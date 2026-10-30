@@ -45,28 +45,65 @@ enum Strategy {
         offset: Pixels,
     },
     /// GitTurtle patch: place the popup wholly below `position`, a pointer's
-    /// place, or wholly above it ([`Positioner::point`]).
-    Point { position: Point<Pixels> },
+    /// place, or wholly above it, `gap` clear of the device pixel row the
+    /// point lies in at `scale_factor`, the window's, which the positioner
+    /// sets as it resolves the popup ([`Positioner::point`]).
+    Point {
+        position: Point<Pixels>,
+        gap: Pixels,
+        scale_factor: f32,
+    },
 }
 
 impl Strategy {
     /// GitTurtle patch: a [`Strategy::Point`] as the side placement it is:
-    /// below the whole pixels the point lies within, its leading edge at
-    /// the point, or above them where the popup fits only there, or where
-    /// it fits on neither side and there is more room above.
+    /// below the device pixel row the point lies in and `gap` past it, its
+    /// leading edge at the point, or above that row and its gap where the
+    /// popup fits only there, or where it fits on neither side and there is
+    /// more room above. The gap's far edges are rounded out to whole pixels,
+    /// so a popup placed there by whole pixels keeps the whole gap. At scale
+    /// 1 or 2 the row is one whole pixel or within it; at a fractional
+    /// scale, where GPUI paints a popup's ring over the device pixels it
+    /// touches, the ring a gap of its width holds still ends clear of the
+    /// device row under the pointer.
     fn as_side(self) -> Self {
         match self {
-            Self::Point { position } => Self::Side {
-                trigger_bounds: Bounds::from_corners(
-                    point(position.x, position.y.floor()),
-                    point(position.x, position.y.ceil()),
-                ),
-                placement: Some(Placement::Bottom),
-                align: Align::Start,
-                offset: px(0.),
-            },
+            Self::Point {
+                position,
+                gap,
+                scale_factor,
+            } => {
+                let scale_factor = scale_factor.max(f32::EPSILON);
+                let row = (f32::from(position.y) * scale_factor).floor();
+                let top = px(row / scale_factor) - gap;
+                let bottom = px((row + 1.) / scale_factor) + gap;
+                Self::Side {
+                    trigger_bounds: Bounds::from_corners(
+                        point(position.x, top.floor()),
+                        point(position.x, bottom.ceil()),
+                    ),
+                    placement: Some(Placement::Bottom),
+                    align: Align::Start,
+                    offset: px(0.),
+                }
+            }
             strategy => strategy,
         }
+    }
+
+    /// GitTurtle patch: for a [`Strategy::Point`], the tallest the popup may
+    /// be in `viewport_size` with `margin` to lie wholly below or wholly
+    /// above its point and gap: the larger of the rooms
+    /// [`resolve_placement`] weighs ([`Positioner::point_room`]). `None`
+    /// for the other placements.
+    fn point_room(self, viewport_size: Size<Pixels>, margin: Pixels) -> Option<Pixels> {
+        let (Self::Point { .. }, Self::Side { trigger_bounds, .. }) = (self, self.as_side()) else {
+            return None;
+        };
+        let bottom_limit = (viewport_size.height - margin).max(margin);
+        let below = bottom_limit - trigger_bounds.bottom();
+        let above = trigger_bounds.top() - margin;
+        Some(below.max(above).max(px(0.)))
     }
 }
 
@@ -153,7 +190,13 @@ impl Positioner {
     /// its height fits below it, otherwise its bottom-left corner there
     /// where it fits above it, and where it fits on neither side, on the
     /// side with more room. It moves in from the window's sides as a corner
-    /// does, and by whole pixels away from the point, never onto it.
+    /// does, and by whole pixels away from the point, never onto it. It
+    /// lies beside the pixel row the point lies in, never on it, with
+    /// [`Positioner::offset`]'s gap between them, the room a caller keeps
+    /// for a ring the popup draws outside its fill, so that nothing it
+    /// draws covers the point. With no gap its top lies on the row's lower
+    /// edge, so a pointer on a whole pixel, as X11 reports one, is not
+    /// inside it.
     /// A popup that fits on neither side is still clamped into the window,
     /// over the point, unless the caller caps it at
     /// [`Positioner::point_room`]. [`Positioner::corner`] keeps the corner at
@@ -161,26 +204,36 @@ impl Positioner {
     /// over the point it was opened at.
     pub fn point(position: Point<Pixels>) -> Self {
         Self {
-            strategy: Strategy::Point { position },
+            strategy: Strategy::Point {
+                position,
+                gap: px(0.),
+                scale_factor: 1.,
+            },
             ..Self::corner(Anchor::TopLeft, position)
         }
     }
 
     /// GitTurtle patch: for [`Positioner::point`], the tallest the popup
-    /// may be in `window` to lie wholly below or wholly above its point,
-    /// with this positioner's margin and bottom inset: the room on the side
-    /// with more. A caller caps a scrolling popup at it so that it never
-    /// covers the point, however short the window. `None` for the other
-    /// placements.
+    /// may be in `window` to lie wholly below or wholly above its point and
+    /// gap, with this positioner's margin and bottom inset: the room on the
+    /// side with more. A caller caps a scrolling popup at it so that it
+    /// never covers the point, however short the window. `None` for the
+    /// other placements.
     pub fn point_room(&self, window: &Window) -> Option<Pixels> {
-        let Strategy::Point { position } = self.strategy else {
-            return None;
-        };
         let (viewport, margin) = self.viewport(window);
-        // The rooms the side placement weighs ([`Strategy::as_side`]).
-        let below = viewport.height - margin - position.y.ceil();
-        let above = position.y.floor() - margin;
-        Some(below.max(above).max(px(0.)))
+        self.strategy_in(window).point_room(viewport, margin)
+    }
+
+    /// GitTurtle patch: the strategy as `window` resolves it: a followed
+    /// corner as it stands now, and a point on the window's device pixels.
+    fn strategy_in(&self, window: &Window) -> Strategy {
+        let mut strategy = self.strategy;
+        match (&mut strategy, &self.following) {
+            (Strategy::Corner { position, .. }, Some(following)) => *position = following.get(),
+            (Strategy::Point { scale_factor, .. }, _) => *scale_factor = window.scale_factor(),
+            _ => {}
+        }
+        strategy
     }
 
     /// The viewport a popup is resolved in and the margin it keeps there:
@@ -217,9 +270,15 @@ impl Positioner {
 
     /// Sets the gap between the trigger and the popup. Only meaningful for
     /// [`Positioner::side`].
+    ///
+    /// GitTurtle patch: and for [`Positioner::point`], the gap between the
+    /// pixel row the point lies in and the popup.
     pub fn offset(mut self, offset: Pixels) -> Self {
-        if let Strategy::Side { offset: slot, .. } = &mut self.strategy {
-            *slot = offset;
+        match &mut self.strategy {
+            Strategy::Side { offset: slot, .. } | Strategy::Point { gap: slot, .. } => {
+                *slot = offset;
+            }
+            Strategy::Corner { .. } => {}
         }
         self
     }
@@ -443,14 +502,9 @@ impl Element for Positioner {
         // the viewport the popup is resolved in by the difference, so the
         // margin then ends at the inset.
         let (viewport, margin) = self.viewport(window);
-        // GitTurtle patch: a followed corner as it stands now.
-        let mut strategy = self.strategy;
-        if let (Strategy::Corner { position, .. }, Some(following)) =
-            (&mut strategy, &self.following)
-        {
-            *position = following.get();
-        }
-        let position = resolve(strategy, popup_size, viewport, margin);
+        // GitTurtle patch: a followed corner as it stands now, and a point
+        // on the window's device pixels.
+        let position = resolve(self.strategy_in(window), popup_size, viewport, margin);
         // Ahead of the children so it blocks what is behind the popup without
         // blocking the popup's own content.
         if self.occlude {
@@ -464,10 +518,12 @@ impl Element for Positioner {
         // status bar another half pixel lower.
         let bottom = viewport.height - margin;
         // GitTurtle patch: a popup above a point moves up to a whole pixel,
-        // never down onto the point: its height can end in half a pixel,
+        // never down toward the point: its height can end in half a pixel,
         // as on a display of scale 2, and rounding to the nearest pixel then
-        // carried its bottom half a pixel below the point's pixel row. One
-        // below the point starts at a whole pixel already.
+        // carried its bottom half a pixel into the gap kept above the
+        // point's pixel row, and its ring onto that row. One below the point
+        // starts at a whole pixel already, its gap rounded out to one
+        // ([`Strategy::as_side`]).
         let y = match (self.strategy, position.placement) {
             (Strategy::Point { .. }, Some(Placement::Top)) => offset.y.floor(),
             _ => match offset.y.round() {
@@ -653,16 +709,26 @@ mod tests {
         assert_eq!(position.bounds.bottom(), viewport().height - MARGIN);
     }
 
-    /// GitTurtle patch: a popup at a point lies below the whole pixels the
-    /// point lies within where it fits there, otherwise above them where it
-    /// fits there, otherwise on the side with more room.
+    /// GitTurtle patch: a point at `y`, `gap` clear of its pixel row, at
+    /// `scale_factor`.
+    fn point_at(y: f32, gap: f32, scale_factor: f32) -> Strategy {
+        Strategy::Point {
+            position: point(px(100.), px(y)),
+            gap: px(gap),
+            scale_factor,
+        }
+    }
+
+    /// GitTurtle patch: a popup at a point lies below the pixel row the
+    /// point lies in where it fits there, otherwise above it where it fits
+    /// there, otherwise on the side with more room. A point on a whole
+    /// pixel, as X11 reports one, lies in the row that pixel starts, not
+    /// inside a popup that starts there.
     #[test]
     fn point_positioning_opens_below_or_wholly_above_the_point() {
         let at = |y: f32, height: f32| {
             resolve(
-                Strategy::Point {
-                    position: point(px(100.), px(y)),
-                },
+                point_at(y, 0., 1.),
                 Size::new(px(40.), px(height)),
                 viewport(),
                 MARGIN,
@@ -673,13 +739,62 @@ mod tests {
         assert_eq!(below.placement, Some(Placement::Bottom));
         assert_eq!(below.bounds.origin, point(px(100.), px(151.)));
 
+        let whole = at(150., 100.);
+        assert_eq!(whole.bounds.origin, point(px(100.), px(151.)));
+        assert!(!whole.bounds.contains(&point(px(100.), px(150.))));
+
         let above = at(350.6, 100.);
         assert_eq!(above.placement, Some(Placement::Top));
         assert_eq!(above.bounds.bottom(), px(350.));
 
-        // 176 px below, 216 px above: neither holds it.
+        // 175 px below, 216 px above: neither holds it.
         assert_eq!(at(220., 300.).placement, Some(Placement::Top));
         assert_eq!(at(180., 300.).placement, Some(Placement::Bottom));
+    }
+
+    /// GitTurtle patch: with a gap as wide as the ring a popup draws in the
+    /// band outside its fill, the ring, painted over every device pixel it
+    /// touches as GPUI paints a shadow (`cover_bounds`), never reaches the
+    /// device row under the pointer, below or above it, at scale 1, 2 and
+    /// the fractional 1.25 and 1.5, for a pointer anywhere in its pixel,
+    /// on a whole pixel among them; and neither fill nor ring holds the
+    /// point. Without the gap the ring lay on the pointer's row, and a
+    /// pointer on a whole pixel lay inside a popup below it.
+    #[test]
+    fn point_positioning_keeps_its_ring_off_the_pointers_device_row() {
+        const RING: f32 = 1.;
+        for scale_factor in [1., 2., 1.25, 1.5] {
+            for step in 0..40 {
+                for (row, height, side) in [
+                    (150., 100., Placement::Bottom),
+                    (350., 100.5, Placement::Top),
+                ] {
+                    let y = row + step as f32 * 0.05;
+                    let pointer = point(px(100.), px(y));
+                    let at = format!("{y} at scale {scale_factor}");
+                    let resolved = resolve(
+                        point_at(y, RING, scale_factor),
+                        Size::new(px(40.), px(height)),
+                        viewport(),
+                        MARGIN,
+                    );
+                    assert_eq!(resolved.placement, Some(side), "{at}");
+                    let ring = resolved.bounds.dilate(px(RING));
+                    assert!(!ring.contains(&pointer), "{at}: {ring:?} holds the point");
+                    let pointer_row = (y * scale_factor).floor();
+                    match side {
+                        Placement::Bottom => assert!(
+                            (f32::from(ring.top()) * scale_factor).floor() > pointer_row,
+                            "{at}: the ring {ring:?} reaches device row {pointer_row}"
+                        ),
+                        _ => assert!(
+                            (f32::from(ring.bottom()) * scale_factor).ceil() <= pointer_row,
+                            "{at}: the ring {ring:?} reaches device row {pointer_row}"
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     // Migrated from the tooltip module when its private positioning logic was

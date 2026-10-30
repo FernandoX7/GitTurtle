@@ -206,28 +206,42 @@ a popup at a pointer only by a corner (`Positioner::corner`), which keeps
 that corner at the point and only clamps the popup into the window, so a
 menu opened near the window's foot, or above an application's bottom inset,
 slid up over the point it was opened at. `Positioner::point` places it as a
-side placement on the whole pixels the point lies within (`Strategy::Point`,
-resolved as `Strategy::Side` with a bottom preference and leading
-alignment): its top-left corner at the point where its height fits below,
-otherwise its bottom-left corner there where it fits above, otherwise on the
-side with more room, moving in from the window's sides as a corner does. One
-below the point starts at a whole pixel; one above it moves up to a whole
-pixel rather than to the nearest, since a height that ends in half a pixel,
-as on a display of scale 2, would otherwise carry its bottom half a pixel
-below the point's pixel row. A popup that fits on neither side is still
+side placement on the device pixel row the point lies in at the window's
+scale (`Strategy::Point`, resolved as `Strategy::Side` with a bottom
+preference and leading alignment), with a gap past that row that
+`Positioner::offset` sets, its far edges rounded out to whole pixels: its
+top-left corner just below the point where its height fits below,
+otherwise its bottom-left corner just above it where it fits above,
+otherwise on the side with more room, moving in from the window's sides as a
+corner does. One below the point starts at a whole pixel; one above it moves
+up to a whole pixel rather than to the nearest, since a height that ends in
+half a pixel, as on a display of scale 2, would otherwise carry its bottom
+half a pixel into the gap, and a ring drawn there onto the point's row. The
+gap is the room a caller keeps for the ring a popup draws outside its fill:
+at the point, the ring lay on the row clicked. The row's lower edge, not the
+point, bounds the room below, so a pointer on a whole pixel, as X11 reports
+one, no longer lies inside a popup that starts there (GPUI's `Bounds::contains`
+counts the top edge in). At a fractional scale such as 1.25, where GPUI
+paints a shadow's ring over every device pixel it touches (`cover_bounds`),
+a gap counted from the pointer's logical pixel let the ring reach the device
+row under a pointer late in its pixel; counted from the device row, it
+cannot. A popup that fits on neither side is still
 clamped over the point, so `Positioner::point_room` gives the room on the
-side with more, with the positioner's margin and bottom inset, at which a
-caller caps a scrolling popup so that it never covers the point however short
-its window. The
+side with more, past the gap, with the positioner's margin and bottom inset,
+at which a caller caps a scrolling popup so that it never covers the point
+however short its window. The
 consumer is the component's `NativeMenu` fallback, the drawn menu a
 right-click in an input, text area or editor shows on Linux
-([component patch](../gpui-component/GITTURTLE-PATCH.md)).
+([component patch](../gpui-component/GITTURTLE-PATCH.md)), which sets the
+gap to its ring's width.
 `positioner::tests::point_positioning_opens_below_or_wholly_above_the_point`
-covers the side it takes, through
+covers the side it takes and
+`point_positioning_keeps_its_ring_off_the_pointers_device_row` the gap at
+scales 1, 2, 1.25 and 1.5, through
 `scripts/vendor-crate-test.sh vendor/gpui-base positioner::`;
 `cargo test --locked -p gitturtle an_inputs_menu_opens` covers it in the
-app, below the Working Changes filter's pointer and wholly above the commit
-title's, and
+app at scales 1 and 2, the drawn edge on the row below the Working Changes
+filter's pointer and on the row above the commit title's, and
 `an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` covers
 the room, capping a code editor's menu beside the point in a 461 × 330
 window. Remove this part

@@ -7,11 +7,12 @@
 //! GitTurtle patch: placed at the pointer by the base `Positioner`, inside
 //! the window less 8 px and above the room an application keeps at its foot
 //! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
-//! at: below the pointer where it fits, otherwise above it, its bottom edge
-//! at the pointer, its items capped at the room on the side with more and
-//! scrolled past it. GPUI's `anchored` snap kept it only inside the window,
-//! so an input's right-click menu near the window's foot ended over a status
-//! bar, and kept above the bar by sliding up, it covered the line clicked.
+//! at: below the pointer where it fits, otherwise above it, its drawn edge
+//! next to the pixel row the pointer lies in either way, never on it, its
+//! items capped at the room on the side with more and scrolled past it.
+//! GPUI's `anchored` snap kept it only inside the window, so an input's
+//! right-click menu near the window's foot ended over a status bar, and kept
+//! above the bar by sliding up, it covered the line clicked.
 
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
@@ -36,10 +37,15 @@ struct ActiveMenu {
 
 /// GitTurtle patch: how the menu opened at `position` is placed: wholly
 /// below the point or wholly above it ([`gpui_base::Positioner::point`]),
-/// 8 px inside the window and above the room the application keeps at its
-/// foot, as the kit's context menu and dropdowns keep theirs.
+/// its drawn edge, the ring painted in the band outside its fill
+/// ([`crate::POPOVER_EDGE_WIDTH`]), clear of the pixel row the point lies
+/// in, 8 px inside the window and above the room the application keeps at
+/// its foot, as the kit's context menu and dropdowns keep theirs. With its
+/// fill at the point the ring lay on the row clicked, and on a whole-pixel
+/// pointer, as X11 reports, the fill's top held the point.
 fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::Positioner {
     gpui_base::Positioner::point(position)
+        .offset(crate::POPOVER_EDGE_WIDTH)
         .margin(px(8.))
         .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
 }

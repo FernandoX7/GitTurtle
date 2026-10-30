@@ -630,6 +630,20 @@ a dropdown, and the first test passes without it; since no app menu uses the
 kit's context menu, a kit update may instead drop that half rather than carry
 it forward, with that test's right-click case.
 
+The input-menu patch also modifies `src/native_menu/fallback.rs`. The
+fallback menu gives the base `Positioner::point` a gap of
+`POPOVER_EDGE_WIDTH` ([base patch](../gpui-base/GITTURTLE-PATCH.md)), so its
+drawn edge, the ring painted in the band outside its fill, lies on the pixel
+row next to the pointer's, below it or above it, never on it, as the app's
+row menus keep their edge clear of their row. With its fill at the pointer,
+the ring lay on the row clicked, and a pointer on a whole pixel, as X11
+reports one, lay inside the fill's top edge.
+`an_inputs_menu_opens_at_the_pointer_where_it_fits_below` and
+`an_inputs_menu_opens_wholly_above_the_pointer_where_it_does_not_fit_below`
+read the drawn edge clear of the pointer's row at scales 1 and 2, for a
+pointer on a whole pixel and part way into one. Remove this part with the
+fallback menu's placement.
+
 The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
 `confirm`, which Enter and a click run, acted on whatever entry was selected.
 The pointer's hover selects any row, a disabled item or a label among them, so
