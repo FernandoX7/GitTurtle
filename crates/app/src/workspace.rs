@@ -2437,14 +2437,20 @@ impl GitTurtle {
     /// once where its view is open, else as the preview read under way lands
     /// ([`GitTurtle::preview_activation`]). Selecting a row is not choosing
     /// it: an arrow key, a write's status read or a refresh selects it and
-    /// leaves focus where it is (`select_working`). Returns whether anything
-    /// was activated.
+    /// leaves focus where it is (`select_working`). While the list refuses
+    /// a choice ([`Self::working_list_refuses`]), neither a click on the
+    /// selected row nor Enter chooses it: both once focused its conflict's
+    /// draft, the click though the list had refused it. Returns whether
+    /// anything was activated.
     pub(super) fn activate_working_preview(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.mode != WorkspaceMode::Working || self.working_selected.is_none() {
+        if self.mode != WorkspaceMode::Working
+            || self.working_selected.is_none()
+            || self.working_list_refuses()
+        {
             return false;
         }
         if self.activate_conflict_view(window, cx) {
@@ -4532,7 +4538,8 @@ impl GitTurtle {
                             window,
                             cx,
                         );
-                        // A click on the row chooses its file.
+                        // A click on the row chooses its file; one the list
+                        // refuses chooses nothing (`activate_working_preview`).
                         if this.working_selected == Some((index, area)) {
                             this.activate_working_preview(window, cx);
                         }

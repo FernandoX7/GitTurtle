@@ -467,6 +467,16 @@ impl GitTurtle {
                     .contains(&Key::new(entry.path.clone(), area))
             })
     }
+    /// Whether the Working list refuses a choice of its rows: a write runs,
+    /// the rows drawn are being replaced, or the filter failed. Its busy
+    /// look, the header's Refreshing… or the filter's error, drawn where it
+    /// refuses, says why; a click, Enter or Select All then changes nothing.
+    pub(super) fn working_list_refuses(&self) -> bool {
+        self.operation_busy.is_some()
+            || self.working_paths.pending
+            || self.working_paths.error.is_some()
+    }
+
     pub(super) fn choose_working_selection(
         &mut self,
         index: usize,
@@ -476,10 +486,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.operation_busy.is_some()
-            || self.working_paths.pending
-            || self.working_paths.error.is_some()
-        {
+        if self.working_list_refuses() {
             return;
         }
         let Some(entry) = self.work_status.as_ref().and_then(|s| s.entries.get(index)) else {
@@ -491,11 +498,7 @@ impl GitTurtle {
         self.select_working(index, area, window, cx);
     }
     pub(super) fn select_all_working(&mut self, cx: &mut Context<Self>) {
-        if self.mode != WorkspaceMode::Working
-            || self.operation_busy.is_some()
-            || self.working_paths.pending
-            || self.working_paths.error.is_some()
-        {
+        if self.mode != WorkspaceMode::Working || self.working_list_refuses() {
             return;
         }
         self.working_selection.selected = self.visible_working_keys().into_iter().collect();

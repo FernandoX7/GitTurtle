@@ -4861,6 +4861,155 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// [`narrow_notes`] stopped on a merge, with another.txt added: notes.txt
+    /// conflicted and selected, its conflict view open, both files selected
+    /// and focus on the list. Returns the list's focus handle.
+    async fn conflicted_notes_selected(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        repository: &Path,
+    ) -> FocusHandle {
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        merge_stopping_on_notes(repository);
+        quietly_refreshed(app, cx);
+        preview_landed(app, cx);
+        let notes = position_of(app, cx, "notes.txt", ChangeArea::Unstaged);
+        let selector: &'static str = format!("working-row-{notes}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(app, cx);
+        app.update(cx, |app, cx| app.select_all_working(cx));
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(app, cx),
+            Some(false),
+            "notes.txt's view is open, its draft not focused"
+        );
+        list
+    }
+
+    /// The Working list's cursor row and its selected files' paths.
+    fn working_choice(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> (Option<(usize, ChangeArea)>, Option<String>) {
+        app.read_with(cx, |app, _| {
+            (app.working_selected, app.working_copy_paths())
+        })
+    }
+
+    /// A click on the selected conflicted file's row, or Enter, while the
+    /// Working list refuses a choice, as while a discard review is prepared
+    /// (a write in the window's busy spell that leaves the preview open) or
+    /// while the list's rows are prepared, chooses nothing: the selection
+    /// stays as it was and focus stays on the list, the busy look saying
+    /// why. The click chose the selected row whether or not the list had
+    /// refused it, and Enter did, so the file's resolution draft took focus
+    /// from the list the person was in.
+    #[gpui::test]
+    async fn a_choice_the_working_list_refuses_activates_nothing(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let list = conflicted_notes_selected(&app, cx, &repository).await;
+        // notes.txt's row, which stays where it is drawn while the list
+        // refuses: rows being replaced are none to act on.
+        let notes = position_of(&app, cx, "notes.txt", ChangeArea::Unstaged);
+        let refused = |cx: &mut VisualTestContext, refusal: &str| {
+            let before = working_choice(&app, cx);
+            assert!(
+                app.read_with(cx, |app, _| app.working_list_refuses()),
+                "{refusal}: the list refuses"
+            );
+            let selector: &'static str = format!("working-row-{notes}").leak();
+            let row = cx.debug_bounds(selector).expect(selector);
+            cx.simulate_click(row.center(), Modifiers::default());
+            next_frame(cx);
+            assert_eq!(
+                conflict_shown(&app, cx),
+                Some(false),
+                "{refusal}: the click focuses no draft"
+            );
+            assert!(
+                cx.update(|window, _| list.is_focused(window)),
+                "{refusal}: focus stays on the list"
+            );
+            assert_eq!(
+                working_choice(&app, cx),
+                before,
+                "{refusal}: the selection is unchanged"
+            );
+        };
+        let entered = |cx: &mut VisualTestContext, refusal: &str| {
+            let before = working_choice(&app, cx);
+            cx.simulate_keystrokes("enter");
+            next_frame(cx);
+            assert_eq!(
+                conflict_shown(&app, cx),
+                Some(false),
+                "{refusal}: Enter focuses no draft"
+            );
+            assert!(
+                cx.update(|window, _| list.is_focused(window)),
+                "{refusal}: focus stays on the list"
+            );
+            assert_eq!(working_choice(&app, cx), before, "{refusal}: unchanged");
+        };
+
+        let another = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .and_then(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == Path::new("another.txt"))
+                })
+                .cloned()
+                .expect("another.txt's entry")
+        });
+        let preparing = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(another, window, cx)));
+        next_frame(cx);
+        refused(cx, "a discard review is prepared");
+        assert!(app.read_with(cx, |app, _| app.working_list_refuses()));
+        entered(cx, "a discard review is prepared");
+        app.update(cx, |app, _| app.cancel_discard_action());
+        drop(preparing);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+
+        // The rows are prepared again, held on the filter's thread so that
+        // they land only once released.
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.schedule_working_filter(
+                    None,
+                    false,
+                    crate::working_selection::Preparation::Status,
+                    window,
+                    cx,
+                )
+            })
+        });
+        next_frame(cx);
+        refused(cx, "the rows are prepared");
+        assert!(app.read_with(cx, |app, _| app.working_list_refuses()));
+        entered(cx, "the rows are prepared");
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the rows landed, focus on the list"
+        );
+        assert!(!writing(&app, cx), "no write runs");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The selected working file's preview that lands conflicted while
     /// Settings shows opens its conflict view as the window returns to the
     /// repository, without its draft taking focus even for a frame: focus
