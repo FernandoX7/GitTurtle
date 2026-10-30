@@ -807,6 +807,82 @@ mod tests {
         );
     }
 
+    /// A plan History asks for opens over History only. Primary + 2 while
+    /// Amend last commit or a branch's actions are prepared opens Changes
+    /// and drops the plan, as leaving the page does, while the preparation's
+    /// end still reads the working state Changes asked for meanwhile, with
+    /// no read queued behind it. Amend's form once opened over the working
+    /// list. Asked for again in History, the plan opens there.
+    #[gpui::test]
+    async fn changes_opened_while_history_prepares_a_plan_drops_the_plan(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        let amend_open = |cx: &mut VisualTestContext| {
+            app.read_with(cx, crate::recovery::amend_description)
+                .is_some()
+        };
+        let dialog =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        /// Returns once the preparation and the reads after it have landed.
+        async fn ends(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle(app, cx).await;
+            crate::path_filter::filters_land(app, cx);
+        }
+        /// Starts a plan's preparation for the commit given.
+        type Prepare = fn(&mut GitTurtle, String, &mut Window, &mut Context<GitTurtle>);
+        let prepare: [(&str, Prepare); 2] = [
+            ("Amend last commit", |app, head, window, cx| {
+                crate::recovery::prepare_amend(app, head, window, cx)
+            }),
+            ("main's branch actions", |app, _, window, cx| {
+                app.open_contextual_branch("main".into(), false, window, cx)
+            }),
+        ];
+        for (index, (plan, prepare)) in prepare.into_iter().enumerate() {
+            // Its preparation held as a slow disk holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let head = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, head, window, cx)));
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                "{plan} is prepared"
+            );
+            let later = format!("later-{index}.txt");
+            std::fs::write(fixture.path().join("narrow").join(&later), "later\n").unwrap();
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.mode == WorkspaceMode::Working, "{plan}: Changes opens");
+                assert!(app.status_task.is_none(), "{plan}: no read waits behind it");
+            });
+            drop(held);
+            ends(&app, cx).await;
+            assert!(!amend_open(cx), "{plan}: no Amend form over Changes");
+            assert!(!dialog(cx), "{plan}: no plan over Changes");
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_none()),
+                "{plan}: the preparation ended"
+            );
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{plan}: the preparation's end reads the working state"
+            );
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+        }
+
+        // Asked for in History and answered there, the plan opens.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                crate::recovery::prepare_amend(app, head, window, cx)
+            })
+        });
+        ends(&app, cx).await;
+        assert!(amend_open(cx), "Amend last commit opens in History");
+    }
+
     /// A Commit or Fetch refreshes quietly as it ends, and that quiet read
     /// serves Changes opened while it ran: its rows land without a second,
     /// aloud read clearing them, and the selected row gets back the preview

@@ -53,6 +53,9 @@ type Reviewing = Box<dyn FnOnce(&mut Window, &mut Context<GitTurtle>) -> bool>;
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+    /// Whether the running preparation's plan is no longer wanted
+    /// ([`GitTurtle::dismiss_recovery_read`]).
+    dismissed: bool,
     amend: Option<Entity<AmendForm>>,
     stash: Option<Entity<StashForm>>,
     /// The Stashes dialog opened last, which keeps its own Review restore…
@@ -96,6 +99,7 @@ impl GitTurtle {
     pub(super) fn cancel_recovery_read(&mut self) {
         self.recovery.generation = self.recovery.generation.wrapping_add(1);
         self.recovery.task = None;
+        self.recovery.dismissed = false;
         if self.operation_busy == Some(PREPARING) {
             self.operation_busy = None;
         }
@@ -111,6 +115,18 @@ impl GitTurtle {
             self.cancel_recovery_read();
             cx.notify();
         }
+    }
+
+    /// Drops the plan the running preparation brings, as Changes opens over
+    /// the view that asked for it, which [`Self::cancel_recovery_read`]
+    /// does on leaving the page. Its read still ends as it would: the
+    /// operation executor cannot stop it, so the preparation keeps its busy
+    /// state until then and, ending, reads the working state Changes asked
+    /// for meanwhile (`read_deferred_working`) rather than leave that read
+    /// queued behind it. Opened during a preparation History started, Changes
+    /// once showed its plan's form over the working list.
+    pub(super) fn dismiss_recovery_read(&mut self) {
+        self.recovery.dismissed = self.recovery.task.is_some();
     }
 
     /// Reports that a recovery action refuses while an integration is
@@ -279,7 +295,10 @@ impl GitTurtle {
                     this.operation_busy = None;
                 }
                 this.read_deferred_working(window, cx);
-                if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository {
+                if this.path.as_ref() != Some(&path)
+                    || this.page != AppPage::Repository
+                    || this.recovery.dismissed
+                {
                     cx.notify();
                     return;
                 }

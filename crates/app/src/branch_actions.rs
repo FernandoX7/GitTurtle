@@ -19,6 +19,9 @@ type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTu
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+    /// Whether the running preparation's outcome is no longer wanted
+    /// ([`GitTurtle::dismiss_branch_action`]).
+    dismissed: bool,
     /// The list of the chooser or remote manager opened last, for tests.
     #[cfg(test)]
     list: Option<FocusReveal>,
@@ -97,9 +100,17 @@ impl GitTurtle {
     pub(super) fn cancel_branch_action(&mut self) {
         self.branch_actions.generation = self.branch_actions.generation.wrapping_add(1);
         self.branch_actions.task = None;
+        self.branch_actions.dismissed = false;
         if self.operation_busy == Some(PREPARING) {
             self.operation_busy = None;
         }
+    }
+
+    /// Drops what the running preparation brings while its read still ends,
+    /// as Changes opens over the view that asked for it
+    /// ([`Self::dismiss_recovery_read`]).
+    pub(super) fn dismiss_branch_action(&mut self) {
+        self.branch_actions.dismissed = self.branch_actions.task.is_some();
     }
 
     /// Replaces the existing picker; its frequent switch actions remain first.
@@ -582,7 +593,10 @@ impl GitTurtle {
                     this.operation_busy = None;
                 }
                 this.read_deferred_working(window, cx);
-                if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository {
+                if this.path.as_ref() != Some(&path)
+                    || this.page != AppPage::Repository
+                    || this.branch_actions.dismissed
+                {
                     cx.notify();
                     return;
                 }

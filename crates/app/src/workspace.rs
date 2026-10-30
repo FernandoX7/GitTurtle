@@ -2108,6 +2108,12 @@ impl GitTurtle {
     /// for the write to end ([`Self::refresh_worktree`]). The switch once
     /// returned while any write ran, from the toggle drawn and announced
     /// available, its shortcut and the palette alike.
+    ///
+    /// Leaving History or Compare drops the plan a recovery, rebase or
+    /// branch action is being prepared for there, as leaving the page does,
+    /// while the preparation's read still ends and then reads the working
+    /// state this page asked for ([`Self::dismiss_recovery_read`]). Its form
+    /// once opened over the working list.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
         if self.repository.is_none() {
@@ -2115,6 +2121,9 @@ impl GitTurtle {
             return;
         }
         if self.mode != WorkspaceMode::Working {
+            self.dismiss_recovery_read();
+            self.dismiss_interactive_rebase_action();
+            self.dismiss_branch_action();
             if self.mode == WorkspaceMode::History {
                 self.history_sidebar = self.sidebar;
             }

@@ -22,6 +22,9 @@ pub(super) fn init(cx: &mut App) {
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+    /// Whether the running preparation's outcome is no longer wanted
+    /// ([`GitTurtle::dismiss_interactive_rebase_action`]).
+    dismissed: bool,
     draft: Option<Entity<RebaseForm>>,
     message: Option<Entity<MessageForm>>,
 }
@@ -73,9 +76,17 @@ impl GitTurtle {
     pub(super) fn cancel_interactive_rebase_action(&mut self) {
         self.interactive_rebase.generation = self.interactive_rebase.generation.wrapping_add(1);
         self.interactive_rebase.task = None;
+        self.interactive_rebase.dismissed = false;
         if self.operation_busy == Some(PREPARING) {
             self.operation_busy = None;
         }
+    }
+
+    /// Drops what the running preparation brings while its read still ends,
+    /// as Changes opens over the view that asked for it
+    /// ([`Self::dismiss_recovery_read`]).
+    pub(super) fn dismiss_interactive_rebase_action(&mut self) {
+        self.interactive_rebase.dismissed = self.interactive_rebase.task.is_some();
     }
 
     /// A selected commit may be supplied as the exclusive base; otherwise the
@@ -242,7 +253,10 @@ impl GitTurtle {
                     this.operation_busy = None;
                 }
                 this.read_deferred_working(window, cx);
-                if this.path.as_ref() == Some(&path) && this.page == AppPage::Repository {
+                if this.path.as_ref() == Some(&path)
+                    && this.page == AppPage::Repository
+                    && !this.interactive_rebase.dismissed
+                {
                     receive(result, this, window, cx);
                 }
                 cx.notify();
