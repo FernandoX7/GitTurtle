@@ -16171,13 +16171,18 @@ pub(crate) mod tests {
 
     /// The bar's room for Cancel ([`GitTurtle::full_bar_room`]) is kept
     /// wherever some header's contents send the widest label's status to the
-    /// bar: at 13 and 18 pt, at full-header widths from 461 to 1,480 px,
-    /// every set of controls with Changes and the profile's label sampled
-    /// across their ranges a few pixels apart sends it there only where the
-    /// room is kept, and the room is kept at some widths and not at others.
-    /// The widest labels alone would not do: a profile that fills the
-    /// spacer's line leaves it less room than a longer one that wraps with
-    /// Settings onto a line of their own.
+    /// bar, and only there: at 13 and 18 pt, at full-header widths from 461
+    /// to 1,480 px, every set of controls with Changes and the profile's
+    /// label sampled across their ranges a few pixels apart sends it there
+    /// only where the room is kept, and the room is kept at some widths and
+    /// not at others; and at the widest width that keeps it, below the one
+    /// where it stops, some contents sampled a pixel apart do send it there,
+    /// where a pixel past that width none does. The widest labels alone
+    /// would not do: a profile that fills the spacer's line leaves it less
+    /// room than a longer one that wraps with Settings onto a line of their
+    /// own. Nothing checked that the room was not kept too early: deciding
+    /// it for a header 60 px narrower kept it where no header sends a write
+    /// to the bar.
     #[gpui::test]
     async fn the_bars_room_for_cancel_holds_for_every_header_s_contents(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -16195,38 +16200,73 @@ pub(crate) mod tests {
                     let count = (f32::from(most - least) / step).ceil() as usize;
                     (0..=count).map(move |at| (least + px(at as f32 * step)).min(most))
                 };
+                let narrow = |width: Pixels| width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                // The first sampled contents, Changes and the profile `step`
+                // apart, that send the widest status to the bar in a header
+                // `width` wide.
+                let sends = |width: Pixels, step: (f32, f32)| {
+                    [(true, true), (true, false), (false, true), (false, false)]
+                        .into_iter()
+                        .find_map(|(repository, projects)| {
+                            let controls = HeaderControls {
+                                projects,
+                                repository,
+                            };
+                            samples(least, most, step.0).find_map(|changes| {
+                                samples(px(0.), limit, step.1).find_map(|profile| {
+                                    let widths = ChromeWidths {
+                                        changes,
+                                        profile,
+                                        ..widths
+                                    };
+                                    app.header_layout(
+                                        width,
+                                        narrow(width),
+                                        controls,
+                                        false,
+                                        &widths,
+                                        window,
+                                    )
+                                    .widest_to_bar
+                                    .then_some((controls, changes, profile))
+                                })
+                            })
+                        })
+                };
+                let room = |width: Pixels| app.full_bar_room(width, narrow(width), &widths, window);
                 for width in (461..=1480).step_by(13) {
                     let width = px(width as f32);
-                    let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
-                    let room = app.full_bar_room(width, narrow, &widths, window);
-                    for (repository, projects) in
-                        [(true, true), (true, false), (false, true), (false, false)]
-                    {
-                        let controls = HeaderControls {
-                            projects,
-                            repository,
-                        };
-                        for changes in samples(least, most, 5.) {
-                            for profile in samples(px(0.), limit, 3.) {
-                                let widths = ChromeWidths {
-                                    changes,
-                                    profile,
-                                    ..widths
-                                };
-                                let to_bar = app
-                                    .header_layout(width, narrow, controls, false, &widths, window)
-                                    .widest_to_bar;
-                                assert!(
-                                    room || !to_bar,
-                                    "{text} pt, {width:?}: {controls:?} with Changes {changes:?} \
-                                     and the profile {profile:?} send the widest status to a bar \
-                                     that keeps no room"
-                                );
-                            }
-                        }
+                    let room = room(width);
+                    if !room {
+                        let sent = sends(width, (5., 3.));
+                        assert!(
+                            sent.is_none(),
+                            "{text} pt, {width:?}: {sent:?} sends the widest status to a bar \
+                             that keeps no room"
+                        );
                     }
                     kept[usize::from(room)] += 1;
                 }
+                // Where the room stops being kept, it is kept no earlier than
+                // a header sends a write there.
+                let stops = (462..=2400)
+                    .rev()
+                    .map(|width| px(width as f32))
+                    .find(|&width| room(width - px(1.)) && !room(width))
+                    .expect("the room stops being kept at some width");
+                let last = stops - px(1.);
+                assert!(
+                    sends(last, (1., 1.)).is_some(),
+                    "{text} pt: at {last:?}, the widest that keeps the room, some contents \
+                     send the widest status to the bar"
+                );
+                let past = stops + px(1.);
+                assert!(!room(past), "{text} pt: {past:?} keeps no room");
+                let sent = sends(past, (1., 1.));
+                assert!(
+                    sent.is_none(),
+                    "{text} pt: at {past:?} {sent:?} sends the widest status to the bar"
+                );
             });
         }
         assert!(
