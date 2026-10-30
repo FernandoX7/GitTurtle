@@ -278,8 +278,13 @@ impl GitTurtle {
     /// keeping its slot of the executor's bounded queue until it reached the
     /// front though the next Refresh had dropped it, so a few presses filled
     /// the queue, the next read was refused as busy and Changes lost its
-    /// rows. Settings and Projects stay the way out of a read that never
-    /// ends ([`Self::end_dropped_preparation`]).
+    /// rows. The only ways out of a read that never ends are those that end
+    /// the wait ([`Self::end_dropped_preparation`]): Settings, from wherever
+    /// it is offered, Projects, from its shortcut, the header's Projects,
+    /// History's Back to Projects, File ▸ Projects…, the palette or the
+    /// Linux Main Menu, none of which the wait refuses
+    /// (`GitTurtle::projects_refusal`), and closing the last tab, which
+    /// shows Projects.
     ///
     /// The busy state it gives back is the one for the repository shown
     /// ([`Self::dropped_preparation_label`]), so each change of the shown
