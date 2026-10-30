@@ -197,7 +197,8 @@ impl GitTurtle {
                 "page-back",
                 self.operation_busy.is_some() && self.mode == WorkspaceMode::History,
                 |app| crate::workspace::WaitingTooltip {
-                    name: format!("{} · {}[", app.back_label(), primary_label()).into(),
+                    name: app.back_label().into(),
+                    shortcut: Some(format!("{}[", primary_label()).into()),
                     dimmed: app.operation_shown().is_some() && app.mode == WorkspaceMode::History,
                 },
                 cx,
@@ -314,6 +315,7 @@ impl GitTurtle {
                     self.operation_busy.is_some(),
                     |app| crate::workspace::WaitingTooltip {
                         name: "Open Projects".into(),
+                        shortcut: None,
                         dimmed: app.operation_shown().is_some(),
                     },
                     cx,

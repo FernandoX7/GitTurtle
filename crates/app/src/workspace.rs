@@ -644,19 +644,31 @@ pub(crate) fn refusing(
 /// What a control that waits for a running write says in its tooltip
 /// ([`GitTurtle::refusing_with_reason`]).
 pub(crate) struct WaitingTooltip {
-    /// What it says at rest.
+    /// What it is, which leads the tooltip.
     pub(crate) name: SharedString,
+    /// Its shortcut, which ends the tooltip.
+    pub(crate) shortcut: Option<SharedString>,
     /// Whether it looks refused, which adds why ([`BUSY_REASON`]).
     pub(crate) dimmed: bool,
 }
 
 impl WaitingTooltip {
+    /// The name, why it waits while it looks refused, then the shortcut:
+    /// every tooltip that names a shortcut ends with it ("History ·
+    /// Primary+1") and a refusing one gives its reason after its name
+    /// ("Open Projects · Wait for …"). Back to Projects once read
+    /// "Back to Projects · Primary+[ · Wait for …".
     fn text(&self) -> SharedString {
+        let mut text = self.name.to_string();
         if self.dimmed {
-            format!("{} · {BUSY_REASON}", self.name).into()
-        } else {
-            self.name.clone()
+            text.push_str(" · ");
+            text.push_str(BUSY_REASON);
         }
+        if let Some(shortcut) = &self.shortcut {
+            text.push_str(" · ");
+            text.push_str(shortcut);
+        }
+        text.into()
     }
 }
 

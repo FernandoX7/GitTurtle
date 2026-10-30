@@ -327,14 +327,18 @@ mod tests {
         cx.simulate_keystrokes(&format!("{primary}-shift-o"));
         draw(cx);
         assert!(history(cx), "Projects waits for the write");
-        let back = format!("Back to Projects · {}[", primary_label());
-        assert_eq!(tooltip("page-back"), Some(back.clone()), "Back at first");
+        let shortcut = format!("{}[", primary_label());
+        assert_eq!(
+            tooltip("page-back"),
+            Some(format!("Back to Projects · {shortcut}")),
+            "Back at first"
+        );
         cx.executor()
             .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
         draw(cx);
         assert_eq!(
             tooltip("page-back"),
-            Some(format!("{back} · {BUSY_REASON}")),
+            Some(format!("Back to Projects · {BUSY_REASON} · {shortcut}")),
             "Back to Projects once the write looks busy"
         );
 
@@ -757,6 +761,61 @@ mod tests {
         assert!(app.read_with(cx, |app, _| app.operation_busy.is_none()));
         draw(cx);
         assert!(shows(cx, rest), "once the write ends");
+        assert!(!shows(cx, &waiting));
+    }
+
+    /// History's Back to Projects says why it waits for a write between its
+    /// name and its shortcut, the order every tooltip keeps: a shortcut ends
+    /// it ("History · Primary+1") and a reason follows the name ("Open
+    /// Projects · Wait for …"). It read "Back to Projects · Primary+[ ·
+    /// Wait for …", the reason trailing the shortcut. Resting there, the
+    /// pointer reads it lose the reason as the write ends.
+    #[gpui::test]
+    async fn back_to_projects_gives_its_reason_before_its_shortcut(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        draw(cx);
+        let shows = |cx: &mut VisualTestContext, text: &str| {
+            cx.debug_bounds(format!("page-back/tooltip/{text}").leak())
+                .is_some()
+        };
+        let shortcut = format!("{}[", primary_label());
+        let rest = format!("Back to Projects · {shortcut}");
+        let waiting = format!("Back to Projects · {BUSY_REASON} · {shortcut}");
+
+        // A write held open, as a Fetch from an unreachable remote stays.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.executor().advance_clock(BUSY_LOOK_DELAY);
+        draw(cx);
+        let back = cx
+            .debug_bounds("page-back")
+            .expect("History's Back to Projects");
+        cx.simulate_mouse_move(back.center(), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        draw(cx);
+        assert!(shows(cx, &waiting), "while the write looks busy");
+
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(shows(cx, &rest), "once the write ends");
         assert!(!shows(cx, &waiting));
     }
 
