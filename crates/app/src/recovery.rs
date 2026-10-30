@@ -3838,6 +3838,103 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A window shrunk until the Stashes detail cuts the control the
+    /// keyboard left focus on shows it whole again in the frames after the
+    /// resize: stacked beneath the list at 18 pt, with Tab on Review
+    /// restore… at the detail's foot in a 461 × 640 window and the pointer
+    /// since moved, as it is to drag the window's edge, the window shrunk
+    /// to 461 × 490 shows it whole with its ring. A control the person had
+    /// scrolled out of view is left there: only a cut the resize makes is
+    /// revealed. Judged only on a key being the last input, a resize after
+    /// the pointer moved left the focused control cut.
+    #[gpui::test]
+    async fn a_resize_that_cuts_the_focused_control_reveals_it(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "first\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        std::fs::write(repo.path().join("notes.txt"), "second\n").unwrap();
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(640.)));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let room = cx.read(appearance::button_ring_room);
+        let slack = px(0.01);
+        let whole = |cx: &mut VisualTestContext| {
+            let ring = rendered(cx, "restore-saved-stash").dilate(room);
+            let view = rendered(cx, "stash-detail");
+            ring.top() + slack >= view.top() && ring.bottom() <= view.bottom() + slack
+        };
+        let pointer_moves = |cx: &mut VisualTestContext| {
+            let list = rendered(cx, "stash-list").center();
+            cx.simulate_mouse_move(list, None, Modifiers::default());
+            draw(cx);
+        };
+        tab_to(&browser, "restore-saved-stash", cx);
+        draw(cx);
+        assert!(whole(cx), "Tab reveals Review restore…");
+
+        // Scrolled out of view by the person, it stays out of view.
+        pointer_moves(cx);
+        cx.update(|window, _| {
+            detail.scroll().set_offset(point(px(0.), px(0.)));
+            window.refresh();
+        });
+        draw(cx);
+        assert!(
+            !whole(cx),
+            "at its top the detail does not show Review restore… whole"
+        );
+        cx.simulate_resize(size(px(461.), px(600.)));
+        draw(cx);
+        assert_eq!(
+            detail.scroll().offset().y,
+            px(0.),
+            "a resize leaves a control the person scrolled away from where it is"
+        );
+
+        // Shown whole, it is shown whole again once a resize cuts it.
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            cx.update(|window, _| detail.focused(window)),
+            Some("restore-saved-stash".into()),
+            "Tab returns to Review restore…"
+        );
+        assert!(whole(cx), "Tab reveals Review restore… again");
+        pointer_moves(cx);
+        let foot = rendered(cx, "restore-saved-stash").bottom();
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(
+            rendered(cx, "stash-detail").bottom() < foot,
+            "the smaller window's detail ends above where Review restore… lay"
+        );
+        assert_eq!(
+            cx.update(|window, _| detail.focused(window)),
+            Some("restore-saved-stash".into()),
+            "focus stays on Review restore…"
+        );
+        assert!(
+            whole(cx),
+            "the resize reveals Review restore… whole with its ring"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The saved files cue their overflow as the detail around them does
     /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, eleven
     /// unstaged files overflow their box, which shows a scrollbar in a

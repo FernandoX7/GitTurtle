@@ -4,9 +4,19 @@
 //! container, the container scrolls by the least amount that shows the whole
 //! control plus a margin: to the nearest edge, without centring or animation.
 //! Only a change of focus reveals, or a page that opens with focus on a
-//! control ([`FocusReveal::reveal_next_focus`]). Scrolling away from a
-//! focused control, or drawing again with the same focus, leaves the
-//! container where it is.
+//! control ([`FocusReveal::reveal_next_focus`]), or a resize or text-size
+//! change that cuts the focused control the last frame showed whole. That
+//! last reveal follows how focus was placed, not the last input: focus the
+//! keyboard placed stays in view when the window is then resized by
+//! dragging its edge, which moves the pointer, as the app's own focus ring
+//! stays through pointer moves; shrunk until the Stashes detail cut Review
+//! restore…, the window once left it cut. Scrolling away from a focused
+//! control, or drawing again with the same focus, leaves the container
+//! where it is, and so does a resize after the person has scrolled the
+//! control out of view.
+//!
+//! A resize is revealed in the frame after the one that lays the container
+//! out at its new size, since no frame knows that size before its layout.
 //!
 //! The reveal lands in the frame that first draws the new focus. GPUI lays a
 //! frame out, prepaints and paints it, so a control's bounds are known only
@@ -100,6 +110,14 @@ pub(crate) struct FocusReveal {
     /// ([`Self::reveal_next_focus`]).
     next_focus: Rc<Cell<bool>>,
     observed: Rc<RefCell<Observation>>,
+    /// Whether the focus the container last drew with was placed in a way
+    /// the trigger reveals, or by a page that asked for it to be revealed:
+    /// a resize that cuts its control reveals it whatever the last input
+    /// has been since.
+    placed: Rc<Cell<bool>>,
+    /// Whether the last frame showed the control holding focus whole in the
+    /// container's view, so a resize that cuts it is what cut it.
+    shown: Rc<Cell<bool>>,
     controls: Rc<RefCell<HashMap<ElementId, FocusHandle>>>,
     /// The controls reported so far in the frame being prepainted.
     drawing: Rc<RefCell<Vec<Drawn>>>,
@@ -116,6 +134,8 @@ impl FocusReveal {
             trigger,
             next_focus: Rc::default(),
             observed: Rc::default(),
+            placed: Rc::default(),
+            shown: Rc::default(),
             controls: Rc::default(),
             drawing: Rc::default(),
             drawn: Rc::default(),
@@ -350,14 +370,26 @@ impl FocusReveal {
         }
     }
 
-    /// Whether focus has changed since the last frame in a way the trigger
-    /// reveals, or a page opening asked for its focus to be revealed
-    /// ([`Self::reveal_next_focus`]) even onto the control it last drew
-    /// focused.
+    /// Whether a reveal is due: focus has changed since the last frame in a
+    /// way the trigger reveals; a page opening asked for its focus to be
+    /// revealed ([`Self::reveal_next_focus`]) even onto the control it last
+    /// drew focused; or, focus unchanged, the container's size or the text
+    /// size has changed since a frame that showed the control whole, focus
+    /// having been placed there in a way the trigger reveals, so the change
+    /// is what cuts it.
     fn due(&self, observed: &Observation, window: &Window) -> bool {
+        let last = self.observed.borrow();
         self.next_focus.get()
-            || (*self.observed.borrow() != *observed
-                && (self.trigger == Trigger::AnyFocus || window.last_input_was_keyboard()))
+            || if last.focus != observed.focus {
+                self.revealing(window)
+            } else {
+                *last != *observed && self.placed.get() && self.shown.get()
+            }
+    }
+
+    /// Whether a focus change now is one the trigger reveals.
+    fn revealing(&self, window: &Window) -> bool {
+        self.trigger == Trigger::AnyFocus || window.last_input_was_keyboard()
     }
 
     /// Records that the frame being prepainted drew the control `focus`
@@ -395,7 +427,20 @@ impl FocusReveal {
             drawing.clear();
             drawn.items = items;
         }
-        *self.observed.borrow_mut() = self.observation(window, cx);
+        let observed = self.observation(window, cx);
+        if self.next_focus.get() {
+            self.placed.set(true);
+        } else if self.observed.borrow().focus != observed.focus {
+            self.placed.set(self.revealing(window));
+        }
+        let (viewport, offset) = (self.scroll.bounds(), self.scroll.offset().y);
+        let slack = px(0.01);
+        self.shown
+            .set(self.drawn_focus(window, cx).is_some_and(|(bounds, _)| {
+                let drawn = bounds + point(px(0.), offset);
+                drawn.top() + slack >= viewport.top() && drawn.bottom() <= viewport.bottom() + slack
+            }));
+        *self.observed.borrow_mut() = observed;
         self.next_focus.set(false);
         #[cfg(test)]
         self.painted.borrow_mut().push(tests::Painted {
@@ -472,9 +517,9 @@ impl FocusReveal {
         (offset != previous).then_some(offset)
     }
 
-    /// Reveals `bounds`, where the control is drawn in this frame, if focus
-    /// has changed since the last frame in a way the trigger reveals and
-    /// [`Self::reveal`] has not already shown it.
+    /// Reveals `bounds`, where the control is drawn in this frame, if a
+    /// reveal is due ([`Self::due`]) and [`Self::reveal`] has not already
+    /// shown it: as after a resize, which only this frame's layout shows.
     fn request(&self, bounds: Bounds<Pixels>, margin: Pixels, window: &mut Window, cx: &mut App) {
         let observed = self.observation(window, cx);
         if !self.due(&observed, window) {
