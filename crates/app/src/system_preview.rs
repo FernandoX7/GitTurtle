@@ -761,7 +761,10 @@ pub(crate) struct HeaderEnd {
 /// as every scrolling list is ([`crate::tags::ScrollCue`]): by a scrollbar
 /// where its thumb moves along the region, and at the region's 36–44 px
 /// floor, where the kit's 48 px thumb filled its track, by a fade at each
-/// edge its controls continue past. A side's `foot`, the model's
+/// edge its controls continue past, which stops short of the ring of the
+/// control holding focus ([`crate::tags::ScrollCue::revealing`]): there a
+/// control revealed with its ring's room lies within the fade's height of
+/// an edge, and the fade once covered its ring. A side's `foot`, the model's
 /// details, gives way before the header does. In a narrow side, at 13 and
 /// 18 pt in a 461 × 490 window and at 18 pt in 640 × 680, the controls once
 /// wrapped past the preview's foot and took the line out of view; then the
@@ -812,7 +815,7 @@ pub(crate) fn header_ends(
         let most =
             (height - reserve - appearance::ui_size(crate::image_compare::STAGE_MIN)).max(row);
         let content = height - reserve - most;
-        let cue = crate::tags::ScrollCue::new(held.reveal.scroll(), px(0.));
+        let cue = crate::tags::ScrollCue::revealing(&held.reveal, px(0.));
         let region = div()
             .on_children_prepainted(cue.observe(held.reveal.observe()))
             .id(SharedString::from(format!("{name}/header")))

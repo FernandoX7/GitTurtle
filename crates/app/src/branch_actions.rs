@@ -1204,7 +1204,7 @@ impl Render for BranchChooser {
             .list
             .items(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
         // Past its height the list cues the rest with its scrollbar.
-        let cue = tags::ScrollCue::new(self.list.scroll(), room);
+        let cue = tags::ScrollCue::revealing(&self.list, room);
         div().flex().flex_col().gap_3().pb(room)
             .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
@@ -1426,7 +1426,7 @@ impl Render for RemoteManager {
         // remote keeps its controls' ring room inside its own padding, so the
         // list keeps none around the remotes.
         let room = appearance::button_ring_room(cx);
-        let cue = tags::ScrollCue::new(self.list.scroll(), Pixels::ZERO);
+        let cue = tags::ScrollCue::revealing(&self.list, Pixels::ZERO);
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))

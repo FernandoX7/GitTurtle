@@ -12484,7 +12484,9 @@ pub(crate) mod tests {
     /// across the side whole with its ring: labelled, Copy source, the
     /// views menu, Linked, Read page text, Retry page, the page number and
     /// Linked pages were wider than the 88 px side at 13 pt and cut at its
-    /// edge. At 18 pt the side is 121 px.
+    /// edge. At 18 pt the side is 121 px. At the region's floor no fade lies
+    /// over the ring of the control Tab or Shift+Tab brings to its edge, and
+    /// a fade cut short of a ring returns whole as focus leaves the region.
     /// The page view's position, a polite live region, lies outside the
     /// region that can scroll it out of reach. A header scrolled down starts
     /// at its top again in the next showing, as a new file's does.
@@ -12589,6 +12591,96 @@ pub(crate) mod tests {
                 );
             }
         };
+        // A fade never obscures a focus indicator. From focus on `first` at
+        // the top of side `name`'s region at its floor, Tab moves through
+        // `controls` and Shift+Tab back, bringing controls to each edge the
+        // region continues past, within a fade's height of it: no fade
+        // reaches the focused control's ring, or its label inside it. Where
+        // focus leaves the region, Shift+Tab from `first`, the fade it cut
+        // returns whole. It once lay over the ring of a control at the edge.
+        let unobscured = |cx: &mut VisualTestContext,
+                          at: &str,
+                          name: &'static str,
+                          first: &Control,
+                          controls: &[Control]| {
+            let list = reveal(name, &app, cx);
+            let region = format!("{name}/header").leak();
+            list.reveal_next_focus();
+            cx.update(|window, cx| list.focus(first.0.clone(), cx).focus(window, cx));
+            draw(cx);
+            let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+            let full = |held: Bounds<Pixels>, cx: &mut VisualTestContext| {
+                cx.update(|_, _| appearance::ui_size(8.))
+                    .min(held.size.height / 4.)
+            };
+            let steps = controls
+                .iter()
+                .map(|control| ("tab", control))
+                .chain(
+                    controls
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .map(|control| ("shift-tab", control)),
+                )
+                .chain([("shift-tab", first)]);
+            let (mut top, mut bottom) = (0, 0);
+            for (key, (id, selector)) in steps {
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                assert_eq!(
+                    cx.update(|window, _| list.focused(window)).as_ref(),
+                    Some(id),
+                    "{at}: {key} reaches {selector}"
+                );
+                let held = bounds(region, cx);
+                let ring = bounds(selector, cx).dilate(room);
+                let (top_fade, bottom_fade) = crate::tags::tests::painted_fades(cx, held);
+                assert!(
+                    top_fade.is_none_or(|fade| held.top() + fade <= ring.top() + px(0.01))
+                        && bottom_fade
+                            .is_none_or(|fade| held.bottom() - fade >= ring.bottom() - px(0.01)),
+                    "{at}: after {key}, {selector}'s ring {ring:?} lies clear of the fades {top_fade:?} and {bottom_fade:?} over {held:?}"
+                );
+                // Whether the ring lies within a fade's height of an edge
+                // the region continues past.
+                let (scroll, fade) = (list.scroll(), full(held, cx));
+                let scrolled = -scroll.offset().y;
+                top += usize::from(scrolled > slack && ring.top() < held.top() + fade);
+                bottom += usize::from(
+                    scrolled < scroll.max_offset().y - slack
+                        && ring.bottom() > held.bottom() - fade,
+                );
+            }
+            assert!(
+                top > 0 && bottom > 0,
+                "{at}: Tab and Shift+Tab bring controls to each edge, {top} to the top and {bottom} to the bottom"
+            );
+            // Focus on `first` at the region's top leaves the bottom fade
+            // short of its ring; Shift+Tab takes focus out of the region,
+            // which stays where it is, and the fade returns whole.
+            let held = bounds(region, cx);
+            let (_, cut) = crate::tags::tests::painted_fades(cx, held);
+            let offset = list.scroll().offset().y;
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| list.focused(window)),
+                None,
+                "{at}: Shift+Tab from {} leaves the region",
+                first.1
+            );
+            let (_, returned) = crate::tags::tests::painted_fades(cx, held);
+            let fade = full(held, cx);
+            assert!(
+                list.scroll().offset().y == offset
+                    && cut.is_none_or(|cut| cut < fade - slack)
+                    // Painted, the band snaps to device pixels.
+                    && returned.is_some_and(|returned| (returned - fade).abs() < slack),
+                "{at}: the bottom fade, {cut:?} short of {}'s ring, returns whole, {fade:?}, as focus leaves, not {returned:?}",
+                first.1
+            );
+        };
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
 
@@ -12646,6 +12738,7 @@ pub(crate) mod tests {
             (bounds("model-side-header-1", cx).top() - top).abs() <= slack,
             "the next showing's header starts at its top"
         );
+        unobscured(cx, "the model at 13 pt", "model-side-1", &source, &controls);
         // At 18 pt the details still give their room first.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         draw(cx);
@@ -12660,6 +12753,7 @@ pub(crate) mod tests {
             "at 18 pt, at its {floor:?} floor, the region cues the rest with a fade, not a scrollbar"
         );
         walk(cx, "the model at 18 pt", model, &source, &controls);
+        unobscured(cx, "the model at 18 pt", "model-side-1", &source, &controls);
         // In a full window the details stay, beneath a header that fits.
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);

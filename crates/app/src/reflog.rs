@@ -1052,7 +1052,7 @@ impl Render for ReflogBrowser {
         let show_entry = self.entries.items(entries.clone(), room);
         let show_list = self.content.group(entries.clone(), room);
         // Past its height the entry list cues the rest with its scrollbar.
-        let cue = crate::tags::ScrollCue::new(self.entries.scroll(), room);
+        let cue = crate::tags::ScrollCue::revealing(&self.entries, room);
         let shown =
             |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
         let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())

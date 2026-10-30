@@ -715,8 +715,8 @@ impl Render for WorktreeManager {
             .collect();
         let reveal_choice = self.choices.items(choice_focus.clone(), room);
         let show_choices = self.content.group(choice_focus.clone(), room);
-        let cue = crate::tags::ScrollCue::new(self.rows.scroll(), room);
-        let choice_cue = crate::tags::ScrollCue::new(self.choices.scroll(), room);
+        let cue = crate::tags::ScrollCue::revealing(&self.rows, room);
+        let choice_cue = crate::tags::ScrollCue::revealing(&self.choices, room);
         // As the dialog opens, the content scrolls the shown form's first
         // field into view with its ring: it follows the tabs' row, the
         // loading row and the error, and in Create the branch choice and its

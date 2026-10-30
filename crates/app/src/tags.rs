@@ -58,11 +58,25 @@ pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 /// reach and its length in the frame that changes them: a list that grows
 /// past the shortest track draws no fade before its scrollbar comes, and
 /// one that shrinks below it fades in the frame that shrinks it.
+///
+/// A fade never lies over a focus indicator. In a list whose controls a
+/// [`FocusReveal`] scrolls into view ([`ScrollCue::revealing`]), the fade at
+/// an edge stops short of the focused control's ring, its ring's room
+/// outside its edge, so the ring and the label inside it stay whole, and
+/// it returns whole in the frame focus leaves. The reveal keeps its ring's
+/// room alone: at a side header's floor, as in the model's 40 px region at
+/// 13 pt, a 28 px control (about 39 px at 18 pt) cannot also keep a fade's
+/// height clear of both edges, and a reveal that kept one edge's fade
+/// clear brought the control under the other's, its second pass in the
+/// frame scrolling it back.
 pub(crate) struct ScrollCue {
     rows: RowColumn,
     /// Whether this frame keeps the gutter, and whether it draws the
     /// scrollbar in it ([`cues`]).
     cued: (bool, bool),
+    /// What scrolls the list's focused control into view, whose ring the
+    /// fades stop short of.
+    reveal: Option<FocusReveal>,
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -83,7 +97,8 @@ const EDGE_FADE: f32 = 8.;
 
 impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its
-    /// rows for their rings, for the frame being rendered.
+    /// rows for their rings, for the frame being rendered: for a list that
+    /// holds no control focus can reach, such as a model's details.
     pub(crate) fn new(scroll: &ScrollHandle, room: Pixels) -> Self {
         let rows = RowColumn {
             scroll: scroll.clone(),
@@ -92,6 +107,16 @@ impl ScrollCue {
         Self {
             cued: cues(&rows),
             rows,
+            reveal: None,
+        }
+    }
+
+    /// [`Self::new`] for a list whose controls `reveal` scrolls into view:
+    /// its fades stop short of the focused control's ring.
+    pub(crate) fn revealing(reveal: &FocusReveal, room: Pixels) -> Self {
+        Self {
+            reveal: Some(reveal.clone()),
+            ..Self::new(reveal.scroll(), room)
         }
     }
 
@@ -137,7 +162,7 @@ impl ScrollCue {
             ))
             // In every frame, so a list that shrinks below the shortest
             // track fades in the frame that shrinks it.
-            .child(edge_fades(self.rows.clone()));
+            .child(edge_fades(self.rows.clone(), self.reveal.clone()));
         if scrollbar {
             cue.child(
                 div()
@@ -183,12 +208,14 @@ fn edge_fade(rows: &RowColumn) -> Pixels {
 /// enough for a thumb draws none while its scrollbar is still to come; read
 /// as the cue renders, rows that arrived drew no fade until something else
 /// drew the list again, and a tall list drew a fade for one frame before
-/// its scrollbar. It inserts no hitbox,
+/// its scrollbar. It reads where `reveal`'s focused control lies then too,
+/// and a fade whose band reaches that control's ring ends where the ring
+/// begins ([`fade_reach`]). It inserts no hitbox,
 /// so the pointer reaches what lies beneath it: a wheel over a fade scrolls
 /// the list, and a row under one takes its hover and click. It does not
 /// move: a fade comes and goes with the scroll that reveals an edge, in
 /// that frame.
-fn edge_fades(rows: RowColumn) -> impl IntoElement {
+fn edge_fades(rows: RowColumn, reveal: Option<FocusReveal>) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
@@ -198,6 +225,11 @@ fn edge_fades(rows: RowColumn) -> impl IntoElement {
             if fade <= Pixels::ZERO {
                 return;
             }
+            let ring = reveal
+                .as_ref()
+                .and_then(|reveal| reveal.focused_bounds(window, cx))
+                .map(|control| control.dilate(appearance::button_ring_room(cx)));
+            let (top_fade, bottom_fade) = fade_reach(list, fade, ring);
             // Half a pixel either way is an end: GPUI rounds the reach to
             // two decimals.
             let slack = px(0.5);
@@ -210,16 +242,16 @@ fn edge_fades(rows: RowColumn) -> impl IntoElement {
                     linear_color_stop(surface, 1.),
                 )
             };
-            if scrolled > slack {
+            if scrolled > slack && top_fade > Pixels::ZERO {
                 // Toward the top, opaque at the list's top edge.
-                let top = Bounds::new(list.origin, size(list.size.width, fade));
+                let top = Bounds::new(list.origin, size(list.size.width, top_fade));
                 window.paint_quad(fill(top, band(0.)));
             }
-            if scrolled < scroll.max_offset().y - slack {
+            if scrolled < scroll.max_offset().y - slack && bottom_fade > Pixels::ZERO {
                 // Toward the bottom, opaque at the list's bottom edge.
                 let bottom = Bounds::new(
-                    point(list.left(), list.bottom() - fade),
-                    size(list.size.width, fade),
+                    point(list.left(), list.bottom() - bottom_fade),
+                    size(list.size.width, bottom_fade),
                 );
                 window.paint_quad(fill(bottom, band(180.)));
             }
@@ -227,6 +259,32 @@ fn edge_fades(rows: RowColumn) -> impl IntoElement {
     )
     .absolute()
     .size_full()
+}
+
+/// How far the fades `fade` tall reach in from the top and the bottom edge
+/// of the list at `list`: each ends where `ring`, the focused control's
+/// ring, begins, where its band reaches the ring, and is none where the
+/// ring reaches the list's edge. Its band keeps its gradient, clear inward,
+/// over the height left, so no hard edge lies across the list.
+fn fade_reach(
+    list: Bounds<Pixels>,
+    fade: Pixels,
+    ring: Option<Bounds<Pixels>>,
+) -> (Pixels, Pixels) {
+    let Some(ring) = ring else {
+        return (fade, fade);
+    };
+    let top = if ring.bottom() > list.top() && ring.top() < list.top() + fade {
+        (ring.top() - list.top()).max(Pixels::ZERO)
+    } else {
+        fade
+    };
+    let bottom = if ring.top() < list.bottom() && ring.bottom() > list.bottom() - fade {
+        (list.bottom() - ring.bottom()).max(Pixels::ZERO)
+    } else {
+        fade
+    };
+    (top, bottom)
 }
 
 /// A list's scroll as its scrollbar reads it: over the column its rows lie
@@ -448,7 +506,7 @@ impl GitTurtle {
             let pushes: Vec<_> = (0..remotes.len()).map(|index| list.focus(("push-tag-remote", index), cx)).collect();
             let reveal = list.items(pushes.clone(), room);
             // Past its height the list cues the rest with its scrollbar.
-            let cue = ScrollCue::new(list.scroll(), room);
+            let cue = ScrollCue::revealing(&list, room);
             // A write refuses Delete and Push at once, and assistive
             // technology hears them unavailable at once, while they dim only
             // once it looks busy (`workspace::BusyLook`); each refused a
@@ -675,7 +733,7 @@ impl Render for TagBrowser {
             .collect();
         let reveal = self.rows.items(rows.clone(), room);
         // Past its height the list cues the rest with its scrollbar.
-        let cue = ScrollCue::new(self.rows.scroll(), room);
+        let cue = ScrollCue::revealing(&self.rows, room);
         // A write refuses Create tag… and the rows, which open a tag, at
         // once, and assistive technology hears them unavailable at once,
         // while they dim only once it looks busy (`workspace::BusyLook`);

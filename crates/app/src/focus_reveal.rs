@@ -153,6 +153,15 @@ impl FocusReveal {
         self.drawn_focus(window, cx).is_some()
     }
 
+    /// Where the control holding focus lies in the frame being painted, if
+    /// the container drew it: read after the container has prepainted, as
+    /// its scroll cue's fades are (`tags::ScrollCue::revealing`), which stop
+    /// short of the control's ring.
+    pub(crate) fn focused_bounds(&self, window: &Window, cx: &App) -> Option<Bounds<Pixels>> {
+        self.drawn_focus(window, cx)
+            .map(|(bounds, _)| bounds + point(px(0.), self.scroll.offset().y))
+    }
+
     /// The control holding focus among those [`Self::focus`] handed out.
     #[cfg(test)]
     pub(crate) fn focused(&self, window: &Window) -> Option<ElementId> {
@@ -382,18 +391,12 @@ impl FocusReveal {
         *self.observed.borrow_mut() = self.observation(window, cx);
         self.next_focus.set(false);
         #[cfg(test)]
-        {
-            let offset = self.scroll.offset().y;
-            let control = self
-                .drawn_focus(window, cx)
-                .map(|(bounds, _)| bounds + point(px(0.), offset));
-            self.painted.borrow_mut().push(tests::Painted {
-                control,
-                viewport: self.scroll.bounds(),
-                offset,
-                max_offset: self.scroll.max_offset().y,
-            });
-        }
+        self.painted.borrow_mut().push(tests::Painted {
+            control: self.focused_bounds(window, cx),
+            viewport: self.scroll.bounds(),
+            offset: self.scroll.offset().y,
+            max_offset: self.scroll.max_offset().y,
+        });
     }
 
     /// The control holding focus among those the last prepainted frame drew:
