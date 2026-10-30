@@ -1069,11 +1069,20 @@ impl GitTurtle {
                 // Dropped unanswered by the worker, the read is over all the
                 // same: left loading, it held quiet reads off, a write's
                 // reload with them, and every menu that waits for that
-                // reload stayed refused.
-                let Ok(result) = reply else {
-                    this.try_automatic_refresh(window, cx);
-                    cx.notify();
-                    return;
+                // reload stayed refused. An Open so dropped fails as an
+                // interrupted one: ended alone, it left the window on the
+                // repository page with nothing read and nothing to say why,
+                // and the hub busy behind it, its actions refused.
+                let result = match reply {
+                    Ok(result) => result,
+                    Err(_) if opening.is_some() => Err(anyhow::anyhow!(
+                        "Repository read was interrupted. Open the repository again to retry."
+                    )),
+                    Err(_) => {
+                        this.try_automatic_refresh(window, cx);
+                        cx.notify();
+                        return;
+                    }
                 };
                 match result {
                     Ok(output) => {

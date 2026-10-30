@@ -2171,6 +2171,68 @@ mod tests {
         }
     }
 
+    /// An Open the worker drops unanswered, with no newer read in its
+    /// place, fails as an interrupted read does (`GitTurtle::request`): the
+    /// window returns to the hub, which is no longer busy, so its actions
+    /// are available again, and says why, announced at once, as the window
+    /// does. Ended as any other dropped read is, it left the window on the
+    /// repository page with nothing read and nothing to say why, and the
+    /// hub busy behind it, its actions refused.
+    #[gpui::test]
+    async fn an_open_dropped_unanswered_fails_as_interrupted(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        crate::views::tests::draw(cx);
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        let reader = app.read_with(cx, |app, _| app.worker.hold());
+        hub.update(cx, |hub, cx| {
+            hub.emit_operation(ProjectEvent::Open(other.path().to_owned()), cx)
+        });
+        cx.executor().run_until_parked();
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_some())
+                && hub.read_with(cx, |hub, _| hub.busy),
+            "the Open waits on the held reader, the hub busy"
+        );
+        // Dropped unanswered, as a cancel that leaves the read's generation
+        // as it was drops it.
+        app.read_with(cx, |app, _| app.worker.cancel());
+        drop(reader);
+        cx.executor().run_until_parked();
+        written::forget();
+        crate::views::tests::draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_none()),
+            "the Open ended"
+        );
+        assert!(
+            !hub.read_with(cx, |hub, _| hub.busy),
+            "the hub is no longer busy"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.page == crate::AppPage::Projects),
+            "the window is back on the hub"
+        );
+        let error = hub.read_with(cx, |hub, _| hub.error.clone());
+        assert_eq!(
+            error.as_deref(),
+            Some("Repository read was interrupted. Open the repository again to retry."),
+            "the hub says why"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.error.clone()),
+            error,
+            "and so does the window"
+        );
+        assert_eq!(
+            written::announced("project-hub-error"),
+            Some(written::Announced::ASSERTIVE),
+            "announced at once"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn chosen_destination_preserves_non_utf8_parent_bytes() {
