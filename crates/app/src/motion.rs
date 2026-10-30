@@ -2769,6 +2769,11 @@ mod tests {
             dialog_open(cx) && cx.debug_bounds("stash-restore-refusal").is_some(),
             "Stashes stays open with its refusal"
         );
+        assert_eq!(
+            app.read_with(cx, crate::recovery::stash_restore_line),
+            Some(crate::recovery::PAUSED_REFUSAL.into()),
+            "the refusal is the core's, for the paused merge"
+        );
         cx.update(|window, cx| window.close_all_dialogs(cx));
         next_frame(cx);
 

@@ -1390,6 +1390,14 @@ pub(crate) async fn open_selected_stash(app: &Entity<GitTurtle>, cx: &mut gpui::
     );
 }
 
+/// Why the open Stashes last refused Review restore…, the line its footer
+/// note says, for tests in other modules.
+#[cfg(test)]
+pub(crate) fn stash_restore_line(app: &GitTurtle, cx: &App) -> Option<String> {
+    let browser = app.recovery.browser.as_ref()?.upgrade()?;
+    browser.read(cx).restore_line.clone()
+}
+
 impl StashBrowser {
     /// Returns once every read the browser has started, the saved stashes
     /// or a selected stash's inspection, has landed and been drawn. They run
