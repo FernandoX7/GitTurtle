@@ -520,6 +520,38 @@ struct Queue {
     /// answered or skipped ([`Worker::wait_idle`]).
     #[cfg(test)]
     running: bool,
+    /// Test-only: the reader takes no request while a test holds it
+    /// ([`Worker::hold`]).
+    #[cfg(test)]
+    held: bool,
+}
+
+impl Queue {
+    /// Whether the reader waits rather than taking the pending request.
+    fn waits(&self) -> bool {
+        #[cfg(test)]
+        let held = self.held;
+        #[cfg(not(test))]
+        let held = false;
+        self.pending.is_none() || held
+    }
+}
+
+/// Keeps a [`Worker`]'s reader from taking requests until it drops
+/// ([`Worker::hold`]).
+#[cfg(test)]
+#[must_use = "the reader is released as soon as the guard drops"]
+pub struct ReaderHeld {
+    queue: Arc<(Mutex<Queue>, Condvar)>,
+}
+
+#[cfg(test)]
+impl Drop for ReaderHeld {
+    fn drop(&mut self) {
+        let (lock, ready) = &*self.queue;
+        lock.lock().unwrap_or_else(|error| error.into_inner()).held = false;
+        ready.notify_all();
+    }
 }
 
 struct Cancellation {
@@ -582,6 +614,8 @@ impl Worker {
                 active: None,
                 #[cfg(test)]
                 running: false,
+                #[cfg(test)]
+                held: false,
             }),
             Condvar::new(),
         ));
@@ -602,7 +636,7 @@ impl Worker {
                             state.running = false;
                             ready.notify_all();
                         }
-                        while state.pending.is_none() && !state.closed {
+                        while state.waits() && !state.closed {
                             state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
                         }
                         if state.closed {
@@ -660,6 +694,22 @@ impl Worker {
     #[cfg(test)]
     pub fn submissions(&self) -> u64 {
         self.submissions.load(Ordering::Acquire)
+    }
+
+    /// Test-only: keeps the reader from taking a request until the
+    /// returned guard drops, as a slow read ahead of it would, so a request
+    /// submitted meanwhile stays pending, where a newer one or
+    /// [`Self::cancel`] drops it unanswered.
+    #[cfg(test)]
+    pub fn hold(&self) -> ReaderHeld {
+        self.queue
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .held = true;
+        ReaderHeld {
+            queue: Arc::clone(&self.queue),
+        }
     }
 
     /// Test-only: blocks until the reader thread has answered or skipped

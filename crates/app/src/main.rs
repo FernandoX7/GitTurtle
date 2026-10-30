@@ -1057,15 +1057,22 @@ impl GitTurtle {
         });
         let response = self.worker.submit(job);
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let Ok(result) = response.await else {
-                return;
-            };
+            let reply = response.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if generation != this.generation {
                     return;
                 }
                 this.loading = None;
                 this.task = None;
+                // Dropped unanswered by the worker, the read is over all the
+                // same: left loading, it held quiet reads off, a write's
+                // reload with them, and every menu that waits for that
+                // reload stayed refused.
+                let Ok(result) = reply else {
+                    this.try_automatic_refresh(window, cx);
+                    cx.notify();
+                    return;
+                };
                 match result {
                     Ok(output) => {
                         if let (Some(opening), Output::Snapshot(snapshot)) = (opening, &output) {

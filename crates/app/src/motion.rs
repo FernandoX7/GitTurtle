@@ -5260,6 +5260,150 @@ mod tests {
         );
     }
 
+    /// Ends a write that reloads the repository quietly as it ends, as
+    /// Create branch does, its reload held from starting.
+    async fn writes_reload_waits(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        hold_quiet_reads(app, cx, true);
+        let write = held(
+            app,
+            cx,
+            gitturtle_core::WriteCommand::CreateBranch {
+                name: "side-q9".into(),
+                start_point: None,
+            },
+        );
+        release(app, write, cx).await;
+        crate::path_filter::filters_land(app, cx);
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.write_unsettled()
+                && !app.automatic.quiet_read_running()),
+            "the write ended, and its reload waits"
+        );
+    }
+
+    /// Starts the write's reload, held until now, with the path filter's
+    /// newest answer already waiting on the window's thread, where it lands
+    /// first, as the reload runs. The filter's lane is a thread
+    /// `run_until_parked` cannot wait for: drained before the reload starts,
+    /// its answer is queued on the window's thread ahead of the reload's.
+    fn filter_lands_as_the_reload_runs(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.file_paths.drain());
+        reload_runs(app, cx);
+        cx.executor().run_until_parked();
+    }
+
+    /// Working rows that land without the selected row, as a path filter
+    /// that leaves its file out, stop the window's reads (`invalidate_read`),
+    /// a write's running quiet reload with them, and start that reload
+    /// again. Nothing else started it: it waited for the next local change,
+    /// every menu that follows writes refused meanwhile.
+    #[gpui::test]
+    async fn working_rows_without_the_selection_run_a_writes_reload_again(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        writes_reload_waits(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.working_selected.is_some()),
+            "alpha is selected"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value("zeta", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        filter_lands_as_the_reload_runs(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_selected.is_none()
+                && !app.working_paths.pending),
+            "the rows landed without alpha's"
+        );
+        quiet_reads_land(&app, cx);
+        crate::path_filter::filters_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.write_unsettled()),
+            "the reload ran again and landed, and menus are offered"
+        );
+    }
+
+    /// History's file filter that hides the selected file stops the
+    /// window's reads (`invalidate_read`), a write's running quiet reload
+    /// with them, and starts that reload again. Nothing else started it: it
+    /// waited for the next local change, every menu that follows writes
+    /// refused meanwhile.
+    #[gpui::test]
+    async fn a_file_filter_hiding_the_selection_runs_a_writes_reload_again(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        writes_reload_waits(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::History
+                && app.selected_file == Some(0)),
+            "the commit's file is highlighted in History"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.file_filter
+                    .update(cx, |input, cx| input.set_value("absent", window, cx));
+                app.change_file_filter(window, cx);
+            })
+        });
+        filter_lands_as_the_reload_runs(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.selected_file.is_none()
+                && !app.file_paths.pending),
+            "the filter landed and hid the file"
+        );
+        quiet_reads_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.write_unsettled()),
+            "the reload ran again and landed, and menus are offered"
+        );
+        drop(fixture);
+    }
+
+    /// A read the worker drops unanswered, with no newer read in its place,
+    /// ends all the same: the window stops loading and starts the quiet
+    /// reads it held off, a write's reload among them. Left loading, it held
+    /// that reload off until another read ran, every menu that follows
+    /// writes refused meanwhile.
+    #[gpui::test]
+    async fn a_read_dropped_unanswered_runs_a_writes_reload(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        writes_reload_waits(&app, cx).await;
+        let reader = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.select_commit(1, window, cx);
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_some()
+                && !app.automatic.quiet_read_running()),
+            "the selection's read waits on the held reader, and the reload waits for it"
+        );
+        // Dropped unanswered, as a cancel that leaves the read's generation
+        // as it was drops it.
+        app.read_with(cx, |app, _| app.worker.cancel());
+        drop(reader);
+        cx.executor().run_until_parked();
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_none()),
+            "the dropped read ended"
+        );
+        quiet_reads_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.write_unsettled()),
+            "the reload ran and landed, and menus are offered"
+        );
+        drop(fixture);
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's
