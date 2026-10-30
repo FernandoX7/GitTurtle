@@ -1302,9 +1302,10 @@ impl GitTurtle {
             self.working_paths.reset();
             self.file_paths.reset();
         }
-        self.repository_tabs.tabs.remove(index);
+        let closed = self.repository_tabs.tabs.remove(index).path;
         // A wait for a preparation the closed tab dropped says it finishes
-        // a closed tab's work.
+        // a closed tab's work, in a tab that opens its repository again too.
+        self.forget_dropped_preparation_tab(&closed);
         self.hold_dropped_preparation();
         if active {
             self.repository_tabs.active = None;

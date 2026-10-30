@@ -20,7 +20,8 @@ pub(super) struct DroppedPreparation {
     /// the wait ends in the tab that asked for it; any other tab shows
     /// where the work runs instead ([`FINISHING_ELSEWHERE`]).
     label: &'static str,
-    /// The repository whose tab asked for the preparation, which decides
+    /// The repository whose tab asked for the preparation, while that tab
+    /// is open ([`GitTurtle::forget_dropped_preparation_tab`]), which decides
     /// only the label the wait shows ([`GitTurtle::dropped_preparation_label`]):
     /// opened again in place, as History's Refresh opens it, every tab holds
     /// the wait alike ([`GitTurtle::hold_dropped_preparation`]).
@@ -276,19 +277,30 @@ impl GitTurtle {
     /// repository shown: the preparation's own in the tab that asked for
     /// it, and in any other tab what it finishes and where
     /// ([`FINISHING_ELSEWHERE`]): another tab, or a closed one once that
-    /// tab has closed.
+    /// tab has closed ([`Self::forget_dropped_preparation_tab`]).
     fn dropped_preparation_label(&self) -> Option<&'static str> {
         let running = self.dropped_preparation.as_ref()?;
-        if running.repository == self.path {
-            return Some(running.label);
+        Some(match &running.repository {
+            Some(asked) if self.path.as_ref() == Some(asked) => running.label,
+            Some(_) => FINISHING_ELSEWHERE[0].0,
+            None => FINISHING_ELSEWHERE[1].0,
+        })
+    }
+
+    /// Forgets which tab asked for a running wait's preparation as that
+    /// tab, whose repository is `closed`, closes, so every tab then says the
+    /// wait finishes a closed tab's review ([`FINISHING_ELSEWHERE`]), a tab
+    /// that opens the same repository again among them, since that tab never
+    /// asked. Found by its repository's path while the record outlived the
+    /// tab, such a tab once showed the review's own label, "Reviewing file
+    /// changes…", with the Git operation's reason, for work it never asked
+    /// for.
+    pub(super) fn forget_dropped_preparation_tab(&mut self, closed: &std::path::Path) {
+        if let Some(running) = self.dropped_preparation.as_mut()
+            && running.repository.as_deref() == Some(closed)
+        {
+            running.repository = None;
         }
-        let open = running.repository.as_ref().is_some_and(|asked| {
-            self.repository_tabs
-                .tabs
-                .iter()
-                .any(|tab| tab.path == *asked)
-        });
-        Some(FINISHING_ELSEWHERE[usize::from(!open)].0)
     }
 
     /// Ends the wait for a dropped preparation
@@ -2956,16 +2968,17 @@ mod tests {
     /// A dropped review's wait says where its work runs in a tab that did
     /// not ask for it: the busy label, and the reason a refused control
     /// gives in its tooltip, as the palette does (`busy_reason`), name
-    /// another tab's review, or a closed tab's once that tab has closed,
-    /// while the tab that asked shows the review's own label and the Git
-    /// operation's reason. The next tab once read "Reviewing file changes…"
-    /// as why its own actions were unavailable, a review it never asked
-    /// for.
+    /// another tab's review, or a closed tab's once that tab has closed, in
+    /// a tab that opens its repository again too, while the tab that asked
+    /// shows the review's own label and the Git operation's reason. The
+    /// next tab once read "Reviewing file changes…" as why its own actions
+    /// were unavailable, a review it never asked for, and so did a tab that
+    /// opened the closed tab's repository again, found by its path.
     #[gpui::test]
     async fn a_dropped_reviews_wait_says_where_it_runs(cx: &mut TestAppContext) {
         use crate::views::tests::{draw, settle};
         use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON, refusals};
-        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        let (_fixture, app, cx, root, other) = beside_another_tab(cx).await;
         // Wide enough that the busy look's progress label takes none of the
         // header's room from Projects, which Changes shows.
         cx.simulate_resize(size(px(1600.), px(900.)));
@@ -3033,6 +3046,28 @@ mod tests {
                 "Wait for a closed tab's review to finish"
             ),
             "once the tab that asked has closed"
+        );
+
+        // A tab that opens the closed tab's repository again never asked
+        // for the review either.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        let snapshot = app.update(cx, |app, _| app.task.take());
+        if let Some(snapshot) = snapshot {
+            snapshot.await;
+        }
+        changes(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.path.clone()), Some(root));
+        assert_eq!(
+            shown(cx),
+            says(
+                "Finishing a closed tab's review…",
+                "Wait for a closed tab's review to finish"
+            ),
+            "a tab that opens the closed tab's repository again"
         );
 
         drop(held);
