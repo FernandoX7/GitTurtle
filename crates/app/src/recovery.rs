@@ -2593,15 +2593,14 @@ impl Render for StashBrowser {
         // dialogs' lists (`tags::ScrollCue`), where the box is tall enough
         // for a thumb that moves, and a fade at each edge the rows continue
         // past where it is not; rows that fit keep the box's whole width.
-        // The list reaches into the gutter the cue keeps beside its rows (the
-        // track and a ring's room, as `ScrollCue::list` keeps it), so its
+        // The list reaches into the gutter the cue keeps beside its rows
+        // (`ScrollCue::gutter`, the one `ScrollCue::list` keeps), so its
         // scroll, along whose right edge the track runs, spans it, and keeps
         // it clear for the track. Eleven saved files once had
         // only a row cut at the box's foot to say more lay below.
         let file_cue =
             crate::tags::ScrollCue::new(&self.file_scroll.0.borrow().base_handle, Pixels::ZERO);
-        let ring = appearance::BUTTON_FOCUS_RING;
-        let gutter = Scrollbar::width() + ring.gap + ring.width;
+        let gutter = crate::tags::ScrollCue::gutter();
         let files = file_cue
             .list(
                 div()
@@ -3941,11 +3940,16 @@ mod tests {
     /// gutter at the rows' right, its thumb following their scroll and
     /// covering no row, and the one staged file fits, drawing none, its row
     /// keeping the box's whole width. Eleven files once had only a row cut
-    /// at the box's foot to say more lay below.
+    /// at the box's foot to say more lay below. The files' scroll reaches
+    /// exactly into the cue's gutter (`ScrollCue::gutter`), so the track
+    /// runs along its right edge and each row ends where the gutter begins:
+    /// the list once copied the gutter's sum, which could drift from the
+    /// cue's.
     #[gpui::test]
     async fn the_saved_files_cue_their_overflow(cx: &mut gpui_kit::TestAppContext) {
         use crate::tags::tests::{
-            assert_no_scroll_cue, assert_scroll_cue, draw, git, tagged_repository, window,
+            assert_no_scroll_cue, assert_scroll_cue, draw, git, rendered, set_interface_text_size,
+            tagged_repository, window,
         };
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
@@ -3992,6 +3996,23 @@ mod tests {
             px(0.),
             &["stash-file-0", "stash-file-1", "stash-file-2"],
         );
+        let gutter = crate::tags::ScrollCue::gutter();
+        for size in [13, 18] {
+            set_interface_text_size(cx, &app, size);
+            assert!(
+                scroll.max_offset().y > px(0.),
+                "at {size} pt the eleven files overflow their box"
+            );
+            let (list, rows) = (scroll.bounds(), rendered(cx, "stash-file-rows"));
+            let row = rendered(cx, "stash-file-0");
+            assert!(
+                (list.right() - rows.right()).abs() < px(0.01)
+                    && (rows.right() - gutter - row.right()).abs() < px(0.01),
+                "at {size} pt the files' scroll {list:?} spans the cue's {gutter:?} gutter \
+                 in {rows:?}, beside the row {row:?}"
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
         browser.update(cx, |browser, cx| browser.choose_area(StashArea::Staged, cx));
         draw(cx);
         assert_no_scroll_cue(cx, &app, "stash-file-rows", px(0.), &["stash-file-0"]);
