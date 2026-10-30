@@ -51,9 +51,12 @@ pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 ///
 /// GPUI lays a frame out before it knows whether the list overflows, so the
 /// gutter follows the overflow the list's scroll handle kept from the last
-/// frame, and the scrollbar the length of the track it kept. A frame whose
-/// layout differs draws once more after it is painted; a frame draws the
-/// scrollbar only with the gutter, so a thumb never paints over a row. The
+/// frame, and the scrollbar the length of the track it kept, built only
+/// where the track the frame paints is still that long: a list shrunk
+/// below the shortest track draws no bar in the frame that shrinks it. A
+/// frame whose layout differs draws once more after it is painted; a frame
+/// draws the scrollbar only with the gutter, so a thumb never paints over a
+/// row. The
 /// fades read the list as it is painted, so they follow its offset, its
 /// reach and its length in the frame that changes them: a list that grows
 /// past the shortest track draws no fade before its scrollbar comes, and
@@ -164,22 +167,41 @@ impl ScrollCue {
             // track fades in the frame that shrinks it.
             .child(edge_fades(self.rows.clone(), self.reveal.clone()));
         if scrollbar {
-            // The kit's scrollbar lays itself over the list already; this
-            // wrapper only carries its debug selector, which the kit's
-            // element takes none of. It stays: a test tells a list that
-            // draws no scrollbar from one that leaves a bar behind painting
-            // nothing, which a pointer would still meet, only by it, where a
-            // painted thumb shows only what is painted.
+            // The scrollbar is built as the frame paints (`in_frame`), after
+            // the list has laid out in it, and only along a track a thumb
+            // moves on then: a list that shrinks below the shortest track
+            // draws no bar, and leaves no hitbox, in the frame that shrinks
+            // it, where its fades already are. Built as the cue rendered,
+            // from the length the list kept from the frame before, the bar
+            // painted for that one frame over the new fade, and a pointer
+            // could still meet it.
+            let rows = self.rows.clone();
             cue.child(
-                div()
-                    .debug_selector(move || id.into())
-                    .absolute()
-                    .size_full()
-                    .child(
-                        Scrollbar::vertical(&self.rows)
-                            .id(id)
-                            .mode(ScrollbarMode::Always),
-                    ),
+                div().absolute().size_full().flex().flex_col().child(
+                    crate::in_frame::in_frame(move |_, _, _| {
+                        if rows.viewport_bounds().size.height < SHORTEST_SCROLL_TRACK {
+                            return div().into_any_element();
+                        }
+                        // The kit's scrollbar lays itself over the list
+                        // already; this wrapper only carries its debug
+                        // selector, which the kit's element takes none of.
+                        // It stays: a test tells a list that draws no
+                        // scrollbar from one that leaves a bar behind
+                        // painting nothing, which a pointer would still
+                        // meet, only by it, where a painted thumb shows only
+                        // what is painted.
+                        crate::in_frame::probed(
+                            div().debug_selector(move || id.into()).size_full().child(
+                                Scrollbar::vertical(&rows)
+                                    .id(id)
+                                    .mode(ScrollbarMode::Always),
+                            ),
+                            "scrollbar",
+                        )
+                        .into_any_element()
+                    })
+                    .named(id),
+                ),
             )
         } else {
             cue
@@ -2610,10 +2632,14 @@ pub(crate) mod tests {
     /// arriving in a 200 px list, whose track holds a thumb that moves, draw
     /// no fade in the first frame that draws them, while its scrollbar is
     /// still to come, and none once it has come; shrunk to 40 px, the list
-    /// fades its bottom edge in the frame that shrinks it. Decided by the
-    /// overflow alone as it painted, the tall list drew a bottom fade for a
-    /// frame before its scrollbar, on Tags, the branch chooser, the GitHub
-    /// panel's body and the Reflog's entries as they opened.
+    /// fades its bottom edge in the frame that shrinks it, and that frame
+    /// draws no scrollbar: no scrollbar element, which a pointer would meet,
+    /// and nothing painted in its column. Decided by the overflow alone as
+    /// it painted, the tall list drew a bottom fade for a frame before its
+    /// scrollbar, on Tags, the branch chooser, the GitHub panel's body and
+    /// the Reflog's entries as they opened; and decided as the cue
+    /// rendered, the shrunk list's bar painted over the new fade for the
+    /// frame that shrank it, its hitbox live.
     #[gpui::test]
     fn a_list_s_fades_follow_its_length_in_the_frame_drawn(cx: &mut gpui_kit::TestAppContext) {
         let (list, cx) = cued_window(cx, 200., Pixels::ZERO, 1);
@@ -2630,20 +2656,54 @@ pub(crate) mod tests {
             (None, None),
             "the first frame of a tall list's arriving rows fades no edge"
         );
+        // Every frame the cue draws its scrollbar in, as the frame paints.
+        let barred = |frames: &[crate::in_frame::probe::Frame]| {
+            frames.iter().any(|frame| {
+                frame.region == "cued-list/scrollbar" && frame.part("scrollbar").is_some()
+            })
+        };
+        crate::in_frame::probe::watch();
         draw(cx);
         assert!(
             cx.debug_bounds("cued-list/scrollbar").is_some()
+                && barred(&crate::in_frame::probe::take())
                 && painted_fades(cx, region) == (None, None),
             "the tall list cues its rows with a scrollbar and no fade"
         );
         let short = Bounds::new(region.origin, size(region.size.width, px(40.)));
+        // The scrollbar's column, where the kit paints its track and thumb.
+        let column = Bounds::from_corners(
+            point(short.right() - Scrollbar::width() - px(4.), short.top()),
+            short.bottom_right(),
+        );
         let shrunk = list.clone();
-        let (top, bottom) = first_frame_fades(cx, short, move |_, cx| {
+        let ((top, bottom), painted) = cx.update(|window, cx| {
             shrunk.update(cx, |list, cx| {
                 list.height = px(40.);
                 cx.notify();
-            })
+            });
+            window.draw(cx).clear(cx);
+            let scale = window.scale_factor();
+            let painted: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent())
+                .map(|quad| logical(quad.bounds, scale))
+                .filter(|fill| {
+                    fill.left() >= column.left() - px(0.5)
+                        && fill.right() <= column.right() + px(0.5)
+                        && fill.intersects(&column)
+                })
+                .collect();
+            (fades_in(window, cx, short), painted)
         });
+        let frames = crate::in_frame::probe::take();
+        crate::in_frame::probe::stop();
+        assert!(
+            !barred(&frames) && painted.is_empty(),
+            "the frame that shrinks the list to 40 px draws no scrollbar: {painted:?} painted in \
+             its column {column:?}, {frames:?}"
+        );
         assert!(
             top.is_none() && bottom.is_some(),
             "the frame that shrinks the list to 40 px fades its bottom edge, not {top:?} and {bottom:?}"
