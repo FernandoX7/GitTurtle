@@ -219,6 +219,60 @@ impl GitTurtle {
                 })
         });
     }
+
+    /// Submits a request of the panel over `repository`, an outbound
+    /// action when `writing` or a read, on the operation executor, where
+    /// it runs as the window's busy spell until it answers, as a write
+    /// does, labelled with the panel's busy line: Git writes and
+    /// preparations refuse meanwhile and say why, its Cancel is the
+    /// operation bar's, and a working-state read asked for meanwhile waits
+    /// for it, then runs as it ends ([`Self::read_deferred_working`]). That
+    /// holds after the panel has closed and dropped its reply, as closing
+    /// during a read does, since the executor runs the request until it
+    /// stops. Such a read once queued behind a review being sent, with
+    /// nothing saying why, for as long as GitHub took to answer. Returns
+    /// the request's control and its reply, or None, submitting nothing,
+    /// while another write or preparation runs.
+    fn submit_github_request<T: Send + 'static>(
+        &mut self,
+        writing: bool,
+        repository: std::path::PathBuf,
+        operation: impl FnOnce(OperationControl) -> anyhow::Result<T> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(
+        OperationControl,
+        futures::channel::oneshot::Receiver<anyhow::Result<T>>,
+    )> {
+        if self.operation_busy.is_some() {
+            return None;
+        }
+        let label = if writing { SENDING } else { LOADING };
+        let control = self.begin_operation_control(window, cx);
+        let worker_control = control.clone();
+        let response = self.operations.submit(move || operation(worker_control));
+        self.operation_busy = Some(label);
+        self.operation_repository = Some(repository);
+        let (reply, replied) = futures::channel::oneshot::channel();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!(INTERRUPTED)));
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.operation_busy == Some(label) {
+                    this.operation_busy = None;
+                    this.operation_repository = None;
+                    this.finish_operation_control(window, cx);
+                }
+                this.read_deferred_working(window, cx);
+                cx.notify();
+            });
+            let _ = reply.send(result);
+        })
+        .detach();
+        cx.notify();
+        Some((control, replied))
+    }
 }
 struct Confirmation {
     action: Action,
@@ -242,6 +296,13 @@ struct Presses {
     error: usize,
     issue: usize,
 }
+/// The panel's busy line while a request it sent runs, an outbound action
+/// or a read, which the window's progress label also reads
+/// ([`GitTurtle::submit_github_request`]).
+const SENDING: &str = "Sending the captured review…";
+const LOADING: &str = "Loading your requested PR context…";
+/// What a request's reply says when none arrives.
+const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DraftIssue {
     Destination,
@@ -834,13 +895,20 @@ impl Panel {
         if self.pending || self.closed {
             return;
         }
-        let control = OperationControl::default();
-        let worker_control = control.clone();
-        let response = self.owner.update(cx, |owner, _| {
-            owner.operations.submit(move || operation(worker_control))
+        let repository = self.repo.path().to_owned();
+        let submitted = self.owner.update(cx, |owner, cx| {
+            owner.submit_github_request(writing, repository, operation, window, cx)
         });
-        let Ok(response) = response else {
+        let Ok(submitted) = submitted else {
             self.refuse("The repository window is unavailable.");
+            return;
+        };
+        let Some((control, response)) = submitted else {
+            self.refuse(format!(
+                "{}, then try again.",
+                crate::workspace::BUSY_REASON
+            ));
+            cx.notify();
             return;
         };
         self.control = Some(control);
@@ -850,17 +918,32 @@ impl Panel {
         self.writing = writing;
         self.error = None;
         self.notice = None;
-        self.task=Some(cx.spawn_in(window,async move|this,cx|{
-            let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.")));
-            let _=this.update_in(cx,|this,window,cx|{if generation!=this.request_generation{return;}this.pending=false;this.writing=false;this.control=None;
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!(INTERRUPTED)));
+            let _ = this.update_in(cx, |this, window, cx| {
+                if generation != this.request_generation {
+                    return;
+                }
+                this.pending = false;
+                this.writing = false;
+                this.control = None;
                 // The busy row goes: focus on its Cancel moves to the section
                 // the panel shows, as when it opens, before the reply moves it
                 // anywhere else.
-                if !this.closed && this.cancel_request.holds_focus(window) {this.focus_visible_section(window,cx);}
-                if !this.closed {receive(result,this,window,cx);}
+                if !this.closed && this.cancel_request.holds_focus(window) {
+                    this.focus_visible_section(window, cx);
+                }
+                if !this.closed {
+                    receive(result, this, window, cx);
+                }
                 // `run` cleared the failure line, so one there now is this press's answer.
-                if this.error.is_some() {this.presses.error=this.presses.error.wrapping_add(1);}
-                cx.notify();});
+                if this.error.is_some() {
+                    this.presses.error = this.presses.error.wrapping_add(1);
+                }
+                cx.notify();
+            });
         }));
         cx.notify();
     }
@@ -1288,7 +1371,7 @@ impl Render for Panel {
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
-                .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
+                .child(label("github-busy",if self.writing{SENDING}else{LOADING}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
@@ -1759,6 +1842,139 @@ mod tests {
             window.close_dialog(cx);
             assert!(!window.has_active_dialog(cx));
         });
+    }
+
+    /// A request the panel sends holds the window's operation executor, so
+    /// it runs as the window's busy spell, as a write does, labelled with
+    /// the panel's busy line: the header's progress says what runs once the
+    /// spell looks busy, Changes' Refresh is refused, and a working-state
+    /// read asked for meanwhile, as Settings asks on its return, waits for
+    /// the request rather than queueing behind it, and runs as it ends. Such
+    /// a read once queued behind a review being sent, with nothing saying
+    /// why, for as long as GitHub took to answer.
+    #[gpui::test]
+    async fn a_working_read_waits_for_a_github_request_and_says_why(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_script, history_window_from, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, refusals};
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        // Wide enough that the header draws the busy look's progress label.
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        let root = fixture.path().join("narrow");
+        std::fs::write(root.join("draft.txt"), "draft\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let destination = "gitturtle-fixture/native-review";
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel
+                    .destination
+                    .update(cx, |input, cx| input.set_value(destination, window, cx));
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            panel
+        });
+        settle_panel(&app, cx).await;
+        let entries = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.work_status.as_ref().map(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .map(|entry| entry.path.display().to_string())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default()
+        };
+        type Request = fn(&mut Panel, &mut Window, &mut Context<Panel>);
+        let requests: [(&str, Request, &str); 2] = [
+            (
+                "Refresh PRs",
+                |panel, window, cx| panel.refresh(1, window, cx),
+                LOADING,
+            ),
+            (
+                "a review comment",
+                |panel, window, cx| {
+                    let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+                    panel.confirm = Some(Confirmation {
+                        action: Action::Comment {
+                            pull: github::review::fixture_pull(false).capture(repository),
+                            body: "Looks right.".into(),
+                        },
+                        account: "offline-reviewer".into(),
+                    });
+                    panel.submit(window, cx);
+                },
+                SENDING,
+            ),
+        ];
+        for (index, (request, send, label)) in requests.into_iter().enumerate() {
+            // The request held as a slow network holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| panel.update(cx, |panel, cx| send(panel, window, cx)));
+            assert!(
+                panel.read_with(cx, |panel, _| panel.pending),
+                "{request} is sent"
+            );
+            let later = format!("later-{index}.txt");
+            std::fs::write(root.join(&later), "later\n").unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.status_task.is_none(),
+                    "{request}: no read queues behind it"
+                );
+                assert_eq!(
+                    app.operation_busy,
+                    Some(label),
+                    "{request}: the window is busy"
+                );
+                assert!(
+                    app.working_read_pending(),
+                    "{request}: the read waits for it"
+                );
+            });
+            cx.executor().advance_clock(BUSY_LOOK_DELAY);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("operation-progress").is_some(),
+                "{request}: the header says what runs"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_shown()),
+                Some(label)
+            );
+            assert_eq!(
+                refusals::get("refresh-working").map(|refusal| refusal.announced),
+                Some(true),
+                "{request}: Changes' Refresh is refused"
+            );
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            settle(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.operation_busy, None, "{request}: it ended");
+                assert_eq!(app.working_read_deferred, None, "{request}");
+            });
+            assert!(
+                !panel.read_with(cx, |panel, _| panel.pending),
+                "{request}: it answered"
+            );
+            assert!(
+                entries(cx).contains(&later),
+                "{request}: the read asked for meanwhile ran as it ended"
+            );
+        }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
     }
 
     /// The sign-in command's copy button, drawn by the panel's own view in
