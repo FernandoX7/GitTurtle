@@ -1377,6 +1377,14 @@ pub(crate) struct StashBrowser {
     /// the core's refusal for a paused integration, or any other answer,
     /// such as Git's report, which Details… opens whole.
     restore_line: Option<String>,
+    /// The window's alert that says that refusal ([`Self::refuse`]) until a
+    /// frame draws the note: a stash chosen before then, as a key or click
+    /// handled ahead of the display's next frame chooses one, drops the note
+    /// unshown and takes the alert back unheard
+    /// ([`Self::forget_restore_line`]). Once a frame has drawn the note, the
+    /// alert has been said with it and stays, however far the detail has
+    /// scrolled the note.
+    restore_alert: Option<crate::copy_feedback::Alerted>,
     /// Whether that note says the integration Review restore… was last
     /// refused for has ended ([`PAUSE_ENDED`]).
     pause_ended: bool,
@@ -1543,6 +1551,7 @@ impl StashBrowser {
             restore_index: false,
             restoring: None,
             restore_line: None,
+            restore_alert: None,
             pause_ended: false,
             reveal_note: Default::default(),
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
@@ -1616,7 +1625,7 @@ impl StashBrowser {
         self.selected_file = None;
         self.loading = Some("Reading stashes…");
         self.error = None;
-        self.forget_restore_line();
+        self.forget_restore_line(cx);
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1687,7 +1696,7 @@ impl StashBrowser {
         self.selected_file = None;
         self.loading = Some("Reading saved changes…");
         self.error = None;
-        self.forget_restore_line();
+        self.forget_restore_line(cx);
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1876,7 +1885,7 @@ impl StashBrowser {
         });
         if let Ok(Some(read)) = started {
             self.restoring = Some((request, read));
-            self.forget_restore_line();
+            self.forget_restore_line(cx);
             cx.notify();
         }
     }
@@ -2011,7 +2020,9 @@ impl StashBrowser {
     /// a 461 × 490 window, so its alert was never heard there; and the
     /// vendored AT-SPI adapter reports a line's `showing` change as the
     /// detail scrolls it in and out, which Orca presents for an alert, so an
-    /// alert line could be said again.
+    /// alert line could be said again. Another stash chosen before a frame
+    /// draws the note takes the alert back unheard
+    /// ([`Self::forget_restore_line`]).
     fn refuse(
         &mut self,
         message: String,
@@ -2022,7 +2033,7 @@ impl StashBrowser {
         let said = first_line(&message)
             .unwrap_or(RESTORE_UNEXPLAINED)
             .to_owned();
-        crate::copy_feedback::alert(window, cx, said);
+        self.restore_alert = Some(crate::copy_feedback::alert(window, cx, said));
         self.restore_line = Some(message);
         self.pause_ended = false;
         self.reveal_note_for(NoteReveal::Pressed(held));
@@ -2037,8 +2048,14 @@ impl StashBrowser {
 
     /// The footer note says again what restoring does, and no longer
     /// scrolls the detail to a refusal that has gone: a reveal still due
-    /// scrolled the next stash's detail to its foot.
-    fn forget_restore_line(&mut self) {
+    /// scrolled the next stash's detail to its foot. A refusal no frame has
+    /// drawn yet goes unheard too: the window's alert that says it is taken
+    /// back (`copy_feedback::withdraw`), which went on for 1.5 s, the note
+    /// never drawn, and could cut into what the next stash says.
+    fn forget_restore_line(&mut self, cx: &mut App) {
+        if let Some(alerted) = self.restore_alert.take() {
+            crate::copy_feedback::withdraw(alerted, cx);
+        }
         self.restore_line = None;
         self.pause_ended = false;
         self.reveal_note.set(None);
@@ -2675,6 +2692,12 @@ impl Render for StashBrowser {
         // expires, as beside the list, where the footer is always in view
         // ([`reveal_note`]).
         let due = self.reveal_note.take();
+        if self.snapshot.is_some() {
+            // This frame draws the footer note, as the window draws its
+            // alert: a refusal it says has been heard and is no longer taken
+            // back as another stash is chosen ([`Self::restore_alert`]).
+            self.restore_alert = None;
+        }
         let actions = self.snapshot.is_some().then(|| {
             let row = div()
                 .debug_selector(|| "stash-actions".into())
@@ -3793,12 +3816,15 @@ mod tests {
     /// state, no refusal under a selection moved on. Stacked at 18 pt in a
     /// 461 × 490 window, with a merge paused: no refusal lands under the
     /// stash chosen meanwhile, and a refusal that lands with another stash
-    /// chosen before a frame draws it does not scroll that stash's detail
-    /// to its foot once its inspection lands. Each answered what had been
-    /// asked once it landed: the old stash's review opened, the refusal lay
-    /// under the other stash, the review restored without the staged state,
-    /// and the review popped up after Stashes had closed; and the refusal's
-    /// reveal, still due, scrolled the next stash's detail to its foot.
+    /// chosen before a frame draws it is never heard and does not scroll
+    /// that stash's detail to its foot once its inspection lands, while one
+    /// a frame drew keeps its alert as another stash is chosen. Each
+    /// answered what had been asked once it landed: the old stash's review
+    /// opened, the refusal lay under the other stash, the review restored
+    /// without the staged state, and the review popped up after Stashes had
+    /// closed; the refusal's reveal, still due, scrolled the next stash's
+    /// detail to its foot; and the window's alert said the refusal no frame
+    /// had shown, for 1.5 s beside the stash chosen.
     #[gpui::test]
     async fn review_restore_answers_only_what_stashes_still_shows(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
@@ -4082,12 +4108,31 @@ mod tests {
             (Some(0), None),
             "Layout experiment chosen"
         );
-        assert!(refused.is_some(), "Index only is refused first");
+        assert_eq!(
+            refused, None,
+            "Index only's refusal, which no frame drew, is never said"
+        );
         StashBrowser::lands(&stashes, cx);
         assert_eq!(
             stashes.read_with(cx, |stashes, _| stashes.detail.scroll().offset().y),
             px(0.),
             "Layout experiment's detail opens at its top"
+        );
+        // A refusal a frame has drawn has been said with it: choosing
+        // another stash then leaves its alert to end in its own time.
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        let said =
+            crate::copy_feedback::tests::alerted(cx).filter(|(_, text)| text == PAUSED_REFUSAL);
+        assert!(said.is_some(), "Layout experiment is refused");
+        cx.update(|window, cx| {
+            stashes.update(cx, |stashes, cx| stashes.select_stash(1, window, cx))
+        });
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            crate::copy_feedback::tests::alerted(cx),
+            said,
+            "the drawn refusal's alert stays as Index only is chosen"
         );
         git(&["merge", "--abort"]);
         drop(stashes);

@@ -12,12 +12,13 @@
 //! input, as the panel opens with them and as they change, from wherever its
 //! body has scrolled them; and Stashes' answer to Review restore…, and the
 //! end of the pause it was refused for, from wherever its detail has
-//! scrolled the note that says them. Neither ends the confirmation a control
-//! reads, nor shortens its time. The announcement node also says one failure
-//! that focus moved away from, with no mark: a Reflog entry's read that fails
-//! as focus leaves its Cancel for the entry (`reflog`), whose error the
-//! content then shows past its fold, where AccessKit's filter leaves its line
-//! out.
+//! scrolled the note that says them; an answer whose note another stash
+//! replaces before any frame draws it is taken back unheard ([`withdraw`]).
+//! Neither ends the confirmation a control reads, nor shortens its time. The
+//! announcement node also says one failure that focus moved away from, with
+//! no mark: a Reflog entry's read that fails as focus leaves its Cancel for
+//! the entry (`reflog`), whose error the content then shows past its fold,
+//! where AccessKit's filter leaves its line out.
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
@@ -240,15 +241,29 @@ pub(crate) fn announce(window: &mut Window, cx: &mut App, announcement: impl Int
 /// Announces `alert` once, at once, from the window's alert node, which
 /// leaves both a confirmation and a polite [`announce`] alone: a failure or
 /// refused input that its own line, in a scrolling body, could not say from
-/// past the body's edge. The node goes after [`RESTORE_AFTER`], or when a
-/// newer alert takes its place.
-pub(crate) fn alert(window: &mut Window, cx: &mut App, alert: impl Into<SharedString>) {
-    say(window, cx, true, alert.into());
+/// past the body's edge. The node goes after [`RESTORE_AFTER`], when a
+/// newer alert takes its place, or when [`withdraw`] takes back the alert
+/// this returns.
+pub(crate) fn alert(window: &mut Window, cx: &mut App, alert: impl Into<SharedString>) -> Alerted {
+    Alerted(say(window, cx, true, alert.into()))
+}
+
+/// An [`alert`] the window's alert node says, by its generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Alerted(usize);
+
+/// Takes back `alerted` unless a newer alert has replaced it or it has
+/// ended: its node goes, so one no frame has drawn yet is never heard. A
+/// line that no longer answers what its window shows by the time the
+/// window draws, as Stashes' refusal once another stash is chosen in the
+/// same frame, says nothing.
+pub(crate) fn withdraw(alerted: Alerted, cx: &mut App) {
+    quiet(true, alerted.0, cx);
 }
 
 /// Says `announcement` from the window's alert node if `assertive`, and
-/// otherwise from its announcement node.
-fn say(window: &mut Window, cx: &mut App, assertive: bool, announcement: SharedString) {
+/// otherwise from its announcement node, returning its generation.
+fn say(window: &mut Window, cx: &mut App, assertive: bool, announcement: SharedString) -> usize {
     let feedback = cx.default_global::<Feedback>();
     feedback.generation = feedback.generation.wrapping_add(1);
     let generation = feedback.generation;
@@ -264,10 +279,12 @@ fn say(window: &mut Window, cx: &mut App, assertive: bool, announcement: SharedS
         cx.update(|cx| quiet(assertive, generation, cx));
     });
     cx.global_mut::<Feedback>().said(assertive).end = Some(end);
+    generation
 }
 
 /// Ends announcement `generation`, said at once if `assertive`, unless a
-/// newer one replaced it, redrawing the window it was made in.
+/// newer one replaced it or it has ended, redrawing the window it was made
+/// in.
 fn quiet(assertive: bool, generation: usize, cx: &mut App) {
     let said = cx.global_mut::<Feedback>().said(assertive);
     if said
