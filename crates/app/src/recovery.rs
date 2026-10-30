@@ -1351,9 +1351,10 @@ pub(crate) struct StashBrowser {
     refusals: usize,
     /// The next frame scrolls the stacked detail to the footer note, for
     /// why it changed: an answer to Review restore…'s press, a refusal or
-    /// failure, has just replaced it, which shows wherever focus lies, or
-    /// the end of the pause it was refused for, which scrolls nothing while
-    /// another of the detail's controls holds focus ([`reveal_note`]).
+    /// failure, has just replaced it, which shows while focus stays where
+    /// the press found it, or the end of the pause it was refused for;
+    /// either scrolls nothing while focus has moved onto another of the
+    /// detail's controls ([`reveal_note`]).
     reveal_note: std::rc::Rc<std::cell::Cell<Option<NoteReveal>>>,
     /// The lines a refusal keeps in the stacked footer note: two, or one
     /// where the detail cannot hold two beneath Review restore… whole with
@@ -1381,14 +1382,19 @@ struct RestoreRequest {
 }
 
 /// Why the stacked Stashes detail reveals its footer note ([`reveal_note`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum NoteReveal {
     /// Review restore… was pressed and answered, refused or failed
-    /// ([`StashBrowser::refuse`]): the note is the answer to that press and
-    /// shows wherever focus lies. A pointer's press focuses no Button, so a
-    /// click left focus on the saved files or a document's open control,
-    /// and the answer below the fold showed nothing.
-    Pressed,
+    /// ([`StashBrowser::refuse`]), with the focus the press found, if any:
+    /// the note is the answer to that press and shows while focus stays
+    /// there, on Review restore… or outside the detail. A pointer's press
+    /// focuses no Button, so a click left focus on the saved files or a
+    /// document's open control, and the answer below the fold showed
+    /// nothing. Once the keyboard has moved focus onto another of the
+    /// detail's controls while Git prepared, as on a large stash, the
+    /// answer is heard, as the end of a pause is, and the control the
+    /// keyboard reached stays in view: the late answer scrolled it away.
+    Pressed(Option<WeakFocusHandle>),
     /// A status read found the pause it was refused for ended
     /// ([`GitTurtle::integration_ended`]), which no press asked for: the
     /// note shows only while Review restore… or nothing in the detail holds
@@ -1786,11 +1792,14 @@ impl StashBrowser {
         let browser = cx.entity().downgrade();
         let shown = browser.clone();
         let refused = request.clone();
+        // Where the press left focus, which its answer is shown beside
+        // unless the keyboard has moved on meanwhile.
+        let held = window.focused(cx).map(|focus| focus.downgrade());
         let failure: Failure = Box::new(move |message, window, cx| {
             if let Some(browser) = browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
                 browser.update(cx, |browser, cx| {
                     if browser.answered(&refused) {
-                        browser.refuse(message, cx);
+                        browser.refuse(message, held, cx);
                     }
                 });
             }
@@ -1943,21 +1952,25 @@ impl StashBrowser {
     }
 
     /// Says why Review restore… was refused in the footer note beside it,
-    /// a fresh line announced once.
-    fn refuse(&mut self, message: String, cx: &mut Context<Self>) {
+    /// a fresh line announced once, for the press that found focus on
+    /// `held` ([`NoteReveal::Pressed`]).
+    fn refuse(&mut self, message: String, held: Option<WeakFocusHandle>, cx: &mut Context<Self>) {
         self.restore_line = Some(message);
         self.pause_ended = false;
         self.refusals = self.refusals.wrapping_add(1);
-        self.reveal_note_for(NoteReveal::Pressed);
+        self.reveal_note_for(NoteReveal::Pressed(held));
         cx.notify();
     }
 
     /// Has the next frame reveal the footer note for `cause`. A press's
-    /// answer still due keeps its reveal, which shows wherever focus lies.
+    /// answer still due keeps its reveal, which shows in more places than
+    /// the end of its pause does.
     fn reveal_note_for(&self, cause: NoteReveal) {
-        if self.reveal_note.get() != Some(NoteReveal::Pressed) {
-            self.reveal_note.set(Some(cause));
-        }
+        let cause = match self.reveal_note.take() {
+            Some(pressed @ NoteReveal::Pressed(_)) if cause == NoteReveal::PauseEnded => pressed,
+            _ => cause,
+        };
+        self.reveal_note.set(Some(cause));
     }
 
     /// The footer note says again what restoring does, and no longer
@@ -2327,23 +2340,26 @@ impl StashBrowser {
 /// it scrolls the detail by the least that shows Review restore… and the
 /// note `margin` clear of its edges, or, where both still do not fit,
 /// Review restore… whole at the top with what of the note the rest shows:
-/// the Review restore… just pressed stays whole. The note due for a press
-/// ([`NoteReveal::Pressed`]) shows wherever focus lies: a click focuses no
-/// Button, so focus stays where it was, on the saved files or a
-/// document's open control, and the answer to the click would otherwise
-/// lie below the fold. The note due for the end of its pause
-/// ([`NoteReveal::PauseEnded`]) scrolls only while Review restore…,
-/// `pressed`, holds focus or nothing in the detail does: with focus on
-/// another of its controls, such as the saved files, a file's text or a
-/// document's open control, the detail stays where it is, and the note is
-/// heard, not shown. It scrolls after the frame the note is laid out in,
-/// as a focus reveal does for a control it has not drawn
-/// ([`crate::focus_reveal`]). A note the detail had scrolled below its
-/// fold, beneath the Review restore… just pressed, showed nothing, one
-/// revealed whole at two lines cut Review restore…'s ring, a merge
-/// finished in a terminal scrolled the focused saved files out of view, to
-/// Review restore… and the note that it had ended, and a click on Review
-/// restore… with focus in the detail showed its answer nowhere.
+/// the Review restore… just pressed stays whole. Either note scrolls while
+/// Review restore…, `pressed`, holds focus or nothing in the detail does;
+/// the note due for a press ([`NoteReveal::Pressed`]) also while focus
+/// stays where the press found it: a click focuses no Button, so focus
+/// stays where it was, on the saved files or a document's open control,
+/// and the answer to the click would otherwise lie below the fold. With
+/// focus moved onto another of the detail's controls, such as the saved
+/// files, a file's text or a document's open control, whether by the
+/// keyboard while Git prepared the press's answer or before the end of its
+/// pause ([`NoteReveal::PauseEnded`]), which no press asked for, the
+/// detail stays where it is, and the note is heard, not shown. It scrolls
+/// after the frame the note is laid out in, as a focus reveal does for a
+/// control it has not drawn ([`crate::focus_reveal`]). A note the detail
+/// had scrolled below its fold, beneath the Review restore… just pressed,
+/// showed nothing, one revealed whole at two lines cut Review restore…'s
+/// ring, a merge finished in a terminal scrolled the focused saved files
+/// out of view, to Review restore… and the note that it had ended, a click
+/// on Review restore… with focus in the detail showed its answer nowhere,
+/// and its answer landing after Tab had reached the saved files scrolled
+/// them out of view.
 fn reveal_note(
     due: std::rc::Rc<std::cell::Cell<Option<NoteReveal>>>,
     lines: std::rc::Rc<std::cell::Cell<usize>>,
@@ -2376,10 +2392,15 @@ fn reveal_note(
         let Some(cause) = due.take() else {
             return;
         };
-        if cause == NoteReveal::PauseEnded
-            && !pressed.is_focused(window)
-            && detail.holds_focus(window, cx)
-        {
+        // Focus still where the press left it, for a press's answer.
+        let kept = match &cause {
+            NoteReveal::Pressed(held) => held
+                .as_ref()
+                .and_then(WeakFocusHandle::upgrade)
+                .is_some_and(|held| held.is_focused(window)),
+            NoteReveal::PauseEnded => false,
+        };
+        if !kept && !pressed.is_focused(window) && detail.holds_focus(window, cx) {
             // The control focused elsewhere in the detail stays in view.
             return;
         }
@@ -2642,9 +2663,9 @@ impl Render for StashBrowser {
                 .when(pinned, |actions| actions.pb(room))
                 .when(!pinned, |actions| {
                     // Stacked, the note scrolls with the detail: revealed
-                    // wherever focus lies for a press's answer, and for the
-                    // end of its pause only while Review restore… or nothing
-                    // in the detail holds focus.
+                    // while Review restore… or nothing in the detail holds
+                    // focus, and for a press's answer while focus stays
+                    // where the press found it.
                     actions.on_children_prepainted(reveal_note(
                         self.reveal_note.clone(),
                         self.note_lines.clone(),
@@ -4383,6 +4404,7 @@ mod tests {
         stashes.update(cx, |stashes, cx| {
             stashes.refuse(
                 "\n  \nUnable to read working-copy status: fatal: index file corrupt\n".into(),
+                None,
                 cx,
             )
         });
@@ -4394,7 +4416,7 @@ mod tests {
         assert!(cx.debug_bounds("stash-restore-details").is_some());
         // A report that says nothing still says that Git could not prepare
         // the restoration, with no Details… to open nothing.
-        stashes.update(cx, |stashes, cx| stashes.refuse("\n  \n".into(), cx));
+        stashes.update(cx, |stashes, cx| stashes.refuse("\n  \n".into(), None, cx));
         crate::views::tests::draw(cx);
         assert_eq!(
             note_label(&stashes, cx).as_deref(),
@@ -4665,6 +4687,143 @@ mod tests {
             scroll.offset()
         );
         assert!(on_files(cx), "the saved files keep focus");
+        git(&["merge", "--abort"]);
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// Stacked at 18 pt in a 461 × 490 window, where the detail is about
+    /// 60 px tall, the answer to a press of Review restore… leaves the
+    /// control the keyboard reached while Git prepared it in view. With a
+    /// merge paused and the window's operations held, so Git has not
+    /// answered, a click on Review restore…, focus on the saved-work list,
+    /// then Tab onto the saved files, which the detail reveals whole: once
+    /// the refusal lands it is announced, and the detail stays where it is,
+    /// the saved files focused and whole in its view. Pressed with Space
+    /// instead, then Shift+Tab back onto the saved files: the same. The
+    /// press's answer scrolled the detail to Review restore… and the note
+    /// wherever focus lay, taking the saved files out of view.
+    #[gpui::test]
+    async fn a_late_restore_answer_leaves_the_control_tabbed_to_in_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        let files = stashes.read_with(cx, |stashes, _| stashes.file_focus.clone());
+        let list = stashes.read_with(cx, |stashes, _| stashes.stash_focus.clone());
+        let on_files =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, _| files.is_focused(window));
+        let scroll = stashes.read_with(cx, |stashes, _| stashes.detail.scroll().clone());
+        let files_in_view = |cx: &mut gpui::VisualTestContext| {
+            let [files, view] =
+                ["stash-files", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
+            (inside(files, view), files, view)
+        };
+        // Moves focus onto the saved files with `key`, which the detail
+        // reveals whole.
+        let move_to_files = |key: &str, cx: &mut gpui::VisualTestContext| {
+            for _ in 0..12 {
+                cx.simulate_keystrokes(key);
+                crate::views::tests::draw(cx);
+                if on_files(cx) {
+                    break;
+                }
+            }
+            assert!(on_files(cx), "{key} reaches the saved files");
+            let (shown, files_at, view) = files_in_view(cx);
+            assert!(
+                shown,
+                "the saved files {files_at:?} are revealed whole in {view:?}"
+            );
+        };
+
+        for press in ["click", "space"] {
+            let held = if press == "click" {
+                // Focus on the saved-work list, outside the detail, and
+                // Review restore… scrolled into the detail's view.
+                assert!(
+                    cx.update(|window, _| list.is_focused(window)),
+                    "the saved-work list holds focus"
+                );
+                let [restore, view] = ["restore-saved-stash", "stash-detail"]
+                    .map(|name| cx.debug_bounds(name).expect(name));
+                let room = cx.read(appearance::button_ring_room);
+                let offset = scroll.offset();
+                scroll.set_offset(point(
+                    offset.x,
+                    (offset.y + view.bottom() - room - restore.bottom())
+                        .clamp(-scroll.max_offset().y, px(0.)),
+                ));
+                crate::views::tests::draw(cx);
+                let restore = cx
+                    .debug_bounds("restore-saved-stash")
+                    .expect("Review restore…");
+                let held = app.update(cx, |app, _| app.operations.hold());
+                cx.simulate_click(restore.center(), Modifiers::none());
+                held
+            } else {
+                tab_to(&stashes, "restore-saved-stash", cx);
+                let held = app.update(cx, |app, _| app.operations.hold());
+                space(cx);
+                held
+            };
+            crate::views::tests::draw(cx);
+            assert!(
+                stashes.read_with(cx, |stashes, cx| stashes.preparing(cx)),
+                "{press}: Git prepares the restoration"
+            );
+            // The keyboard moves on to the saved files while Git prepares.
+            move_to_files(if press == "click" { "tab" } else { "shift-tab" }, cx);
+            let kept = scroll.offset();
+            let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+
+            drop(held);
+            recovery_lands(&app, cx);
+            quiet_reads_land(&app, cx);
+            crate::views::tests::draw(cx);
+            assert_eq!(
+                stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+                Some(PAUSED_REFUSAL.to_owned()),
+                "{press}: the press is refused"
+            );
+            assert_eq!(
+                crate::native_accessibility::written::announced(&format!(
+                    "stash-restore-refusal-{}",
+                    refusals + 1
+                )),
+                Some(crate::native_accessibility::written::Announced::ASSERTIVE),
+                "{press}: the refusal is announced"
+            );
+            let (shown, files_at, view) = files_in_view(cx);
+            assert!(
+                on_files(cx) && shown && scroll.offset() == kept,
+                "{press}: the saved files {files_at:?} keep focus, whole in {view:?}, \
+                 the detail kept at {kept:?}, not {:?}",
+                scroll.offset()
+            );
+        }
         git(&["merge", "--abort"]);
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
