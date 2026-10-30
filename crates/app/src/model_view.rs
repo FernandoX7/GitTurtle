@@ -765,7 +765,7 @@ fn render_side<T: 'static>(
             "model",
             offer,
         );
-        source_actions = source_actions.child(target.button(offer.form(room, window), cx));
+        source_actions = source_actions.child(target.control(offer.form(room, window), cx));
         answer = target.answered(cx);
     }
     header = header.child(source_actions);

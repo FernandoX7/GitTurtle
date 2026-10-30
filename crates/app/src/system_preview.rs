@@ -322,11 +322,35 @@ impl Showing {
 pub(crate) struct Opener {
     owner: WeakEntity<GitTurtle>,
     showing: Showing,
+    /// The scrolling container the comparison is drawn in, if it reveals
+    /// its controls, and the margin it reveals them with
+    /// ([`Self::revealed_by`]).
+    reveal: Option<(crate::focus_reveal::FocusReveal, Pixels)>,
 }
 
 impl Opener {
     pub(crate) fn new(owner: WeakEntity<GitTurtle>, showing: Showing) -> Self {
-        Self { owner, showing }
+        Self {
+            owner,
+            showing,
+            reveal: None,
+        }
+    }
+
+    /// The opener of a comparison drawn inside `reveal`'s scrolling
+    /// container, whose open controls are among the container's controls
+    /// ([`Target::control`]): the keyboard reveals each with its ring,
+    /// `margin`, and one holding focus counts as the container's
+    /// ([`crate::focus_reveal::FocusReveal::holds_focus`]). Unknown to the
+    /// Stashes detail, a focused open control was not revealed, and the note
+    /// that a pause had ended scrolled it out of view.
+    pub(crate) fn revealed_by(
+        mut self,
+        reveal: crate::focus_reveal::FocusReveal,
+        margin: Pixels,
+    ) -> Self {
+        self.reveal = Some((reveal, margin));
+        self
     }
 
     /// The open control `control` for the captured `bytes` of the `side`
@@ -347,9 +371,11 @@ impl Opener {
         let subject = (Arc::as_ptr(bytes) as *const u8 as usize, bytes.len());
         #[cfg(target_os = "linux")]
         let _ = (name, what);
+        let control = control.into();
         Target {
             opener: self.clone(),
-            mark: Mark::new(control, subject),
+            mark: Mark::new(control.clone(), subject),
+            control,
             side,
             bytes: Arc::clone(bytes),
             offer,
@@ -397,6 +423,8 @@ impl Offer {
 pub(crate) struct Target {
     opener: Opener,
     mark: Mark,
+    /// The control's id, which its button and its mark carry.
+    control: ElementId,
     side: &'static str,
     bytes: Arc<[u8]>,
     offer: Offer,
@@ -536,6 +564,26 @@ impl Target {
             Some(self.side),
             &self.copy(),
         ))
+    }
+
+    /// [`Self::button`] as a comparison places it. Where the opener's
+    /// comparison lies in a scrolling container that reveals its controls
+    /// ([`Opener::revealed_by`]), the control is one of them: it tracks the
+    /// container's handle for its id and reports where it lies as each frame
+    /// prepaints it, so the keyboard reveals it with its ring and the
+    /// container knows it holds focus. Its wrapper keeps the button's own
+    /// size and does not shrink, as the button does not.
+    pub(crate) fn control(&self, form: Form, cx: &App) -> AnyElement {
+        let button = self.button(form, cx);
+        let Some((reveal, margin)) = &self.opener.reveal else {
+            return button.into_any_element();
+        };
+        let focus = reveal.focus(self.control.clone(), cx);
+        div()
+            .flex_shrink_0()
+            .on_children_prepainted(reveal.control(focus.clone(), *margin))
+            .child(button.track_focus(&focus))
+            .into_any_element()
     }
 
     /// What its click hands over, as its accessible name ends.
@@ -1065,6 +1113,7 @@ pub(crate) mod tests {
         Target {
             opener: Opener::new(WeakEntity::new_invalid(), Showing::next()),
             mark: Mark::new(("image-system-preview", 1usize), "captured"),
+            control: ("image-system-preview", 1usize).into(),
             side: "After",
             bytes: Arc::from(&b"captured"[..]),
             offer: Offer {

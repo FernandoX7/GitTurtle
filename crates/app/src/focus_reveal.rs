@@ -107,7 +107,7 @@ impl FocusReveal {
     /// The focus handle the control `id` tracks, the same one in every frame,
     /// so the container can tell which of its controls holds focus. A Button
     /// takes it through `track_focus`.
-    pub(crate) fn focus(&self, id: impl Into<ElementId>, cx: &mut App) -> FocusHandle {
+    pub(crate) fn focus(&self, id: impl Into<ElementId>, cx: &App) -> FocusHandle {
         self.controls
             .borrow_mut()
             .entry(id.into())

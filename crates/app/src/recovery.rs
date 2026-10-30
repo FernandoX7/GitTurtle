@@ -1490,9 +1490,12 @@ impl StashBrowser {
     }
 
     /// Opens captured bytes for this showing's open controls through the
-    /// window's `GitTurtle`.
-    fn opener(&self) -> crate::system_preview::Opener {
+    /// window's `GitTurtle`. The controls are the detail's own, revealed
+    /// with their rings as the keyboard reaches them, so the note's reveal
+    /// leaves one that holds focus where it is ([`reveal_note`]).
+    fn opener(&self, cx: &App) -> crate::system_preview::Opener {
         crate::system_preview::Opener::new(self.owner.clone(), self.showing)
+            .revealed_by(self.detail.clone(), appearance::button_ring_room(cx))
     }
 
     fn clear_preview(&mut self) {
@@ -2169,7 +2172,7 @@ impl StashBrowser {
                         crate::rich_preview::render_comparison(
                             preview,
                             false,
-                            self.opener(),
+                            self.opener(cx),
                             width,
                             window,
                             cx,
@@ -2180,7 +2183,7 @@ impl StashBrowser {
             Some(Content::Rich(preview)) => crate::rich_preview::render_comparison(
                 preview,
                 false,
-                self.opener(),
+                self.opener(cx),
                 width,
                 window,
                 cx,
@@ -4581,6 +4584,138 @@ mod tests {
             cx.update(|window, cx| window.close_all_dialogs(cx));
             crate::views::tests::draw(cx);
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// Stacked at 18 pt in a 461 × 490 window, where the detail is about
+    /// 60 px tall, a stashed document's open control is one of the detail's
+    /// controls. Review restore… refused while a merge pauses, Shift+Tab
+    /// onto After's Open in default app scrolls it into the detail's view
+    /// with its ring, and once a read finds the merge ended the note says
+    /// so and the detail stays where it is, the control focused and whole
+    /// in view. Unknown to the detail, the control was not revealed, and the
+    /// note's reveal, which scrolls only while nothing else in the detail
+    /// holds focus, found none there and scrolled it away.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_focused_open_control_stays_in_view_as_a_pause_ends(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        // The app's palette, whose accent draws the keyboard ring.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        // The newest stash saves a document's second version.
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repository.join("document.pdf");
+        std::fs::write(&document, pdf("first")).unwrap();
+        git(&["add", "document.pdf"]);
+        git(&["commit", "-q", "-m", "Add a document"]);
+        std::fs::write(&document, pdf("second")).unwrap();
+        git(&["stash", "push", "-q", "-m", "Document"]);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        let landed = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                crate::views::tests::draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+
+        // Refused while the merge pauses, unread, which the refusal has the
+        // window read, with the document chosen.
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        cx.update(|window, cx| {
+            stashes.update(cx, |stashes, cx| stashes.select_file(0, window, cx))
+        });
+        landed(cx, "system-preview-1");
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        quiet_reads_land(&app, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+            Some(PAUSED_REFUSAL.to_owned())
+        );
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
+
+        // Shift+Tab back onto After's open control, which scrolls into the
+        // detail's view with its ring.
+        let detail = stashes.read_with(cx, |stashes, _| stashes.detail.clone());
+        let open = cx.update(|_, cx| detail.focus(("system-preview", 1_usize), cx));
+        let mut reached = false;
+        for _ in 0..12 {
+            cx.simulate_keystrokes("shift-tab");
+            crate::views::tests::draw(cx);
+            if cx.update(|window, _| open.is_focused(window)) {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Shift+Tab reaches After's open control");
+        crate::views::tests::draw(cx);
+        let room = cx.read(appearance::button_ring_room);
+        let in_view = |cx: &mut gpui::VisualTestContext| {
+            let [control, view] =
+                ["system-preview-1", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
+            (inside(control.dilate(room), view), control, view)
+        };
+        let (shown, control, view) = in_view(cx);
+        assert!(
+            shown,
+            "the open control {control:?} and its ring lie in the detail's view {view:?}"
+        );
+        let ring = ring_around(cx, control)
+            .unwrap_or_else(|| panic!("the open control {control:?} draws no ring"));
+        assert!(ring.whole, "its ring {ring:?} is whole");
+        let kept = detail.scroll().offset();
+
+        // The merge ends in a terminal; the next read says so in the note.
+        git(&["merge", "--abort"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.is_none()
+                && stashes.pause_ended)
+                && cx.debug_bounds("stash-restore-ended").is_some(),
+            "the note says the merge ended"
+        );
+        assert_eq!(
+            detail.scroll().offset(),
+            kept,
+            "the detail stays where the keyboard left it"
+        );
+        let (shown, control, view) = in_view(cx);
+        assert!(
+            cx.update(|window, _| open.is_focused(window)) && shown,
+            "the open control {control:?} keeps focus in the detail's view {view:?}"
+        );
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         drop(fixture);
     }

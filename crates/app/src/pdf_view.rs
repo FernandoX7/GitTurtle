@@ -492,7 +492,7 @@ pub(super) fn render_comparison<T: 'static>(
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, "PDF", offer);
-            header = header.child(target.button(offer.form(room, window), cx));
+            header = header.child(target.control(offer.form(room, window), cx));
             answer = target.answered(cx);
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();

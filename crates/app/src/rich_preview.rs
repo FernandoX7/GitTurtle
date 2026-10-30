@@ -434,7 +434,7 @@ pub(super) fn render_comparison<T: 'static>(
             // Labelled where it fits beside the side's name and format,
             // otherwise its icon.
             let room = header_room(index, side_width, label, &side.metadata.format, window);
-            header = header.child(target.button(offer.form(room, window), cx));
+            header = header.child(target.control(offer.form(room, window), cx));
             answer = target.answered(cx);
         }
         if !side.pages.is_empty() {
