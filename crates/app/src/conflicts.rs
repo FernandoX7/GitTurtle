@@ -784,11 +784,12 @@ fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
 
 impl GitTurtle {
     /// Builds the conflict view for `presentation` unless one is open.
-    /// `activated` says the preview answers the person's choice of the file,
-    /// as a click or the keys that select its row ask for it: the view's
-    /// result draft, where it opens, takes focus. A preview a passive read
-    /// lands, as a quiet refresh does finding the selected file conflicted,
-    /// shows the view and leaves focus where it is.
+    /// `activated` says the preview answers the person's explicit choice of
+    /// the file, a click on its row or the keys that select it
+    /// ([`GitTurtle::activate_working_preview`]): the view's result draft,
+    /// where it opens, takes focus. A preview a passive read lands, as a
+    /// quiet refresh or a write's status read does finding the selected file
+    /// conflicted, shows the view and leaves focus where it is.
     pub(super) fn ensure_conflict_view(
         &mut self,
         presentation: Arc<Presentation>,
@@ -889,6 +890,21 @@ impl GitTurtle {
             }
         }));
         self.conflict_view = Some(view);
+    }
+
+    /// Activates the open conflict view, as the person's choice of its file
+    /// does: its result draft, where it is open, takes focus. Returns
+    /// whether a view was open.
+    pub(super) fn activate_conflict_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(view) = self.conflict_view.clone() else {
+            return false;
+        };
+        view.update(cx, |view, cx| view.focus_resolution(window, cx));
+        true
     }
 }
 

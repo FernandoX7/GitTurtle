@@ -2332,6 +2332,10 @@ impl GitTurtle {
         }
     }
 
+    /// Selects the working row of `index` in `area` and reads its preview.
+    /// Selecting activates nothing: a conflicted file's view opens with
+    /// focus left where it is, unless the person's choice of the row asks
+    /// for its draft ([`Self::activate_working_preview`]).
     pub(super) fn select_working(
         &mut self,
         index: usize,
@@ -2420,6 +2424,31 @@ impl GitTurtle {
         );
     }
 
+    /// The person's explicit choice of the selected working file, a click on
+    /// its row or an arrow key moving onto it: its conflict's result draft
+    /// takes focus, at once where its view is open, else as the preview read
+    /// under way lands ([`GitTurtle::preview_activation`]). A write's status
+    /// read or a refresh selects the row again without choosing it and
+    /// leaves focus where it is (`select_working`). Returns whether anything
+    /// was activated.
+    pub(super) fn activate_working_preview(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.mode != WorkspaceMode::Working || self.working_selected.is_none() {
+            return false;
+        }
+        if self.activate_conflict_view(window, cx) {
+            return true;
+        }
+        if self.task.is_some() {
+            self.preview_activation = Some(self.generation);
+            return true;
+        }
+        false
+    }
+
     pub(super) fn move_working_selection(
         &mut self,
         direction: i32,
@@ -2450,6 +2479,10 @@ impl GitTurtle {
         };
         let (position, index, area) = files[next];
         self.choose_working_selection(index, area, false, false, window, cx);
+        // The arrow keys choose the file they move onto, as a click does.
+        if self.working_selected == Some((index, area)) {
+            self.activate_working_preview(window, cx);
+        }
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
     }
@@ -4486,7 +4519,11 @@ impl GitTurtle {
                             modifiers.shift,
                             window,
                             cx,
-                        )
+                        );
+                        // A click on the row chooses its file.
+                        if this.working_selected == Some((index, area)) {
+                            this.activate_working_preview(window, cx);
+                        }
                     }))
                     .app_context_menu(move |menu, _, cx| {
                         // Read as it is built: a write's start or end builds

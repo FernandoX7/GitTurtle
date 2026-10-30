@@ -469,6 +469,13 @@ struct GitTurtle {
     worker: Worker,
     task: Option<Task<()>>,
     generation: u64,
+    /// The generation of the preview read that the person's explicit choice
+    /// of its file started or waits on: a click on its row, or an arrow key
+    /// moving onto it. Only its landing activates the preview, where a
+    /// conflict's result draft takes focus ([`Self::ensure_conflict_view`]);
+    /// any other landing, as a write's status read selecting the row again,
+    /// leaves focus where it is.
+    preview_activation: Option<u64>,
     repository: Option<GitRepository>,
     path: Option<PathBuf>,
     scope: Option<(String, worker::Scope)>,
@@ -833,6 +840,7 @@ impl GitTurtle {
             worker: Worker::new(),
             task: None,
             generation: 0,
+            preview_activation: None,
             repository: None,
             path: None,
             scope: None,
@@ -1427,7 +1435,12 @@ impl GitTurtle {
                 if self.page == AppPage::Repository
                     && matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working)
                 {
-                    self.ensure_editor(window, cx);
+                    // Only the read the person's choice of the file started
+                    // activates it. A write's status read selecting the row
+                    // again took focus into a conflict's draft, closing a
+                    // row's keyboard menu that the selection had kept open.
+                    let activated = self.preview_activation.take() == Some(self.generation);
+                    self.prepare_editor(activated, window, cx);
                     self.restore_tab_documents(cx);
                     self.trace_frame(
                         if self.mode == WorkspaceMode::Working {

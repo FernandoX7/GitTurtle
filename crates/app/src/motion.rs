@@ -4740,6 +4740,79 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Lets the preview the selected working row's selection asked for land,
+    /// and draws the frame after it: the worker answers on its own thread,
+    /// which `run_until_parked` cannot wait for.
+    fn preview_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..8 {
+            if app.read_with(cx, |app, _| app.task.is_none()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.task.is_none()),
+            "the preview landed"
+        );
+        next_frame(cx);
+    }
+
+    /// Merges `side` into [`narrow_notes`]' main outside the app, which
+    /// stops with notes.txt conflicted.
+    fn merge_stopping_on_notes(repository: &Path) {
+        fixture_git(repository, &["checkout", "-q", "--", "notes.txt"]);
+        assert!(
+            !committing_git(repository, &["merge", "-q", "side"])
+                .status
+                .success(),
+            "the merge stops on notes.txt"
+        );
+    }
+
+    /// A status read aloud that finds the selected working file conflicted,
+    /// as the one after a Merge or Pull that stops on it does, or Refresh,
+    /// selects its row again and opens its conflict view, leaving focus,
+    /// and the row's keyboard menu holding it, where they are: selecting the
+    /// row again keeps that menu open, and its preview activates nothing,
+    /// the read being no choice of the file. Every working preview's landing
+    /// activated it, so the resolution draft took focus and the menu, its
+    /// focus gone, closed.
+    #[gpui::test]
+    async fn a_status_read_aloud_opens_a_conflict_without_moving_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        open_row_menu_showing(&app, cx, "notes.txt", Opening::Keyboard, NOTES_STAGE);
+        let menu_focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.read(cx)
+                    .file_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.has_focus(window, cx))
+            })
+        };
+        assert!(menu_focused(cx), "the row's keyboard menu holds focus");
+
+        merge_stopping_on_notes(&repository);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        rows_arrived(&app, cx).await;
+        preview_landed(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the conflict view shows without taking focus"
+        );
+        assert_eq!(
+            offered(cx, "Stage"),
+            Some(true),
+            "the row's keyboard menu stays open"
+        );
+        assert!(menu_focused(cx), "focus stays in the menu");
+        assert!(!writing(&app, cx), "no write started");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
     /// down to Discard changes… and the pointer then moved onto that item,
     /// is built again as a change outside the app changes its file, here
