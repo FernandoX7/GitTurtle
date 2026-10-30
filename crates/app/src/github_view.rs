@@ -1711,6 +1711,40 @@ impl Panel {
             })
             .children(line)
     }
+    /// The panel's top line among the content, under the toolbar, while no conversation is
+    /// open: `lines`, then `busy`, as one part of the content whose lines each start a block of
+    /// the body. It records in `flowing` where it lies in the frame, from which the content
+    /// records the room it takes there, its gap to the part after it included
+    /// ([`review::ReviewState::top_line`]): as a reply opens and the line moves above the body
+    /// ([`Self::pin_top_line`]), the body's scroll moves by only the difference, so the
+    /// conversation below stays where it was drawn. With no room recorded there, the line
+    /// moving above the body counted as a new line and scrolled the conversation up by its
+    /// whole height.
+    fn flow_top_line(
+        &self,
+        lines: Vec<AnyElement>,
+        busy: Option<AnyElement>,
+        flowing: std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>,
+    ) -> Option<Div> {
+        if lines.is_empty() && busy.is_none() {
+            return None;
+        }
+        let blocks = self.review.body_blocks.clone();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .on_children_prepainted(move |line, _, _| {
+                    blocks.report(&line);
+                    if let (Some(first), Some(last)) = (line.first(), line.last()) {
+                        flowing.set(Some((first.top(), last.bottom())));
+                    }
+                })
+                .children(lines)
+                .children(busy),
+        )
+    }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.request.writing() {
             self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
@@ -1888,19 +1922,30 @@ impl Render for Panel {
             )
             .into_any_element()
         });
-        let (lines, busy, top_line) = if pinned {
-            (
-                Vec::new(),
-                None,
-                Some(self.pin_top_line(lines, busy, window, cx)),
-            )
+        // Where the line lies among the content this frame, its top and bottom, if it does.
+        let flowing = std::rc::Rc::new(std::cell::Cell::new(None));
+        let (flowing_line, top_line) = if pinned {
+            (None, Some(self.pin_top_line(lines, busy, window, cx)))
         } else {
             self.review.top_line.set(Pixels::ZERO);
-            (lines, busy, None)
+            (self.flow_top_line(lines, busy, flowing.clone()), None)
+        };
+        // Each part of the content starts a block of the body ([`review::Blocks`]), and the
+        // line among it records the room it takes there, up to the part after it
+        // ([`Self::flow_top_line`]).
+        let starts = blocks.starts();
+        let drawn = self.review.top_line.clone();
+        let parts = move |children: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
+            if let Some((top, bottom)) = flowing.get()
+                && let Some(next) = children.iter().find(|part| part.top() >= bottom)
+            {
+                drawn.set(next.top() - top);
+            }
+            starts(children, window, cx);
         };
         // The panel's content, its text one inset in from this edge. Each part of it starts a
         // block of the body, where a reveal may bring the body's top edge.
-        let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(blocks.starts()).min_w_0().flex().flex_col().gap_2()
+        let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(parts).min_w_0().flex().flex_col().gap_2()
             .when(self.review.fixture,|element|element.child(self.part("banner",div(),cx).flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).debug_selector(||"github-fixture-move".into()).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
@@ -1923,8 +1968,7 @@ impl Render for Panel {
                     .child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
-            .children(lines)
-            .children(busy)
+            .children(flowing_line)
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
                 // their rings' room inside that clip: its sides give the room back through their
@@ -4893,6 +4937,118 @@ mod tests {
             settle_panel(&app, cx).await;
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Reply opened while the panel's top line says something, a notice or a "Cancelled",
+    /// moves the line from among the content to above the body ([`Panel::flow_top_line`],
+    /// [`Panel::pin_top_line`]), and the conversation drawn below the line stays where it was
+    /// in the frame the reply opens, the body scrolled partway, at 13 pt in a 461 × 490 window
+    /// and in a 1,480 × 980 one. The panel once took the line above the body for a new line,
+    /// though its room among the content went with it, and scrolled the conversation up by
+    /// the line's whole height (65 px for the fixture's notice at 461 × 490).
+    #[gpui::test]
+    async fn opening_a_reply_keeps_the_conversation_where_it_was(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        // Rows of the conversation below the line, above the composer that opens.
+        const ROWS: [&str; 5] = [
+            "github-pull-title",
+            "github-branch-context",
+            "github-captured-identities",
+            "github-threads",
+            "github-open-changes",
+        ];
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+            })
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let placed = |scroll: &ScrollHandle| scroll.bounds().top() + scroll.offset().y;
+        let rows = |cx: &mut VisualTestContext| {
+            ROWS.map(|row| cx.debug_bounds(row).expect("the row is drawn").top())
+        };
+        for (interface, width, height) in [(13, 461., 490.), (13, 1480., 980.)] {
+            for (said, notice, cancelled) in [
+                ("the notice", Some(OFFLINE), None),
+                ("a cancel", None, RequestKind::Compare.cancelled(false)),
+            ] {
+                let at = format!("{said} at {interface} pt in {width} × {height}");
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, _| {
+                        panel.conversations.active = None;
+                        panel.notice = notice.map(str::to_owned);
+                        panel.cancelled = cancelled;
+                        // Reply saves the drafts and says so under the section tabs, which the
+                        // status already says here, so only the line changes as it opens.
+                        panel.save_status = "Saving local draft…".into();
+                    })
+                });
+                open_notice_panel(&app, &panel, (interface, width, height), cx).await;
+                // The body scrolled partway: the line among the content above its top, the
+                // PR's identities at it.
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let identities = cx
+                    .debug_bounds("github-captured-identities")
+                    .expect("the identities");
+                scroll.set_offset(point(
+                    px(0.),
+                    (scroll.offset().y - (identities.top() - body.top()))
+                        .clamp(-scroll.max_offset().y, px(0.)),
+                ));
+                draw(cx);
+                assert!(
+                    panel.read_with(cx, |panel, _| panel.conversations.active.is_none()),
+                    "{at}: no reply is open"
+                );
+                let before = rows(cx);
+                let content = placed(&scroll);
+
+                // Reply, and the frame that draws it, read before the composer's reveal,
+                // which the frame defers, scrolls on to the draft.
+                let opened = cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.begin_reply(target.clone(), window, cx)
+                    });
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    placed(&scroll)
+                });
+                assert!(
+                    cx.debug_bounds("github-top-line").is_some(),
+                    "{at}: the line stands above the body"
+                );
+                // Each row where the frame that opened the reply drew it: where the content
+                // places it, from where that frame placed the content.
+                let after = rows(cx);
+                let now = placed(&scroll);
+                let drawn = after.map(|top| top - now + opened);
+                assert_eq!(
+                    drawn, before,
+                    "{at}: the rows {ROWS:?} stayed where they were as the reply opened \
+                     (content placed at {content:?}, then {opened:?})"
+                );
+                cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+                settle_panel(&app, cx).await;
+            }
+        }
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, _| panel.conversations.active = None);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
