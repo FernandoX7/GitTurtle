@@ -3510,6 +3510,74 @@ mod tests {
             drop(fixture);
         }
 
+        /// A write's reason at a row's end never widens a menu or shortens
+        /// a command: at 18 pt in a 461 × 490 window, while the longest
+        /// label a write runs under ("Checking rewrite publication
+        /// destination…") refuses HEAD's right-click menu, each item's row
+        /// stays where it was drawn at rest and its command is drawn whole,
+        /// where it was at rest, and so again once the write ends. Drawn
+        /// beside the command, the reason cut the commands to "Rev…" and
+        /// "Undo l…", and the menu changed width as the reason came and
+        /// went.
+        #[gpui::test]
+        async fn a_waiting_reason_moves_nothing_drawn(cx: &mut TestAppContext) {
+            const LONGEST: &str = "Checking rewrite publication destination…";
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+            right_click(cx, "history-row-0");
+            let drawn = |cx: &mut VisualTestContext, selector: String| {
+                cx.debug_bounds(selector.clone().leak())
+                    .unwrap_or_else(|| panic!("{selector}"))
+            };
+            let rest: Vec<_> = COMMIT_ITEMS
+                .iter()
+                .map(|item| {
+                    (
+                        drawn(cx, format!("menu-item: {item} · MenuItem")),
+                        drawn(cx, format!("menu-row-text: {item}")),
+                    )
+                })
+                .collect();
+            let busy = |cx: &mut VisualTestContext, label: Option<&'static str>| {
+                app.update(cx, |app, cx| {
+                    app.operation_busy = label;
+                    cx.notify();
+                });
+                next_frame(cx);
+                next_frame(cx);
+            };
+            busy(cx, Some(LONGEST));
+            let spoken = crate::native_accessibility::MenuWait::named(LONGEST).spoken();
+            for (item, (row, text)) in COMMIT_ITEMS.iter().zip(&rest) {
+                let waiting = drawn(
+                    cx,
+                    format!("menu-item: {item}, {spoken} · MenuItem disabled"),
+                );
+                assert_eq!(waiting, *row, "{item}'s row stays where it was drawn");
+                let command = drawn(cx, format!("menu-command: {item}"));
+                assert!(
+                    (command.left() - text.left()).abs() < px(0.5)
+                        && (command.size.width - text.size.width).abs() < px(0.5),
+                    "{item} drawn whole, {command:?}, as at rest {text:?}"
+                );
+            }
+            busy(cx, None);
+            for (item, (row, _)) in COMMIT_ITEMS.iter().zip(&rest) {
+                assert_eq!(
+                    drawn(cx, format!("menu-item: {item} · MenuItem")),
+                    *row,
+                    "{item}'s row once the write ends"
+                );
+            }
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+            drop(fixture);
+        }
+
         /// The label a Fetch runs under, as the window's progress line
         /// shows it.
         const FETCHING: &str = "Fetching remote…";
@@ -3534,12 +3602,16 @@ mod tests {
 
         /// Asserts that the open menu draws each of `items` refused for the
         /// running Fetch and saying so: its accessible name names the Fetch,
-        /// and the Fetch's label stands after the command at the row's end
-        /// in secondary text.
+        /// and the Fetch's label stands after a row's command at its end in
+        /// secondary text where the room the command leaves there holds it,
+        /// and on no row where it does not (`native_accessibility::Detail`).
+        /// Every row's reason has the one selector, so the one a frame
+        /// registers is checked against the row that holds it.
         fn wait_for_the_fetch(cx: &mut VisualTestContext, items: &[&str], when: &str) {
             let muted = cx.update(|_, cx| {
                 gpui::Rgba::from(gpui_kit::component::Theme::global(cx).muted_foreground)
             });
+            let mut rows = Vec::new();
             for item in items {
                 let name = format!(
                     "menu-item: {item}, available when fetching remote finishes · MenuItem disabled"
@@ -3550,13 +3622,24 @@ mod tests {
                 let command = cx
                     .debug_bounds(format!("menu-command: {item}").leak())
                     .unwrap_or_else(|| panic!("{when}: {item}'s command"));
-                let detail = cx
-                    .debug_bounds(format!("menu-detail: {FETCHING} · {muted:?}").leak())
-                    .unwrap_or_else(|| panic!("{when}: {item}'s reason"));
                 assert!(
-                    command.right() < detail.left() && detail.right() <= row.right(),
-                    "{when}: {item}'s reason {detail:?} after {command:?} in {row:?}"
+                    command.left() >= row.left() && command.right() <= row.right(),
+                    "{when}: {item}'s command {command:?} in {row:?}"
                 );
+                rows.push((row, command));
+            }
+            let detail = cx
+                .debug_bounds(format!("menu-detail: {FETCHING} · {muted:?}").leak())
+                .unwrap_or_else(|| panic!("{when}: the Fetch's label"));
+            match rows.iter().find(|(row, _)| row.contains(&detail.center())) {
+                Some((row, command)) => assert!(
+                    command.right() < detail.left() && detail.right() <= row.right(),
+                    "{when}: the reason {detail:?} after {command:?} in {row:?}"
+                ),
+                None => assert!(
+                    rows.iter().all(|(row, _)| !row.intersects(&detail)),
+                    "{when}: a reason left out {detail:?} lies on no row"
+                ),
             }
         }
 

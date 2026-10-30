@@ -950,45 +950,98 @@ pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupM
         label.into(),
         detail.into(),
         format!("{label}, {}", detail.to_lowercase()).into(),
+        Detail::Shown,
     )
 }
+
+/// How a menu row draws the text after its command ([`detail_row`]).
+#[derive(Clone, Copy)]
+enum Detail {
+    /// Whole, beside the command, as a shortcut stands: a condition of the
+    /// item's own, which the menu is as wide as it needs to be for.
+    Shown,
+    /// Only in the room the command leaves at the row's end, ending in an
+    /// ellipsis where that room is short, and not at all where it holds
+    /// less than [`WAIT_FLOOR`], adding nothing to the menu's width: why a
+    /// write refuses the item ([`waiting_item`]), which comes, changes and
+    /// goes while the menu is open.
+    InRoom,
+}
+
+/// The least room a row's end gives a waiting item's reason before it is
+/// left out, about three characters at the interface text size: a reason cut
+/// shorter says nothing, and the accessible name says it whole.
+const WAIT_FLOOR: f32 = 2.5;
+
+/// How tall the strut is that a reason given less than [`WAIT_FLOOR`] wraps
+/// past: far taller than any row, so the second line it goes to lies below
+/// every row of the menu, clipped by its own row's room.
+const WAIT_STRUT: f32 = 10_000.;
 
 /// [`detailed_item`]'s row: `label`, then `detail` at its trailing edge,
 /// announced as `name`, and found as `label` when its menu is built again,
 /// so the keyboard's cursor rests while the item it was on waits rather
 /// than taking the item for one that has gone ([`announces_resting`]).
-fn detail_row(label: SharedString, detail: SharedString, name: SharedString) -> PopupMenuItem {
+fn detail_row(
+    label: SharedString,
+    detail: SharedString,
+    name: SharedString,
+    drawn: Detail,
+) -> PopupMenuItem {
     let command = label.clone();
     PopupMenuItem::element(move |_, cx| {
         let color = gpui_kit::component::Theme::global(cx).muted_foreground;
         let (command, condition) = (label.clone(), detail.clone());
-        div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .debug_selector({
-                        let command = command.clone();
-                        move || format!("menu-command: {command}")
-                    })
-                    .child(command),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(color)
-                    .debug_selector({
-                        let condition = condition.clone();
-                        move || format!("menu-detail: {condition} · {:?}", gpui::Rgba::from(color))
-                    })
-                    .child(condition),
-            )
+        let text = div()
+            .text_color(color)
+            .debug_selector({
+                let condition = condition.clone();
+                move || format!("menu-detail: {condition} · {:?}", gpui::Rgba::from(color))
+            })
+            .child(condition);
+        let row = div().flex().flex_1().min_w_0().items_center().child(
+            div()
+                .min_w_0()
+                .truncate()
+                .debug_selector({
+                    let command = command.clone();
+                    move || format!("menu-command: {command}")
+                })
+                .child(command),
+        );
+        match drawn {
+            Detail::Shown => row.justify_between().gap_3().child(text.flex_shrink_0()),
+            // The room after the command, which grows from nothing and so
+            // adds nothing to the row's width, holds the reason out of flow.
+            // Wrapping past a strut far taller than the room, a reason given
+            // less than its floor goes to a second line far below the row,
+            // which the room clips, so it is drawn on no row.
+            Detail::InRoom => row.child(
+                div().flex_1().min_w_0().self_stretch().relative().child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .pl_3()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_wrap()
+                        .items_start()
+                        .justify_end()
+                        .child(div().w_0().h(px(WAIT_STRUT)))
+                        .child(
+                            text.h_full()
+                                .flex()
+                                .items_center()
+                                .min_w(gpui::rems(WAIT_FLOOR))
+                                .max_w_full()
+                                .truncate(),
+                        ),
+                ),
+            ),
+        }
     })
     .named(command)
     .accessibility_label(name)
@@ -1058,9 +1111,14 @@ impl MenuWait {
 /// `label`'s menu item, unavailable while `refused`, for a reason of the
 /// item's own, or while `wait` holds a write's reason, which it then states:
 /// the command, with the write's label at the row's trailing edge in
-/// secondary text, as [`detailed_item`] states a condition, and the
-/// accessible name "<command>, available when <the write> finishes" ("Open
-/// project, available when fetching remote finishes"). An item refused for
+/// secondary text in the room the command leaves there ([`Detail::InRoom`]),
+/// and the accessible name "<command>, available when <the write> finishes"
+/// ("Open project, available when fetching remote finishes"). The reason
+/// never widens the menu or shortens the command: drawn beside the command
+/// as a condition is, a long one ("Checking rewrite publication
+/// destination…") cut the commands of a 461 px menu at 18 pt to "Rev…", and
+/// the menu changed width, moving a right-click menu's edge, as the reason
+/// came and went. An item refused for
 /// a reason of its own states no wait, since the write's end would not make
 /// it available.
 pub(crate) fn waiting_item(
@@ -1074,7 +1132,7 @@ pub(crate) fn waiting_item(
             let name: SharedString = format!("{label}, {}", wait.spoken()).into();
             #[cfg(test)]
             waiting_names::record(&label, &name);
-            detail_row(label, wait.0.into(), name).disabled(true)
+            detail_row(label, wait.0.into(), name, Detail::InRoom).disabled(true)
         }
         None => PopupMenuItem::new(label).disabled(refused),
     }
