@@ -19,6 +19,11 @@ const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
 /// its label moves nothing.
 pub(crate) const CANCEL_LABELS: [&str; 2] = ["Cancel operation", "Cancelling…"];
 
+/// Cancel's accessible name in either form, labelled or its icon.
+pub(crate) const CANCEL_NAME: &str = "Cancel the running Git operation";
+
+const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
+
 /// One string supplies the prompt's visible guidance and the static text it
 /// is read as.
 fn guidance(confirmation: bool) -> native_accessibility::StaticText<Stateful<Div>> {
@@ -146,19 +151,42 @@ impl GitTurtle {
         }
     }
 
-    pub(super) fn render_operation_cancel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(control) = &self.authentication.control else {
-            return div().into_any_element();
+    /// Cancel for the running write ([`Self::operation_cancel`]), or nothing
+    /// where no write can be cancelled.
+    pub(super) fn render_operation_cancel(&self, icon: bool, cx: &mut Context<Self>) -> AnyElement {
+        self.operation_cancel(icon, cx)
+            .map_or_else(|| div().into_any_element(), IntoElement::into_any_element)
+    }
+
+    /// Cancel for the running write: labelled, or where `icon` the shared
+    /// 28 px control with its icon, its label leading its tooltip. Either
+    /// keeps one accessible name ([`CANCEL_NAME`]).
+    pub(super) fn operation_cancel(&self, icon: bool, cx: &mut Context<Self>) -> Option<Button> {
+        let control = self.authentication.control.as_ref()?;
+        let label = CANCEL_LABELS[usize::from(control.is_cancelled())];
+        let cancel = if icon {
+            let tooltip = format!("{label} · {CANCEL_TOOLTIP}");
+            crate::views::note_control_tooltip(&"cancel-git-operation".into(), &tooltip);
+            crate::views::compact_control_name(
+                crate::button("cancel-git-operation", "", "close", false),
+                "cancel-git-operation",
+                CANCEL_NAME,
+            )
+            .tooltip(tooltip)
+        } else {
+            Button::new("cancel-git-operation")
+                .secondary()
+                .small()
+                .label(label)
+                .tooltip(CANCEL_TOOLTIP)
+                .accessibility_label(CANCEL_NAME)
         };
-        Button::new("cancel-git-operation")
-            .debug_selector(|| "cancel-git-operation".into())
-            .secondary().small()
-            .label(CANCEL_LABELS[usize::from(control.is_cancelled())])
-            .disabled(control.is_cancelled())
-            .tooltip("Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.")
-            .accessibility_label("Cancel the running Git operation")
-            .on_click(cx.listener(|this, _, window, cx| this.cancel_operation(window, cx)))
-            .into_any_element()
+        Some(
+            cancel
+                .debug_selector(|| "cancel-git-operation".into())
+                .disabled(control.is_cancelled())
+                .on_click(cx.listener(|this, _, window, cx| this.cancel_operation(window, cx))),
+        )
     }
 
     fn show_authentication_prompt(
