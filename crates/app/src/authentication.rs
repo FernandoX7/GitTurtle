@@ -15,8 +15,9 @@ const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
 };
 
 /// Cancel's labels while the write runs and once it is cancelled. The header
-/// keeps room for the wider (`views::OperationStatus`), so Cancel changing
-/// its label moves nothing.
+/// keeps room for the wider (`views::OperationStatus`) and the labelled
+/// Cancel is drawn that wide ([`GitTurtle::render_operation_cancel`]), so
+/// Cancel changing its label moves nothing.
 pub(crate) const CANCEL_LABELS: [&str; 2] = ["Cancel operation", "Cancelling…"];
 
 /// Cancel's accessible name in either form, labelled or its icon.
@@ -152,9 +153,24 @@ impl GitTurtle {
     }
 
     /// Cancel for the running write ([`Self::operation_cancel`]), or nothing
-    /// where no write can be cancelled.
-    pub(super) fn render_operation_cancel(&self, icon: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// where no write can be cancelled. Labelled, it is drawn as wide as the
+    /// wider of its labels, the room the header keeps for it
+    /// ([`Self::labelled_cancel_width`]), so pressing it, which turns its
+    /// label to the shorter "Cancelling…", moves nothing.
+    pub(super) fn render_operation_cancel(
+        &self,
+        icon: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.operation_cancel(icon, cx)
+            .map(|cancel| {
+                if icon {
+                    cancel
+                } else {
+                    cancel.min_w(self.labelled_cancel_width(window))
+                }
+            })
             .map_or_else(|| div().into_any_element(), IntoElement::into_any_element)
     }
 

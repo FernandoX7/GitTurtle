@@ -362,7 +362,7 @@ impl GitTurtle {
                 (OperationPlace::StatusBar, _) => status,
             })
             .child(self.render_operation_progress(label, form.named, false, cx))
-            .child(self.render_operation_cancel(form.icon, cx))
+            .child(self.render_operation_cancel(form.icon, window, cx))
             .into_any_element()
     }
 
@@ -4200,6 +4200,13 @@ impl OperationStatus {
     }
 }
 
+/// The labelled Cancel's width: a small kit Button's `px_2` around the wider
+/// of its labels (`authentication::CANCEL_LABELS`), so its label changing as
+/// it is pressed moves nothing.
+fn labelled_cancel(widths: &ChromeWidths, window: &Window) -> Pixels {
+    window.pixel_snap(window.rem_size() * 0.5) * 2. + widths.cancel
+}
+
 /// How a running write's status draws: Cancel as its icon or labelled, and
 /// whether the progress label names the write's repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5009,9 +5016,8 @@ impl GitTurtle {
 
     /// The room a running write's status takes in the header
     /// ([`OperationStatus`]): the progress label, from its text as the write
-    /// starts to its limit, and after it, `gap_2` apart, Cancel: a small kit
-    /// Button (`px_2` around the wider of its labels, 1.5 rem tall) or the
-    /// shared 28 px control with its icon.
+    /// starts to its limit, and after it, `gap_2` apart, Cancel: labelled
+    /// ([`labelled_cancel`]) or the shared 28 px control with its icon.
     fn operation_status_size(&self, widths: &ChromeWidths, window: &Window) -> OperationStatus {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
@@ -5026,10 +5032,16 @@ impl GitTurtle {
             own: widths.busy.min(limit),
             named: widths.busy_named.min(limit),
             limit,
-            labelled: gap + snap(rem * 0.5) * 2. + widths.cancel,
+            labelled: gap + labelled_cancel(widths, window),
             icon: gap + control,
             heights: (snap((rem * 1.5).max(line)), snap(control.max(line))),
         }
+    }
+
+    /// The labelled Cancel's width ([`labelled_cancel`]), at which it is
+    /// drawn whichever label it shows.
+    pub(super) fn labelled_cancel_width(&self, window: &Window) -> Pixels {
+        labelled_cancel(&self.chrome_widths(window), window)
     }
 
     /// The full header's height in a window `width` wide: `render_header`'s
@@ -7082,7 +7094,7 @@ impl Render for GitTurtle {
                                 self.operation_progress()
                                     .unwrap_or_else(|| "Working…".into()),
                             )
-                            .child(self.render_operation_cancel(false, cx)),
+                            .child(self.render_operation_cancel(false, window, cx)),
                     )
                 },
             )
@@ -15405,6 +15417,63 @@ pub(crate) mod tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The labelled Cancel is drawn as wide as the wider of its labels, the
+    /// room the header keeps for it, so pressing it, which turns "Cancel
+    /// operation" to the shorter "Cancelling…", moves nothing: in a
+    /// 1,480 px window at the default size, where the header draws Cancel
+    /// labelled, Cancel and the end of the progress label keep their bounds
+    /// across the press, as the whole group does. Drawn at its label's
+    /// width, Cancel shrank as it was pressed and the group's label moved
+    /// after it.
+    #[gpui::test]
+    async fn the_labelled_cancel_keeps_its_width_when_pressed(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        settle(&app, cx).await;
+        let held = hold_stage_all(&app, cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        let plan = cx.update(|window, cx| app.read(cx).frame_plan(window, cx));
+        assert!(
+            plan.is_some_and(|plan| plan.operation.place != OperationPlace::StatusBar
+                && !plan.operation.form.icon),
+            "Cancel is labelled in the header: {plan:?}"
+        );
+        let parts = |cx: &mut VisualTestContext| {
+            let [status, progress, cancel] = [
+                "operation-status",
+                "operation-progress",
+                "cancel-git-operation",
+            ]
+            .map(|part| cx.debug_bounds(part).unwrap_or_else(|| panic!("{part}")));
+            (status, progress.right(), cancel)
+        };
+        let before = parts(cx);
+        let width = cx.update(|window, cx| app.read(cx).labelled_cancel_width(window));
+        assert_eq!(
+            before.2.size.width, width,
+            "Cancel {:?} is as wide as its wider label",
+            before.2
+        );
+        cx.simulate_click(before.2.center(), Modifiers::default());
+        draw(cx);
+        let progress = app.read_with(cx, |app, _| app.operation_progress());
+        assert!(
+            progress
+                .as_deref()
+                .is_some_and(|progress| progress.starts_with("Cancelling")),
+            "the press cancels the write: {progress:?}"
+        );
+        assert_eq!(parts(cx), before, "pressed, Cancel moves nothing");
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        settle(&app, cx).await;
     }
 
     /// Outside History's root the full header's return action, Back, fills
