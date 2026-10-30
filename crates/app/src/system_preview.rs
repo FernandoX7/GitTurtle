@@ -1685,6 +1685,13 @@ pub(crate) mod tests {
             &std::collections::BTreeMap<String, DrawnControl>,
         ),
     ) {
+        // The PDF's pages are prepared on the app's page render thread, and a
+        // page that answers after the view's task has begun to await it wakes
+        // that task from there, which the test scheduler fails the test for
+        // unless parking is allowed, as the app's test windows allow it. Each
+        // width's frames wait for the pages before they draw their answers.
+        // (The model asks for no frames: a test window is never active.)
+        cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
         let (sides, cx) = cx.add_window_view(|_, _| Sides {
