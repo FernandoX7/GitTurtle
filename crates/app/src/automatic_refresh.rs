@@ -553,8 +553,9 @@ impl GitTurtle {
         {
             view.update(cx, |view, cx| view.replace(markdown.clone(), cx));
         }
+        // A passive read: a conflict's view shows without taking focus.
         if self.page == AppPage::Repository {
-            self.ensure_editor(window, cx);
+            self.prepare_editor(false, window, cx);
         }
     }
 }

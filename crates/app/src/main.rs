@@ -1444,6 +1444,14 @@ impl GitTurtle {
     }
 
     fn ensure_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_editor(true, window, cx);
+    }
+
+    /// Builds the shown preview's editor, unless built. A conflict's result
+    /// draft takes focus as its view opens only where `activated`, the
+    /// preview answering the person's choice of its file
+    /// ([`Self::ensure_conflict_view`]).
+    fn prepare_editor(&mut self, activated: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.blame.is_visible() {
             return;
         }
@@ -1451,7 +1459,7 @@ impl GitTurtle {
             return;
         };
         if let Content::Conflict(presentation) = content.as_ref() {
-            self.ensure_conflict_view(Arc::clone(presentation), window, cx);
+            self.ensure_conflict_view(Arc::clone(presentation), activated, window, cx);
             return;
         }
         let Content::Text {

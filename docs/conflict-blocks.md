@@ -1,6 +1,6 @@
 # Conflict review by block
 
-Working Changes keeps the full-file conflict viewer and adds selected-block review for bounded UTF-8 text. Initial block parsing runs on the read worker. Draft edits use a bounded background parser with generation checks; outdated replies cannot apply decisions to newer text.
+Working Changes keeps the full-file conflict viewer and adds selected-block review for bounded UTF-8 text. Initial block parsing runs on the read worker. Draft edits use a bounded background parser with generation checks; outdated replies cannot apply decisions to newer text. The viewer opens without taking focus when a quiet refresh finds the selected file conflicted, so focus stays on the file list or in its row's open menu; the result draft takes focus when the file is chosen, from **Edit result**, a block step or **Restore saved draft**.
 
 The toolbar shows the unresolved count and selected result line. **Previous/Next**, or Command-Option-Up/Down in the viewer (Ctrl+Alt+Up/Down on Linux, where the tooltips name those keys), selects a block and reveals it in the result editor. Source panels show that block's Current and Incoming content; **Base** shows its base section when Git's diff3 or zdiff3 markers include one. **Whole file** retains the original sources and full common ancestor. During rebase, Current is the updated base and Incoming is the replayed commit. Stash markers identify the updated worktree and stashed content.
 

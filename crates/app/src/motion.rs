@@ -4576,9 +4576,10 @@ mod tests {
     /// Moved to the nearest item that could act, the cursor fell to Stage,
     /// and Enter ran `git add` on the conflicted file at once, marking it
     /// resolved. A keyboard's opening selected the row, so the conflicted
-    /// file's preview, landing with the status, focuses its resolution
-    /// draft, and the menu, its focus gone, closes, leaving focus in the
-    /// draft and the file conflicted.
+    /// file's preview lands with the status and opens its conflict view,
+    /// which takes no focus, a passive read moving none: the menu stays
+    /// open, built again as the right-click's is. The view's resolution
+    /// draft took focus as it opened, and the menu, its focus gone, closed.
     async fn a_row_menus_cursor_rests_as_its_file_becomes_conflicted(
         cx: &mut TestAppContext,
         opening: Opening,
@@ -4606,43 +4607,41 @@ mod tests {
             "the merge stops on notes.txt"
         );
         quietly_refreshed(&app, cx);
-        match opening {
-            Opening::RightClick => {
-                assert_eq!(
-                    offered(cx, "Discard changes…, after conflict resolution"),
-                    Some(false),
-                    "rebuilt for the conflicted file"
-                );
-                assert_eq!(offered(cx, "Stage"), Some(true), "Stage offered");
-                assert_eq!(
-                    cursor_among(cx, &NOTES_ITEMS),
-                    Vec::<&str>::new(),
-                    "the cursor rests on none"
-                );
-                cx.simulate_keystrokes("enter");
-                cx.executor().run_until_parked();
-                next_frame(cx);
-                assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
-            }
-            Opening::Keyboard => {
-                cx.executor().run_until_parked();
-                next_frame(cx);
-                assert!(
-                    app.read_with(cx, |app, _| app.file_menu.is_none()),
-                    "the keyboard's menu closed"
-                );
-                assert_eq!(offered(cx, "Stage"), None, "no menu drawn");
-                assert!(
-                    cx.update(|window, cx| {
-                        app.read(cx)
-                            .conflict_view
-                            .as_ref()
-                            .is_some_and(|view| view.read(cx).resolution_focused(window, cx))
-                    }),
-                    "focus in the conflicted file's resolution draft"
-                );
-            }
-        }
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        // A keyboard's opening selected the row, whose conflict view shows
+        // without taking focus; a right-click's selected none.
+        assert_eq!(
+            conflict_shown(&app, cx),
+            match opening {
+                Opening::RightClick => None,
+                Opening::Keyboard => Some(false),
+            },
+            "{opening:?}: no resolution draft takes focus"
+        );
+        assert_eq!(
+            offered(cx, "Discard changes…, after conflict resolution"),
+            Some(false),
+            "{opening:?}: rebuilt for the conflicted file"
+        );
+        assert_eq!(
+            offered(cx, "Stage"),
+            Some(true),
+            "{opening:?}: Stage offered"
+        );
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            Vec::<&str>::new(),
+            "{opening:?}: the cursor rests on none"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Stage"),
+            Some(true),
+            "{opening:?}: the menu stays open"
+        );
         assert!(!writing(&app, cx), "{opening:?}: no write started");
         assert!(
             notes_unmerged(&repository),
@@ -4659,8 +4658,86 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_keyboard_menu_closes_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
+    async fn a_keyboard_menu_stays_open_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
         a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::Keyboard).await;
+    }
+
+    /// Whether `app` shows a conflict view, and if so whether its
+    /// resolution draft holds focus.
+    fn conflict_shown(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<bool> {
+        cx.update(|window, cx| {
+            let view = app.read(cx).conflict_view.clone()?;
+            Some(view.read(cx).resolution_focused(window, cx))
+        })
+    }
+
+    /// A quiet refresh that finds the selected working file conflicted, as
+    /// a merge outside the app leaves it, opens its conflict view and leaves
+    /// focus on the list, where the person put it: a passive read moves no
+    /// focus. The view's resolution draft took focus as the view opened,
+    /// out of the list. The file chosen again, by a click on its row, opens
+    /// the view with focus in the draft.
+    #[gpui::test]
+    async fn a_quiet_refresh_opens_a_conflict_without_moving_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the click focuses the list"
+        );
+
+        fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
+        assert!(
+            !committing_git(&repository, &["merge", "-q", "side"])
+                .status
+                .success(),
+            "the merge stops on notes.txt"
+        );
+        quietly_refreshed(&app, cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the conflict view shows without taking focus"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus stays on the list"
+        );
+
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        for _ in 0..8 {
+            if conflict_shown(&app, cx).is_some() {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(true),
+            "the file chosen again focuses its resolution draft"
+        );
+        assert!(!writing(&app, cx), "no write started");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A working row's keyboard menu in [`narrow_notes`], its cursor moved

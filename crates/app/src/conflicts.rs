@@ -366,8 +366,14 @@ impl ConflictView {
             draft_error: None,
         };
         this.prepare_readers(window, cx);
+        // The result draft opens with the view but takes no focus: the view
+        // is built wherever a conflicted preview lands, a quiet refresh's
+        // among them, and a passive read never moves focus. Opened, it took
+        // focus out of the file list, closing a row's keyboard menu open
+        // there. Whoever builds the view for the person's choice of the file
+        // focuses the draft ([`GitTurtle::ensure_conflict_view`]).
         if this.initial_draft.is_some() || this.block_mode {
-            this.open_resolution_editor(window, cx);
+            this.build_resolution_editor(window, cx);
             if this.initial_draft.is_some() {
                 this.schedule_blocks(window, cx);
             }
@@ -383,7 +389,23 @@ impl ConflictView {
             .is_some_and(|editor| editor.focus_handle(cx).is_focused(window))
     }
 
+    /// Opens the result draft, if it is not open, and focuses it: Edit
+    /// result, a block step and Restore saved draft, each asked for.
     fn open_resolution_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.build_resolution_editor(window, cx);
+        self.focus_resolution(window, cx);
+    }
+
+    /// Focuses the result draft, if it is open.
+    fn focus_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.resolution {
+            window.focus(&editor.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// Opens the result draft, if it is not open, leaving focus where it is.
+    fn build_resolution_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.resolution.is_none()
             && let Some(value) = &self.presentation.result
         {
@@ -441,9 +463,6 @@ impl ConflictView {
                     }),
                 );
             self.resolution = Some(editor);
-        }
-        if let Some(editor) = &self.resolution {
-            window.focus(&editor.focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -764,9 +783,16 @@ fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
 }
 
 impl GitTurtle {
+    /// Builds the conflict view for `presentation` unless one is open.
+    /// `activated` says the preview answers the person's choice of the file,
+    /// as a click or the keys that select its row ask for it: the view's
+    /// result draft, where it opens, takes focus. A preview a passive read
+    /// lands, as a quiet refresh does finding the selected file conflicted,
+    /// shows the view and leaves focus where it is.
     pub(super) fn ensure_conflict_view(
         &mut self,
         presentation: Arc<Presentation>,
+        activated: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -808,10 +834,13 @@ impl GitTurtle {
                 cx,
             )
         });
-        view.update(cx, |view, _| {
+        view.update(cx, |view, cx| {
             view.durable_status = self.recovery_drafts.status_for(&persistent_key);
             if let Some(recovered) = recovered {
                 view.durable_saved = Some((recovered.key == persistent_key, recovered.text));
+            }
+            if activated {
+                view.focus_resolution(window, cx);
             }
         });
         let snapshot = Arc::clone(&presentation.snapshot);
