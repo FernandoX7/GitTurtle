@@ -20081,6 +20081,47 @@ pub(crate) mod tests {
         );
     }
 
+    /// On Linux a text field's drawn right-click menu gives Cut, Copy,
+    /// Paste and Select All the role of the plain menu items they are, as
+    /// a macOS menu item without a mark is one: built as unticked check
+    /// items, each was announced as an unchecked check box. The kit names
+    /// each item's role in its debug selector, since the test platform runs
+    /// no accessibility client.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_menu_announces_its_items_as_plain_items(cx: &mut TestAppContext) {
+        const CHECK_BOXES: [&str; 4] = [
+            "MenuItemCheckBox True",
+            "MenuItemCheckBox False",
+            "MenuItemCheckBox True disabled",
+            "MenuItemCheckBox False disabled",
+        ];
+        let at = "13 pt in 461 × 490";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(&app, cx).await;
+        let field = cx
+            .debug_bounds("working-filter")
+            .unwrap_or_else(|| panic!("{at}: the Working Changes filter"));
+        let pointer = point(field.left() + px(16.), field.center().y.floor() + px(0.4));
+        right_click_field(cx, pointer, "Select All", at);
+        let mut has = |label: &str, role: &str| {
+            cx.debug_bounds(format!("menu-item: {label} · {role}").leak())
+                .is_some()
+        };
+        for label in ["Cut", "Copy", "Paste", "Select All"] {
+            assert!(
+                has(label, "MenuItem") || has(label, "MenuItem disabled"),
+                "{at}: {label} is a plain menu item"
+            );
+            for role in CHECK_BOXES {
+                assert!(!has(label, role), "{at}: {label} is a {role}");
+            }
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+    }
+
     /// The open menu's rows labelled `labels`, in order, where the last frame
     /// drew them, inside or past the menu's fold: an item's whatever its
     /// state, or a label's.

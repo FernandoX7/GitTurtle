@@ -114,6 +114,15 @@ impl FallbackMenuOverlay {
 /// GitTurtle patch: a menu given a `cap` scrolls its items past it, with the
 /// kit's capped-menu fold and scrollbar, unless it holds a submenu, which a
 /// scrolling menu cannot show; a submenu is never capped.
+///
+/// GitTurtle patch: an item is a check item only where it is ticked. A
+/// native item says only whether it is ticked, as a macOS or Windows menu
+/// item's state does, and every item of the plain builders (`menu`,
+/// `menu_with_disabled`, the icon builders) is unticked, so each was built
+/// as an unticked check item and announced to a Linux screen reader as an
+/// unchecked check box: Cut, Copy, Paste and Select All among them. A
+/// ticked item stays a check item, announced checked, as the kit's
+/// `with_menu_items` makes only a ticked platform action checkable.
 #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
 fn build_popup(
     items: Vec<NativeMenuItem>,
@@ -143,20 +152,27 @@ fn build_popup(
                     checked,
                     icon: Some(icon),
                     action: Some(action),
-                } => menu.item(
-                    PopupMenuItem::new(label)
+                } => {
+                    let item = PopupMenuItem::new(label)
                         .icon(*icon)
                         .action(action)
-                        .disabled(disabled)
-                        .checked(checked),
-                ),
+                        .disabled(disabled);
+                    menu.item(if checked { item.checked(true) } else { item })
+                }
                 NativeMenuItem::Item {
                     label,
                     disabled,
-                    checked,
+                    checked: true,
                     icon: None,
                     action: Some(action),
-                } => menu.menu_with_check_and_disabled(label, checked, action, disabled),
+                } => menu.menu_with_check_and_disabled(label, true, action, disabled),
+                NativeMenuItem::Item {
+                    label,
+                    disabled,
+                    checked: false,
+                    icon: None,
+                    action: Some(action),
+                } => menu.menu_with_disabled(label, action, disabled),
                 NativeMenuItem::Item { action: None, .. } => menu,
                 NativeMenuItem::Submenu {
                     label,

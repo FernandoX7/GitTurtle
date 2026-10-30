@@ -648,6 +648,20 @@ larger, and reads the capped menu drawn wholly above the point and taller
 than the room below, so a cap at the smaller room fails it. Remove this part
 with the fallback menu's placement.
 
+The fallback's items patch modifies `src/native_menu/fallback.rs`. Upstream
+built every native item as a check item (`menu_with_check_and_disabled`, or
+`PopupMenuItem::checked` for one with an icon), and since the
+checked-menu-item patch makes a check item checkable, a Linux screen reader
+heard each item of an input's menu, Cut, Copy, Paste and Select All among
+them, as an unchecked check box. A `NativeMenu` item says only whether it is
+ticked, as a macOS or Windows menu item's state does, so the fallback now
+builds a check item only for a ticked one, as the kit's `with_menu_items`
+makes only a ticked platform action checkable, and a plain item otherwise.
+`cargo test --locked -p gitturtle an_inputs_menu_announces_its_items_as_plain_items`
+right-clicks the Working Changes filter and reads each item's role in its
+debug selector as a plain menu item. Remove this part when upstream builds
+the fallback's unticked items plain and that test passes without it.
+
 The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
 `confirm`, which Enter and a click run, acted on whatever entry was selected.
 The pointer's hover selects any row, a disabled item or a label among them, so
