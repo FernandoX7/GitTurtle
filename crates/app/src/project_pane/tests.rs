@@ -547,7 +547,7 @@ fn a_project_rows_menu_names_the_write_open_project_waits_for(cx: &mut TestAppCo
         .debug_bounds("menu-command: Open project")
         .expect("Open project's command");
     let detail = cx
-        .debug_bounds(format!("menu-detail: Fetching remote… · {muted:?}").leak())
+        .debug_bounds(format!("menu-reason: Open project · Fetching remote… · {muted:?}").leak())
         .expect("the Fetch's label in secondary text");
     assert!(
         command.right() < detail.left() && detail.right() <= row.right(),

@@ -3683,6 +3683,55 @@ mod tests {
             next_frame(cx);
         }
 
+        /// A reason is drawn only where the room after its command holds
+        /// its first word whole and an ellipsis, and otherwise not at all:
+        /// at 13 pt in a 1,480 px window, while "Disconnecting GitTurtle
+        /// from GitHub…" refuses the Changes Actions menu, each row shows
+        /// "Disconnecting…" or more, or nothing ([`reason_drawn`]). Left out
+        /// only below 2.5 rem, it read "Disco…" where the room was short.
+        #[gpui::test]
+        async fn a_waiting_reason_shows_its_first_word_or_nothing(cx: &mut TestAppContext) {
+            const DISCONNECTING: &str = "Disconnecting GitTurtle from GitHub…";
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+            press(cx, "working-recovery-menu");
+            next_frame(cx);
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some(DISCONNECTING);
+                cx.notify();
+            });
+            next_frame(cx);
+            next_frame(cx);
+            let spoken = crate::native_accessibility::MenuWait::named(DISCONNECTING).spoken();
+            let items = [
+                "Browse stashes…",
+                "Amend last commit…",
+                "Undo last local commit…",
+            ];
+            let rows: Vec<_> = items
+                .iter()
+                .map(|item| {
+                    cx.debug_bounds(
+                        format!("menu-item: {item}, {spoken} · MenuItem disabled").leak(),
+                    )
+                    .unwrap_or_else(|| panic!("{item} names the request"))
+                })
+                .collect();
+            for item in items {
+                reason_drawn(cx, item, DISCONNECTING, &rows);
+            }
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                cx.notify();
+            });
+            next_frame(cx);
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            drop(fixture);
+        }
+
         /// The label a Fetch runs under, as the window's progress line
         /// shows it.
         const FETCHING: &str = "Fetching remote…";
@@ -3705,47 +3754,76 @@ mod tests {
             held
         }
 
-        /// Asserts that the open menu draws each of `items` refused for the
-        /// running Fetch and saying so: its accessible name names the Fetch,
-        /// and the Fetch's label stands after a row's command at its end in
-        /// secondary text where the room the command leaves there holds it,
-        /// and on no row where it does not (`native_accessibility::Detail`).
-        /// Every row's reason has the one selector, so the one a frame
-        /// registers is checked against the row that holds it.
-        fn wait_for_the_fetch(cx: &mut VisualTestContext, items: &[&str], when: &str) {
+        /// Where the open menu draws `item`'s reason, `label`, the label
+        /// its write runs under: after its command on its row, whole or
+        /// ending in an ellipsis, and never narrower than the reason's first
+        /// word with an ellipsis (`native_accessibility::wait_floor`); or, left
+        /// out where the room after the command is shorter than that, on no
+        /// row of the menu, `None`.
+        fn reason_drawn(
+            cx: &mut VisualTestContext,
+            item: &str,
+            label: &str,
+            rows: &[Bounds<Pixels>],
+        ) -> Option<Bounds<Pixels>> {
             let muted = cx.update(|_, cx| {
                 gpui::Rgba::from(gpui_kit::component::Theme::global(cx).muted_foreground)
             });
-            let mut rows = Vec::new();
-            for item in items {
-                let name = format!(
-                    "menu-item: {item}, available when fetching remote finishes · MenuItem disabled"
-                );
-                let row = cx
-                    .debug_bounds(name.clone().leak())
-                    .unwrap_or_else(|| panic!("{when}: {name}"));
-                let command = cx
-                    .debug_bounds(format!("menu-command: {item}").leak())
-                    .unwrap_or_else(|| panic!("{when}: {item}'s command"));
+            let spoken =
+                crate::native_accessibility::MenuWait::named(String::from(label).leak()).spoken();
+            let row = cx
+                .debug_bounds(format!("menu-item: {item}, {spoken} · MenuItem disabled").leak())
+                .unwrap_or_else(|| panic!("{item} names {label}"));
+            let command = cx
+                .debug_bounds(format!("menu-command: {item}").leak())
+                .unwrap_or_else(|| panic!("{item}'s command"));
+            let reason = cx
+                .debug_bounds(format!("menu-reason: {item} · {label} · {muted:?}").leak())
+                .unwrap_or_else(|| panic!("{item}'s reason"));
+            if !row.intersects(&reason) {
                 assert!(
-                    command.left() >= row.left() && command.right() <= row.right(),
-                    "{when}: {item}'s command {command:?} in {row:?}"
+                    rows.iter().all(|row| !row.intersects(&reason)),
+                    "{item}'s reason, left out, {reason:?} lies on no row"
                 );
-                rows.push((row, command));
+                return None;
             }
-            let detail = cx
-                .debug_bounds(format!("menu-detail: {FETCHING} · {muted:?}").leak())
-                .unwrap_or_else(|| panic!("{when}: the Fetch's label"));
-            match rows.iter().find(|(row, _)| row.contains(&detail.center())) {
-                Some((row, command)) => assert!(
-                    command.right() < detail.left() && detail.right() <= row.right(),
-                    "{when}: the reason {detail:?} after {command:?} in {row:?}"
-                ),
-                None => assert!(
-                    rows.iter().all(|(row, _)| !row.intersects(&detail)),
-                    "{when}: a reason left out {detail:?} lies on no row"
-                ),
-            }
+            let floor =
+                cx.update(|window, _| crate::native_accessibility::wait_floor(label, window));
+            assert!(
+                command.right() < reason.left()
+                    && reason.right() <= row.right()
+                    && reason.size.width >= floor - px(0.5),
+                "{item}'s reason {reason:?}, at least {floor:?}, after {command:?} in {row:?}"
+            );
+            Some(reason)
+        }
+
+        /// Asserts that the open menu draws each of `items` refused for the
+        /// running Fetch and saying so: its accessible name names the Fetch,
+        /// and the Fetch's label stands after its command at its row's end in
+        /// secondary text where the room the command leaves there holds it,
+        /// and on no row where it does not ([`reason_drawn`]). Returns the
+        /// items whose reason is drawn.
+        fn wait_for_the_fetch<'a>(
+            cx: &mut VisualTestContext,
+            items: &[&'a str],
+            when: &str,
+        ) -> Vec<&'a str> {
+            let rows: Vec<_> = items
+                .iter()
+                .map(|item| {
+                    let name = format!(
+                        "menu-item: {item}, available when fetching remote finishes · MenuItem disabled"
+                    );
+                    cx.debug_bounds(name.clone().leak())
+                        .unwrap_or_else(|| panic!("{when}: {name}"))
+                })
+                .collect();
+            items
+                .iter()
+                .copied()
+                .filter(|item| reason_drawn(cx, item, FETCHING, &rows).is_some())
+                .collect()
         }
 
         /// Every menu that refuses items while a write runs says why by its

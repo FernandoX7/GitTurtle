@@ -961,21 +961,30 @@ enum Detail {
     /// item's own, which the menu is as wide as it needs to be for.
     Shown,
     /// Only in the room the command leaves at the row's end, ending in an
-    /// ellipsis where that room is short, and not at all where it holds
-    /// less than [`WAIT_FLOOR`], adding nothing to the menu's width: why a
-    /// write refuses the item ([`waiting_item`]), which comes, changes and
-    /// goes while the menu is open.
+    /// ellipsis where that room is short, and not at all where it cannot
+    /// hold the reason's first word whole and an ellipsis ([`wait_floor`]),
+    /// adding nothing to the menu's width: why a write refuses the item
+    /// ([`waiting_item`]), which comes, changes and goes while the menu is
+    /// open.
     InRoom,
 }
 
 /// The least room a row's end gives a waiting item's reason before it is
-/// left out, about three characters at the interface text size: a reason cut
-/// shorter says nothing, and the accessible name says it whole.
-const WAIT_FLOOR: f32 = 2.5;
+/// left out: its first word whole and an ellipsis, measured at a menu row's
+/// text size ("Fetching…" for "Fetching remote…"). Cut shorter, a reason
+/// read "Fet…" or "Che…", which says nothing, and the accessible name says
+/// it whole.
+pub(crate) fn wait_floor(reason: &str, window: &Window) -> Pixels {
+    let word = reason.split_whitespace().next().unwrap_or(reason);
+    let word = word.trim_end_matches('…');
+    // A menu row's text, the kit's `text_sm`.
+    let size = gpui::rems(0.875).to_pixels(window.rem_size());
+    crate::views::line_widths(&[(&format!("{word}…"), size)], window)
+}
 
-/// How tall the strut is that a reason given less than [`WAIT_FLOOR`] wraps
-/// past: far taller than any row, so the second line it goes to lies below
-/// every row of the menu, clipped by its own row's room.
+/// How tall the strut is that a reason given less than its floor wraps past
+/// ([`wait_floor`]): far taller than any row, so the second line it goes to
+/// lies below every row of the menu, clipped by its own row's room.
 const WAIT_STRUT: f32 = 10_000.;
 
 /// [`detailed_item`]'s row: `label`, then `detail` at its trailing edge,
@@ -989,15 +998,22 @@ fn detail_row(
     drawn: Detail,
 ) -> PopupMenuItem {
     let command = label.clone();
-    PopupMenuItem::element(move |_, cx| {
+    PopupMenuItem::element(move |window, cx| {
         let color = gpui_kit::component::Theme::global(cx).muted_foreground;
         let (command, condition) = (label.clone(), detail.clone());
+        // A test build names a condition's text and colour, and a waiting
+        // item's reason by its row's command too, as rows share a reason.
+        let selector = match drawn {
+            Detail::Shown => format!("menu-detail: {condition} · {:?}", gpui::Rgba::from(color)),
+            Detail::InRoom => format!(
+                "menu-reason: {command} · {condition} · {:?}",
+                gpui::Rgba::from(color)
+            ),
+        };
+        let floor = matches!(drawn, Detail::InRoom).then(|| wait_floor(&condition, window));
         let text = div()
             .text_color(color)
-            .debug_selector({
-                let condition = condition.clone();
-                move || format!("menu-detail: {condition} · {:?}", gpui::Rgba::from(color))
-            })
+            .debug_selector(move || selector)
             .child(condition);
         let row = div().flex().flex_1().min_w_0().items_center().child(
             div()
@@ -1035,7 +1051,7 @@ fn detail_row(
                             text.h_full()
                                 .flex()
                                 .items_center()
-                                .min_w(gpui::rems(WAIT_FLOOR))
+                                .min_w(floor.unwrap_or_default())
                                 .max_w_full()
                                 .truncate(),
                         ),
