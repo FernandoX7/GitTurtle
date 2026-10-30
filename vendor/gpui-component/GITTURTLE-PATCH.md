@@ -1056,6 +1056,24 @@ the cursor came from rows that moved, as rows scrolled under the pointer
 inside a surface that stays put, so the pointer is still from there: the row
 only records its hover, and takes the selection once the pointer moves.
 
+A menu built again under a resting pointer can move its rows under it while
+the surface keeps its place and size, which the prepaint's comparison misses:
+a capped menu scrolled to the end of its rows and built again with fewer keeps
+its height, and GPUI's layout clamps the items column's offset to the shorter
+content, so every row moves down. GPUI then reported the row that arrived
+under the pointer hovered, and it took the selection: a capped menu of 128 ×
+112.5 before and after, the pointer on Item 10 and Item 11 gone, selected
+Item 9 and Enter ran it, as the branch switcher, capped and built again as a
+write starts or ends, would check out the branch that arrived under the
+pointer. `rebuild` now records the pointer's place, as a wheel does, where it
+lies over the surface as last laid out and the keyboard does not own the
+cursor, so no row takes the selection or draws the hover until the pointer
+moves, though the rows may not have moved: nothing tells a row that arrived
+from one that stayed, and the rebuild has cleared the pointer's selection, so
+a row lit there would be one Enter does not run. A keyboard's cursor is left
+to the hover's keyboard rule above, so the pointer leaving the cursor's row
+still takes it.
+
 The consumers are, for the wheel, every capped menu the app opens through
 `native_accessibility::open_menu`, as the capped-menu patch lists; for a menu
 laid out at another place or size, each row's menu, the keyboard's
@@ -1098,16 +1116,23 @@ Three; then, the keys' cursor on One and the pointer's hover drawn on Three, a
 move draws only the cursor.
 `a_capped_menu_draws_its_measured_fold_without_another_draw` caps a menu
 whose tall element row the estimate misses and reads the drawn column as tall
-as the measured fold. Without `surface_laid_out` the app test reads Stage lit
+as the measured fold.
+`a_capped_menu_built_again_shorter_under_the_still_pointer_selects_nothing`
+scrolls a capped menu to its end, rests the pointer on Item 10 and builds the
+menu again without Item 11: the surface keeps its bounds and Item 9 comes
+under the pointer, and nothing is selected or drawn lit and Enter runs nothing
+until a 1 px move selects Item 9. Without `surface_laid_out` the app test reads Stage lit
 and the crate's reads Two selected; without the leaving row's report giving
 the selection up, the crate's reads Three still selected; compared by the
 origin alone, the taller menu's Five takes the selection; without the hover's
 keyboard rule, Item 2 takes the cursor; without both, the wider menu's Two
 takes it and Enter runs Two; giving the pointer's selection up in the
 prepaint fails the sideways move, and a prepaint notify fails the moved
-menu's last step and, for the fold, the capped menu. Remove this part of the patch when upstream
-lights at most the row under the pointer after a wheel or a move of the
-menu and those tests pass without it.
+menu's last step and, for the fold, the capped menu; without the rebuild's
+still pointer, Item 9 takes the selection from the menu built again shorter.
+Remove this part of the patch when upstream
+lights at most the row under the pointer after a wheel, a move of the menu or
+a rebuild and those tests pass without it.
 
 The menu-rebuild patch modifies `src/menu/popup_menu.rs`. Upstream's
 `PopupMenu::rebuild`, which builds an open menu's items again in place,

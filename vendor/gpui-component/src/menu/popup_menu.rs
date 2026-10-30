@@ -499,9 +499,10 @@ pub struct PopupMenu {
     /// ([`PopupMenu::rebuild`]). A menu key or a dismissal clears it.
     pointer_selection: bool,
     /// GitTurtle patch: where the pointer rested when a wheel scrolled the
-    /// rows under it, until it moves from there. Meanwhile no row draws the
-    /// pointer's hover or takes its selection: the person never moved to
-    /// the row that arrived under it.
+    /// rows under it, the menu was laid out at another place or size around
+    /// it, or the menu was built again under it, until it moves from there.
+    /// Meanwhile no row draws the pointer's hover or takes its selection:
+    /// the person never moved to the row that arrived under it.
     still_pointer: Option<Point<Pixels>>,
     /// GitTurtle patch: the item GPUI last reported under the pointer, which
     /// takes the selection once a still pointer moves.
@@ -990,6 +991,24 @@ impl PopupMenu {
     /// moved or it returns from rest, and the builder's selection, which a
     /// kept cursor or the pointer's ownership replaces, scrolls nothing: a
     /// menu the wheel scrolled stays where it was.
+    ///
+    /// Built again under a pointer resting over the menu as last laid out,
+    /// the keyboard's cursor elsewhere or none, the pointer is still from
+    /// there, as after a wheel ([`Self::rows_scrolled`]): no row takes the
+    /// selection or draws the pointer's hover until the pointer moves, which
+    /// selects the row under it ([`Self::pointer_moved`]). The rows can move
+    /// under the pointer though the menu keeps its place and size, which the
+    /// layout's comparison of the surface misses
+    /// ([`Self::surface_laid_out`]): a capped menu scrolled to its end, built
+    /// again shorter, keeps its height while GPUI clamps its offset to the
+    /// shorter content, moving every row down; and GPUI then reported the row
+    /// that arrived hovered, which took the selection, so Enter ran it, as a
+    /// branch switcher's row checks its branch out. Nothing tells such a row
+    /// from one that stayed, and the rebuild has cleared the pointer's
+    /// selection, so a row it lit would be one Enter does not run. A
+    /// keyboard's cursor needs none of this: the hover's own rule keeps it
+    /// from rows that arrive under a pointer that has not moved, and the
+    /// pointer taking it as it leaves the cursor's row must stand.
     pub fn rebuild(
         &mut self,
         window: &mut Window,
@@ -1018,6 +1037,13 @@ impl PopupMenu {
             self.selected_index = None;
             self.keyboard_selection = false;
             self.pointer_selection = true;
+        }
+        // Rows built again under a pointer resting over the menu can move
+        // under it though the menu keeps its place and size, so no row the
+        // pointer has not moved to takes the selection or draws its hover.
+        let at = window.mouse_position();
+        if !self.keyboard_selection && self.surface.is_some_and(|surface| surface.contains(&at)) {
+            self.still_pointer = Some(at);
         }
         cx.notify();
     }
@@ -2793,8 +2819,15 @@ mod tests {
     /// frame on screen: the pointer's selection or hover, or the keyboard's
     /// cursor.
     fn lit(cx: &mut VisualTestContext) -> Vec<&'static str> {
-        FOUR.iter()
-            .map(|(name, _)| *name)
+        let four: Vec<_> = FOUR.iter().map(|(name, _)| *name).collect();
+        lit_among(cx, &four)
+    }
+
+    /// The items of `names` drawn with a fill of their own, as [`lit`].
+    fn lit_among(cx: &mut VisualTestContext, names: &[&'static str]) -> Vec<&'static str> {
+        names
+            .iter()
+            .copied()
             .filter(|name| {
                 let row = drawn_item(cx, name);
                 cx.update(|window, _| {
@@ -3179,6 +3212,83 @@ mod tests {
             (Some(3), false),
             "the moved pointer on Item 2"
         );
+    }
+
+    /// A capped menu scrolled to the end of its rows, built again with an
+    /// item fewer under the pointer resting on Item 10, keeps its place and
+    /// size, but GPUI clamps the rows' offset to the shorter content, so the
+    /// rows move down a row and Item 9 comes under the pointer: no item is
+    /// selected or drawn lit and Enter runs nothing until the pointer moves,
+    /// which selects Item 9. The surface had not moved, so Item 9 took the
+    /// selection and Enter ran it, as a branch switcher's row checks its
+    /// branch out at once.
+    #[gpui::test]
+    fn a_capped_menu_built_again_shorter_under_the_still_pointer_selects_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        const ELEVEN: &[(&str, bool)] = TWELVE.split_at(11).0;
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, TWELVE, &ran);
+        let capped = |cx: &mut VisualTestContext, items: &'static [(&'static str, bool)]| {
+            let ran = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, |menu, _, _| {
+                        acting(menu, items, &ran).max_h(px(120.)).scrollable(true)
+                    })
+                })
+            });
+            draw(cx);
+        };
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        capped(cx, TWELVE);
+        let max = menu.read_with(cx, |menu, _| menu.scroll_handle.max_offset().y);
+        assert!(max > px(0.), "the capped menu scrolls");
+        menu.update(cx, |menu, _| {
+            menu.scroll_handle.set_offset(gpui::point(px(0.), -max))
+        });
+        draw(cx);
+        let pointer = drawn_item(cx, "Item 10").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(11), false), "the pointer on Item 10");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+
+        capped(cx, ELEVEN);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.bounds),
+            surface,
+            "the menu keeps its place and size"
+        );
+        assert!(
+            drawn_item(cx, "Item 9").contains(&pointer),
+            "the rows moved down a row, Item 9 under the pointer"
+        );
+        assert_eq!(selection(cx).0, None, "nothing selected");
+        let rows = ["Item 8", "Item 9", "Item 10"];
+        assert!(lit_among(cx, &rows).is_empty(), "nothing drawn lit");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(10), false),
+            "the moved pointer on Item 9"
+        );
+        assert_eq!(lit_among(cx, &rows), ["Item 9"], "Item 9 drawn lit");
     }
 
     #[gpui::test]
