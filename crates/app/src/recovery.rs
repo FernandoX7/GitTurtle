@@ -427,7 +427,8 @@ impl GitTurtle {
     /// The commit's menu as a right-click builds it, for the keyboard to
     /// open below the selected row: built from the window's state it is
     /// given, as the menu opens while the window is being updated and again
-    /// as a write or a pause starts or ends (`KeyboardMenu`).
+    /// as a write or a pause starts or ends or HEAD moves, which adds or
+    /// takes away Amend and Undo (`KeyboardMenu`).
     pub(super) fn keyboard_commit_menu(
         owner: WeakEntity<Self>,
         repository: Option<PathBuf>,

@@ -3237,6 +3237,94 @@ mod tests {
         drop(fixture);
     }
 
+    /// A commit's menu opened on HEAD, as `opening` opens it, is built again
+    /// in place, a keyboard's with focus kept in it, once HEAD moves off the
+    /// commit while the commit stays at its row, as a `git reset` outside
+    /// the app moves it with another branch still on the commit: it no
+    /// longer offers Amend or Undo, which act on HEAD, and offers them again
+    /// once HEAD returns. Built again only as a write or a pause started or
+    /// ended, it kept offering Amend and Undo of a commit that was no longer
+    /// HEAD.
+    async fn a_commit_menu_follows_head(cx: &mut TestAppContext, opening: Opening) {
+        const AMEND: &str = "Amend last commit…";
+        const UNDO: &str = "Undo last local commit…";
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = |arguments: &[&str]| fixture_git(&repository, arguments);
+        git(&["branch", "keep"]);
+        refs_quietly_refreshed(&app, cx).await;
+        let head = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone())
+                    .expect("HEAD")
+            })
+        };
+        let available = |cx: &mut VisualTestContext, items: &[&str], when: &str| {
+            for item in items {
+                assert_eq!(
+                    offered(cx, item),
+                    Some(true),
+                    "{opening:?} {when}: {item} available"
+                );
+            }
+            if matches!(opening, Opening::Keyboard) {
+                assert!(
+                    focus_in_keyed_menu(&app, cx),
+                    "{opening:?} {when}: focus stays in the menu"
+                );
+            }
+        };
+        let opened = head(cx);
+        match opening {
+            Opening::Keyboard => open_keyed_menu(&app, cx, KeyedRow::Commit, "shift-f10").await,
+            // HEAD's row, the newest commit.
+            Opening::RightClick => right_click(cx, "history-row-0"),
+        }
+        available(cx, &COMMIT_ITEMS, "on HEAD");
+        git(&["reset", "-q", "--hard", "HEAD~1"]);
+        refs_quietly_refreshed(&app, cx).await;
+        assert_ne!(head(cx), opened, "{opening:?}: the reset moved HEAD");
+        assert_eq!(
+            app.read_with(cx, |app, _| app
+                .visible
+                .first()
+                .and_then(|index| app.commits.get(*index))
+                .map(|commit| commit.oid.clone())),
+            Some(opened.clone()),
+            "{opening:?}: keep holds the commit at its row"
+        );
+        assert_eq!(
+            offered(cx, AMEND),
+            None,
+            "{opening:?}: no Amend once HEAD moves off"
+        );
+        assert_eq!(
+            offered(cx, UNDO),
+            None,
+            "{opening:?}: no Undo once HEAD moves off"
+        );
+        available(cx, &COMMIT_ITEMS[..2], "once HEAD moves off");
+        git(&["reset", "-q", "--hard", "keep"]);
+        refs_quietly_refreshed(&app, cx).await;
+        assert_eq!(head(cx), opened, "{opening:?}: HEAD returned");
+        available(cx, &COMMIT_ITEMS, "once HEAD returns");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_commit_menu_follows_head(cx: &mut TestAppContext) {
+        a_commit_menu_follows_head(cx, Opening::Keyboard).await;
+    }
+
+    #[gpui::test]
+    async fn a_right_click_commit_menu_follows_head(cx: &mut TestAppContext) {
+        a_commit_menu_follows_head(cx, Opening::RightClick).await;
+    }
+
     /// A navigator branch's keyboard menu stays open through a quiet refresh
     /// that changes nothing, and closes, with focus back on the tree, once
     /// its branch is deleted or renamed outside the app and the refresh

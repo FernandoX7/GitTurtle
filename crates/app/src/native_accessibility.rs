@@ -249,11 +249,12 @@ impl ListRow {
 ///
 /// A menu whose items read the window's state follows writes and pauses as
 /// a right-click menu does ([`Self::following`], [`MenuInputs`]): built
-/// again in place, still focused, when a write starts or ends or an
-/// integration pauses or ends, its keyboard's cursor back on its first item
-/// that can act, or on none while every item is refused, since the kit's
-/// rebuild forgets which item held it; and closed, focus back on its list or
-/// tree, once its row no longer holds what it was opened on. It read both
+/// again in place, still focused, when a write starts or ends, an
+/// integration pauses or ends or HEAD moves, its keyboard's cursor back on
+/// its first item that can act, or on none while every item is refused,
+/// since the kit's rebuild forgets which item held it; and closed, focus
+/// back on its list or tree, once its row no longer holds what it was
+/// opened on. It read both
 /// once, as it opened, so one opened at rest offered Revert while a merge
 /// paused under it and one opened during a quick write kept its items
 /// disabled after the write; built again for the row it opened on, it
@@ -963,19 +964,23 @@ pub(crate) struct AppDropdown {
 /// whether a write runs, which alone refuses a project row's Open project
 /// (`GitTurtle::operation_busy`), whether a write runs or its quiet reload
 /// has yet to land, which refuses every other item that writes
-/// (`GitTurtle::write_unsettled`), and whether a merge, rebase, cherry-pick
+/// (`GitTurtle::write_unsettled`), whether a merge, rebase, cherry-pick
 /// or revert is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
 /// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save
-/// changes to stash…, Amend and Undo. The menu is built again when any of
-/// them changes; built again only for the write, a menu open as a
-/// cherry-pick stopped on conflicts offered those items once the write had
-/// ended, until it was opened again, and one built again only as the reload
-/// landed kept a project row's Open project refused after the write.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// changes to stash…, Amend and Undo, and the commit HEAD is, whose menu
+/// alone adds Amend and Undo. The menu is built again when any of them
+/// changes; built again only for the write, a menu open as a cherry-pick
+/// stopped on conflicts offered those items once the write had ended, until
+/// it was opened again, one built again only as the reload landed kept a
+/// project row's Open project refused after the write, and a commit's menu
+/// kept Amend and Undo once a `git reset` outside the app had moved HEAD off
+/// its commit.
+#[derive(Clone, PartialEq, Eq)]
 struct MenuInputs {
     running: bool,
     writing: bool,
     paused: bool,
+    head: Option<String>,
 }
 
 impl MenuInputs {
@@ -984,6 +989,10 @@ impl MenuInputs {
             running: app.operation_busy.is_some(),
             writing: app.write_unsettled(),
             paused: app.integration_state.is_some(),
+            head: app
+                .work_status
+                .as_ref()
+                .and_then(|status| status.head.clone()),
         }
     }
 }
