@@ -296,8 +296,9 @@ pub(crate) struct ReflogBrowser {
     /// The entries whose text the last layout cut.
     cut_entries: CutEntries,
     pending: bool,
-    /// The loading row's Cancel, which hands focus to the filter as the row
-    /// goes.
+    /// The loading row's Cancel. As the row goes, focus it holds moves to
+    /// the stop the row's place leaves nearest ([`Self::leave_loading_row`]):
+    /// the selected entry for an entry's read, else the filter.
     cancel_read: focus_ring::LoadingCancel,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -589,6 +590,27 @@ impl ReflogBrowser {
             })
             .unwrap_or_default()
     }
+    /// A click, or Space or Enter on the focused entry, selects entry
+    /// `index`. A Button takes no focus on a press, so a click left the
+    /// keyboard where it was: on another entry, from which the arrows went
+    /// on rather than from the one clicked, or on the selected entry's
+    /// commit, which the selection takes away until the next commit lands,
+    /// a control no frame drew. Focus on either moves to the clicked entry;
+    /// focus elsewhere, as in the filter, stays.
+    fn click_entry(
+        &mut self,
+        index: usize,
+        entry: ReflogEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.matches(cx).len().min(100);
+        if self.focused_entry(count, window, cx).is_some() || self.focus_on_commit(window, cx) {
+            let focus = self.entries.focus(("reflog-entry", index), cx);
+            window.focus(&focus, cx);
+        }
+        self.select(entry, window, cx);
+    }
     fn select(&mut self, entry: ReflogEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(entry.clone());
         self.commit = None;
@@ -783,7 +805,7 @@ impl Render for ReflogBrowser {
             .children(error_above)
             .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
+                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.click_entry(index, entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))), "reflog-list-scrollbar")))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
@@ -1310,6 +1332,97 @@ mod tests {
             "the frame draws the stop that holds focus, {from}"
         );
         focus_ring::assert_input_ringed(cx, text, "the Reflog's filter");
+    }
+
+    /// A click on an entry takes the keyboard's place with it. From the
+    /// first entry, a click on the fourth selects it and moves focus onto
+    /// it, so Down goes on to the fifth; a Button takes no focus on a press,
+    /// so focus stayed on the first entry and Down selected the second. From
+    /// the selected entry's commit message, which the selection takes away,
+    /// focus moves to the clicked entry too, which the frame draws; from the
+    /// filter it stays, so typing still narrows the entries.
+    #[gpui::test]
+    async fn a_click_on_an_entry_moves_the_keyboards_place(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let in_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+        };
+        let selected = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| {
+                let page = this.page.as_ref().expect("the log loaded");
+                this.selected
+                    .as_ref()
+                    .and_then(|chosen| page.entries.iter().position(|entry| entry == chosen))
+            })
+        };
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "the keyboard is on the first entry");
+
+        click_entry(cx, &browser, 3);
+        assert_eq!(selected(cx), Some(3), "the click selects the entry");
+        assert_eq!(in_list(cx), entry(3), "and moves focus onto it");
+        cx.simulate_keystrokes("down");
+        settle_reads(cx, &browser);
+        assert_eq!(selected(cx), Some(4), "Down goes on from the clicked entry");
+        assert_eq!(in_list(cx), entry(4));
+
+        cx.simulate_keystrokes("tab tab");
+        draw(cx);
+        let message = browser.read_with(cx, |this, cx| {
+            let message = this.message.as_ref().expect("the commit's message");
+            message.read(cx).focus_handle(cx)
+        });
+        assert!(
+            cx.update(|window, _| message.is_focused(window)),
+            "Tab reaches the commit's message past Copy commit ID"
+        );
+        content_to_top(cx, &browser);
+        click_entry(cx, &browser, 2);
+        assert_eq!(selected(cx), Some(2));
+        assert_eq!(
+            in_list(cx),
+            entry(2),
+            "focus moves from the message to the clicked entry"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws the stop that holds focus"
+        );
+
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+        assert!(cx.update(|window, _| filter.is_focused(window)));
+        click_entry(cx, &browser, 1);
+        assert_eq!(selected(cx), Some(1));
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "focus in the filter stays"
+        );
+    }
+
+    /// Clicks entry `index`, shown whole in the entry list, and lets its
+    /// commit's read land.
+    fn click_entry(cx: &mut VisualTestContext, browser: &Entity<ReflogBrowser>, index: usize) {
+        let selector: &'static str = format!("reflog-entry-{index}").leak();
+        let entry = rendered(cx, selector);
+        let list = rendered(cx, "reflog-list");
+        assert!(shows_whole(list, entry), "{selector} {entry:?} in {list:?}");
+        cx.simulate_click(entry.center(), Modifiers::default());
+        settle_reads(cx, browser);
+    }
+
+    /// Scrolls the Reflog's content to its start.
+    fn content_to_top(cx: &mut VisualTestContext, browser: &Entity<ReflogBrowser>) {
+        browser.update(cx, |this, _| {
+            this.content.scroll().set_offset(point(px(0.), px(0.)));
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
     }
 
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
