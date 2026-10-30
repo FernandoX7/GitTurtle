@@ -28,13 +28,18 @@ pub(super) struct DroppedPreparation {
 /// ([`GitTurtle::end_preparations`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PageSwitch {
-    /// To Settings or Projects, off the repository page.
+    /// To Settings or Projects, off the repository page, or to Projects as
+    /// the last repository tab closes.
     Away,
     /// To Changes, over History or Compare (`show_working`).
     ToChanges,
     /// To History, from Changes (`back_to_history`, which `show_history`
     /// runs).
     ToHistory,
+    /// To another repository tab, a new tab's or one already open, from
+    /// the tab shown (`retain_active_tab`), or as that tab closes
+    /// (`close_repository_tab`).
+    Tab,
 }
 
 impl GitTurtle {
@@ -43,19 +48,19 @@ impl GitTurtle {
     /// view shown next, which once took focus from where the person had
     /// put it: the one set every switch applies, Settings and Projects
     /// (`show_settings`, `show_projects`), Changes opened over History or
-    /// Compare (`show_working`) and History shown again from Changes
-    /// (`back_to_history`). Each preparation is cancelled, dismissed or
-    /// dropped:
+    /// Compare (`show_working`), History shown again from Changes
+    /// (`back_to_history`) and another repository tab shown. Each
+    /// preparation is cancelled, dismissed or dropped:
     ///
-    /// | Preparation | Settings, Projects | History to Changes | Changes to History |
-    /// | --- | --- | --- | --- |
-    /// | Merge…/Rebase… branch comparison | cancelled | dropped | dropped |
-    /// | Tags, a tag's details, Create tag's review | cancelled | dropped | dropped |
-    /// | Ignore…'s review, Preview rule | cancelled | dropped | dropped |
-    /// | Discard…, Delete untracked file…'s review | cancelled | dropped | dropped |
-    /// | Recovery plans: Amend…, Revert…, Review restore… | cancelled | dismissed | wanted again |
-    /// | Edit local commits, a paused rebase's Continue | cancelled | dismissed | wanted again |
-    /// | Branch actions | cancelled | dismissed | wanted again |
+    /// | Preparation | Settings, Projects | History to Changes | Changes to History | Another tab |
+    /// | --- | --- | --- | --- | --- |
+    /// | Merge…/Rebase… branch comparison | cancelled | dropped | dropped | dropped |
+    /// | Tags, a tag's details, Create tag's review | cancelled | dropped | dropped | dropped |
+    /// | Ignore…'s review, Preview rule | cancelled | dropped | dropped | dropped |
+    /// | Discard…, Delete untracked file…'s review | cancelled | dropped | dropped | dropped |
+    /// | Recovery plans: Amend…, Revert…, Review restore… | cancelled | dismissed | wanted again | dropped |
+    /// | Edit local commits, a paused rebase's Continue | cancelled | dismissed | wanted again | dropped |
+    /// | Branch actions | cancelled | dismissed | wanted again | dropped |
     ///
     /// A cancel drops the preparation and ends its busy state at once. Its
     /// end, which reads the working state asked for meanwhile, never runs,
@@ -73,6 +78,19 @@ impl GitTurtle {
     /// outright, each switch to Changes during a slow read queued a status
     /// read behind it, until the executor's bounded queue refused one and
     /// Changes lost its rows.
+    ///
+    /// Another tab drops every kind, for that same reason: the read still
+    /// runs on the one executor every tab shares, so the next tab's
+    /// Changes would queue its reads behind it as History's switch to
+    /// Changes did. The tab that asked is no longer shown, so no plan is
+    /// kept for it to want again: shown again, it opens nothing it asked
+    /// for before it was left, and its working read, which the switch drops
+    /// with the tab's other reads, is read quietly instead. A tab switch
+    /// once ended only Discard…'s review and Merge…'s comparison, at once,
+    /// and let the other kinds carry on, so their forms and dialogs opened
+    /// over the tab that asked once it was shown again, and a "Comparing
+    /// branch tips…" a wait held went on into the next tab while a held
+    /// "Reviewing file changes…" ended.
     ///
     /// Settings once left the recovery, Tags and Ignore preparations, and
     /// Merge…'s comparison, to open over it, Projects waited for them as
@@ -97,16 +115,22 @@ impl GitTurtle {
                 self.cancel_branch_action();
                 self.end_dropped_preparation();
                 self.read_noted_working(window, cx);
+                return;
             }
             PageSwitch::ToChanges | PageSwitch::ToHistory => {
                 self.dismiss_history_plans(switch == PageSwitch::ToChanges);
-                // A preparation cancelled above ended its busy state with it.
-                if let Some(label) = busy
-                    && self.operation_busy.is_none()
-                {
-                    self.wait_for_dropped_preparation(label, window, cx);
-                }
             }
+            PageSwitch::Tab => {
+                self.cancel_recovery_read();
+                self.cancel_interactive_rebase_action();
+                self.cancel_branch_action();
+            }
+        }
+        // A preparation cancelled above ended its busy state with it.
+        if let Some(label) = busy
+            && self.operation_busy.is_none()
+        {
+            self.wait_for_dropped_preparation(label, window, cx);
         }
     }
 
@@ -119,8 +143,8 @@ impl GitTurtle {
     ///
     /// The wait is keyed on its generation, not on the label: nothing
     /// starts while it holds the busy state, and whatever ends that state
-    /// meanwhile ends the wait with it (Settings, Projects and `open`,
-    /// [`Self::end_dropped_preparation`]) or takes it back for the wait
+    /// meanwhile ends the wait with it (Settings, Projects and `open` in
+    /// place, [`Self::end_dropped_preparation`]) or takes it back for the wait
     /// ([`Self::hold_dropped_preparation`]). So a wait already running holds
     /// the very preparation dropped again, as each switch back and forth
     /// drops it, and goes on rather than queue another marker, and its end
@@ -160,13 +184,13 @@ impl GitTurtle {
     /// Gives a running wait for a dropped preparation
     /// ([`Self::wait_for_dropped_preparation`]) back the busy state it
     /// holds, which a cancel run meanwhile ended by its label, and says
-    /// whether one runs. A tab switch and a tab close cancel Discard…'s
-    /// review and the branch comparison in the tab they leave, whose
+    /// whether one runs. Every switch that drops (`end_preparations`), a
+    /// tab switch and a tab close among them, cancels each kind first, by
     /// labels a wait may hold: the read it waits for still runs on the
-    /// executor every tab shares, so the wait goes on into the tab shown
-    /// next, and that tab's reads are noted for its end rather than queued
-    /// behind the read.
-    pub(super) fn hold_dropped_preparation(&mut self) -> bool {
+    /// executor every tab shares, so the wait goes on, into the tab shown
+    /// next too, and that tab's reads are noted for its end rather than
+    /// queued behind the read.
+    fn hold_dropped_preparation(&mut self) -> bool {
         let Some((label, _)) = &self.dropped_preparation.running else {
             return false;
         };
@@ -176,9 +200,10 @@ impl GitTurtle {
 
     /// Ends the wait for a dropped preparation
     /// ([`Self::wait_for_dropped_preparation`]) with its busy state, as a
-    /// cancel ends a preparation's: Settings, Projects and opening a
-    /// repository cancel what it waits for. A later generation leaves the
-    /// end of the wait it replaces nothing to do.
+    /// cancel ends a preparation's: Settings, Projects, the last tab's
+    /// close and opening the shown repository again in place cancel what
+    /// it waits for. A later generation leaves the end of the wait it
+    /// replaces nothing to do.
     pub(super) fn end_dropped_preparation(&mut self) {
         let waits = &mut self.dropped_preparation;
         waits.generation = waits.generation.wrapping_add(1);
@@ -2242,10 +2267,11 @@ mod tests {
     }
 
     /// A tab switch drops the branch comparison Merge… or Rebase… asked for
-    /// and ends its busy state with it: the dropped comparison never reached
-    /// its end, which ended it, so "Comparing branch tips…" once stayed for
-    /// good, and Changes, in that tab or another, said "Reading the working
-    /// tree…" with no end.
+    /// and ends its busy state once its read ends, as it drops every review
+    /// being prepared (`a_tab_switch_drops_every_preparation_alike`): the
+    /// dropped comparison never reached its end, which ended it, so
+    /// "Comparing branch tips…" once stayed for good, and Changes, in that
+    /// tab or another, said "Reading the working tree…" with no end.
     #[gpui::test]
     async fn a_tab_switch_ends_the_branch_comparison_it_drops(cx: &mut TestAppContext) {
         use crate::views::tests::{draw, settle};
@@ -2265,8 +2291,8 @@ mod tests {
         draw(cx);
         assert_eq!(
             app.read_with(cx, |app, _| app.operation_busy),
-            None,
-            "the switch ends the comparison"
+            Some("Comparing branch tips…"),
+            "the next tab waits for the dropped comparison's read"
         );
         std::fs::write(other.join("later.txt"), "later\n").unwrap();
         cx.simulate_keystrokes(&primary("2"));
@@ -2291,6 +2317,165 @@ mod tests {
             !cx.update(|window, cx| window.has_active_dialog(cx)),
             "no plan opens over the other tab"
         );
+    }
+
+    /// A tab switch drops every review being prepared alike
+    /// (`end_preparations`, `PageSwitch::Tab`), Tags, Discard…'s and
+    /// Ignore…'s reviews, Merge…'s comparison, Amend last commit, a
+    /// branch's actions and a paused rebase's Continue: nothing it brings
+    /// opens, in the tab shown next or in the tab that asked when it shows
+    /// again, while both show its label until its read ends, and the next
+    /// tab's Changes notes its read rather than queue it behind that read on
+    /// the executor every tab shares. A new tab opened meanwhile drops it
+    /// too. A switch once ended only Discard…'s review and Merge…'s
+    /// comparison, at once, and let the others carry on, so their dialogs
+    /// opened over the tab that asked as it showed again; a cold tab's
+    /// switch and a new tab cancelled them all at once.
+    #[gpui::test]
+    async fn a_tab_switch_drops_every_preparation_alike(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_repository, settle};
+        let (fixture, app, cx, root, other) = beside_another_tab(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        /// The untracked draft's working entry.
+        fn draft(app: &GitTurtle) -> gitturtle_core::StatusEntry {
+            app.work_status
+                .as_ref()
+                .and_then(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == std::path::Path::new("draft.txt"))
+                        .cloned()
+                })
+                .expect("draft.txt is listed")
+        }
+        // Each preparation, whether Changes asks for it, and its label;
+        // Continue rebase last, as it leaves the repository mid-rebase.
+        let preparations: [(&str, bool, &str, Prepare); 7] = [
+            ("Tags", false, "Reading tags…", |app, _, window, cx| {
+                app.open_tags(window, cx)
+            }),
+            (
+                "Discard…",
+                true,
+                "Reviewing file changes…",
+                |app, _, window, cx| app.open_discard(draft(app), window, cx),
+            ),
+            (
+                "Ignore…",
+                true,
+                "Preparing ignore rule…",
+                |app, _, window, cx| app.open_ignore(draft(app), window, cx),
+            ),
+            (
+                "Merge…",
+                false,
+                "Comparing branch tips…",
+                |app, _, window, cx| app.prepare_integration("main".into(), false, window, cx),
+            ),
+            (
+                "Amend last commit",
+                false,
+                "Preparing recovery action…",
+                |app, head, window, cx| crate::recovery::prepare_amend(app, head, window, cx),
+            ),
+            (
+                "main's branch actions",
+                false,
+                "Preparing branch action…",
+                |app, _, window, cx| app.open_contextual_branch("main".into(), false, window, cx),
+            ),
+            (
+                "Continue rebase",
+                false,
+                "Reading rebase sequence…",
+                |app, _, window, cx| app.prepare_interactive_rebase_continue(window, cx),
+            ),
+        ];
+        let busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.operation_busy);
+        for (name, changes, label, start) in preparations {
+            if name == "Continue rebase" {
+                pause_a_reword(&app, &root, cx).await;
+            }
+            // Asked for in the first tab, held as a slow disk holds it.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if changes {
+                        app.show_working(window, cx)
+                    } else {
+                        app.show_history(window, cx)
+                    }
+                })
+            });
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| start(app, commit, window, cx)));
+            assert_eq!(busy(cx), Some(label), "{name} is prepared");
+
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.path.clone()),
+                Some(other.clone())
+            );
+            assert_eq!(busy(cx), Some(label), "{name}: the next tab shows it");
+            // Its working state asked for, as its Changes asks.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.status_task.is_none()),
+                "{name}: no read queues behind it"
+            );
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.path.clone()),
+                Some(root.clone())
+            );
+            assert_eq!(busy(cx), Some(label), "{name}: so does the tab that asked");
+
+            drop(held);
+            preparation_ends(&app, cx).await;
+            quiet_reads_land(&app, cx);
+            assert!(!dialog_open(cx), "{name}: nothing it brings opens");
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.operation_busy, None, "{name}: it ends with its read");
+                assert!(!status_read_pending(app), "{name}: no read stays noted");
+            });
+            close_dialogs(cx);
+        }
+
+        // A new tab opened while Discard…'s review is prepared drops it too.
+        let third = fixture_repository(fixture.path().join("third"))
+            .path()
+            .to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft(app), window, cx)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(third.clone(), window, cx)
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            busy(cx),
+            Some("Reviewing file changes…"),
+            "a new tab waits for the dropped review"
+        );
+        drop(held);
+        preparation_ends(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        assert!(!dialog_open(cx), "nothing opens over the new tab");
+        assert_eq!(busy(cx), None);
     }
 
     /// Discard…'s review, dropped as History shows again from Changes,

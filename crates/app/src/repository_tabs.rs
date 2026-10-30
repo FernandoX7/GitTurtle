@@ -821,9 +821,9 @@ impl GitTurtle {
         // A working read the tab asked for while a write or preparation ran
         // is dropped with its rows' reads: restored, it reads quietly.
         self.working_read_deferred = None;
-        self.cancel_integration_comparison();
-        self.cancel_discard_action();
-        self.hold_dropped_preparation();
+        // Every review the tab was preparing is dropped, the window busy
+        // until its read ends on the executor every tab shares.
+        self.end_preparations(crate::page_navigation::PageSwitch::Tab, window, cx);
         self.file_history.pause_for_tab();
         self.revision_inspection.pause_for_tab();
         self.blame.pause_for_tab();
@@ -1260,9 +1260,16 @@ impl GitTurtle {
         }
         let active = self.repository_tabs.active == Some(index);
         if active {
-            self.cancel_discard_action();
-            self.hold_dropped_preparation();
+            // The closed tab's read is dropped, and what it was preparing:
+            // as a tab switch drops it when another tab is shown, and as
+            // Projects cancels it when the last tab closes.
             self.working_read_deferred = None;
+            let switch = if self.repository_tabs.tabs.len() > 1 {
+                crate::page_navigation::PageSwitch::Tab
+            } else {
+                crate::page_navigation::PageSwitch::Away
+            };
+            self.end_preparations(switch, window, cx);
             self.persist_commit_draft(window, cx);
             self.invalidate_read();
             self.worker.release_history();

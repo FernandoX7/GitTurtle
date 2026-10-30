@@ -1148,13 +1148,22 @@ impl GitTurtle {
         if self.tab_open_requested(&path, &scope, window, cx) {
             return;
         }
-        self.cancel_branch_action();
-        self.cancel_recovery_read();
-        self.cancel_tag_action();
-        self.cancel_interactive_rebase_action();
-        self.cancel_ignore_action();
-        self.cancel_discard_action();
-        self.end_dropped_preparation();
+        // A repository opened again in place, as History's Refresh opens
+        // it, cancels what it was preparing. One opened in a new tab or a
+        // tab switched to has none shown here: the tab left dropped what it
+        // was preparing (`retain_active_tab`), and the window waits for that
+        // read as a warm tab's switch does. Cancelled here too, a cold tab's
+        // switch, unlike a warm one's, let the next tab queue its reads
+        // behind the read.
+        if self.repository.is_some() {
+            self.cancel_branch_action();
+            self.cancel_recovery_read();
+            self.cancel_tag_action();
+            self.cancel_interactive_rebase_action();
+            self.cancel_ignore_action();
+            self.cancel_discard_action();
+            self.end_dropped_preparation();
+        }
         // The working read Changes asked for while a preparation cancelled
         // above ran is dropped: the snapshot opened below reads the working
         // state too. As History's Refresh cancelled Discard…'s review, the
