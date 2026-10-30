@@ -630,10 +630,12 @@ thread_local! {
     static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The Copy source control's label, laid out.
     static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// The views menu's readings and the camera's Reset, laid out; Edges and
-    /// the link are toggles, laid out at both their readings
-    /// (`system_preview::HeaderControl::toggle`).
-    static VIEW_NAMES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The views menu's width at its widest reading, by what it was laid out
+    /// with ([`views_menu_width`]).
+    static VIEWS_MENU: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+    /// The camera's Reset, laid out; Edges and the link are toggles, laid
+    /// out at both their readings (`system_preview::HeaderControl::toggle`).
     static RESET: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
@@ -642,32 +644,35 @@ thread_local! {
     /// How many times a clip menu's readings were built
     /// (`playback::clip_control`), for a test.
     pub(crate) static CLIP_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the views menu's readings were built
+    /// ([`views_menu_width`]), for a test.
+    pub(crate) static VIEW_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The views menu labelled at its widest reading, a standard view's name or
-/// "Custom view", whatever the view ([`menu_width`]).
+/// "Custom view", whatever the view ([`menu_width_now`]). Its readings never
+/// change, so it is laid out once per font and size and kept by what it was
+/// laid out with, as the clip menu's width is (`playback::clip_control`):
+/// the seven views' names were once gathered and joined on every frame, a
+/// drag's orbit and a clip's playback among them, to look the width up.
 fn views_menu_width(window: &Window) -> Pixels {
-    let names: Vec<&str> = ModelStandardView::ALL
-        .iter()
-        .map(|view| view.label())
-        .chain(["Custom view"])
-        .collect();
-    menu_width(&names, &VIEW_NAMES, window)
+    crate::views::cached_width(&VIEWS_MENU, &crate::views::LineKey::current(window), || {
+        #[cfg(test)]
+        VIEW_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+        let names: Vec<&str> = ModelStandardView::ALL
+            .iter()
+            .map(|view| view.label())
+            .chain(["Custom view"])
+            .collect();
+        menu_width_now(&names, window)
+    })
 }
 
-/// A menu's trigger labelled at the widest of `readings`: the label's
-/// control, then the shared `button` helper's 6 px gap and the kit's
-/// 0.875 rem caret, laid out once per font and size in `cache`.
-fn menu_width(
-    readings: &[&str],
-    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
-    window: &Window,
-) -> Pixels {
-    text_button_width(readings, cache, window) + menu_caret(window)
-}
-
-/// [`menu_width`] laid out now, for a caller that keeps the width itself, as
-/// the clip menu does with its document (`playback::clip_control`).
+/// A menu's trigger labelled at the widest of `readings`, laid out now: the
+/// label's control, then the shared `button` helper's 6 px gap and the kit's
+/// 0.875 rem caret, for a caller that keeps the width itself, as the views
+/// menu does by font and size ([`views_menu_width`]) and the clip menu with
+/// its document (`playback::clip_control`).
 pub(super) fn menu_width_now(readings: &[&str], window: &Window) -> Pixels {
     crate::text_button_width_now(readings, window) + menu_caret(window)
 }
@@ -1591,6 +1596,45 @@ mod tests {
         assert_eq!(
             selected_standard_view(camera),
             Some(ModelStandardView::Right)
+        );
+    }
+
+    /// The views menu's readings are built and laid out once for each font
+    /// and size, as the clip menu's are, not on every frame: walking a model
+    /// comparison's widths at 13 and 18 pt, each side drawing its views menu
+    /// on every frame, builds them only for a size's first frame. Looked up
+    /// by their joined text, the seven views' names and "Custom view" were
+    /// gathered and joined on every frame.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_views_menu_s_readings_are_built_once_per_size(cx: &mut gpui_kit::TestAppContext) {
+        let built = || VIEW_READINGS_BUILT.with(std::cell::Cell::get);
+        let [model, _] = crate::system_preview::tests::document_sides(1, 0);
+        let (mut frames, mut first) = (0, std::collections::BTreeMap::new());
+        crate::system_preview::tests::walk_side_widths(
+            cx,
+            model,
+            40,
+            |_, _, (text, width), drawn| {
+                let now = built();
+                let at_first = *first.entry(text).or_insert(now);
+                assert!(
+                    drawn.contains_key("model-views-0") && drawn.contains_key("model-views-1"),
+                    "at {text} pt, {width} px both sides draw their views menu: {:?}",
+                    drawn.keys()
+                );
+                assert_eq!(
+                    now, at_first,
+                    "at {text} pt, {width} px: built only for the size's first frame"
+                );
+                frames += 1;
+            },
+        );
+        assert!(frames > 30, "the walk drew {frames} frames");
+        assert!(
+            first.len() == 2 && built() >= 2,
+            "built for each of the two sizes: {first:?}, {} in all",
+            built()
         );
     }
 }
