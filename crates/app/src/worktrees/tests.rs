@@ -1161,6 +1161,71 @@ async fn a_narrow_manager_shows_its_whole_no_match_line(cx: &mut TestAppContext)
     }
 }
 
+/// A filter that matches no worktree says so as Tags says a filter matched
+/// no tag: one muted line, the shared empty state's, with no closing period,
+/// at the list's text inset. It was drawn in primary text and ended in a
+/// period, unlike "No tags match this filter" beside it.
+#[gpui::test]
+async fn the_no_match_line_reads_as_the_tags_list_does(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    git(fixture.repo.path(), &["tag", "v1.0"]);
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    let muted = cx.read(|cx| gpui_kit::Hsla::from(rgb(palette(cx).muted)));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager.filter.update(cx, |input, cx| {
+                input.set_value("no such worktree", window, cx)
+            })
+        })
+    });
+    draw(cx);
+    let list = cx
+        .debug_bounds("managed-worktree-list")
+        .expect("the worktree list");
+    let line = cx
+        .debug_bounds("worktrees-empty-line")
+        .expect("the no-match line is the shared empty state's");
+    assert_eq!(
+        crate::empty_state::shown("worktrees-empty").as_deref(),
+        Some("No worktrees match this filter")
+    );
+    let worktrees = crate::appearance::drawn_color("worktrees-empty-line");
+    assert_eq!(worktrees, Some(muted), "the worktree line is muted");
+    // Inside the list's padding, the ring's room, as the rows are.
+    let room = cx.read(crate::appearance::button_ring_room);
+    assert!(
+        (line.left() - list.left() - room - TEXT_INSET).abs() <= px(0.5),
+        "the line {line:?} starts at the list's text inset in {list:?}"
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+    crate::tags::tests::read_lands(&app, cx).await;
+    draw(cx);
+    // Tags opens with its filter focused.
+    cx.simulate_input("no such tag");
+    draw(cx);
+    let tags = crate::empty_state::shown("tag-list-empty");
+    assert_eq!(tags.as_deref(), Some("No tags match this filter"));
+    assert!(
+        !tags.unwrap().ends_with('.')
+            && !crate::empty_state::shown("worktrees-empty")
+                .unwrap()
+                .ends_with('.'),
+        "neither line ends in a period"
+    );
+    assert_eq!(
+        worktrees,
+        crate::appearance::drawn_color("tag-list-empty-line"),
+        "the worktree line is drawn in the tags line's color"
+    );
+}
+
 /// A read that answers while keyboard focus is on its loading row's Cancel
 /// takes the row away and hands focus to the first field below it, ringed
 /// whole: the filter in Manage, the branch field in Create. Escape still

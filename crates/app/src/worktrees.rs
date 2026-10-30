@@ -667,7 +667,7 @@ impl Render for WorktreeManager {
         // two worktrees, too short a track for a scrollbar's thumb to move
         // in. A list with no worktree keeps its whole explanation: at 18 pt
         // in the half tile, with a worktree's details shown, a filter that
-        // matched nothing left "No worktrees match this filter." in a list
+        // matched nothing left "No worktrees match this filter" in a list
         // 6 px tall. Past its height the list cues the rest with its
         // scrollbar, and the content, beside it in the dialog's side
         // padding, cues its own. Create's branch choices keep two whole
@@ -754,7 +754,7 @@ impl Render for WorktreeManager {
                 .child(div().debug_selector(|| "managed-worktree-entries".into()).on_children_prepainted(show_list).flex().flex_col().min_h_0().map(|entries| if trees.is_empty() { entries.flex_shrink_0() } else { entries.min_h(rows_floor) }).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
                     worktree_row(index, text, selected, p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
-                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))), "managed-worktree-scrollbar").min_h_0()))
+                })).when(trees.is_empty() && !self.pending, |element| element.child(div().py_3().ml(TEXT_INSET).child(crate::empty_state::EmptyState::new("worktrees-empty", "No worktrees match this filter").block(cx)))), "managed-worktree-scrollbar").min_h_0()))
                 .when(trees.len() > 100, |element| element.child(label("worktrees-match-limit", "Showing 100 matches. Narrow the filter to find another worktree.").text_size(crate::appearance::ui_text(12.))))
                 .when_some(self.details.as_ref(), |element, details| {
                     let details = details.clone(); let path = details.tree.path.clone(); let finder = path.clone(); let editor = path.clone();

@@ -144,6 +144,9 @@ impl EmptyState {
             })
             .text_size(appearance::ui_text(LINE_TEXT))
             .text_color(rgb(muted))
+            // In tests, the weight and color the line is drawn in, under
+            // its `-line` id (`appearance::drawn_color`).
+            .children(appearance::text_probe(move || format!("{id}-line")))
             .when_some(tooltip, |line, tooltip| {
                 line.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             })
