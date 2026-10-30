@@ -1186,7 +1186,7 @@ fn render_side<T: 'static>(
                             .aria_value(native_accessibility::bounded_accessible_text(format!(
                                 "{label} model details: {details}"
                             )))
-                            .max_h(px(48.))
+                            .max_h(details_room(window))
                             .text_size(appearance::ui_text(10.))
                             .text_color(rgb(colors.muted))
                             .child(
@@ -1225,6 +1225,17 @@ fn render_side<T: 'static>(
             canvas,
         ))
         .into_any_element()
+}
+
+/// The most room a model's details take: their padding and four of their
+/// lines, so a wide side shows the usual details whole, with no scrollbar,
+/// and where they overflow, the scrollbar's thumb, at least the kit's 48 px,
+/// is shorter than its track and moves as they scroll. Capped at an unscaled
+/// 48 px, they drew a thumb that filled its track and never moved, and a
+/// drag on it divided by the track's length less the thumb's, at most zero.
+fn details_room(window: &Window) -> Pixels {
+    window.pixel_snap(window.rem_size() * 0.5) * 2.
+        + crate::image_compare::text_line(appearance::ui_text(10.), window) * 4.
 }
 
 #[allow(clippy::too_many_arguments)]

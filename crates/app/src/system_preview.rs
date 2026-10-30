@@ -795,9 +795,10 @@ pub(crate) fn header_ends(
         // its ring's room, which the reveal keeps clear of the region's
         // edges, and in a header of one row, the header's own padding, so
         // that header shows whole there, unscrolled. Both are counted as
-        // GPUI lays them out, snapped to device pixels: unsnapped, the
-        // model's `py_1` at 18 pt on a 1× display, 4.5 px drawn as 5, would
-        // leave a header of one row a 1 px scroll range. Counting both, the
+        // GPUI lays them out, snapped to device pixels, a half rounding
+        // toward zero: the model's `py_1` at 18 pt on a 1× display is 4.5 px,
+        // drawn as 4, so unsnapped it would make the floor a pixel taller than
+        // a header of one row, a pixel the model needs. Counting both, the
         // floor once took a PDF page about 6 px more than it needed at 18 pt
         // in a 461 × 490 window.
         let around = (window.pixel_snap(padding.to_pixels(window.rem_size())) * 2.)
@@ -1513,7 +1514,7 @@ pub(crate) mod tests {
 
     /// A side 240 px wide and 400 px tall whose own header holds one
     /// control, above content that keeps no room of its own and a foot of
-    /// `lines` lines in a scroll area at most 48 px tall, as a model's
+    /// `lines` lines in a scroll area at most 80 px tall, as a model's
     /// details are.
     #[cfg(target_os = "linux")]
     struct FootSide {
@@ -1534,7 +1535,7 @@ pub(crate) mod tests {
             let area = div()
                 .id("foot-area")
                 .debug_selector(|| "foot-area".into())
-                .max_h(px(48.))
+                .max_h(px(80.))
                 .child(
                     div()
                         .debug_selector(|| "foot-lines".into())
@@ -2049,7 +2050,8 @@ pub(crate) mod tests {
     /// below, as GPUI snaps them to the test window's 2× device pixels: at
     /// 13 pt 34 px under the model's `py_1` (3.25 px drawn as 3, so 34.5
     /// unsnapped) and 41 px under the page view's `p_2`, at 18 pt 48 and
-    /// 57 px (on a 1× display 34 and 40, 49 and 57). From
+    /// 57 px (on a 1× display, where GPUI rounds a half toward zero, so the
+    /// model's 4.5 px `py_1` at 18 pt is 4, 34 and 40, 47 and 57). From
     /// `first`, revealed as a page that opens on it does, Tab moves through
     /// `controls` and Shift+Tab back, each revealed whole with its ring in
     /// every frame painted after the key. `at` names the case.

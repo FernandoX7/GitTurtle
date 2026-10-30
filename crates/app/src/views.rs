@@ -11743,27 +11743,7 @@ pub(crate) mod tests {
             let Some(Content::Rich(preview)) = app.content.as_deref() else {
                 panic!("a changed PDF is a document comparison");
             };
-            let paged = |side: &crate::rich_preview::Side, first| {
-                let bytes = side.captured.clone().expect("the side's bytes");
-                let mut paged =
-                    crate::rich_preview::Side::prepare(bytes.to_vec(), &side.name, || Ok(()))
-                        .expect("the side prepares");
-                paged.pdf = Some(Arc::new(
-                    crate::pdf_view::Document::new(bytes, 3, first, || Ok(())).expect("a document"),
-                ));
-                Arc::new(paged)
-            };
-            let page = crate::rich_preview::Page {
-                render: None,
-                width: 1,
-                height: 1,
-                caption: None,
-                error: None,
-            };
-            app.content = Some(Arc::new(Content::Rich(crate::rich_preview::Comparison {
-                old: paged(&preview.old, Some(page)),
-                new: paged(&preview.new, None),
-            })));
+            app.content = Some(Arc::new(crate::pdf_view::tests::paged(preview)));
             cx.notify();
         });
         draw(cx);
@@ -11916,13 +11896,19 @@ pub(crate) mod tests {
 
     /// A 3D model's details cue the lines beyond their room with a visible
     /// scrollbar at their edge while they overflow, as a comparable bounded
-    /// scroll area does (the commit inspector's message). Their room is
-    /// capped at 48 px, which even a triangle's details overflow: down a
-    /// 461 px window at 13 pt, from 980 to 490 px tall, where the 88 px side
-    /// wraps them to 669 px, and in 1,000 and 1,480 px windows 980 px tall.
-    /// Their scroll area, shrunk to a sliver where the side gave them part
-    /// of their room, once showed part of their lines with no sign that the
-    /// rest scrolled. That a foot draws none where its lines fit is
+    /// scroll area does (the commit inspector's message), and draw none where
+    /// they fit. Their room holds their padding and four of their lines, so
+    /// in a 1,480 × 980 window at 13 pt a triangle's details show whole with
+    /// no scrollbar. Where they overflow, at 13 and 18 pt down a 461 px
+    /// window from 980 to 490 px tall, where the 88 px side wraps them far
+    /// past their room, and in 1,000 and 1,480 px windows, a scrollbar cues
+    /// them, and where they have their whole room its thumb is shorter than
+    /// its track and moves to the track's end as they scroll to theirs.
+    /// Capped at an unscaled 48 px, the kit's shortest thumb, the thumb
+    /// filled its track and never moved. Their scroll area, shrunk to a
+    /// sliver where the side gave them part of their room, once showed part
+    /// of their lines with no sign that the rest scrolled. That a foot draws
+    /// none where its lines fit is also
     /// `system_preview::tests::a_side_s_foot_cues_its_scroll_only_while_it_overflows`.
     #[cfg(target_os = "linux")]
     #[gpui::test]
@@ -11942,39 +11928,96 @@ pub(crate) mod tests {
         });
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
         settle(&app, cx).await;
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
             cx.debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{selector} is drawn"))
         };
         let bar = gpui_kit::component::scroll::Scrollbar::width();
-        let mut cued = false;
-        let sizes = (490..=980)
-            .rev()
-            .step_by(4)
-            .map(|height| (461., height as f32))
-            .chain([(1000., 980.), (1480., 980.)]);
-        for (width, height) in sizes {
-            cx.simulate_resize(size(px(width), px(height)));
-            draw(cx);
-            let at = format!("13 pt in {width} × {height}");
-            let area = bounds("model-details-1", cx);
-            let lines = bounds("model-details-lines-1", cx);
-            // A thumb needs more than its insets; a sliver draws none.
-            if lines.size.height <= area.size.height + px(0.005) || area.size.height < px(16.) {
-                continue;
-            }
-            cued = true;
+        let thumb = |area: Bounds<Pixels>, cx: &mut VisualTestContext| {
             let track = Bounds::new(
                 point(area.right() - bar - px(4.), area.top()),
                 size(bar + px(4.), area.size.height),
             );
-            assert!(
-                crate::tags::tests::painted_thumb(cx, track).is_some(),
-                "{at}: the details {area:?} cue the rest of their lines {lines:?} with a scrollbar"
-            );
+            crate::tags::tests::painted_thumb(cx, track)
+        };
+        let wheel = |area: Bounds<Pixels>, by: f32, cx: &mut VisualTestContext| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: area.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(by))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        let (mut moved, mut rooms) = (0, Vec::new());
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let sizes = (490..=980)
+                .rev()
+                .step_by(4)
+                .map(|height| (461., height as f32))
+                .chain([(1000., 980.), (1480., 980.)]);
+            let mut whole = Pixels::ZERO;
+            for (width, height) in sizes {
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{text} pt in {width} × {height}");
+                let area = bounds("model-details-1", cx);
+                let lines = bounds("model-details-lines-1", cx);
+                let overflows = lines.size.height > area.size.height + px(0.005);
+                if (text, width) == (13, 1480.) {
+                    assert!(
+                        !overflows,
+                        "{at}: the details {lines:?} fit their room {area:?}"
+                    );
+                }
+                if !overflows {
+                    assert!(
+                        thumb(area, cx).is_none(),
+                        "{at}: the details {lines:?} fit their room {area:?}, with no scrollbar"
+                    );
+                    continue;
+                }
+                whole = whole.max(area.size.height);
+                // A thumb needs more than its insets; a sliver draws none.
+                if !overflows || area.size.height < px(16.) {
+                    continue;
+                }
+                let top = thumb(area, cx).unwrap_or_else(|| {
+                    panic!("{at}: the details {area:?} cue the rest of their lines {lines:?} with a scrollbar")
+                });
+                if area.size.height < whole - px(0.5) {
+                    continue;
+                }
+                // With their whole room, the thumb, inset 4 px from each of
+                // the track's ends, is shorter than the track and moves.
+                assert!(
+                    top.size.height < area.size.height - px(9.),
+                    "{at}: the thumb {top:?} is shorter than its track {area:?}"
+                );
+                wheel(area, -10_000., cx);
+                let end = thumb(area, cx).expect("a thumb at the details' end");
+                assert!(
+                    end.top() > top.top() + px(1.)
+                        && (area.bottom() - end.bottom() - px(4.)).abs() < px(0.5),
+                    "{at}: scrolled to their end, the thumb {top:?} moves to its track's end {end:?} in {area:?}"
+                );
+                wheel(area, 10_000., cx);
+                moved += 1;
+            }
+            rooms.push(whole);
         }
-        assert!(cued, "the walk meets details that overflow");
+        assert!(
+            moved >= 2,
+            "the walk meets details with their whole room that overflow"
+        );
+        // Their room holds the same lines at either size, so it scales.
+        let scale = rooms[1] / rooms[0];
+        assert!(
+            (scale - 18. / 13.).abs() < 0.05,
+            "their room {rooms:?} scales with the interface size"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// [`history_window`] on the repository `input` imports.
