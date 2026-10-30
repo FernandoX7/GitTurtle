@@ -3768,6 +3768,117 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// While a reply is open, the panel's failure, or that Cancel stopped its request, stands
+    /// in the reply's own composer, under the draft and above Review reply…, where the reader
+    /// writing the reply looks and where a sent reply's refusal answers: beside the draft,
+    /// never over it, whole in view with it wherever the composer fits the body, at 13 pt in
+    /// a 461 × 490 window and 18 pt in a 1,480 × 800 one. The line at the panel's top, far
+    /// above the conversation, is not drawn then. The window says the failure once, as an
+    /// alert, and the cancel politely.
+    #[gpui::test]
+    async fn a_failure_stands_in_the_reply_composer(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::{alerted, announced};
+        use crate::tags::tests::draw;
+        const FAILURE: &str = "Conversations could not be loaded.";
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target);
+            })
+        });
+        let set = |cx: &mut VisualTestContext, error: Option<&str>, cancelled| {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.error = error.map(str::to_owned);
+                    panel.cancelled = cancelled;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+        };
+        let beside_the_draft = |cx: &mut VisualTestContext, id: &'static str, at: &str| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let composer = cx
+                .debug_bounds("github-reply-composer")
+                .expect("the reply's composer");
+            let context = cx
+                .debug_bounds("github-reply-context")
+                .expect("the reply's context");
+            let line = cx.debug_bounds(id).expect("the line");
+            let draft = cx.update(|_, _| appearance::ui_size(100.));
+            assert!(
+                composer.top() <= line.top() && line.bottom() <= composer.bottom(),
+                "{at}: {id} {line:?} stands in the composer {composer:?}"
+            );
+            assert!(
+                line.top() >= context.bottom() + draft,
+                "{at}: {id} {line:?} lies under the draft, below {context:?} by its {draft:?}"
+            );
+            assert!(
+                body.top() <= context.bottom() && line.bottom() <= body.bottom(),
+                "{at}: {id} {line:?} is whole in view with the draft below {context:?} in \
+                 {body:?}"
+            );
+            assert!(
+                cx.debug_bounds("github-error").is_none()
+                    && cx.debug_bounds("github-cancelled").is_none(),
+                "{at}: the panel's top line is not drawn"
+            );
+        };
+        for (interface, width, height) in [(13, 461., 490.), (18, 1480., 800.)] {
+            let at = format!("{interface} pt in {width} × {height}");
+            open_notice_panel(&app, &panel, (interface, width, height), cx).await;
+            // The reader is writing the reply.
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    // As Reply does, which reveals the draft.
+                    *panel.review.revealed_focus.borrow_mut() = Default::default();
+                    let input = panel.conversations.input.read(cx).focus_handle(cx);
+                    window.focus(&input, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+
+            set(cx, Some(FAILURE), None);
+            beside_the_draft(cx, "github-reply-error", &at);
+            let (heard, text) = alerted(cx).expect("an alert");
+            assert_eq!(text, FAILURE, "{at}: the window says the failure");
+            cx.update(|_, cx| panel.update(cx, |_, cx| cx.notify()));
+            draw(cx);
+            draw(cx);
+            assert_eq!(
+                alerted(cx).map(|(id, _)| id),
+                Some(heard),
+                "{at}: and says it once"
+            );
+
+            let line = RequestKind::Compare.cancelled();
+            set(cx, None, line);
+            beside_the_draft(cx, "github-reply-cancelled", &at);
+            assert_eq!(
+                announced(cx).map(|(_, text)| text).as_deref(),
+                line,
+                "{at}: the cancel is said politely"
+            );
+            escape(cx);
+            set(cx, None, None);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
     /// it as it refused the one before: Review submission… pressed twice with no pull request
     /// chosen. The lines alone stay the same, so the second press was silent.
