@@ -52,6 +52,15 @@ const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
 /// entry's read follows the stop at once.
 const REPEAT_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// An arrow key repeating over the entry list ([`ReflogBrowser::entry_key`]).
+struct Repeat {
+    /// The key that repeats, whose key-up alone ends the repeat.
+    key: String,
+    /// Ends the repeat [`REPEAT_PAUSE`] after its last repeat, where no
+    /// key-up arrives; dropped with the repeat.
+    _pause: Task<()>,
+}
+
 /// The entries whose text the last layout cut, which alone carry a tooltip.
 #[derive(Clone, Default)]
 struct CutEntries(std::rc::Rc<std::cell::RefCell<HashSet<usize>>>);
@@ -339,10 +348,10 @@ pub(crate) struct ReflogBrowser {
     /// The latest read asked for while another was yet to answer or an
     /// arrow key repeats, which starts once neither holds.
     waiting: Option<WaitingRead>,
-    /// While an arrow key repeats over the entry list: the timer that ends
-    /// the repeat [`REPEAT_PAUSE`] after its last repeat, unless the key
-    /// comes up first ([`Self::end_repeat`]).
-    repeat: Option<Task<()>>,
+    /// While an arrow key repeats over the entry list: the key, and the
+    /// timer that ends the repeat [`REPEAT_PAUSE`] after its last repeat,
+    /// unless that key comes up first ([`Self::end_repeat`]).
+    repeat: Option<Repeat>,
     /// How many reads the browser has submitted to its reader.
     #[cfg(test)]
     submitted: usize,
@@ -563,10 +572,13 @@ impl ReflogBrowser {
         };
         cx.stop_propagation();
         if event.is_held {
-            self.repeat = Some(cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(REPEAT_PAUSE).await;
-                let _ = this.update_in(cx, |this, window, cx| this.end_repeat(window, cx));
-            }));
+            self.repeat = Some(Repeat {
+                key: event.keystroke.key.clone(),
+                _pause: cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(REPEAT_PAUSE).await;
+                    let _ = this.update_in(cx, |this, window, cx| this.end_repeat(window, cx));
+                }),
+            });
         }
         let focus = self.entries.focus(("reflog-entry", target), cx);
         window.focus(&focus, cx);
@@ -575,9 +587,14 @@ impl ReflogBrowser {
         }
         cx.notify();
     }
-    /// A key coming up on the entry list ends an arrow key's repeat.
-    fn entry_key_up(&mut self, _: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.repeat.is_some() {
+    /// The repeating arrow's own key coming up on the entry list ends its
+    /// repeat. Another key's release leaves it repeating, as GPUI's Wayland
+    /// backend goes on repeating the arrow when a key held since before it
+    /// comes up: any key-up ended the repeat, which started the entry's
+    /// read, and the arrow's next repeat cancelled it, one Git read started
+    /// and stopped.
+    fn entry_key_up(&mut self, event: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if (self.repeat.as_ref()).is_some_and(|repeat| repeat.key == event.keystroke.key) {
             self.end_repeat(window, cx);
         }
     }
@@ -1629,6 +1646,85 @@ mod tests {
         settle_reads(cx, &browser);
         answer(cx);
         assert_eq!(state(cx), landed(5), "the entry the key rests on lands");
+    }
+
+    /// Only the held arrow's own key-up ends its repeat. A key held since
+    /// before Down was pressed and released while Down repeats, which
+    /// GPUI's Wayland backend goes on repeating, starts no read, and Down's
+    /// release then starts one, of the entry it rests on. Any key-up ended
+    /// the repeat, so that release started the entry's read and Down's next
+    /// repeat cancelled it: one Git read started and stopped.
+    #[gpui::test]
+    async fn only_the_held_arrows_key_up_ends_its_repeat(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let entries = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the log loaded").entries.clone()
+        });
+        let submitted =
+            |cx: &mut VisualTestContext| browser.read_with(cx, |this, _| this.submitted);
+        let down = |cx: &mut VisualTestContext, is_held: bool| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse("down").unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let up = |cx: &mut VisualTestContext, key: &str| {
+            cx.simulate_event(KeyUpEvent {
+                keystroke: Keystroke::parse(key).unwrap(),
+            });
+            draw(cx);
+        };
+
+        // Down pressed, its read answered, and held: its repeats read
+        // nothing.
+        let start = submitted(cx);
+        down(cx, false);
+        settle_reads(cx, &browser);
+        assert_eq!(submitted(cx), start + 1, "the press reads at once");
+        for _ in 0..3 {
+            down(cx, true);
+        }
+        assert_eq!(submitted(cx), start + 1, "the repeats read nothing");
+
+        // A key held since before Down comes up while Down repeats on.
+        up(cx, "a");
+        assert_eq!(
+            submitted(cx),
+            start + 1,
+            "another key's release reads nothing"
+        );
+        for _ in 0..2 {
+            down(cx, true);
+        }
+        assert_eq!(submitted(cx), start + 1, "and Down repeats on");
+
+        up(cx, "down");
+        assert_eq!(submitted(cx), start + 2, "Down's release starts one read");
+        settle_reads(cx, &browser);
+        browser.read_with(cx, |this, _| this.reader.drain());
+        cx.executor().run_until_parked();
+        draw(cx);
+        let landed = browser.read_with(cx, |this, _| {
+            (
+                this.selected.as_ref().map(|entry| entry.oid.clone()),
+                this.commit.as_ref().map(|commit| commit.oid.clone()),
+            )
+        });
+        let rest = Some(entries[6].oid.clone());
+        assert_eq!(
+            landed,
+            (rest.clone(), rest),
+            "the entry Down rests on lands"
+        );
+        assert_eq!(submitted(cx), start + 2, "and no other read starts");
     }
 
     /// While a commit's read runs, the next press cancels it, so its Git
