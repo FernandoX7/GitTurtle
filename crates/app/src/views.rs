@@ -11909,7 +11909,8 @@ pub(crate) mod tests {
     /// sliver where the side gave them part of their room, once showed part
     /// of their lines with no sign that the rest scrolled. Where the side
     /// gives them less than the shortest track a thumb moves along
-    /// ([`crate::tags::SHORTEST_SCROLL_TRACK`]), they draw no scrollbar, and
+    /// ([`crate::tags::SHORTEST_SCROLL_TRACK`]), they draw no scrollbar but
+    /// a wheel still scrolls them to the end of their lines and back, and
     /// any thumb drawn lies within its track: between about 16 and 56 px the
     /// kit's 48 px thumb once ran out of its track against the scroll, or
     /// barely moved (at 13 pt in a 461 × 688 window, a 52.5 px room drew
@@ -11990,7 +11991,24 @@ pub(crate) mod tests {
                         thumb(area, cx).is_none(),
                         "{at}: the details' room {area:?}, too short for a thumb that moves, draws no scrollbar"
                     );
-                    short += usize::from(area.size.height >= px(16.));
+                    if area.size.height >= px(16.) {
+                        // With no scrollbar they still scroll, to the end
+                        // of their lines and back.
+                        wheel(area, -10_000., cx);
+                        let end = bounds("model-details-lines-1", cx);
+                        assert!(
+                            end.top() < lines.top()
+                                && (end.bottom() - area.bottom()).abs() < px(0.5),
+                            "{at}: the details {area:?}, with no scrollbar, scroll their lines {lines:?} to their end {end:?}"
+                        );
+                        wheel(area, 10_000., cx);
+                        let back = bounds("model-details-lines-1", cx);
+                        assert!(
+                            (back.top() - lines.top()).abs() < px(0.5),
+                            "{at}: the details scroll back to their top {lines:?}, not {back:?}"
+                        );
+                        short += 1;
+                    }
                     continue;
                 }
                 let top = thumb(area, cx).unwrap_or_else(|| {
