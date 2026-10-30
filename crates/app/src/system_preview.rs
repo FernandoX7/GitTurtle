@@ -802,13 +802,18 @@ pub(crate) fn header_ends(
                     .flex_col()
                     .child(ends(name, answers, end, body)),
             )
-            // The foot gives way first: its share of any shortfall outweighs
-            // the header's by far.
+            // The foot gives way first, and what it holds gives way with it
+            // as a column's child: a scroll area of its own with no minimum
+            // height (`OwnHeader`) shrinks with it, so its lines stay
+            // within its reach. Clipped by the foot instead, the model's
+            // details were cut mid-line where they partly gave way.
             .children(foot.map(|foot| {
                 div()
                     .debug_selector(move || format!("{name}/foot"))
                     .flex_shrink(1_000_000.)
                     .min_h_0()
+                    .flex()
+                    .flex_col()
                     .overflow_hidden()
                     .child(foot)
             }))
@@ -818,7 +823,10 @@ pub(crate) fn header_ends(
 
 /// A side's own header for [`header_ends`]: the header, what lies beneath
 /// the side's content (the model's details), and the header's scrolling
-/// state.
+/// state. The foot gives way before the header, shrinking as a column's
+/// child, so a foot that can hold more than it shows is a scroll area of
+/// its own with no minimum height (`min_h_0`) and its padding inside, which
+/// keeps its lines within its reach as it shrinks to nothing.
 pub(crate) struct OwnHeader {
     pub(crate) header: AnyElement,
     pub(crate) foot: Option<AnyElement>,

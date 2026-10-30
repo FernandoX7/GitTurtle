@@ -11722,6 +11722,64 @@ pub(crate) mod tests {
         }
     }
 
+    /// A 3D model's details, a label beneath the model, give way within
+    /// their own scroll: where the side's room takes part of their height,
+    /// their scroll area shrinks with it, so it lies whole in what is left
+    /// and every line stays within its reach. Down a 461 px window at 13 pt,
+    /// from 980 to 490 px tall, the side once clipped the details' scroll
+    /// area, as tall as their lines, and cut them mid-line out of its reach;
+    /// shrinking, it still kept its own padding, 13 px in an 11 px room.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_model_s_details_give_way_within_their_own_scroll(cx: &mut TestAppContext) {
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let input = file_commits(&[
+            ("first", &[("note.txt", b"first\n".as_slice())]),
+            ("second", &[("shape.obj", obj.as_slice())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let index = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new("shape.obj"))
+                .expect("the commit adds the model")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let slack = px(0.5);
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let mut walk = Vec::new();
+        for height in (490..=980).rev().step_by(2) {
+            cx.simulate_resize(size(px(461.), px(height as f32)));
+            draw(cx);
+            walk.push((
+                height,
+                bounds("model-side-1/foot", cx),
+                bounds("model-details-1", cx),
+            ));
+        }
+        let whole = walk
+            .iter()
+            .map(|(_, foot, _)| foot.size.height)
+            .fold(Pixels::ZERO, Pixels::max);
+        let mut met = false;
+        for (height, foot, details) in walk {
+            if foot.size.height < slack || foot.size.height > whole - slack {
+                continue;
+            }
+            met = true;
+            assert!(
+                details.top() >= foot.top() - slack && details.bottom() <= foot.bottom() + slack,
+                "13 pt in 461 × {height}: the details' scroll area {details:?} lies whole in what is left of their room {foot:?}"
+            );
+        }
+        assert!(met, "the walk meets the details giving way in part");
+    }
+
     /// [`history_window`] on the repository `input` imports.
     pub(crate) async fn history_window_from(
         cx: &mut TestAppContext,

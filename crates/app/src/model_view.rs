@@ -1093,7 +1093,9 @@ fn render_side<T: 'static>(
             Some(crate::system_preview::OwnHeader {
                 header: header.into_any_element(),
                 // The details, a label, give way before the header's
-                // controls do.
+                // controls do, their own scroll area shrinking with them
+                // to nothing: its padding scrolls with its lines, since a
+                // box never shrinks below its own padding.
                 foot: Some(
                     div()
                         .id(("model-details", index))
@@ -1103,26 +1105,30 @@ fn render_side<T: 'static>(
                             "{label} model details: {details}"
                         )))
                         .max_h(px(48.))
+                        .min_h_0()
                         .overflow_y_scroll()
-                        .p_2()
                         .text_size(appearance::ui_text(10.))
                         .text_color(rgb(colors.muted))
                         .child(
                             div()
-                                .id(("model-summary", index))
-                                .role(Role::Label)
-                                .aria_value(format!(
-                                    "{label}: {} · {summary}",
-                                    document.scene.appearance_label()
-                                ))
-                                .child(format!(
-                                    "{} · {} triangles · {}",
-                                    document.scene.appearance_label(),
-                                    document.scene.triangle_count(),
-                                    document.scene.units.label()
-                                )),
+                                .p_2()
+                                .child(
+                                    div()
+                                        .id(("model-summary", index))
+                                        .role(Role::Label)
+                                        .aria_value(format!(
+                                            "{label}: {} · {summary}",
+                                            document.scene.appearance_label()
+                                        ))
+                                        .child(format!(
+                                            "{} · {} triangles · {}",
+                                            document.scene.appearance_label(),
+                                            document.scene.triangle_count(),
+                                            document.scene.units.label()
+                                        )),
+                                )
+                                .child(details),
                         )
-                        .child(details)
                         .into_any_element(),
                 ),
                 held,
