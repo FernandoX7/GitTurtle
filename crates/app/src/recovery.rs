@@ -3404,10 +3404,13 @@ mod tests {
     /// The open control `open` of a stashed side lies in the side's own
     /// header, `list` drawn as `region`, and in the Stashes detail around
     /// it, `detail` (`system_preview::Target::held_control`). With the
-    /// region showing the control and the detail scrolled to its top, away
-    /// from the comparison, focus moves onto the control through the
-    /// header's list. The detail then holds focus, and in every frame
-    /// painted after focus moves, the first included, the control lies
+    /// detail scrolled to its top, away from the comparison, focus moves
+    /// onto the control: through the header's list with the region showing
+    /// the control, or, where `next` names the control after it, by
+    /// Shift+Tab from that control with the region scrolled to its end,
+    /// away from the open control, and the detail away from the region, so
+    /// both containers scroll. The detail then holds focus, and in every
+    /// frame painted after focus moves, the first included, the control lies
     /// whole with its ring in the detail's view and in the region's.
     #[cfg(target_os = "linux")]
     fn assert_the_detail_reveals_an_open_control(
@@ -3419,6 +3422,7 @@ mod tests {
         ),
         region: &'static str,
         (id, open): &crate::focus_reveal::tests::Control,
+        next: Option<&crate::focus_reveal::tests::Control>,
     ) {
         use crate::tags::tests::{draw, rendered};
         let room = cx.read(appearance::button_ring_room);
@@ -3430,23 +3434,50 @@ mod tests {
             within(rendered(cx, open).dilate(room), rendered(cx, container))
         };
         list.reveal_next_focus();
-        cx.update(|window, cx| list.focus(id.clone(), cx).focus(window, cx));
+        let first = next.map_or(id, |(next, _)| next);
+        cx.update(|window, cx| list.focus(first.clone(), cx).focus(window, cx));
         draw(cx);
         cx.update(|window, cx| {
-            window.blur(cx);
+            if next.is_none() {
+                window.blur(cx);
+            }
             detail.scroll().set_offset(point(px(0.), px(0.)));
             window.refresh();
         });
         draw(cx);
-        assert!(
-            !whole(cx, "stash-detail") && whole(cx, region),
-            "{at}: at its top, the detail does not show {open} whole, and {region} does"
-        );
+        if next.is_some() {
+            // Scrolled after the detail: the detail's scroll moves the
+            // region, which, the last input a key, reveals its focused
+            // control again.
+            cx.update(|window, _| {
+                let end = list.scroll().max_offset().y;
+                list.scroll().set_offset(point(px(0.), -end));
+                window.refresh();
+            });
+            draw(cx);
+            // The region's scroll moves the control, which it clips, so the
+            // detail is away from the region itself.
+            let away = !within(rendered(cx, region), rendered(cx, "stash-detail"));
+            assert!(
+                !whole(cx, region) && away,
+                "{at}: {region} does not show {open} whole, and at its top the detail does not \
+                 show {region} whole"
+            );
+        } else {
+            assert!(
+                !whole(cx, "stash-detail") && whole(cx, region),
+                "{at}: at its top, the detail does not show {open} whole, and {region} does"
+            );
+        }
         detail.take_painted();
         list.take_painted();
-        detail.reveal_next_focus();
-        list.reveal_next_focus();
-        cx.update(|window, cx| list.focus(id.clone(), cx).focus(window, cx));
+        if next.is_some() {
+            cx.simulate_keystrokes("shift-tab");
+        } else {
+            detail.reveal_next_focus();
+            list.reveal_next_focus();
+            cx.update(|window, cx| list.focus(id.clone(), cx).focus(window, cx));
+        }
         draw(cx);
         assert_eq!(
             cx.update(|window, _| list.focused(window)).as_ref(),
@@ -3488,12 +3519,16 @@ mod tests {
     /// Each side's open control is the detail's too: with the detail
     /// scrolled away from the comparison, stacked in a 461 × 490 window and,
     /// for the model, in the wide one, focus moved onto it through its
-    /// header shows it whole in both, the detail holding focus
-    /// ([`assert_the_detail_reveals_an_open_control`]).
+    /// header, and at 18 pt Shift+Tab onto it with the header's region
+    /// scrolled away from it, shows it whole in both from the first frame,
+    /// the detail holding focus
+    /// ([`assert_the_detail_reveals_an_open_control`]). The detail once
+    /// revealed it where the last frame drew it, before the region scrolled,
+    /// so that first frame painted it below the detail's edge.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_stashed_side_header_keeps_its_floor(cx: &mut gpui_kit::TestAppContext) {
-        use crate::focus_reveal::tests::control;
+        use crate::focus_reveal::tests::{Control, control};
         use crate::system_preview::tests::assert_a_header_keeps_its_floor;
         use crate::tags::tests::{draw, git, scroll_down, tagged_repository, window};
         let fixture = tempfile::tempdir().unwrap();
@@ -3549,31 +3584,44 @@ mod tests {
         let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
         // Each side's open control with the detail scrolled away from the
         // comparison, in each of `windows` where the detail's top leaves it
-        // out of view: as the window is, and stacked in a narrow one.
-        let in_the_detail =
-            |cx: &mut VisualTestContext,
-             text: u8,
-             windows: &[(f32, f32)],
-             name: &'static str,
-             open: &crate::focus_reveal::tests::Control| {
-                let list = cx
-                    .update(|_, cx| crate::system_preview::side_header(view, name, cx))
-                    .expect("the side's header");
-                let region: &'static str = format!("{name}/header").leak();
-                for &(width, height) in windows {
-                    cx.simulate_resize(size(px(width), px(height)));
-                    draw(cx);
+        // out of view: as the window is, and stacked in a narrow one. At
+        // 18 pt, where the header's region scrolls, also by Shift+Tab from
+        // `next` with the region scrolled away from it.
+        let in_the_detail = |cx: &mut VisualTestContext,
+                             text: u8,
+                             windows: &[(f32, f32)],
+                             name: &'static str,
+                             (open, next): (&Control, &Control)| {
+            let list = cx
+                .update(|_, cx| crate::system_preview::side_header(view, name, cx))
+                .expect("the side's header");
+            let region: &'static str = format!("{name}/header").leak();
+            for &(width, height) in windows {
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{} in {width} × {height} at {text} pt", open.1);
+                assert_the_detail_reveals_an_open_control(
+                    cx,
+                    &at,
+                    (&detail, &list),
+                    region,
+                    open,
+                    None,
+                );
+                if text == 18 {
                     assert_the_detail_reveals_an_open_control(
                         cx,
-                        &format!("{} in {width} × {height} at {text} pt", open.1),
+                        &format!("Shift+Tab onto {at}"),
                         (&detail, &list),
                         region,
                         open,
+                        Some(next),
                     );
                 }
-                cx.simulate_resize(size(px(1000.), px(560.)));
-                draw(cx);
-            };
+            }
+            cx.simulate_resize(size(px(1000.), px(560.)));
+            draw(cx);
+        };
         let mut cameras = vec![control("model-external", 1)];
         cameras.extend((5..10).map(|index| control("model-camera", index)));
         cameras.extend([control("model-views", 1), control("model-link", 1)]);
@@ -3594,7 +3642,8 @@ mod tests {
                 &cameras,
             );
             let windows = [(1000., 560.), (461., 490.)];
-            in_the_detail(cx, text, &windows, "model-side-1", &cameras[0]);
+            let open = (&cameras[0], &cameras[1]);
+            in_the_detail(cx, text, &windows, "model-side-1", open);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         draw(cx);
@@ -3638,9 +3687,13 @@ mod tests {
                 );
             }
             // The wide window's detail shows a PDF's open controls at its top.
-            for (side, name) in [(0, "pdf-side-0"), (1, "pdf-side-1")] {
+            for (side, name, page) in [
+                (0, "pdf-side-0", "pdf-read-text"),
+                (1, "pdf-side-1", "pdf-retry"),
+            ] {
                 let windows = [(461., 490.)];
-                in_the_detail(cx, text, &windows, name, &control("pdf-system", side));
+                let open = (&control("pdf-system", side), &control(page, side));
+                in_the_detail(cx, text, &windows, name, open);
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

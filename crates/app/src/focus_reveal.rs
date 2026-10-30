@@ -20,6 +20,17 @@
 //! last frame did not draw or that has moved since is still revealed: its
 //! bounds in the frame being prepainted request one reveal, applied after
 //! painting unless focus or a user's scroll has superseded it.
+//!
+//! A control can lie in two revealing containers, one inside the other, as
+//! an open control in a side's own header does in the Stashes detail: the
+//! header's region reveals it in its own scroll, and the detail shows it
+//! there ([`FocusReveal::control_within`]). The outer container's reveal
+//! runs the inner one's first, in the same render, and reveals the control
+//! where the inner scroll has just moved it, so both show it whole in the
+//! frame that first draws the focus. Revealed from where the last frame drew
+//! it, before the header's region scrolled, the control lay below the
+//! detail's edge for one frame after Shift+Tab onto it, until the request
+//! its bounds made scrolled it in.
 
 use gpui_kit::*;
 use std::{
@@ -38,8 +49,15 @@ struct Observation {
 }
 
 /// A control a frame drew: its focus handle, where it lay with the container
-/// at offset zero, and the margin it is revealed with.
-type Drawn = (WeakFocusHandle, Bounds<Pixels>, Pixels);
+/// at offset zero, the margin it is revealed with, and, for a control inside
+/// a revealing container of its own ([`FocusReveal::control_within`]), that
+/// container and the offset its scroll drew the control at.
+struct Drawn {
+    focus: WeakFocusHandle,
+    bounds: Bounds<Pixels>,
+    margin: Pixels,
+    within: Option<(FocusReveal, Pixels)>,
+}
 
 /// The controls one frame drew.
 #[derive(Default)]
@@ -155,6 +173,11 @@ impl FocusReveal {
         if !self.due(&observed, window) {
             return;
         }
+        // A control in a revealing container of its own is revealed there
+        // first, so this container shows it where that scroll has moved it.
+        if let Some(inner) = self.drawn_within(window, cx) {
+            inner.reveal(window, cx);
+        }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
             let at = bounds + point(px(0.), self.scroll.offset().y);
             if let Some(offset) = self.target(at, margin, observed.viewport) {
@@ -180,13 +203,42 @@ impl FocusReveal {
         focus: FocusHandle,
         margin: Pixels,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        self.reported(focus, margin, None)
+    }
+
+    /// [`Self::control`] for a control that also lies in `inner`, a
+    /// revealing container inside this one that reveals it in its own
+    /// scroll, as a side's own header does its open control in the Stashes
+    /// detail. When focus moves onto the control, this container's
+    /// [`Self::reveal`] runs `inner`'s first and shows the control where
+    /// `inner` has scrolled it in that frame, not where the last frame drew
+    /// it.
+    pub(crate) fn control_within(
+        &self,
+        focus: FocusHandle,
+        margin: Pixels,
+        inner: &FocusReveal,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        self.reported(focus, margin, Some(inner.clone()))
+    }
+
+    /// [`Self::control`], its control inside `within` where given.
+    fn reported(
+        &self,
+        focus: FocusHandle,
+        margin: Pixels,
+        within: Option<FocusReveal>,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let this = self.clone();
         let weak = focus.downgrade();
         move |bounds, window, cx| {
             let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
                 return;
             };
-            this.record(weak.clone(), bounds, margin);
+            let within = within
+                .as_ref()
+                .map(|inner| (inner.clone(), inner.scroll.offset().y));
+            this.record(weak.clone(), bounds, margin, within);
             if focus.contains_focused(window, cx) {
                 this.request(bounds, margin, window, cx);
             }
@@ -207,7 +259,7 @@ impl FocusReveal {
             let mut focused = None;
             for (handle, bounds) in focus.iter().zip(bounds) {
                 let Some(handle) = handle else { continue };
-                this.record(handle.downgrade(), bounds, margin);
+                this.record(handle.downgrade(), bounds, margin, None);
                 if focused.is_none() && handle.contains_focused(window, cx) {
                     focused = Some(bounds);
                 }
@@ -236,7 +288,7 @@ impl FocusReveal {
                 return;
             };
             for handle in &focus {
-                this.record(handle.downgrade(), bounds, margin);
+                this.record(handle.downgrade(), bounds, margin, None);
             }
             if focus
                 .iter()
@@ -293,10 +345,22 @@ impl FocusReveal {
     }
 
     /// Records that the frame being prepainted drew the control `focus`
-    /// tracks at `bounds`, where it lies at the container's current offset.
-    fn record(&self, focus: WeakFocusHandle, bounds: Bounds<Pixels>, margin: Pixels) {
-        let unscrolled = bounds - point(px(0.), self.scroll.offset().y);
-        self.drawing.borrow_mut().push((focus, unscrolled, margin));
+    /// tracks at `bounds`, where it lies at the container's current offset,
+    /// inside the revealing container `within` at the offset given there.
+    fn record(
+        &self,
+        focus: WeakFocusHandle,
+        bounds: Bounds<Pixels>,
+        margin: Pixels,
+        within: Option<(FocusReveal, Pixels)>,
+    ) {
+        let bounds = bounds - point(px(0.), self.scroll.offset().y);
+        self.drawing.borrow_mut().push(Drawn {
+            focus,
+            bounds,
+            margin,
+            within,
+        });
     }
 
     /// Ends the frame being prepainted: keeps the controls it drew, its own
@@ -333,7 +397,8 @@ impl FocusReveal {
     }
 
     /// The control holding focus among those the last prepainted frame drew:
-    /// where it lay with the container at offset zero, and its margin.
+    /// where it lies with the container at offset zero, moved as far as a
+    /// revealing container it lies in has scrolled since, and its margin.
     fn drawn_focus(&self, window: &Window, cx: &App) -> Option<(Bounds<Pixels>, Pixels)> {
         let drawn = self.drawn.borrow();
         let item = drawn.items.as_ref().and_then(|(focus, margin)| {
@@ -343,15 +408,30 @@ impl FocusReveal {
             Some((self.scroll.bounds_for_item(index)?, *margin))
         });
         item.or_else(|| {
-            drawn
-                .controls
-                .iter()
-                .find(|(focus, ..)| {
-                    focus
-                        .upgrade()
-                        .is_some_and(|focus| focus.contains_focused(window, cx))
-                })
-                .map(|&(_, bounds, margin)| (bounds, margin))
+            let control = Self::holding_focus(&drawn.controls, window, cx)?;
+            let moved = control
+                .within
+                .as_ref()
+                .map_or(px(0.), |(inner, at)| inner.scroll.offset().y - *at);
+            Some((control.bounds + point(px(0.), moved), control.margin))
+        })
+    }
+
+    /// The revealing container inside this one that holds the control
+    /// holding focus, if the last prepainted frame drew it there.
+    fn drawn_within(&self, window: &Window, cx: &App) -> Option<FocusReveal> {
+        let drawn = self.drawn.borrow();
+        let control = Self::holding_focus(&drawn.controls, window, cx)?;
+        control.within.as_ref().map(|(inner, _)| inner.clone())
+    }
+
+    /// The control among `controls` that holds focus or contains it.
+    fn holding_focus<'a>(controls: &'a [Drawn], window: &Window, cx: &App) -> Option<&'a Drawn> {
+        controls.iter().find(|control| {
+            control
+                .focus
+                .upgrade()
+                .is_some_and(|focus| focus.contains_focused(window, cx))
         })
     }
 

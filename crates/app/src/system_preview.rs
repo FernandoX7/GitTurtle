@@ -606,7 +606,9 @@ impl Target {
     /// handle, and where the opener's container reveals its controls too
     /// (a narrow model or PDF page side in Stashes), the wrapper tracks the
     /// container's handle around it, so focus on the button lies in both
-    /// and each reveals it in its own scroll.
+    /// and each reveals it in its own scroll, the container where the
+    /// header's region has scrolled it in the same frame
+    /// ([`crate::focus_reveal::FocusReveal::control_within`]).
     pub(crate) fn held_control(&self, form: Form, held: &SideHeader, cx: &mut App) -> AnyElement {
         let button = held.track(self.control.clone(), self.button(form, cx), cx);
         let Some((reveal, margin)) = &self.opener.reveal else {
@@ -616,7 +618,7 @@ impl Target {
         div()
             .flex_shrink_0()
             .track_focus(&focus)
-            .on_children_prepainted(reveal.control(focus, *margin))
+            .on_children_prepainted(reveal.control_within(focus, *margin, &held.reveal))
             .child(button)
             .into_any_element()
     }
