@@ -58,7 +58,7 @@ pub(crate) fn dialog_footer(
     DialogFooter::new()
         .when_some(cancel, |footer, cancel| {
             footer.child(
-                button("cancel", cancel, "", false)
+                dialog_cancel("cancel", cancel)
                     .debug_selector(move || format!("dialog-cancel: {cancel}"))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)),
             )
@@ -71,6 +71,18 @@ pub(crate) fn dialog_footer(
                     window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
                 }),
         )
+}
+
+/// A dialog's Cancel, `id`, reading `label`, on the compact frame: the
+/// secondary variant, its `subtle` fill bordered by the palette's `border`
+/// at rest, as macOS draws Cancel as a bordered push button beside the
+/// filled default action, and one Cancel style in every dialog, the ones
+/// `dialog_footer` builds and those that build their own footers alike
+/// (Create tag, forced worktree removal, Discard). The frame's transparent
+/// rest left Cancel reading as plain text beside the filled primary. The
+/// border is the toolkit's 1 px in every state, so nothing moves.
+pub(crate) fn dialog_cancel(id: &'static str, label: &'static str) -> Button {
+    button(id, label, "", false).secondary().border_1()
 }
 
 /// The cue a scrolling list gives the rows beyond its edge, the same for
@@ -694,7 +706,7 @@ impl GitTurtle {
                             // to cancel missed the dialog once Settings had
                             // shown and taken focus.
                             let form = form.clone();
-                            button("cancel", "Cancel", "", false)
+                            crate::tags::dialog_cancel("cancel", "Cancel")
                                 .debug_selector(|| "cancel-create-tag".into())
                                 .on_click(move |_, window, cx| {
                                     form.update(cx, |form, cx| form.cancel(window, cx));
@@ -1700,69 +1712,149 @@ pub(crate) mod tests {
 
     /// The dialogs' own footers stand on the compact frame every other
     /// action in the app does (`button_frame`): each footer button, OK and
-    /// Cancel as `dialog_footer` builds them and Create tag's own Cancel and
-    /// Review tag, is as tall as the frame, 28 px at the interface size, at
-    /// 13 and 18 pt. The kit's own Buttons stood 26 px at 13 pt and 36 px at
-    /// 18 pt beside the dialogs' 28 px controls.
+    /// Cancel as `dialog_footer` builds them (Add remote's), Create tag's own
+    /// Cancel and Review tag, and forced worktree removal's Cancel and Force
+    /// remove worktree, is as tall as the frame, 28 px at the interface size,
+    /// at 13 and 18 pt. Every Cancel rests on the palette's `subtle` fill with
+    /// a 1 px edge in its `border`, in Midnight and Daylight alike. The kit's
+    /// own Buttons stood 26 px at 13 pt and 36 px at 18 pt beside the
+    /// dialogs' 28 px controls, and Cancel, once moved, rested transparent,
+    /// reading as plain text beside the filled primary.
     #[gpui::test]
     async fn dialog_footers_stand_on_the_compact_frame(cx: &mut TestAppContext) {
         use crate::focus_ring::sweep::open_dialog;
-        type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        type Open = Box<dyn Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)>;
         let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
-        let dialogs: [(&str, Open, &[&'static str]); 6] = [
+        let details = app.read_with(cx, |app, _| {
+            let repo = app.repository.clone().expect("a repository");
+            let tree = repo.worktrees().unwrap().remove(0);
+            repo.worktree_details(&tree).unwrap()
+        });
+        let dialogs: Vec<(&str, Open, &[&'static str])> = vec![
             (
                 "Tags",
-                |app, window, cx| app.open_tags(window, cx),
+                Box::new(|app, window, cx| app.open_tags(window, cx)),
                 &["dialog-ok: Done"],
             ),
             (
                 "Create tag",
-                |app, window, cx| app.open_create_tag(window, cx),
+                Box::new(|app, window, cx| app.open_create_tag(window, cx)),
                 &["cancel-create-tag", "review-tag"],
             ),
             (
+                "Add remote",
+                Box::new(|app, window, cx| app.open_remote_form(None, window, cx)),
+                &["dialog-cancel: Cancel", "dialog-ok: Review settings"],
+            ),
+            (
+                "Force remove worktree",
+                Box::new(move |app, window, cx| {
+                    app.confirm_force_worktree_removal(details.clone(), window, cx)
+                }),
+                &[
+                    "cancel-force-worktree-removal",
+                    "confirm-force-worktree-removal",
+                ],
+            ),
+            (
                 "Worktrees",
-                |app, window, cx| app.open_worktree_manager(window, cx),
+                Box::new(|app, window, cx| app.open_worktree_manager(window, cx)),
                 &["dialog-ok: Done"],
             ),
             (
                 "the Reflog",
-                |app, window, cx| drop(app.open_reflog_browser(window, cx)),
+                Box::new(|app, window, cx| drop(app.open_reflog_browser(window, cx))),
                 &["dialog-ok: Done"],
             ),
             (
                 "Git profiles",
-                |app, window, cx| app.open_profiles(window, cx),
+                Box::new(|app, window, cx| app.open_profiles(window, cx)),
                 &["dialog-ok: Done"],
             ),
             (
                 "Activity",
-                |app, window, cx| app.open_activity(window, cx),
+                Box::new(|app, window, cx| app.open_activity(window, cx)),
                 &["dialog-ok: Done"],
             ),
         ];
+        let cancels = [
+            "cancel-create-tag",
+            "dialog-cancel: Cancel",
+            "cancel-force-worktree-removal",
+        ];
         cx.simulate_resize(size(px(1280.), px(800.)));
         let mut failures = Vec::new();
-        for text in [13, 18] {
-            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            let frame = appearance::ui_size(28.);
-            for (name, open, buttons) in &dialogs {
-                open_dialog(&app, cx, name, *open).await;
-                draw(cx);
-                for button in *buttons {
-                    match cx.debug_bounds(button) {
-                        None => failures.push(format!("{name} at {text} pt draws no {button}")),
+        for theme in [
+            appearance::ThemeChoice::Midnight,
+            appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|window, cx| theme.apply(Some(window), cx));
+            let p = cx.update(|_, cx| palette(cx));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                let frame = appearance::ui_size(28.);
+                for (name, open, buttons) in &dialogs {
+                    open_dialog(&app, cx, name, |app, window, cx| open(app, window, cx)).await;
+                    draw(cx);
+                    let at = format!("{name} in {theme:?} at {text} pt");
+                    for button in *buttons {
+                        let Some(drawn) = cx.debug_bounds(button) else {
+                            failures.push(format!("{at} draws no {button}"));
+                            continue;
+                        };
                         // Snapped to the test window's 2× device pixels.
-                        Some(drawn) if (drawn.size.height - frame).abs() > px(0.5) => failures
-                            .push(format!(
-                                "{name} at {text} pt: {button} is {:?} tall, not the frame's {frame:?}",
+                        if (drawn.size.height - frame).abs() > px(0.5) {
+                            failures.push(format!(
+                                "{at}: {button} is {:?} tall, not the frame's {frame:?}",
                                 drawn.size.height
-                            )),
-                        Some(_) => {}
+                            ));
+                        }
+                        if !cancels.contains(button) {
+                            continue;
+                        }
+                        // Its own quad at rest: the fill and the edge.
+                        let near = |a: f32, b: Pixels| (a - f32::from(b)).abs() < 0.5;
+                        let rest = cx.update(|window, _| {
+                            let scale = window.scale_factor();
+                            window
+                                .painted_quads()
+                                .into_iter()
+                                .filter(|quad| {
+                                    near(quad.bounds.origin.x.as_f32() / scale, drawn.origin.x)
+                                        && near(
+                                            quad.bounds.origin.y.as_f32() / scale,
+                                            drawn.origin.y,
+                                        )
+                                        && near(
+                                            quad.bounds.size.height.as_f32() / scale,
+                                            drawn.size.height,
+                                        )
+                                })
+                                .collect::<Vec<_>>()
+                        });
+                        let fill = gpui_kit::Background::from(Hsla::from(rgb(p.subtle)));
+                        let edge = Hsla::from(rgb(p.border));
+                        // GPUI paints the fill and the edge as quads of their own.
+                        let filled = rest.iter().any(|quad| quad.background == fill);
+                        let edged = rest.iter().any(|quad| {
+                            quad.border_widths.bottom.as_f32() > 0. && quad.border_color == edge
+                        });
+                        if !(filled && edged) {
+                            failures.push(format!(
+                                "{at}: {button} rests as {:?}, not on subtle with a border edge",
+                                rest.iter()
+                                    .map(|quad| (
+                                        quad.background,
+                                        quad.border_color,
+                                        quad.border_widths
+                                    ))
+                                    .collect::<Vec<_>>()
+                            ));
+                        }
                     }
+                    cx.update(|window, cx| window.close_all_dialogs(cx));
+                    draw(cx);
                 }
-                cx.update(|window, cx| window.close_all_dialogs(cx));
-                draw(cx);
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

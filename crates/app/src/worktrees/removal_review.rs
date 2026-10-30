@@ -142,7 +142,7 @@ fn effects(details: &WorktreeDetails, colors: appearance::Palette) -> Div {
 }
 
 impl GitTurtle {
-    pub(super) fn confirm_force_worktree_removal(
+    pub(crate) fn confirm_force_worktree_removal(
         &mut self,
         details: WorktreeDetails,
         window: &mut Window,
@@ -274,7 +274,7 @@ impl GitTurtle {
                         .flex()
                         .justify_end()
                         .gap_2()
-                        .child(button("cancel-force-worktree-removal", "Cancel", "", false)
+                        .child(crate::tags::dialog_cancel("cancel-force-worktree-removal", "Cancel")
                             .debug_selector(|| "cancel-force-worktree-removal".into())
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)))
                         .child(button("confirm-force-worktree-removal", "Force remove worktree", "", false)
