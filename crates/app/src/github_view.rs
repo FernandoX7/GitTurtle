@@ -448,9 +448,13 @@ impl RequestKind {
     /// Fetch, and a cancelled Disconnect a failure saying the authorization
     /// was kept. A request to GitHub has none: the GitHub CLI's stop reaches
     /// it as a failure, and a sent action's outcome stays uncertain.
-    fn cancelled(self) -> Option<&'static str> {
+    /// `connected` is whether the panel shows a connected account, which a
+    /// stopped Connect leaves as it was: it once said no account was
+    /// connected while one was.
+    fn cancelled(self, connected: bool) -> Option<&'static str> {
         match self {
             Self::Load | Self::Send => None,
+            Self::Connect if connected => Some("Cancelled · the account is unchanged"),
             Self::Connect => Some("Cancelled · no account was connected"),
             Self::Disconnect => Some("Cancelled · GitTurtle's authorization was kept"),
             Self::Compare => Some("Cancelled · the PR's changes were not compared"),
@@ -1219,7 +1223,7 @@ impl Panel {
                     // would stand, in place of what asked for the cancel. A
                     // failure the request met before the cancel reached it
                     // ends with its own error and is shown as one.
-                    match (result, kind.cancelled()) {
+                    match (result, kind.cancelled(this.account.is_some())) {
                         (Err(error), Some(line)) if stopped_by_cancel(&error) => {
                             this.cancelled = Some(line);
                             this.notice = None;
@@ -2773,10 +2777,67 @@ mod tests {
                 );
                 assert_eq!(
                     (panel.error.as_deref(), panel.cancelled),
-                    (None, kind.cancelled()),
+                    (None, kind.cancelled(true)),
                     "{button}: the panel says it was cancelled"
                 );
             });
+        }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// Connect stopped by Cancel leaves the account as it was and says so: with an account
+    /// connected, "Cancelled · the account is unchanged", where it once said no account was
+    /// connected while the toolbar named the connected one; with none, that none was.
+    #[gpui::test]
+    async fn a_cancelled_connect_says_what_it_left_of_the_account(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Opened at rest, so a click lands where the last frame drew its button. The offline
+        // fixture leaves Connect unavailable.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.review.fixture = false);
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        for (account, says) in [
+            (
+                Some("offline-reviewer"),
+                "Cancelled · the account is unchanged",
+            ),
+            (None, "Cancelled · no account was connected"),
+        ] {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.account = account.map(str::to_owned);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            // Held as a slow GitHub CLI holds it, then the panel's Cancel.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            click(cx, "github-connect");
+            draw(cx);
+            click(cx, "github-cancel");
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            draw(cx);
+            assert_eq!(
+                panel.read_with(cx, |panel, _| (panel.account.clone(), panel.cancelled)),
+                (account.map(str::to_owned), Some(says)),
+                "{account:?}: the account stays and the panel says so"
+            );
+            assert!(
+                cx.debug_bounds("github-cancelled").is_some(),
+                "{account:?}: on the panel's top line"
+            );
         }
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
@@ -2988,7 +3049,7 @@ mod tests {
             assert!(panel.templates.is_empty(), "no template shows");
             assert_eq!(
                 (panel.error.as_deref(), panel.cancelled),
-                (None, RequestKind::Templates.cancelled()),
+                (None, RequestKind::Templates.cancelled(false)),
                 "the panel says the read was cancelled"
             );
         });
@@ -3030,7 +3091,7 @@ mod tests {
         });
         assert_eq!(
             panel.read_with(cx, |panel, _| (panel.error.clone(), panel.cancelled)),
-            (None, RequestKind::Compare.cancelled()),
+            (None, RequestKind::Compare.cancelled(false)),
             "the panel says it did not compare, as cancelled"
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
@@ -3060,7 +3121,7 @@ mod tests {
         });
         open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
         let line = RequestKind::Compare
-            .cancelled()
+            .cancelled(false)
             .expect("Changes says it was cancelled");
 
         // Changes, held as a large comparison holds it, then the panel's Cancel.
@@ -4090,7 +4151,7 @@ mod tests {
                 "{at}: and says it once"
             );
 
-            let line = RequestKind::Compare.cancelled();
+            let line = RequestKind::Compare.cancelled(false);
             set(cx, None, line);
             beside_the_draft(cx, "github-reply-cancelled", &at);
             assert_eq!(
@@ -4159,7 +4220,7 @@ mod tests {
         draw(cx);
         assert_eq!(
             panel.read_with(cx, |panel, _| (panel.error.clone(), panel.cancelled)),
-            (None, RequestKind::Compare.cancelled()),
+            (None, RequestKind::Compare.cancelled(false)),
             "Changes was cancelled"
         );
         let line = cx
