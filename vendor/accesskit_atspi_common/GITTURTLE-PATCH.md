@@ -63,12 +63,13 @@ can lie wholly outside the outer one, the one place nothing of it is drawn.
 The work is one walk up the node's ancestors, ending at the first clip that
 leaves the node out, when a client reads its state or the adapter compares a
 changed node's states. The adapter sends the existing state-change event for
-a change of `Showing` only when the node's own data, or its place under its
-parent, changes in an update: `accesskit_consumer` 0.38 reports no other node
-as updated (`tree.rs`). A change of a clipping ancestor alone, such as a fold
-a resized window moves across rows that stay where they lie, sends no event;
-a client sees the node's new state when it next reads it. That is an open
-item for the Orca check (`docs/native-accessibility.md`). macOS has no
+a change of `Showing` only when the node's own data or its place under its
+parent changes, or focus moves onto or off it, in an update:
+`accesskit_consumer` 0.38 reports no other node as updated (`tree.rs`). A
+change of a clipping ancestor alone, such as a fold a resized window moves
+across rows that stay where they lie, sends no event; a client sees the
+node's new state when it next reads it. That is an open item for the Orca
+check (`docs/native-accessibility.md`). macOS has no
 showing state and uses `accesskit_macos`, which this does not touch: there a
 node AccessKit keeps past a fold, which GitTurtle reports at its layout, has
 nothing marking it off screen, and VoiceOver's cursor may outline what lies
