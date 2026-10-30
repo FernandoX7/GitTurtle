@@ -1000,6 +1000,31 @@ impl ShortcutHelpView {
         self.heights.clone()
     }
 
+    /// Brings the entry Up or Down selected into view as the palette's and
+    /// Quick Open's lists do: centred where any of it lies outside the list,
+    /// left where it lies whole in it. The toolkit's virtual list centres on
+    /// every request, so holding Down kept the highlight at the list's middle
+    /// and scrolled the list on each press.
+    fn reveal_selected(&mut self) {
+        // The toolkit scrolls a row to an edge in window coordinates, so a
+        // row it placed there can read a rounding error past it here.
+        const ROUNDING: Pixels = px(0.01);
+        let heights = self.heights();
+        let Some(height) = heights.get(self.selected).map(|size| size.height) else {
+            return;
+        };
+        let top: Pixels = heights[..self.selected]
+            .iter()
+            .map(|size| size.height)
+            .sum();
+        // How far the list is scrolled, and its height, as last laid out.
+        let (scrolled, view) = (-self.scroll.offset().y, self.scroll.bounds().size.height);
+        if top < scrolled - ROUNDING || top + height > scrolled + view + ROUNDING {
+            self.scroll
+                .scroll_to_item(self.selected, ScrollStrategy::Center);
+        }
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::component::WindowExt;
         if self.closed {
@@ -1130,7 +1155,7 @@ impl Render for ShortcutHelpView {
                 };
                 if let Some(index) = next {
                     this.selected = index;
-                    this.scroll.scroll_to_item(index, ScrollStrategy::Center);
+                    this.reveal_selected();
                     cx.notify();
                 }
                 cx.stop_propagation();
@@ -1361,5 +1386,91 @@ mod list_tests {
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Up and Down move the highlight through the entries the list shows
+    /// whole without scrolling it, as the palette's and Quick Open's lists
+    /// do, and scroll it only for an entry outside it or cut by its edge,
+    /// centring that entry: at 13 pt in a 1200 × 800 window, Down from the
+    /// first entry keeps the list at its top until it passes the foot, and
+    /// Up from a scrolled list keeps it still until it passes the top. The
+    /// toolkit's virtual list centred the entry on every press, so holding
+    /// Down kept the highlight at the list's middle and scrolled it each time.
+    #[gpui::test]
+    async fn up_and_down_scroll_the_list_only_past_its_edges(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        let rows = help_matches("");
+        let heights: Vec<Pixels> = rows.iter().map(row_height).collect();
+        let tops: Vec<Pixels> = heights
+            .iter()
+            .scan(px(0.), |top, height| {
+                let at = *top;
+                *top += *height;
+                Some(at)
+            })
+            .collect();
+        let content: Pixels = heights.iter().copied().sum();
+        let entries: Vec<usize> = (0..rows.len())
+            .filter(|&index| matches!(rows[index], HelpRow::Entry(_)))
+            .collect();
+        let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+        // Inside the list's 1 px border.
+        let (top, view) = (list.top() + px(1.), list.size.height - px(2.));
+        assert!(
+            content > view * 3.,
+            "{content:?} in {view:?}: the list scrolls"
+        );
+        let whole = |entry: usize, scroll: Pixels| {
+            tops[entry] >= scroll && tops[entry] + heights[entry] <= scroll + view
+        };
+        // The scroll that centres `entry`, within the list's range.
+        let centred = |entry: usize| {
+            (tops[entry] + heights[entry] / 2. - view / 2.).clamp(px(0.), content - view)
+        };
+        let (mut selected, mut scroll) = (entries[0], px(0.));
+        // Down three times past the list's foot, then Up once past its top.
+        for (key, scrolls) in [("down", 3), ("up", 1)] {
+            let (mut kept, mut moved) = (0, 0);
+            while moved < scrolls {
+                let at = entries.iter().position(|&entry| entry == selected).unwrap();
+                let next = entries[if key == "down" { at + 1 } else { at - 1 }];
+                let inside = whole(next, scroll);
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                // How far the list is scrolled, read from where the newly
+                // selected entry is drawn.
+                let drawn = cx
+                    .debug_bounds(row_selector(&rows, next))
+                    .unwrap_or_else(|| panic!("{key} to entry {next}: it is drawn"));
+                let now = top + tops[next] - drawn.top();
+                if inside {
+                    assert!(
+                        (now - scroll).abs() < px(0.5),
+                        "{key} to entry {next}, whole in the list scrolled {scroll:?}, \
+                         scrolled it to {now:?}"
+                    );
+                    kept += 1;
+                } else {
+                    let centre = centred(next);
+                    assert!(
+                        (now - centre).abs() < px(0.5) && (now - scroll).abs() >= px(0.5),
+                        "{key} to entry {next}, outside the list scrolled {scroll:?}, \
+                         scrolls it to centre the entry at {centre:?}: {now:?}"
+                    );
+                    moved += 1;
+                    scroll = now;
+                }
+                selected = next;
+            }
+            assert!(kept >= 3, "{key} kept the list still for {kept} entries");
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
     }
 }
