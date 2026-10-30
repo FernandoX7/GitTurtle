@@ -362,8 +362,11 @@ impl GitTurtle {
     /// meanwhile start, a write's reload among them.
     pub(super) fn resume_repository_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.resume_file_history(window, cx);
+        // Returning activates nothing: a conflict's view whose preview landed
+        // meanwhile opens without its draft taking focus, which returns
+        // below to where it was; the draft took it for one frame first.
         if self.mode != WorkspaceMode::History {
-            self.ensure_editor(window, cx);
+            self.prepare_editor(false, window, cx);
         }
         let focus = self.page_return_focus.take().unwrap_or_else(|| {
             if self.mode == WorkspaceMode::History {

@@ -4861,6 +4861,62 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The selected working file's preview that lands conflicted while
+    /// Settings shows opens its conflict view as the window returns to the
+    /// repository, without its draft taking focus even for a frame: focus
+    /// returns where it was as the window left, the list. The return built
+    /// the view as an activation, so the draft held focus until the next
+    /// frame restored it.
+    #[gpui::test]
+    async fn returning_to_a_conflict_that_landed_meanwhile_focuses_no_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+
+        merge_stopping_on_notes(&repository);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        next_frame(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        rows_arrived(&app, cx).await;
+        preview_landed(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                matches!(app.content.as_deref(), Some(Content::Conflict(_))),
+                "the conflicted preview landed while Settings showed"
+            );
+            assert!(app.conflict_view.is_none(), "with no view built");
+        });
+
+        let returned = cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.return_from_page(window, cx));
+            let view = app.read(cx).conflict_view.clone();
+            view.map(|view| view.read(cx).resolution_focused(window, cx))
+        });
+        assert_eq!(
+            returned,
+            Some(false),
+            "the view opens as the window returns, its draft not focused"
+        );
+        next_frame(cx);
+        assert_eq!(conflict_shown(&app, cx), Some(false), "nor after it");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus returns to the list"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
     /// down to Discard changes… and the pointer then moved onto that item,
     /// is built again as a change outside the app changes its file, here
