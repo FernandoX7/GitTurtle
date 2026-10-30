@@ -9463,7 +9463,10 @@ pub(crate) mod tests {
     /// 20 px shadow padding, then its 1 px border, on each untiled side. At
     /// scale factor 1.5 the layout rounds the padding to 30 device pixels and
     /// the border, a stroke, to 1, so a 1,061 px window's body is drawn at
-    /// 1,529 device pixels; its content less 42 px and snapped, 1,528.
+    /// 1,529 device pixels; its content less 42 px and snapped, 1,528. The
+    /// scale factors include Wayland's 1.2 and 4/3 (n/120), where the
+    /// padding is not a whole number of device pixels until rounded: 26.67
+    /// at 4/3, laid out at 27.
     #[gpui::test]
     fn the_body_is_predicted_at_the_width_it_is_laid_out(cx: &mut TestAppContext) {
         struct Frame {
@@ -9524,7 +9527,7 @@ pub(crate) mod tests {
                 frame.paddings = paddings;
                 cx.notify();
             });
-            for scale in [1., 1.25, 1.5, 1.75, 2.] {
+            for scale in [1., 1.2, 1.25, 4. / 3., 1.5, 1.75, 2.] {
                 for width in [1000., 1001., 1002., 1060., 1061.] {
                     cx.simulate_resize(size(px(width), px(600.)));
                     cx.update(|window, cx| {
@@ -9613,7 +9616,12 @@ pub(crate) mod tests {
     }
 
     /// The body's test inset ends with its guard when a test fails while it
-    /// is set: reset only at a test's end, it outlived the failing test.
+    /// is set. Reset only at a test's end, it outlived a failing test, but
+    /// only on that test's thread: libtest runs each test on a thread of its
+    /// own, and GPUI ends a test at its first failing seed, so the leak could
+    /// reach only another run of the same test on that thread, a retry GPUI
+    /// makes for a test that asks for retries, or code run after catching
+    /// the failure, as this test does.
     #[test]
     fn the_body_inset_ends_with_a_failing_test() {
         let failed = std::panic::catch_unwind(|| {
