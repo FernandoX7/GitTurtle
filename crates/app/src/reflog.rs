@@ -700,23 +700,30 @@ impl ReflogBrowser {
                 // staying where it is, so a failed read is never out of
                 // view. Focus that leaves an entry's Cancel for the entry,
                 // far above the error, is revealed instead, so the entry it
-                // lands on draws its ring, and the error, which may then lie
-                // below the fold, is announced politely, once, from the
-                // window root's announcement node, a fresh node for each
-                // failure. The error's own line, a live region in the
-                // content, was left out of the tree by AccessKit's filter
-                // while it lay wholly past the content's clip beside
-                // neighbours past it too, so it was announced only once
-                // scrolled into view, and again at each scroll back in.
+                // lands on draws its ring, and the error may then lie below
+                // the fold.
                 match place {
                     ReadPlace::Log => this.reveal_filter = true,
-                    ReadPlace::Entry => {
-                        this.reveal_error = this.error.is_some() && !left_cancel;
-                        if left_cancel && let Some(error) = this.error.clone() {
-                            copy_feedback::confirm(window, cx, None, error);
-                        }
-                    }
+                    ReadPlace::Entry => this.reveal_error = this.error.is_some() && !left_cancel,
                     ReadPlace::Recovery => this.reveal_error = this.error.is_some(),
+                }
+                // Every failure, the log's, an entry's or the recovery
+                // review's, says itself once, at once, from the window
+                // root's alert node, a fresh node for each failure, as the
+                // app's other failures do, while its line stands in place.
+                // Only an entry's read that failed on its Cancel was heard,
+                // politely, and the rest were heard only by an assistive
+                // technology reading the content. The line itself is no live
+                // region: AccessKit's filter left it out of the tree while
+                // it lay wholly past the content's clip beside neighbours
+                // past it too, so it was announced only once scrolled into
+                // view, and again at each scroll back in.
+                if let Some(error) = &this.error {
+                    copy_feedback::alert(
+                        window,
+                        cx,
+                        native_accessibility::bounded_accessible_text(error.as_str()),
+                    );
                 }
                 cx.notify();
             });
@@ -960,13 +967,22 @@ impl Render for ReflogBrowser {
         // failed read, far from Review recovery branch… and out of view
         // where the content had scrolled down to it.
         let reveal_error = std::mem::take(&mut self.reveal_error);
+        // A failure's report, which Git's output can make long, reaches
+        // assistive technology bounded; the line draws it whole.
         let error = self.error.as_ref().map(|error| {
-            label("reflog-error", error.clone())
-                .text_size(crate::appearance::ui_text(12.))
-                .text_color(rgb(p.warning))
-                .when(reveal_error, |error| {
-                    error.on_prepaint(reveal_landed(self.content.scroll().clone(), room))
-                })
+            native_accessibility::static_text(
+                div()
+                    .id("reflog-error")
+                    .debug_selector(|| "reflog-error".into())
+                    .child(error.clone()),
+                native_accessibility::bounded_accessible_text(error.as_str()),
+            )
+            .ml(TEXT_INSET)
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(p.warning))
+            .when(reveal_error, |error| {
+                error.on_prepaint(reveal_landed(self.content.scroll().clone(), room))
+            })
         });
         let (error_above, error_below, error_after_review) = place.slots(error);
         let show_entry = self.entries.items(entries.clone(), room);
@@ -1470,9 +1486,9 @@ mod tests {
     }
 
     /// An entry's read that fails while keyboard focus is on its loading
-    /// row's Cancel is announced once, as it fails, at 18 pt in a 461 × 490
-    /// half tile, where focus moves to the entry, which the content shows,
-    /// and the error lies past the fold: from the window root's announcement
+    /// row's Cancel is announced once, at once, as it fails, at 18 pt in a
+    /// 461 × 490 half tile, where focus moves to the entry, which the content
+    /// shows, and the error lies past the fold: from the window root's alert
     /// node, beside the page and the dialog, which AccessKit's filter keeps
     /// wherever the content scrolls. Scrolling the error into view and out
     /// again announces nothing more, and the error's line is no live region.
@@ -1526,21 +1542,21 @@ mod tests {
             dialog.set_label("Local reflog and recovery");
             dialog.set_modal();
             let mut tree = written::Assembly::default().written("gitturtle-page", None);
-            if let Some((id, text)) = copy_feedback::tests::announced(cx) {
+            if let Some((id, text)) = copy_feedback::tests::alerted(cx) {
                 let key = id.to_string();
                 assert_eq!(
                     written::announced(&key),
                     Some(written::Announced {
-                        live: Live::Polite,
+                        live: Live::Assertive,
                         atomic: true,
                         busy: false,
                     }),
-                    "the announcement is polite"
+                    "the alert is assertive"
                 );
-                let mut node = Node::new(A11yRole::Status);
+                let mut node = Node::new(A11yRole::Alert);
                 node.set_label(text.clone());
                 node.set_value(text);
-                node.set_live(Live::Polite);
+                node.set_live(Live::Assertive);
                 node.set_live_atomic();
                 tree = tree.node(&key, node, None);
             }
@@ -1630,8 +1646,8 @@ mod tests {
             reached(&failed)
         );
         assert!(
-            reaches(&failed, A11yRole::Status, &error),
-            "the announcement is in reach: {:#?}",
+            reaches(&failed, A11yRole::Alert, &error),
+            "the alert is in reach: {:#?}",
             reached(&failed)
         );
         assert_eq!(
@@ -1639,7 +1655,7 @@ mod tests {
             None,
             "the error's line is no live region"
         );
-        let (first, _) = copy_feedback::tests::announced(cx).expect("the failure is announced");
+        let (first, _) = copy_feedback::tests::alerted(cx).expect("the failure is announced");
         #[cfg(target_os = "linux")]
         {
             bus.update(failed);
@@ -1684,7 +1700,7 @@ mod tests {
         let held = fail_on_cancel(cx);
         let waiting = frame(cx);
         assert_eq!(
-            copy_feedback::tests::announced(cx).map(|(id, _)| id),
+            copy_feedback::tests::alerted(cx).map(|(id, _)| id),
             Some(first.clone()),
             "the first failure's node still stands"
         );
@@ -1704,8 +1720,8 @@ mod tests {
         );
         let again = frame(cx);
         assert!(
-            reaches(&again, A11yRole::Status, &error),
-            "the second announcement is in reach: {:#?}",
+            reaches(&again, A11yRole::Alert, &error),
+            "the second alert is in reach: {:#?}",
             reached(&again)
         );
         #[cfg(target_os = "linux")]
@@ -1717,8 +1733,81 @@ mod tests {
                 "the second failure is announced once"
             );
         }
-        let (second, _) = copy_feedback::tests::announced(cx).expect("the failure is announced");
+        let (second, _) = copy_feedback::tests::alerted(cx).expect("the failure is announced");
         assert_ne!(second, first, "each failure is a fresh node");
+    }
+
+    /// Every read the Reflog makes says its failure once, at once, from the
+    /// window root's alert node, a fresh node for each, its line standing in
+    /// place: an entry's, here a pruned commit's with focus on the entry, the
+    /// recovery review's, for a branch name already taken, and the log's,
+    /// for a scope that names no valid branch. Only an entry's read that
+    /// failed on its Cancel was heard, politely; the others said nothing.
+    #[gpui::test]
+    async fn every_failed_read_is_announced(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use gpui::accesskit::Live;
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = pruned_repository(fixture.path());
+        git(repo.path(), &["branch", "recovery/taken"]);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        // The alert the last frame drew, which says the failure the browser
+        // shows, at once, from a node other than `previous`.
+        let alerted = |cx: &mut VisualTestContext, read: &str, previous: Option<&ElementId>| {
+            let error = browser
+                .read_with(cx, |this, _| this.error.clone())
+                .unwrap_or_else(|| panic!("{read} fails"));
+            assert!(
+                cx.debug_bounds("reflog-error").is_some(),
+                "{read}: the failure's line stands in place"
+            );
+            let (id, said) = copy_feedback::tests::alerted(cx)
+                .unwrap_or_else(|| panic!("{read}: the failure is announced"));
+            assert_eq!(said, error, "{read}: the alert says the failure");
+            assert_eq!(
+                written::announced(&id.to_string()),
+                Some(written::Announced {
+                    live: Live::Assertive,
+                    atomic: true,
+                    busy: false,
+                }),
+                "{read}: announced at once"
+            );
+            assert_ne!(Some(&id), previous, "{read}: a fresh node");
+            id
+        };
+
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        cx.simulate_keystrokes("down");
+        settle_reads(cx, &browser);
+        let entry = alerted(cx, "the pruned entry's read", None);
+
+        cx.simulate_keystrokes("up");
+        settle_reads(cx, &browser);
+        assert!(browser.read_with(cx, |this, _| this.commit.is_some()));
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| {
+                this.name.update(cx, |input, cx| {
+                    input.set_value("recovery/taken", window, cx);
+                });
+                this.recover(window, cx);
+            });
+        });
+        settle_reads(cx, &browser);
+        let review = alerted(cx, "the recovery review", Some(&entry));
+
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| {
+                this.scope.update(cx, |input, cx| {
+                    input.set_value("bad..name", window, cx);
+                });
+                this.refresh(window, cx);
+            });
+        });
+        settle_reads(cx, &browser);
+        alerted(cx, "the log's read", Some(&review));
     }
 
     /// Down held past the last entry while a commit's read is slow selects
