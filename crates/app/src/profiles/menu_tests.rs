@@ -308,3 +308,44 @@ fn the_current_identity_leaves_out_what_is_not_set() {
     );
     assert_eq!(identity("", ""), "Current: no Git identity");
 }
+
+/// A profile save that fails while its form shows is said once: by the
+/// form's own line, through the window's alert, and not by the window's
+/// error as well. Both said it, the form's line even while it was hidden.
+#[gpui::test]
+async fn a_failed_save_is_said_once_by_the_form_that_shows_it(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, Store::default()).await;
+    // A folder where the store's file goes: the save cannot write it.
+    std::fs::create_dir_all(Store::path().unwrap()).unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.edit_profile(None, window, cx)));
+    settle(&app, cx).await;
+    let form = app
+        .read_with(cx, |app, _| app.profiles.draft.clone())
+        .expect("the form opens");
+    cx.update(|window, cx| {
+        form.update(cx, |form, cx| {
+            for (field, value) in [
+                (&form.label, "Work"),
+                (&form.name, "Profile Author"),
+                (&form.email, "work@example.invalid"),
+            ] {
+                field.update(cx, |field, cx| field.set_value(value, window, cx));
+            }
+            form.submit(window, cx);
+        })
+    });
+    let barrier = app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())));
+    barrier.await.unwrap().unwrap();
+    settle(&app, cx).await;
+    let error = form
+        .read_with(cx, |form, _| form.error.clone())
+        .expect("the save fails");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_error.clone()),
+        None,
+        "the window's error says nothing more"
+    );
+    let (_, said) = crate::copy_feedback::tests::alerted(cx).expect("the form's line is said");
+    assert_eq!(said, error);
+}

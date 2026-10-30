@@ -432,13 +432,29 @@ impl GitTurtle {
                         let error = format!("{error:#}");
                         this.profiles.error = Some(error.clone());
                         this.profiles.failed = if form.is_some() { None } else { Some(mutation) };
-                        this.operation_error = Some(format!("Profile persistence: {error}"));
-                        if let Some(form) = &form {
-                            let _ = form.update(cx, |form, cx| {
+                        // Said once: by the form's own line where the form
+                        // shows, which the window's alert says, or else by the
+                        // window's error. Both were said, the form's even
+                        // while it was hidden.
+                        let shown = form
+                            .as_ref()
+                            .and_then(|form| form.upgrade())
+                            .filter(|form| form.read(cx).visible);
+                        if let Some(form) = shown {
+                            form.update(cx, |form, cx| {
                                 form.pending = false;
                                 crate::tags::set_error_line(&mut form.error, error, window, cx);
                                 cx.notify();
                             });
+                        } else {
+                            this.operation_error = Some(format!("Profile persistence: {error}"));
+                            if let Some(form) = &form {
+                                let _ = form.update(cx, |form, cx| {
+                                    form.pending = false;
+                                    form.error = Some(error);
+                                    cx.notify();
+                                });
+                            }
                         }
                     }
                 }
