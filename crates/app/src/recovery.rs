@@ -124,9 +124,11 @@ impl GitTurtle {
     /// state until then and, ending, reads the working state Changes asked
     /// for meanwhile (`read_deferred_working`) rather than leave that read
     /// queued behind it. Opened during a preparation History started, Changes
-    /// once showed its plan's form over the working list.
-    pub(super) fn dismiss_recovery_read(&mut self) {
-        self.recovery.dismissed = self.recovery.task.is_some();
+    /// once showed its plan's form over the working list. `dismissed` false,
+    /// as History shows again before the preparation ends, wants the plan
+    /// again ([`Self::dismiss_history_plans`]).
+    pub(super) fn dismiss_recovery_read(&mut self, dismissed: bool) {
+        self.recovery.dismissed = dismissed && self.recovery.task.is_some();
     }
 
     /// Reports that a recovery action refuses while an integration is

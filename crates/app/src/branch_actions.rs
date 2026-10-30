@@ -107,10 +107,11 @@ impl GitTurtle {
     }
 
     /// Drops what the running preparation brings while its read still ends,
-    /// as Changes opens over the view that asked for it
+    /// as Changes opens over the view that asked for it, or wants it again
+    /// (`dismissed` false) as that view shows again
     /// ([`Self::dismiss_recovery_read`]).
-    pub(super) fn dismiss_branch_action(&mut self) {
-        self.branch_actions.dismissed = self.branch_actions.task.is_some();
+    pub(super) fn dismiss_branch_action(&mut self, dismissed: bool) {
+        self.branch_actions.dismissed = dismissed && self.branch_actions.task.is_some();
     }
 
     /// Replaces the existing picker; its frequent switch actions remain first.

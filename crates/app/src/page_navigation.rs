@@ -943,6 +943,166 @@ mod tests {
         assert!(amend_open(cx), "Amend last commit opens in History");
     }
 
+    /// The plans History asks for whose preparation can be held: Amend last
+    /// commit, main's branch actions and, last as it leaves the repository
+    /// mid-rebase, a paused rebase's Continue (`pause_a_reword`).
+    type Prepare = fn(&mut GitTurtle, String, &mut Window, &mut Context<GitTurtle>);
+    fn plans() -> [(&'static str, Prepare); 3] {
+        [
+            ("Amend last commit", |app, head, window, cx| {
+                crate::recovery::prepare_amend(app, head, window, cx)
+            }),
+            ("main's branch actions", |app, _, window, cx| {
+                app.open_contextual_branch("main".into(), false, window, cx)
+            }),
+            ("Continue rebase", |app, _, window, cx| {
+                app.prepare_interactive_rebase_continue(window, cx)
+            }),
+        ]
+    }
+
+    /// Pauses a reword of `root`'s last commit for its message, which
+    /// Continue rebase edits, and reads the paused state.
+    async fn pause_a_reword(
+        app: &Entity<GitTurtle>,
+        root: &std::path::Path,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::views::tests::{fixture_git, settle};
+        use gitturtle_core::{InteractiveRebaseCommand, RebaseAction, WriteCommand};
+        fixture_git(root, &["config", "user.name", "Fixture"]);
+        fixture_git(root, &["config", "user.email", "fixture@example.invalid"]);
+        fixture_git(root, &["config", "commit.gpgsign", "false"]);
+        let repo = app.read_with(cx, |app, _| app.repository.clone().unwrap());
+        let plan = repo.interactive_rebase_plan("HEAD~1").unwrap();
+        let mut steps = plan.steps();
+        steps[0].action = RebaseAction::Reword;
+        repo.execute(&WriteCommand::InteractiveRebase(Arc::new(
+            InteractiveRebaseCommand::Start {
+                plan,
+                steps,
+                acknowledge_published: false,
+            },
+        )))
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(app, cx).await;
+        crate::path_filter::filters_land(app, cx);
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
+    }
+
+    /// Lets a held preparation end, and the reads after it land.
+    async fn preparation_ends(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(app, cx).await;
+        crate::path_filter::filters_land(app, cx);
+    }
+
+    fn dialog_open(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| window.has_active_dialog(cx))
+    }
+
+    fn close_dialogs(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        crate::views::tests::draw(cx);
+    }
+
+    /// A plan Changes dropped as it opened leaves the next one: Changes'
+    /// own Amend last commit…, its branch picker's actions or the paused
+    /// rebase's Continue, asked for there once History's had ended unseen,
+    /// opens its plan over Changes. The preparation's start resets what the
+    /// last one dropped (`cancel_recovery_read`, `cancel_branch_action`,
+    /// `cancel_interactive_rebase_action`), or the next plan would be
+    /// dropped too, with nothing said. Continue rebase's dialog is dropped as
+    /// Changes opens, as the other plans are
+    /// (`changes_opened_while_history_prepares_a_plan_drops_the_plan`).
+    #[gpui::test]
+    async fn a_plan_changes_dropped_leaves_the_next_one_asked_for_there(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        for (plan, prepare) in plans() {
+            if plan == "Continue rebase" {
+                pause_a_reword(&app, &root, cx).await;
+            }
+            // Asked for in History, held, and Changes opened.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, commit, window, cx)));
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                "{plan} is prepared"
+            );
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+            drop(held);
+            preparation_ends(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working
+                    && app.operation_busy.is_none()),
+                "{plan}: the preparation ended in Changes"
+            );
+            assert!(
+                !dialog_open(cx),
+                "{plan}: History's plan opens nothing over Changes"
+            );
+            // Asked for again in Changes, the plan opens there.
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, commit, window, cx)));
+            preparation_ends(&app, cx).await;
+            assert!(
+                dialog_open(cx),
+                "{plan}: asked for in Changes, it opens there"
+            );
+            close_dialogs(cx);
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+        }
+    }
+
+    /// History shown again before the plan Changes dropped is prepared
+    /// wants it again: Primary + 2 and Primary + 1 while Amend last commit,
+    /// a branch's actions or a paused rebase's Continue are prepared, and
+    /// the plan opens over History as its preparation ends. It once stayed
+    /// dropped, and the action did nothing.
+    #[gpui::test]
+    async fn a_plan_changes_dropped_opens_once_history_shows_again(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        for (plan, prepare) in plans() {
+            if plan == "Continue rebase" {
+                pause_a_reword(&app, &root, cx).await;
+            }
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, commit, window, cx)));
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                "{plan} is prepared"
+            );
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working));
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+            drop(held);
+            preparation_ends(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.mode == WorkspaceMode::History
+                    && app.operation_busy.is_none()),
+                "{plan}: the preparation ended in History"
+            );
+            assert!(
+                dialog_open(cx),
+                "{plan}: back in History, its plan opens there"
+            );
+            close_dialogs(cx);
+        }
+    }
+
     /// A Commit or Fetch refreshes quietly as it ends, and that quiet read
     /// serves Changes opened while it ran: its rows land without a second,
     /// aloud read clearing them, and the selected row gets back the preview

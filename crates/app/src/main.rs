@@ -1694,6 +1694,9 @@ impl GitTurtle {
             self.sidebar = self.history_sidebar;
         }
         if was_working {
+            // A plan History asked for that Changes dropped as it opened
+            // opens here as its preparation ends: it once stayed dropped.
+            self.dismiss_history_plans(false);
             self.invalidate_read();
             self.clear_preview();
             let (files, selected) = self.retained_history_files.take().unwrap_or_default();

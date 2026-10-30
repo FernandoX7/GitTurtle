@@ -2133,7 +2133,7 @@ impl GitTurtle {
     /// Leaving History or Compare drops the plan a recovery, rebase or
     /// branch action is being prepared for there, as leaving the page does,
     /// while the preparation's read still ends and then reads the working
-    /// state this page asked for ([`Self::dismiss_recovery_read`]). Its form
+    /// state this page asked for ([`Self::dismiss_history_plans`]). Its form
     /// once opened over the working list.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
@@ -2142,9 +2142,7 @@ impl GitTurtle {
             return;
         }
         if self.mode != WorkspaceMode::Working {
-            self.dismiss_recovery_read();
-            self.dismiss_interactive_rebase_action();
-            self.dismiss_branch_action();
+            self.dismiss_history_plans(true);
             if self.mode == WorkspaceMode::History {
                 self.history_sidebar = self.sidebar;
             }
@@ -2161,6 +2159,21 @@ impl GitTurtle {
         window.focus(&self.file_focus, cx);
         self.refresh_worktree(window, cx);
         cx.notify();
+    }
+
+    /// Drops the plans a recovery, rebase or branch action brings when
+    /// its preparation, started in History or Compare, ends, as Changes
+    /// opens over the view that asked for them ([`Self::show_working`]), or,
+    /// `dismissed` false as History shows again before the preparation ends
+    /// (`back_to_history`), wants them again, so the plan opens there. Kept
+    /// dropped, History's action did nothing. Each preparation's start wants
+    /// its plan again too (`cancel_recovery_read`,
+    /// `cancel_interactive_rebase_action`, `cancel_branch_action`), so one
+    /// Changes asks for opens there.
+    pub(super) fn dismiss_history_plans(&mut self, dismissed: bool) {
+        self.dismiss_recovery_read(dismissed);
+        self.dismiss_interactive_rebase_action(dismissed);
+        self.dismiss_branch_action(dismissed);
     }
 
     /// Reads the shown repository's working state if it asked for a read

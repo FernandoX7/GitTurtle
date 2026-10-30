@@ -85,10 +85,11 @@ impl GitTurtle {
     }
 
     /// Drops what the running preparation brings while its read still ends,
-    /// as Changes opens over the view that asked for it
+    /// as Changes opens over the view that asked for it, or wants it again
+    /// (`dismissed` false) as that view shows again
     /// ([`Self::dismiss_recovery_read`]).
-    pub(super) fn dismiss_interactive_rebase_action(&mut self) {
-        self.interactive_rebase.dismissed = self.interactive_rebase.task.is_some();
+    pub(super) fn dismiss_interactive_rebase_action(&mut self, dismissed: bool) {
+        self.interactive_rebase.dismissed = dismissed && self.interactive_rebase.task.is_some();
     }
 
     /// A selected commit may be supplied as the exclusive base; otherwise the
