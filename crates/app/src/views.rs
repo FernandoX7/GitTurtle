@@ -5057,7 +5057,9 @@ impl GitTurtle {
     /// the status, where a narrower one fills that line and leaves the
     /// spacer too little, so each arrangement the contents can take is
     /// asked where it leaves the least ([`to_bar_anywhere`]). Kept for each
-    /// width and text size ([`Measured`]); a resize asks again.
+    /// width, text size and scale factor ([`Measured`]), since the header's
+    /// insets and gaps snap to the window's device pixels; a resize asks
+    /// again, and so does a window on a monitor of another scale.
     fn full_bar_room(
         &self,
         width: Pixels,
@@ -5076,6 +5078,7 @@ impl GitTurtle {
         let changes = (least.min(widths.changes), widest.max(widths.changes));
         let key = (
             line,
+            window.scale_factor().to_bits(),
             f32::from(width).to_bits(),
             narrow,
             f32::from(changes.1).to_bits(),
@@ -6187,10 +6190,11 @@ thread_local! {
     /// The status line's whole text, measured where spare keyboard hints
     /// ask whether it keeps it (`GitTurtle::fit_status_bar`).
     static STATUS_TEXT: TextWidth = const { RefCell::new(None) };
-    /// [`StatusWidths`] for the keyboard hints and font and sizes drawn
-    /// lately, so the windows, pages and text sizes drawn in turn keep their
-    /// own.
-    static STATUS_WIDTHS: RefCell<Measured<(LineKey, shortcuts::KeyHints), StatusWidths>> =
+    /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
+    /// drawn lately, so the windows, pages and text sizes drawn in turn keep
+    /// their own; its gaps and the warning's controls snap to the window's
+    /// device pixels.
+    static STATUS_WIDTHS: RefCell<Measured<(LineKey, u32, shortcuts::KeyHints), StatusWidths>> =
         const { RefCell::new(Measured::new()) };
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
@@ -6206,13 +6210,20 @@ thread_local! {
     static CHANGES_LABELS: RefCell<Option<(LineKey, (Pixels, Pixels))>> =
         const { RefCell::new(None) };
     /// Whether the status bar keeps Cancel's room, for each width and text
-    /// size asked lately (`GitTurtle::full_bar_room`): the font and sizes,
-    /// the header's width, whether it is narrow, and the widest Changes.
-    static BAR_ROOM: RefCell<Measured<(LineKey, u32, bool, u32), bool>> =
+    /// size asked lately (`GitTurtle::full_bar_room`, [`BarRoomKey`]).
+    static BAR_ROOM: RefCell<Measured<BarRoomKey, bool>> =
         const { RefCell::new(Measured::new()) };
     /// [`SidebarWidths`] for the current font and sizes.
     static SIDEBAR_WIDTHS: RefCell<Option<(LineKey, SidebarWidths)>> = const { RefCell::new(None) };
 }
+
+/// What the status bar's room for Cancel is kept by
+/// (`GitTurtle::full_bar_room`): the font and sizes, the window's scale
+/// factor, the header's width, whether it is narrow, and the widest
+/// Changes. Without the scale factor a window moved to a monitor of another
+/// scale, or two windows on two, read each other's answer at one logical
+/// width, though the header snaps to each one's device pixels.
+type BarRoomKey = (LineKey, u32, u32, bool, u32);
 
 /// The navigation's mode toggles, in order: each mode, its name, the glyph
 /// it shows where the names do not fit one row, and its debug selector.
@@ -7144,9 +7155,12 @@ impl GitTurtle {
             room -= gap + window.pixel_snap(appearance::ui_size(WATCH_CONTROL));
         }
         STATUS_WIDTHS.with_borrow_mut(|cache| {
-            let widths = cache.get((LineKey::current(window), hints), |(_, hints)| {
-                self.status_widths(hints, window)
-            });
+            let key = (
+                LineKey::current(window),
+                window.scale_factor().to_bits(),
+                hints,
+            );
+            let widths = cache.get(key, |(_, _, hints)| self.status_widths(hints, window));
             let line = match self.fresh_outcome() {
                 Some(outcome) => cached_text_width(&STATUS_OUTCOME, outcome, window, || {
                     line_widths(&[(outcome, appearance::ui_text(10.))], window)
@@ -16219,6 +16233,106 @@ pub(crate) mod tests {
             kept.iter().all(|&widths| widths > 0),
             "the room is kept at some widths and not at others: {kept:?}"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The bar's room for Cancel and the status bar's widths are kept for
+    /// each scale factor, since the header and the bar snap to the window's
+    /// device pixels: at 13 and 18 pt, at a body width where scale factors
+    /// 1 and 1.25, 1.5 or 2 decide the room differently, a window drawn at
+    /// the scale that keeps no room and then at the one that keeps it, at
+    /// the same logical width, takes each scale's own answer, its own header
+    /// among those asked, and measures the bar's widths again. Kept by font
+    /// and sizes alone, a window moved to a monitor of another scale, or
+    /// two windows on two, read each other's answer near the threshold: the
+    /// bar's hints and Details… moved when a write started, and a debug
+    /// build failed the frame's assertion.
+    #[gpui::test]
+    async fn the_bars_room_and_widths_are_kept_for_each_scale_factor(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let initial = cx.update(|window, _| window.scale_factor());
+        // Draws the window at `scale` with its body `width` wide, and gives
+        // the frame's room. A resize sets the test window's own scale, 2,
+        // so the scale is set after it.
+        let drawn = |scale: f32, width: Pixels, cx: &mut VisualTestContext| {
+            let insets =
+                cx.update(|window, _| window.viewport_size().width - body_size(window).width);
+            cx.simulate_resize(size(width + insets, px(980.)));
+            // As a move to a monitor of another scale does, it lays the
+            // whole window out again.
+            cx.update(|window, _| {
+                window.set_scale_factor(scale);
+                window.refresh();
+            });
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| (window.scale_factor(), body_size(window).width)),
+                (scale, width),
+                "the window's scale and body"
+            );
+            cx.update(|window, cx| app.read(cx).frame_plan(window, cx))
+                .expect("a Repository frame")
+        };
+        let mut checked = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            // A width every scale lays out in whole device pixels where scale
+            // factor 1 and another decide the room differently, each asked
+            // afresh, in one update so the search draws no frames; the scale
+            // that keeps no room first, as a window moving to the other
+            // would draw it.
+            let found = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let widths = app.chrome_widths(window);
+                let mut afresh = |scale: f32, width: Pixels| {
+                    window.set_scale_factor(scale);
+                    BAR_ROOM.with_borrow_mut(|cache| *cache = Measured::new());
+                    let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                    app.full_bar_room(width, narrow, &widths, window)
+                };
+                let found = [1.25, 1.5, 2.].into_iter().find_map(|other| {
+                    (116..=600)
+                        .map(|quarter| px(quarter as f32 * 4.))
+                        .find_map(|width| {
+                            let (one, two) = (afresh(1., width), afresh(other, width));
+                            (one != two).then_some(if one {
+                                (other, 1., width)
+                            } else {
+                                (1., other, width)
+                            })
+                        })
+                });
+                window.set_scale_factor(initial);
+                found
+            });
+            let Some((without, with, width)) = found else {
+                continue;
+            };
+            let at = format!("{text} pt, {width:?}, scale {without} then {with}");
+            // The search drew frames at both scales; these two draws start
+            // afresh.
+            BAR_ROOM.with_borrow_mut(|cache| *cache = Measured::new());
+            STATUS_WIDTHS.with_borrow_mut(|cache| *cache = Measured::new());
+            assert!(
+                !drawn(without, width, cx).bar_room,
+                "{at}: no room at {without}"
+            );
+            let measured = STATUS_MEASURED.with(std::cell::Cell::get);
+            let plan = drawn(with, width, cx);
+            assert!(plan.full.is_some(), "{at}: the full header");
+            assert!(plan.bar_room, "{at}: the room at {with}, its own answer");
+            assert!(
+                STATUS_MEASURED.with(std::cell::Cell::get) > measured,
+                "{at}: the bar's widths are measured for the new scale"
+            );
+            checked.push(text);
+        }
+        assert!(
+            !checked.is_empty(),
+            "a width where the scales differ is checked"
+        );
+        cx.update(|window, _| window.set_scale_factor(initial));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
