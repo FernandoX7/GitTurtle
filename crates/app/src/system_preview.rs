@@ -1569,7 +1569,8 @@ pub(crate) mod tests {
     /// A side 240 px wide and 400 px tall whose own header holds one
     /// control, above content that keeps no room of its own and a foot of
     /// `lines` lines in a scroll area at most 80 px tall, as a model's
-    /// details are.
+    /// details are at most their room, which holds four of their lines at
+    /// the interface size (`model_view::details_room`).
     #[cfg(target_os = "linux")]
     struct FootSide {
         lines: usize,
@@ -2225,6 +2226,44 @@ pub(crate) mod tests {
                 measured[selector]
             );
         }
+    }
+
+    /// The clip menu's readings and the page number's twenty are built and
+    /// laid out once for each font and size, not on every frame: walking a
+    /// model comparison, whose Before has clips, and a 111-page PDF's page
+    /// view, at 13 and 18 pt, builds them only for a size's first frame.
+    /// Built on every frame, the clip menu's names were gathered and joined
+    /// on each frame of a clip's playback. That a page number's are built
+    /// again for a count of more digits is
+    /// `pdf_view::tests::a_page_number_is_measured_again_for_a_count_of_more_digits`.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_widest_readings_are_built_once_per_size(cx: &mut gpui_kit::TestAppContext) {
+        let built = || {
+            (
+                crate::model_view::CLIP_READINGS_BUILT.with(std::cell::Cell::get),
+                crate::pdf_view::PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get),
+            )
+        };
+        let mut frames = 0;
+        for content in document_sides(111, 107) {
+            let mut first = std::collections::BTreeMap::new();
+            walk_side_widths(cx, content, 40, |_, _, (text, width), _| {
+                let now = built();
+                let at_first = *first.entry(text).or_insert(now);
+                assert_eq!(
+                    now, at_first,
+                    "at {text} pt, {width} px: built only for the size's first frame"
+                );
+                frames += 1;
+            });
+        }
+        let (clips, page_numbers) = built();
+        assert!(frames > 30, "the walks drew {frames} frames");
+        assert!(
+            clips >= 2 && page_numbers >= 4,
+            "the clip menu's readings were built {clips} times and the page numbers' {page_numbers}"
+        );
     }
 
     /// Side `name`'s own header, which `view` draws in a box its content

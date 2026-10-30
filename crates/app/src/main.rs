@@ -2709,9 +2709,11 @@ mod icon_symbol_tests {
     /// The literal icon names in `source`: the symbol argument of each
     /// `button(id, label, symbol, active)` call, the argument of each
     /// `control_icon(symbol)` call (as `copy_feedback::copy_button` draws its
-    /// copy and check icons) and each `icons/<name>.svg` path literal. Method
-    /// calls (`.button(`) and definitions are not calls of the helper; an
-    /// empty symbol draws no icon.
+    /// copy and check icons), the icon of each side header control, the
+    /// fifth argument of `HeaderControl::new` and `HeaderControl::toggle`
+    /// (`system_preview::HeaderControl`), and each `icons/<name>.svg` path
+    /// literal. Method calls (`.button(`) and definitions are not calls of
+    /// the helper; an empty symbol draws no icon.
     fn literal_icon_symbols(source: &str) -> Vec<String> {
         let tokens = tokens(source);
         let mut symbols = Vec::new();
@@ -2725,9 +2727,19 @@ mod icon_symbol_tests {
                 symbols.push(name.to_owned());
             }
             // The symbol's argument position in each helper.
+            let header_control = || {
+                index >= 3
+                    && tokens[index - 3..index]
+                        == [
+                            Token::Ident("HeaderControl".to_owned()),
+                            Token::Punct(':'),
+                            Token::Punct(':'),
+                        ]
+            };
             let position = match token {
                 Token::Ident(name) if name == "button" => 2,
                 Token::Ident(name) if name == "control_icon" => 0,
+                Token::Ident(name) if (name == "new" || name == "toggle") && header_control() => 4,
                 _ => continue,
             };
             let call = tokens.get(index + 1) == Some(&Token::Punct('('))
@@ -2798,10 +2810,16 @@ mod icon_symbol_tests {
             let h = copy_feedback::copy_button(mark, "Copy", "a tooltip, not an icon", cx);
             fn control_icon(symbol: &str) -> Icon {}
             let i = div().child(control_icon("fourth")).child(control_icon(icon));
+            let j = crate::system_preview::HeaderControl::new(
+                ("clip", index), format!("clip-{index}"), "Default pose", name, "fifth", widest,
+            );
+            let k = HeaderControl::toggle(id, selector, ["Off", "On"], name, "sixth", on, window);
+            let l = Self::new(id, selector, readings[0], name, icon, widest);
+            let m = Theme::new(id, selector, reading, name, "not-a-header-control", widest);
         "#;
         assert_eq!(
             literal_icon_symbols(source),
-            ["first", "second", "third", "fourth"]
+            ["first", "second", "third", "fourth", "fifth", "sixth"]
         );
     }
 
@@ -2835,6 +2853,21 @@ mod icon_symbol_tests {
                 .any(|symbol| symbol == "refresh"),
             "the scanner must see Read log's helper call"
         );
+        // A renamed asset of a side header control drew an empty 28 px
+        // square with every test passing while the scanner missed them.
+        for (file, symbol) in [
+            ("pdf_view.rs", "page"),
+            ("model_view.rs", "edges"),
+            ("model_view/playback.rs", "clip"),
+        ] {
+            let source = std::fs::read_to_string(root.join(file)).unwrap();
+            assert!(
+                literal_icon_symbols(&source)
+                    .iter()
+                    .any(|seen| seen == symbol),
+                "the scanner must see the side header control icon {symbol} in {file}"
+            );
+        }
         assert!(checked > 50, "only {checked} literal icon names were found");
     }
 }

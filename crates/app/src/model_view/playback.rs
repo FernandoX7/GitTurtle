@@ -171,12 +171,6 @@ fn choose_clip(document: &Arc<Document>, partner: Option<&Arc<Document>>, clip: 
     seek(&documents, 0.);
 }
 
-thread_local! {
-    /// Each side's clip names, laid out.
-    static BEFORE_CLIPS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static AFTER_CLIPS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-}
-
 /// Side `index`'s clip menu and the displayed pose's time, in the header
 /// `held` whose line leaves a control `line_room`: labelled with the chosen
 /// clip's name and a caret where its widest reading, "Default pose" or a
@@ -196,28 +190,36 @@ pub(super) fn clip_control<T: 'static>(
     if clips.is_empty() {
         return None;
     }
-    let (selected, sampled) = {
+    // The menu's widest reading is laid out once per font and size and kept
+    // with the document, whose clips never change: its readings were once
+    // gathered and joined on every frame, a clip's playback among them.
+    let key = crate::views::LineKey::current(window);
+    let (selected, sampled, measured) = {
         let state = document.state.lock().unwrap_or_else(|e| e.into_inner());
         (
             state.playback.pose.clip,
             state.frame_pose.unwrap_or_default(),
+            state
+                .clip_menu
+                .as_ref()
+                .filter(|(laid_out, _)| *laid_out == key)
+                .map(|(_, width)| *width),
         )
     };
     let text = selected
         .and_then(|index| clips.get(index))
         .map_or_else(|| "Default pose".to_owned(), |clip| clip.name.clone());
-    let readings: Vec<&str> = std::iter::once("Default pose")
-        .chain(clips.iter().map(|clip| clip.name.as_str()))
-        .collect();
-    let widest = super::menu_width(
-        &readings,
-        if index == 0 {
-            &BEFORE_CLIPS
-        } else {
-            &AFTER_CLIPS
-        },
-        window,
-    );
+    let widest = measured.unwrap_or_else(|| {
+        #[cfg(test)]
+        super::CLIP_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+        let readings: Vec<&str> = std::iter::once("Default pose")
+            .chain(clips.iter().map(|clip| clip.name.as_str()))
+            .collect();
+        let width = super::menu_width_now(&readings, window);
+        let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.clip_menu = Some((key, width));
+        width
+    });
     let menu = crate::system_preview::HeaderControl::new(
         ("model-clip", index),
         format!("model-clip-{index}"),

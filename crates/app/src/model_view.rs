@@ -105,6 +105,10 @@ struct State {
     timeline_focus: Option<FocusHandle>,
     timeline_bounds: Bounds<Pixels>,
     scrubbing: bool,
+    /// The clip menu's width at its widest reading, "Default pose" or one of
+    /// the scene's clip names, by what it was laid out with
+    /// (`playback::clip_control`).
+    clip_menu: Option<(crate::views::LineKey, Pixels)>,
 }
 impl State {
     fn edge(&self) -> u32 {
@@ -162,6 +166,7 @@ impl Document {
                 timeline_focus: None,
                 timeline_bounds: Bounds::default(),
                 scrubbing: false,
+                clip_menu: None,
             }),
             scene,
             generation: Arc::new(AtomicU64::new(0)),
@@ -631,6 +636,13 @@ thread_local! {
     static RESET: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times a clip menu's readings were built
+    /// (`playback::clip_control`), for a test.
+    pub(crate) static CLIP_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The views menu labelled at its widest reading, a standard view's name or
 /// "Custom view", whatever the view ([`menu_width`]).
 fn views_menu_width(window: &Window) -> Pixels {
@@ -645,12 +657,24 @@ fn views_menu_width(window: &Window) -> Pixels {
 /// A menu's trigger labelled at the widest of `readings`: the label's
 /// control, then the shared `button` helper's 6 px gap and the kit's
 /// 0.875 rem caret, laid out once per font and size in `cache`.
-pub(super) fn menu_width(
+fn menu_width(
     readings: &[&str],
     cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    text_button_width(readings, cache, window) + appearance::ui_size(6.) + window.rem_size() * 0.875
+    text_button_width(readings, cache, window) + menu_caret(window)
+}
+
+/// [`menu_width`] laid out now, for a caller that keeps the width itself, as
+/// the clip menu does with its document (`playback::clip_control`).
+pub(super) fn menu_width_now(readings: &[&str], window: &Window) -> Pixels {
+    crate::text_button_width_now(readings, window) + menu_caret(window)
+}
+
+/// The room a menu trigger's caret takes after its label: the shared
+/// `button` helper's 6 px gap and the kit's 0.875 rem caret.
+fn menu_caret(window: &Window) -> Pixels {
+    appearance::ui_size(6.) + window.rem_size() * 0.875
 }
 
 /// The room side `index`'s source row leaves its open control in a side

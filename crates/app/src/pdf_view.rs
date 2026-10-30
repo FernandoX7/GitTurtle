@@ -447,16 +447,26 @@ thread_local! {
     /// Each side header's heading, laid out.
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// Read page text's, Retry page's and each side's page number, whole
-    /// and short, at its widest for the side's count, laid out; the link is
-    /// a toggle, laid out at both its readings
+    /// Read page text's and Retry page's labels, laid out; the link is a
+    /// toggle, laid out at both its readings
     /// (`system_preview::HeaderControl::toggle`).
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static BEFORE_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static AFTER_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static BEFORE_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static AFTER_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// Each side's page number, whole and short, at its widest for a count
+    /// of so many digits ([`page_number_widths`]), laid out.
+    static BEFORE_PAGE_NUMBER: PageNumberWidths = const { std::cell::RefCell::new(None) };
+    static AFTER_PAGE_NUMBER: PageNumberWidths = const { std::cell::RefCell::new(None) };
+}
+
+/// A side's page number laid out whole and short at its widest, by what it
+/// was laid out with and the count's digits.
+type PageNumberWidths =
+    std::cell::RefCell<Option<(crate::views::LineKey, usize, (Pixels, Pixels))>>;
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a page number's readings were built, for a test.
+    pub(crate) static PAGE_NUMBER_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The room the first line of side `index`'s header leaves its open control
@@ -500,19 +510,37 @@ fn page_number_readings(count: usize) -> [Vec<String>; 2] {
 }
 
 /// The widths of side `index`'s page number labelled and short at their
-/// widest for `count` pages ([`page_number_readings`]).
+/// widest for `count` pages ([`page_number_readings`]), laid out once per
+/// font and size for each number of digits, which alone sets the readings:
+/// the twenty readings were once built and joined on every frame.
 fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, Pixels) {
-    let (whole, short) = if index == 0 {
-        (&BEFORE_PAGE_NUMBER, &BEFORE_SHORT_PAGE_NUMBER)
+    let cache = if index == 0 {
+        &BEFORE_PAGE_NUMBER
     } else {
-        (&AFTER_PAGE_NUMBER, &AFTER_SHORT_PAGE_NUMBER)
+        &AFTER_PAGE_NUMBER
     };
-    let width = |readings: Vec<String>, cache| {
-        let readings: Vec<&str> = readings.iter().map(String::as_str).collect();
-        text_button_width(&readings, cache, window)
-    };
-    let [whole_readings, short_readings] = page_number_readings(count);
-    (width(whole_readings, whole), width(short_readings, short))
+    let digits = count.checked_ilog10().map_or(1, |power| power as usize + 1);
+    let key = crate::views::LineKey::current(window);
+    cache.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match &*cache {
+            Some((laid_out, measured, widths)) if *laid_out == key && *measured == digits => {
+                *widths
+            }
+            _ => {
+                #[cfg(test)]
+                PAGE_NUMBER_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+                let width = |readings: &[String]| {
+                    let readings: Vec<&str> = readings.iter().map(String::as_str).collect();
+                    text_button_width_now(&readings, window)
+                };
+                let [whole, short] = page_number_readings(count);
+                let widths = (width(&whole), width(&short));
+                *cache = Some((key, digits, widths));
+                widths
+            }
+        }
+    })
 }
 
 /// The comparison's sides, each with its header of page controls; `width`
@@ -739,6 +767,36 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// A page number's widest readings are laid out once for a count of so
+    /// many digits at a font and size, and again for a count of more or
+    /// fewer: kept for the font and size alone, a 111-page view would take
+    /// the width of a three-page view's widest reading, "Page 9 / 9", and
+    /// "Page 108 / 111" would be labelled where it does not fit, and cut.
+    /// Built for every frame, the twenty readings were joined on each.
+    #[gpui::test]
+    fn a_page_number_is_measured_again_for_a_count_of_more_digits(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        let widths = cx.update(|window, _| {
+            [3, 111, 107, 107, 3].map(|count| page_number_widths(0, count, window))
+        });
+        assert!(
+            widths[1].0 > widths[0].0 && widths[1].1 > widths[0].1,
+            "111 pages' widest readings {:?} are wider than 3 pages' {:?}",
+            widths[1],
+            widths[0]
+        );
+        assert_eq!(widths[2], widths[1], "107 pages' are 111 pages'");
+        assert_eq!(widths[4], widths[0], "3 pages' are measured again");
+        assert_eq!(
+            PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get),
+            3,
+            "built for 3 pages, for 111 and for 3 again; not for 107, whose digits are 111's"
+        );
     }
 
     #[test]

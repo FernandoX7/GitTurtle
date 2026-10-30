@@ -11980,7 +11980,7 @@ pub(crate) mod tests {
                 }
                 whole = whole.max(area.size.height);
                 // A thumb needs more than its insets; a sliver draws none.
-                if !overflows || area.size.height < px(16.) {
+                if area.size.height < px(16.) {
                     continue;
                 }
                 let top = thumb(area, cx).unwrap_or_else(|| {
