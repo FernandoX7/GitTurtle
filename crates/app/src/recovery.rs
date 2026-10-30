@@ -2587,9 +2587,43 @@ impl Render for StashBrowser {
                     .map(|index| this.render_file_row(index, cx))
                     .collect::<Vec<_>>()
             }),
-        )
-        .size_full()
-        .track_scroll(&self.file_scroll);
+        );
+        // While the saved files overflow their box, a scrollbar runs in a
+        // gutter at their right, as in the detail around them and the
+        // dialogs' lists (`tags::ScrollCue`), where the box is tall enough
+        // for a thumb that moves, and a fade at each edge the rows continue
+        // past where it is not; rows that fit keep the box's whole width.
+        // The list reaches into the gutter the cue keeps beside its rows (the
+        // track and a ring's room, as `ScrollCue::list` keeps it), so its
+        // scroll, along whose right edge the track runs, spans it, and keeps
+        // it clear for the track. Eleven saved files once had
+        // only a row cut at the box's foot to say more lay below.
+        let file_cue =
+            crate::tags::ScrollCue::new(&self.file_scroll.0.borrow().base_handle, Pixels::ZERO);
+        let ring = appearance::BUTTON_FOCUS_RING;
+        let gutter = Scrollbar::width() + ring.gap + ring.width;
+        let files = file_cue
+            .list(
+                div()
+                    .on_children_prepainted(file_cue.observe(|_, _, _| {}))
+                    .id("stash-file-rows")
+                    .debug_selector(|| "stash-file-rows".into())
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        files
+                            .flex_1()
+                            .min_h_0()
+                            .mr(-gutter)
+                            .pr(gutter)
+                            .track_scroll(&self.file_scroll),
+                    ),
+                "stash-files-scrollbar",
+            )
+            .flex_1()
+            .min_h_0();
         // The heading counts what the list holds: the page's stashes, or
         // which of them it shows where Previous or More pages through more.
         let heading = match &self.page {
@@ -2888,7 +2922,7 @@ impl Render for StashBrowser {
                     // they took 85 px of a 63.5 px detail, which no reveal
                     // could show whole, and the detail's clip cut their ring.
                     // Their rows scroll inside them.
-                    .child(div().flex().flex_col().flex_shrink_0().h(px(if narrow { 85. } else { 130. })).max_h(relative(1.)).on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").debug_selector(|| "stash-files".into()).role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).flex_1().min_h_0().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
+                    .child(div().flex().flex_col().flex_shrink_0().h(px(if narrow { 85. } else { 130. })).max_h(relative(1.)).on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").debug_selector(|| "stash-files".into()).role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).flex_1().min_h_0().flex().flex_col().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected_file, this.files().len()) {
                                 cx.stop_propagation();
@@ -3701,6 +3735,68 @@ mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The saved files cue their overflow as the detail around them does
+    /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, eleven
+    /// unstaged files overflow their box, which shows a scrollbar in a
+    /// gutter at the rows' right, its thumb following their scroll and
+    /// covering no row, and the one staged file fits, drawing none, its row
+    /// keeping the box's whole width. Eleven files once had only a row cut
+    /// at the box's foot to say more lay below.
+    #[gpui::test]
+    async fn the_saved_files_cue_their_overflow(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{
+            assert_no_scroll_cue, assert_scroll_cue, draw, git, tagged_repository, window,
+        };
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let names: Vec<_> = (0..12)
+            .map(|index| format!("file-{index:02}.txt"))
+            .collect();
+        for name in &names {
+            std::fs::write(repo.path().join(name), "first\n").unwrap();
+            git(repo.path(), &["add", name]);
+        }
+        git(repo.path(), &["commit", "--quiet", "-m", "Add them"]);
+        for name in &names {
+            std::fs::write(repo.path().join(name), "second\n").unwrap();
+        }
+        git(repo.path(), &["add", &names[0]]);
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let scroll = browser.read_with(cx, |browser, _| {
+            browser.file_scroll.0.borrow().base_handle.clone()
+        });
+        browser.update(cx, |browser, cx| {
+            browser.choose_area(StashArea::Unstaged, cx)
+        });
+        draw(cx);
+        assert_eq!(
+            browser.read_with(cx, |browser, _| browser.files().len()),
+            11,
+            "eleven unstaged files"
+        );
+        assert_scroll_cue(
+            cx,
+            &app,
+            &scroll,
+            "stash-file-rows",
+            px(0.),
+            &["stash-file-0", "stash-file-1", "stash-file-2"],
+        );
+        browser.update(cx, |browser, cx| browser.choose_area(StashArea::Staged, cx));
+        draw(cx);
+        assert_no_scroll_cue(cx, &app, "stash-file-rows", px(0.), &["stash-file-0"]);
     }
 
     /// A stashed 3D model and PDF, at the floor the Stashes dialog keeps
