@@ -1897,12 +1897,20 @@ impl StashBrowser {
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .line_height(relative(1.))
-                        .child(text),
+                        .child(text)
+                        // In tests, the size, weight and colour it is drawn in.
+                        .children(appearance::text_probe(move || {
+                            format!("restore-saved-stash/{state}/text")
+                        })),
                 )
         };
+        // Its label is the compact helper's, as Drop…'s beside it is: the
+        // kit's small label, `text_sm`, drew 11.375 px beside Drop…'s 12 px
+        // at 13 pt.
         let restore = Button::new("restore-saved-stash")
             .primary()
             .small()
+            .text_size(crate::appearance::ui_text(crate::LABEL_TEXT))
             .child(
                 div()
                     .grid()
@@ -2603,6 +2611,9 @@ impl Render for StashBrowser {
                 .child(div().flex_1())
                 .child(
                     button("drop-saved-stash", "Drop…", "", false)
+                        // In tests, the size, weight and colour its label is
+                        // drawn in, which Review restore…'s matches.
+                        .children(appearance::text_probe(|| "drop-saved-stash/text".into()))
                         .track_focus(&drop)
                         .debug_selector(|| "drop-saved-stash".into())
                         .map(|drop| {
@@ -4435,10 +4446,10 @@ mod tests {
     /// the merge pauses, focus moves to the saved files, as a click on one
     /// moves it, and the merge is aborted in a terminal: once a read finds
     /// it ended, the note says so, and the detail stays where it is, with
-    /// the saved files focused and in its view. Refused again with focus on
-    /// the saved-work list instead, outside the detail, and the detail
-    /// scrolled to its top: the end reveals Review restore… and the note
-    /// whole beneath it. The detail jumped to Review restore… and the note
+    /// the saved files focused and whole in its view. Refused again with
+    /// focus on the saved-work list instead, outside the detail, and the
+    /// detail scrolled to its top: the end reveals Review restore… and the
+    /// note whole beneath it. The detail jumped to Review restore… and the note
     /// on any read that found the merge ended, scrolling the focused saved
     /// files out of view.
     #[gpui::test]
@@ -4490,17 +4501,13 @@ mod tests {
         let in_view = |cx: &mut gpui::VisualTestContext| {
             let [files, view] =
                 ["stash-files", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
-            // In view, at least in part.
-            (
-                files.bottom() > view.top() + slack && files.top() < view.bottom() - slack,
-                files,
-                view,
-            )
+            // Whole in view, no taller than the detail shows.
+            (inside(files, view), files, view)
         };
         let (shown, files_at, view) = in_view(cx);
         assert!(
             shown,
-            "the saved files {files_at:?} are in view {view:?} at {kept:?}"
+            "the saved files {files_at:?} are whole in view {view:?} at {kept:?}"
         );
         // The merge ends in a terminal; the next read says so in the note.
         git(&["merge", "--abort"]);
@@ -4516,7 +4523,7 @@ mod tests {
         );
         assert!(
             cx.update(|window, _| files.is_focused(window)) && in_view(cx).0,
-            "the saved files keep focus in view"
+            "the saved files keep focus, whole in view"
         );
 
         // Refused again, the keyboard on the saved-work list, outside the
@@ -4672,9 +4679,12 @@ mod tests {
     /// keyboard, its name says it is preparing at once, and once the
     /// preparation looks busy it reads "Preparing…", keeping focus, whole
     /// with its ring, and its width, so Drop… and the footer stay where they
-    /// were. Once Git answers, the review opens in Stashes' place. Nothing in
-    /// Stashes said Git was preparing: the window's progress label that said
-    /// so lay beneath the dialog's backdrop.
+    /// were. Once Git answers, the review opens in Stashes' place. At rest
+    /// its label is drawn as Drop…'s beside it, as large and as heavy, in
+    /// the primary label colour. Nothing in Stashes said Git was preparing:
+    /// the window's progress label that said so lay beneath the dialog's
+    /// backdrop; and the label took the kit's small size, 11.375 px beside
+    /// Drop…'s 12 px at 13 pt.
     #[gpui::test]
     async fn review_restore_says_it_is_preparing_in_place(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
@@ -4732,6 +4742,33 @@ mod tests {
                 name(&stashes, cx).as_deref(),
                 Some("Review restore…"),
                 "{at}"
+            );
+            // At rest its label is drawn as Drop…'s beside it, the compact
+            // helper's: as large and as heavy, in the kit's primary label
+            // colour.
+            let text = |key: &str| {
+                (
+                    appearance::drawn_size(key),
+                    appearance::drawn_weight(key),
+                    appearance::drawn_color(key),
+                )
+            };
+            let (size, weight, color) = text("restore-saved-stash/rest/text");
+            let (drop_size, drop_weight, _) = text("drop-saved-stash/text");
+            assert!(
+                size.is_some() && size == drop_size,
+                "{at}: Review restore…'s label, {size:?}, is as large as Drop…'s, {drop_size:?}"
+            );
+            assert!(
+                weight.is_some() && weight == drop_weight,
+                "{at}: Review restore…'s label, {weight:?}, is as heavy as Drop…'s, {drop_weight:?}"
+            );
+            let primary =
+                cx.read(|cx| gpui_kit::component::Theme::global(cx).button_primary_foreground);
+            assert_eq!(
+                color,
+                Some(primary),
+                "{at}: Review restore…'s label is in the primary label colour"
             );
 
             let held = app.update(cx, |app, _| app.operations.hold());

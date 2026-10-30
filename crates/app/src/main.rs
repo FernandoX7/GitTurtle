@@ -2017,6 +2017,11 @@ fn button(
 /// with the Button's label.
 const LABEL_INSET: f32 = 10.;
 
+/// A compact Button's label size at the default interface size, which
+/// [`button_frame`] sets: a Button built another way beside such Buttons, as
+/// Stashes' Review restore… is beside Drop…, takes it so their labels match.
+const LABEL_TEXT: f32 = 12.;
+
 /// The space beside an icon-only compact Button's 16 px icon, at the default
 /// interface size: its 28 px square less the icon, halved.
 const ICON_INSET: f32 = 6.;
@@ -2042,7 +2047,7 @@ fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: boo
         .gap(appearance::ui_size(6.))
         .rounded(appearance::ui_size(7.))
         .selected(active)
-        .text_size(crate::appearance::ui_text(12.));
+        .text_size(crate::appearance::ui_text(LABEL_TEXT));
     if active {
         // The kit omits variant hover styles for selected controls. Tint their
         // selected surface for gentle pointer feedback that leaves the focus
@@ -2070,7 +2075,7 @@ fn labelled_button_width(
 ) -> Pixels {
     appearance::ui_size(LABEL_INSET * 2. + 16. + 6.)
         + views::cached_text_width(cache, label, window, || {
-            views::line_widths(&[(label, appearance::ui_text(12.))], window)
+            views::line_widths(&[(label, appearance::ui_text(LABEL_TEXT))], window)
         })
 }
 

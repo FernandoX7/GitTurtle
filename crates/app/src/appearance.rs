@@ -339,21 +339,22 @@ pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
 
 #[cfg(test)]
 thread_local! {
-    /// The weight and color each [`text_probe`] last saw its label's text
-    /// drawn with, by key.
+    /// The weight, color and size each [`text_probe`] last saw its label's
+    /// text drawn with, by key.
     static DRAWN_TEXT: std::cell::RefCell<
-        std::collections::HashMap<String, (gpui_kit::FontWeight, gpui_kit::Hsla)>,
+        std::collections::HashMap<String, (gpui_kit::FontWeight, gpui_kit::Hsla, Pixels)>,
     > = Default::default();
 }
 
 /// In tests, a zero-size child for a label's element that records, under
-/// `key`, the font weight the label's text is shaped at and the color it is
-/// painted in, for [`drawn_weight`] and [`drawn_color`]; in other builds,
-/// nothing. Text takes both from the window's text style where it is laid
-/// out, which is what the probe reads, so a test sees what the label draws,
-/// inherited values included. The test text system draws every weight in one
-/// face and paints no glyphs a test can read, so neither the shaped runs nor
-/// the frame carry them. Absolutely positioned, it moves nothing.
+/// `key`, the font weight the label's text is shaped at, the color it is
+/// painted in and its size, for [`drawn_weight`], [`drawn_color`] and
+/// [`drawn_size`]; in other builds, nothing. Text takes each from the
+/// window's text style where it is laid out, which is what the probe reads,
+/// so a test sees what the label draws, inherited values included. The test
+/// text system draws every weight in one face and paints no glyphs a test
+/// can read, so neither the shaped runs nor the frame carry them. Absolutely
+/// positioned, it moves nothing.
 pub(crate) fn text_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyElement> {
     #[cfg(test)]
     {
@@ -363,10 +364,11 @@ pub(crate) fn text_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyEl
             canvas(
                 move |_, window, _| {
                     let style = window.text_style();
+                    let size = style.font_size.to_pixels(window.rem_size());
                     DRAWN_TEXT.with(|drawn| {
                         drawn
                             .borrow_mut()
-                            .insert(key, (style.font_weight, style.color))
+                            .insert(key, (style.font_weight, style.color, size))
                     });
                 },
                 |_, _, _, _| {},
@@ -386,13 +388,19 @@ pub(crate) fn text_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyEl
 /// The weight the [`text_probe`] under `key` last saw its label shaped at.
 #[cfg(test)]
 pub(crate) fn drawn_weight(key: &str) -> Option<gpui_kit::FontWeight> {
-    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(weight, _)| *weight))
+    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(weight, ..)| *weight))
 }
 
 /// The color the [`text_probe`] under `key` last saw its label painted in.
 #[cfg(test)]
 pub(crate) fn drawn_color(key: &str) -> Option<gpui_kit::Hsla> {
-    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(_, color)| *color))
+    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(_, color, _)| *color))
+}
+
+/// The size the [`text_probe`] under `key` last saw its label laid out at.
+#[cfg(test)]
+pub(crate) fn drawn_size(key: &str) -> Option<Pixels> {
+    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(.., size)| *size))
 }
 
 /// What the last frame painted for the Button at `element`, for tests: the
