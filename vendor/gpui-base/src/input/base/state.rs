@@ -1694,7 +1694,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.propagate();
     }
 
-    /// Show the right-click context menu as a native OS menu.
+    /// Show the right-click context menu through the handler the component
+    /// installs: the OS's own menu on macOS and Windows, and on Linux a menu
+    /// the kit draws in the window.
+    ///
+    /// GitTurtle patch: upstream said a native OS menu on every platform.
+    /// The right-click's press, whose release calls this, has focused this
+    /// input, as GPUI focuses a focusable element under any mouse-down, so
+    /// the menu's actions, which go to the window's focus, act on this
+    /// input, as on macOS.
     pub(crate) fn handle_right_click_menu(
         &mut self,
         position: Point<Pixels>,

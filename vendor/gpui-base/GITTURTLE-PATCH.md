@@ -252,6 +252,13 @@ only the kit test reaches the move up to a whole pixel. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 
+The doc of the input's right-click menu (`handle_right_click_menu` in
+`src/input/base/state.rs`) said it is a native OS menu; it now says it is the
+OS's own on macOS and Windows and drawn by the kit on Linux, and that the
+right-click's press has focused the input, so the menu's actions act on it
+([component patch](../gpui-component/GITTURTLE-PATCH.md)). This is a comment
+only.
+
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
 panels were laid out at their sizes for the old size, and only then rescales

@@ -19979,10 +19979,10 @@ pub(crate) mod tests {
     /// Working Changes list, a right-click's press in its filter focuses the
     /// filter before its menu opens, so Paste puts the clipboard's text in
     /// the filter, the list's selected row unchanged and focus back in the
-    /// filter, and a resized window that closes the menu returns focus to
-    /// the filter. The menu's actions go to the focus the window held as it
-    /// opened; had the press left focus in the list, Paste would have gone
-    /// there and done nothing.
+    /// filter, and Escape or a resized window that closes the menu returns
+    /// focus to the filter. The menu's actions go to the focus the window
+    /// held as it opened; had the press left focus in the list, Paste would
+    /// have gone there and done nothing.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[gpui::test]
     async fn an_inputs_menu_acts_on_the_field_right_clicked(cx: &mut TestAppContext) {
@@ -20065,6 +20065,19 @@ pub(crate) mod tests {
         assert!(
             cx.update(|window, _| filter.is_focused(window)),
             "{at}: focus is in the filter"
+        );
+
+        // Escape closes the field's menu and returns focus to the field.
+        right_click_field(cx, pointer, "Paste", at);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            menu_rows(cx, &["Paste"]).is_empty(),
+            "{at}: Escape closed the menu"
+        );
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "{at}: Escape returned focus to the filter"
         );
 
         // A resize closes the field's menu and returns focus to the field.

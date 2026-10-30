@@ -303,7 +303,10 @@ impl Input {
         self
     }
 
-    /// Sets a custom context menu builder for the input, shown as a native OS menu.
+    /// Sets a custom context menu builder for the input, shown as a
+    /// [`NativeMenu`]: the OS's own menu on macOS and Windows, and on Linux a
+    /// menu the kit draws in the window (GitTurtle patch: upstream said a
+    /// native OS menu on every platform).
     ///
     /// If set, this overrides the built-in right-click context menu.
     pub fn context_menu(

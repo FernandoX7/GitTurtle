@@ -4,6 +4,11 @@
 //! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
 //! the [`super::NativeMenu`] API working on every platform.
 //!
+//! GitTurtle patch: its actions go to the focus the window held as it
+//! opened, which for an input's right-click is that input, and focus it
+//! holds returns there when it closes, by Escape, an item or a resized
+//! window.
+//!
 //! GitTurtle patch: placed at the pointer by the base `Positioner`, inside
 //! the window less 8 px and above the room an application keeps at its foot
 //! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
@@ -59,6 +64,9 @@ impl FallbackMenuOverlay {
     ///
     /// `action_context` is the focus handle the selected action is dispatched
     /// to, matching the native backends (which dispatch to the window's focus).
+    ///
+    /// GitTurtle patch: it is also where focus the menu holds returns when
+    /// the menu closes, by Escape, an item or a resized window.
     #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
     fn show(
         &mut self,
@@ -83,7 +91,11 @@ impl FallbackMenuOverlay {
         // it, closes the menu, as it closes the application's other menus:
         // its side and its cap were chosen for the size it opened in, and
         // the field it was opened on may have moved. Focus the menu holds
-        // returns to that field, which its own dismissal would have done.
+        // returns to `action_context`, the focus the window held as the menu
+        // opened: for an input's right-click, the input itself, which the
+        // press focused before the release opened the menu (`show` below).
+        // Escape and an item return focus there too (`PopupMenu::dismiss`,
+        // `PopupMenu::dispatch_confirm_action`).
         let viewport = window.viewport_size();
         let resized = cx.observe_window_bounds(window, move |this, window, cx| {
             if window.viewport_size() == viewport {
@@ -217,6 +229,12 @@ pub(super) fn show(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // GitTurtle patch: the focus the window holds as the menu opens, where
+    // its actions go and its focus returns. For an input's right-click it
+    // is the input: GPUI focuses a focusable element under any mouse-down,
+    // the right button's included, and the input opens its menu on the
+    // release that follows, so Cut, Copy and Paste act on the field
+    // clicked, whatever held focus before, as on macOS.
     let action_context = window.focused(cx);
     let Some(overlay) = Root::native_menu_overlay(window, cx) else {
         return;

@@ -662,6 +662,25 @@ right-clicks the Working Changes filter and reads each item's role in its
 debug selector as a plain menu item. Remove this part when upstream builds
 the fallback's unticked items plain and that test passes without it.
 
+Where the fallback menu's focus goes: its actions go to `action_context`,
+the focus the window held as it opened, and focus the menu holds returns
+there when it closes, by an item (`PopupMenu::dispatch_confirm_action`),
+Escape (`PopupMenu::dismiss`) or a resized window. For an input's
+right-click that is the input itself: GPUI focuses a focusable element under
+any mouse-down, the right button's included, and the input opens its menu
+on the release, so Cut, Copy and Paste act on the field clicked, whatever
+held focus before, as on macOS.
+`cargo test --locked -p gitturtle an_inputs_menu_acts_on_the_field_right_clicked`
+guards it: with focus in the Working Changes list, a right-click in the
+filter and its Paste put the clipboard's text in the filter, with the list's
+selected row kept, and Escape and a resize return focus to the filter. The
+docs of
+`NativeMenu` (`src/native_menu/mod.rs`), `Input::context_menu`
+(`src/input/input.rs`) and the fallback said the menu is a native OS menu,
+or left where focus returns unsaid; they now say it is the OS's own on macOS
+and Windows and drawn by the kit elsewhere, Linux among them, and where its
+actions and focus go. These are comments only.
+
 The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
 `confirm`, which Enter and a click run, acted on whatever entry was selected.
 The pointer's hover selects any row, a disabled item or a label among them, so
