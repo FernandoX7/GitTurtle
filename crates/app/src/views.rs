@@ -10695,6 +10695,134 @@ pub(crate) mod tests {
         );
     }
 
+    /// The controls of a 3D model's and the PDF page view's own side headers
+    /// take their form (labelled, a short reading or the icon) from the
+    /// preview column's width in the frame Compare draws it
+    /// ([`crate::in_frame`]), as its toolbar does. Every frame drawn as the
+    /// window narrows and widens by 60 px between 461 and 1,481 px, at 13
+    /// and 18 pt, draws each header control and each side's open control in
+    /// the form of the frame it settles in, and the walk meets both
+    /// labelled and as icons. Fed the comparison's width a frame late, the
+    /// first frame after a width step drew the forms of the width before.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_side_header_takes_its_forms_in_the_frame_compare_draws(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        let before = b"v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n";
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let (first, second) = (pdf("first"), pdf("second"));
+        let input = file_commits(&[
+            (
+                "first",
+                &[("document.pdf", first.as_bytes()), ("shape.obj", before)],
+            ),
+            (
+                "second",
+                &[("document.pdf", second.as_bytes()), ("shape.obj", obj)],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        // Each control's form, in the order the frame laid them out: a header
+        // control's as it was drawn, an open control's by its width.
+        let forms = |frame: &probe::Frame, icon: Pixels| -> Vec<&'static str> {
+            frame
+                .parts
+                .iter()
+                .filter_map(|(part, bounds)| match *part {
+                    "open-control" if bounds.size.width > icon => Some("open-control/labelled"),
+                    "open-control" => Some("open-control/icon"),
+                    part if part.starts_with("header-control/") => Some(part),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut met = std::collections::BTreeSet::new();
+        probe::watch();
+        for path in ["shape.obj", "document.pdf"] {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            settle(&app, cx).await;
+            if path == "document.pdf" {
+                // Each side paged, as a build that renders pages prepares it.
+                app.update(cx, |app, cx| {
+                    let Some(Content::Rich(preview)) = app.content.as_deref() else {
+                        panic!("a changed PDF is a document comparison");
+                    };
+                    app.content = Some(Arc::new(crate::pdf_view::tests::paged(preview)));
+                    cx.notify();
+                });
+                draw(cx);
+                crate::pdf_view::tests::drain_pages();
+                draw(cx);
+            }
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(1481.), px(980.)));
+                draw(cx);
+                let icon =
+                    cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.))) + px(1.);
+                let widths = (461..=1481)
+                    .rev()
+                    .step_by(60)
+                    .chain((461..=1481).step_by(60));
+                for width in widths {
+                    let at = format!("{path} at {text} pt, resized to {width} × 980");
+                    probe::take();
+                    cx.simulate_resize(size(px(width as f32), px(980.)));
+                    draw(cx);
+                    let frames = probe::take();
+                    draw(cx);
+                    let settled = probe::take()
+                        .into_iter()
+                        .rfind(|frame| frame.region == "compare-preview")
+                        .unwrap_or_else(|| panic!("{at}: Compare's preview is drawn"));
+                    let settled = forms(&settled, icon);
+                    assert!(
+                        settled
+                            .iter()
+                            .any(|form| form.starts_with("header-control/")),
+                        "{at}: the side headers' controls are drawn"
+                    );
+                    let drawn: Vec<_> = frames
+                        .iter()
+                        .filter(|frame| frame.region == "compare-preview")
+                        .collect();
+                    assert!(
+                        !drawn.is_empty(),
+                        "{at}: the preview was drawn after the step"
+                    );
+                    for (index, frame) in drawn.iter().enumerate() {
+                        assert_eq!(
+                            forms(frame, icon),
+                            settled,
+                            "{at}: frame {index} of {} draws the side headers' controls in the forms it settles in",
+                            drawn.len()
+                        );
+                    }
+                    met.extend(settled);
+                }
+            }
+        }
+        probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        for form in [
+            "header-control/labelled",
+            "header-control/icon",
+            "open-control/labelled",
+            "open-control/icon",
+        ] {
+            assert!(met.contains(form), "the walk meets {form}: {met:?}");
+        }
+    }
+
     /// Compare's toolbar and footer choose their form from the preview
     /// column's width in the frame they are drawn ([`crate::in_frame`]), for
     /// text as for an image. Chosen from the column's width a frame before,

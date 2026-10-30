@@ -518,8 +518,9 @@ pub(super) fn pause(content: Option<&Content>) {
     }
 }
 
-/// The comparison's sides; `width` is the comparison's
-/// (`rich_preview::render_comparison`), which its open controls' form fits.
+/// The comparison's sides; `width` is the comparison's in the frame it is
+/// drawn (`rich_preview::render_comparison`), which each side header's
+/// controls, its open control among them, take their forms from.
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,

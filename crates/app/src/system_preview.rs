@@ -1049,16 +1049,19 @@ impl HeaderControl {
             Some(choices) => Some(format!("{} · {choices}", self.reading).into()),
             None => Some(self.reading.clone()),
         };
+        // Tests read each frame's form where the control is drawn
+        // (`in_frame::probe`).
+        let part = match (labelled, icon) {
+            (true, _) => "header-control/labelled",
+            (false, None) => "header-control/short",
+            (false, Some(_)) => "header-control/icon",
+        };
         #[cfg(test)]
         DRAWN_CONTROLS.with(|drawn| {
             drawn.borrow_mut().insert(
                 self.selector.clone(),
                 DrawnControl {
-                    form: match (labelled, icon) {
-                        (true, _) => "labelled",
-                        (false, None) => "short",
-                        (false, Some(_)) => "icon",
-                    },
+                    form: part.strip_prefix("header-control/").unwrap_or(part),
                     shows: shows.to_string(),
                     icon,
                     tooltip: tooltip.as_ref().map(ToString::to_string),
@@ -1068,7 +1071,7 @@ impl HeaderControl {
             )
         });
         let selector = self.selector;
-        crate::button(
+        let button = crate::button(
             self.id,
             shows,
             icon.unwrap_or_default(),
@@ -1080,7 +1083,8 @@ impl HeaderControl {
         .when_some(self.on, |button, on| button.toggled(on))
         .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
         .debug_selector(move || selector)
-        .accessibility_label(self.name)
+        .accessibility_label(self.name);
+        crate::in_frame::probed(button, part)
     }
 }
 
