@@ -302,12 +302,13 @@ struct Presses {
 }
 /// What a request of the panel does, which its busy line names, as the
 /// window's operation bar does while it runs as the window's busy spell
-/// ([`GitTurtle::submit_github_request`]). Connecting the account and
-/// Disconnect once read "Loading your requested PR context…" there.
+/// ([`GitTurtle::submit_github_request`]), and why the controls it refuses
+/// wait ([`Self::reason`]). Connecting the account and Disconnect once read
+/// "Loading your requested PR context…" there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RequestKind {
-    /// Reads PR context: the list, a PR with its checks, files and
-    /// conversations, a submission's preparation or its templates.
+pub(crate) enum RequestKind {
+    /// Reads PR context from GitHub: the list, a PR with its checks, files
+    /// and conversations, or a submission's preparation.
     Load,
     /// Sends one confirmed outbound action.
     Send,
@@ -318,14 +319,18 @@ enum RequestKind {
     /// Compares a PR's captured base and head in the local repository, for
     /// its Changes.
     Compare,
+    /// Reads a new PR's templates from its base revision in the local
+    /// repository.
+    Templates,
 }
 impl RequestKind {
-    const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Load,
         Self::Send,
         Self::Connect,
         Self::Disconnect,
         Self::Compare,
+        Self::Templates,
     ];
     /// Its busy line.
     fn label(self) -> &'static str {
@@ -335,6 +340,20 @@ impl RequestKind {
             Self::Connect => "Connecting your GitHub account…",
             Self::Disconnect => "Disconnecting GitTurtle from GitHub…",
             Self::Compare => "Comparing the PR's changes locally…",
+            Self::Templates => "Reading the PR templates locally…",
+        }
+    }
+    /// Why a control the window's busy spell refuses waits while this runs
+    /// as the spell ([`GitTurtle::busy_reason`]): a request to GitHub names
+    /// GitHub, and the panel's local work names itself. One reason, "Wait
+    /// for the GitHub request to finish", once stood for every kind, though
+    /// Disconnect, a PR's Changes and its templates send nothing to GitHub.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Load | Self::Send | Self::Connect => "Wait for the GitHub request to finish",
+            Self::Disconnect => "Wait for GitTurtle to disconnect from GitHub",
+            Self::Compare => "Wait for the pull request comparison to finish",
+            Self::Templates => "Wait for the pull request templates to load",
         }
     }
     /// Whether it sends an outbound action, whose outcome may be uncertain
@@ -343,18 +362,18 @@ impl RequestKind {
         self == Self::Send
     }
 }
-/// Whether `label`, the window's busy spell, is a request of the panel.
-pub(crate) fn runs_request(label: &str) -> bool {
-    RequestKind::ALL.iter().any(|kind| kind.label() == label)
+/// The request of the panel that `label`, the window's busy spell, runs, if
+/// it is one.
+pub(crate) fn running_request(label: &str) -> Option<RequestKind> {
+    RequestKind::ALL
+        .into_iter()
+        .find(|kind| kind.label() == label)
 }
 /// Each request's busy line, the window's busy label while it runs.
 #[cfg(test)]
 pub(crate) fn request_labels() -> [&'static str; RequestKind::ALL.len()] {
     RequestKind::ALL.map(RequestKind::label)
 }
-/// Why a control the window's busy spell refuses waits while it is a
-/// request of the panel ([`GitTurtle::busy_reason`]).
-pub(crate) const REQUEST_REASON: &str = "Wait for the GitHub request to finish";
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1116,7 +1135,7 @@ impl Panel {
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         let revision = self.base.read(cx).value().to_string();
-        self.run(RequestKind::Load,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(RequestKind::Templates,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn review_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -2165,11 +2184,11 @@ mod tests {
 
     /// Each kind of request the panel sends names itself in the panel's
     /// busy line and the window's operation bar, and what the busy spell
-    /// refuses meanwhile says it waits for the GitHub request: Projects'
-    /// tooltip, and the palette's and the Linux Main Menu's rows. Connecting
-    /// the account and Disconnect once read "Loading your requested PR
-    /// context…", and the refusals said to wait for "the current Git
-    /// operation". A Git write's refusals still name the Git operation.
+    /// refuses meanwhile gives that kind's reason: Projects' tooltip, and the
+    /// palette's and the Linux Main Menu's rows. Connecting the account and
+    /// Disconnect once read "Loading your requested PR context…", and the
+    /// refusals said to wait for "the current Git operation". A Git write's
+    /// refusals still name the Git operation.
     #[gpui::test]
     async fn each_github_request_names_itself_and_what_refusals_wait_for(cx: &mut TestAppContext) {
         use crate::command_palette::CommandId;
@@ -2224,11 +2243,11 @@ mod tests {
             );
             assert!(cx.debug_bounds("github-busy").is_some());
             assert_eq!(
-                tooltip.as_deref(),
-                Some("Open Projects · Wait for the GitHub request to finish"),
+                tooltip,
+                Some(format!("Open Projects · {}", kind.reason())),
                 "{kind:?}: Projects waits for it"
             );
-            assert_eq!(palette, Some(REQUEST_REASON), "{kind:?}: so does Tags");
+            assert_eq!(palette, Some(kind.reason()), "{kind:?}: so does Tags");
             labels.push(kind.label());
             drop(held);
             app.read_with(cx, |app, _| app.operations.drain());
@@ -2267,14 +2286,9 @@ mod tests {
         settle_panel(&app, cx).await;
     }
 
-    /// The operation bar's Cancel (`GitTurtle::cancel_operation`) stops a
-    /// PR's Changes, as the panel's own Cancel does: the comparison reads
-    /// through its own cancellation, which the bar's Cancel once never
-    /// reached, so the comparison ran on and opened.
-    #[gpui::test]
-    async fn the_operation_bars_cancel_stops_a_prs_changes(cx: &mut TestAppContext) {
-        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
-        // A PR from the window's first commit to its latest, both local.
+    /// A PR from the window's first commit to its latest, both local, for
+    /// its Changes.
+    fn local_pull(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> PullRequest {
         let (base, head) = app.read_with(cx, |app, _| {
             (
                 app.commits.last().unwrap().oid.clone(),
@@ -2282,13 +2296,96 @@ mod tests {
             )
         });
         assert_ne!(base, head);
-        let pull: PullRequest = serde_json::from_value(serde_json::json!({
+        serde_json::from_value(serde_json::json!({
             "number": 7, "title": "Local", "body": null, "state": "open", "draft": false,
             "user": {"login": "river-chen"},
             "head": {"sha": head, "ref": "feature", "label": "river-chen:feature"},
             "base": {"sha": base, "ref": "main", "label": "gitturtle-fixture:main"}
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    /// The panel's local work, started from the panel's own callers, names
+    /// itself in what the busy spell refuses meanwhile: a new PR's
+    /// templates, read from its base in the local repository, say to wait
+    /// for the pull request templates, and a PR's Changes, compared there,
+    /// for the pull request comparison, in Projects' tooltip and the
+    /// palette's and the Linux Main Menu's rows. Both once said to wait for
+    /// "the GitHub request", which neither sends, and the templates read
+    /// ran as a PR context load, "Loading your requested PR context…".
+    #[gpui::test]
+    async fn the_panels_local_work_names_itself_in_what_refusals_wait_for(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, refusals};
+        type Start = fn(&mut Panel, &mut Window, &mut Context<Panel>);
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Wide enough that the header draws the busy look's progress label,
+        // and Changes, whose header has Projects.
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.pull = Some(pull)));
+        // The templates first: the comparison, once it lands, closes the
+        // panel to show its changes.
+        let work: [(&str, Start, &str, &str); 2] = [
+            (
+                "Templates",
+                Panel::load_templates,
+                "Reading the PR templates locally…",
+                "Wait for the pull request templates to load",
+            ),
+            (
+                "Changes",
+                Panel::changes,
+                "Comparing the PR's changes locally…",
+                "Wait for the pull request comparison to finish",
+            ),
+        ];
+        for (name, start, label, reason) in work {
+            // Held as a large repository holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| panel.update(cx, |panel, cx| start(panel, window, cx)));
+            cx.executor().advance_clock(BUSY_LOOK_DELAY);
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_shown()),
+                Some(label),
+                "{name}: the operation bar names it"
+            );
+            assert_eq!(
+                refusals::tooltip("projects").map(|tooltip| tooltip.to_string()),
+                Some(format!("Open Projects · {reason}")),
+                "{name}: Projects waits for it"
+            );
+            assert_eq!(
+                cx.update(|window, cx| {
+                    app.read(cx)
+                        .menu_command_reason(CommandId::Tags, window, cx)
+                }),
+                Some(reason),
+                "{name}: so does Tags"
+            );
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                None,
+                "{name} ended"
+            );
+        }
+    }
+
+    /// The operation bar's Cancel (`GitTurtle::cancel_operation`) stops a
+    /// PR's Changes, as the panel's own Cancel does: the comparison reads
+    /// through its own cancellation, which the bar's Cancel once never
+    /// reached, so the comparison ran on and opened.
+    #[gpui::test]
+    async fn the_operation_bars_cancel_stops_a_prs_changes(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        let pull = local_pull(&app, cx);
         cx.update(|_, cx| panel.update(cx, |panel, _| panel.pull = Some(pull)));
         // Changes, held as a large comparison holds it, then the bar's Cancel.
         let held = app.update(cx, |app, _| app.operations.hold());

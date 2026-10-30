@@ -676,20 +676,16 @@ impl WaitingTooltip {
 }
 
 impl GitTurtle {
-    /// Why a control the running busy spell refuses waits: for the GitHub
-    /// request that runs as the spell (`github_view::REQUEST_REASON`), or
-    /// else for the Git operation ([`BUSY_REASON`]). Projects' tooltip, the
-    /// palette and the window's Close once said to wait for "the current Git
-    /// operation" while the GitHub panel loaded a PR or sent a review.
+    /// Why a control the running busy spell refuses waits: for the request
+    /// of the GitHub panel that runs as the spell, which gives its own
+    /// reason (`github_view::RequestKind::reason`), or else for the Git
+    /// operation ([`BUSY_REASON`]). Projects' tooltip, the palette and the
+    /// window's Close once said to wait for "the current Git operation"
+    /// while the GitHub panel loaded a PR or sent a review.
     pub(crate) fn busy_reason(&self) -> &'static str {
-        if self
-            .operation_busy
-            .is_some_and(crate::github_view::runs_request)
-        {
-            crate::github_view::REQUEST_REASON
-        } else {
-            BUSY_REASON
-        }
+        self.operation_busy
+            .and_then(crate::github_view::running_request)
+            .map_or(BUSY_REASON, crate::github_view::RequestKind::reason)
     }
 
     /// [`refusing`], with a tooltip that says why once the control looks
