@@ -180,8 +180,9 @@ part at 13 pt as the window narrows from 1,480 to 1,000 px;
 `an_open_kit_dropdown_follows_its_button_when_the_window_changes_width`
 reads a kit dropdown left open beside its button in the frame each width
 change draws, and fails without the corner part. The crate's own
-`popup::tests::an_open_popup_follows_its_trigger_in_the_frame_that_moves_it`
-covers the corner part in the toolkit. The crate is
+`popup::tests` cover both parts in the toolkit:
+`a_popup_asks_for_a_frame_only_for_content_it_holds_back` and
+`an_open_popup_follows_its_trigger_in_the_frame_that_moves_it`. The crate is
 an excluded workspace member whose dev-dependencies the workspace's lockfile
 does not resolve, so the crate's tests run in a copy of it as its own root:
 copied to `crates/gpui-base` in a directory outside any Cargo workspace,

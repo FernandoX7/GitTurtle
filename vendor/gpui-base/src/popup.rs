@@ -335,6 +335,56 @@ mod tests {
         }
     }
 
+    /// GitTurtle patch: a popup asks for the next frame only while it holds
+    /// content back for its trigger's bounds. Upstream it asked the first
+    /// time its trigger was drawn, so a menu's trigger first drawn closed,
+    /// as GitTurtle's text review options are when they fold into their
+    /// menu at a new width, asked for a frame that drew nothing new. A
+    /// trigger first drawn open still asks for the frame that draws its
+    /// content, and that frame asks for no other.
+    #[gpui::test]
+    fn a_popup_asks_for_a_frame_only_for_content_it_holds_back(cx: &mut gpui::TestAppContext) {
+        let id = Rc::new(Cell::new("closed"));
+        let open = Rc::new(Cell::new(false));
+        let (view, window) = cx.add_window_view({
+            let (id, open) = (id.clone(), open.clone());
+            move |_, _| Trailing { id, open }
+        });
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(window.debug_bounds("popup-trigger").is_some());
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "a trigger first drawn closed asks for no frame"
+        );
+
+        // A popup of its own, first drawn open.
+        id.set("open");
+        open.set(true);
+        view.update(window, |_, cx| cx.notify());
+        window.run_until_parked();
+        assert!(window.debug_bounds("popup-trigger").is_some());
+        assert!(
+            window.debug_bounds("popup-content").is_none(),
+            "the content waits for its trigger's bounds"
+        );
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            1,
+            "a trigger first drawn open asks for the frame that draws its content"
+        );
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("popup-content").is_some(),
+            "the frame it asked for draws the content"
+        );
+        assert_eq!(
+            window.update(|window, cx| window.simulate_next_frame(cx)),
+            0,
+            "and that frame asks for no other"
+        );
+    }
+
     /// GitTurtle patch: an open popup follows its trigger in the frame that
     /// moves it, and asks for no frame to do so. Placed at the corner its
     /// trigger had in the frame before, the popup stayed where a narrower
