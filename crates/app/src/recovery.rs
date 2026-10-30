@@ -2315,6 +2315,172 @@ impl StashBrowser {
             .into_any_element()
     }
 
+    /// A stashed image's two sides, `width` wide together. Each side's
+    /// caption offers the open control Compare's image captions do, by the
+    /// same rule: only where the side's captured bytes establish what it is
+    /// (`ImageSide::system_preview`, decided on the worker with them, a
+    /// raster image on Linux), so a side Compare offers none shows none.
+    /// The control is one of the detail's (`system_preview::Opener::
+    /// revealed_by`), so the keyboard reveals it there with its ring, and
+    /// beneath its caption the short line says why its last click opened
+    /// nothing, its whole answer in its tooltip and name. Both controls take
+    /// one form, from the narrower room a side's name leaves: labelled
+    /// where the label fits beside the name, otherwise the icon, on the
+    /// name's line where the icon fits there, otherwise both on a line
+    /// beneath the names; a side without one keeps that line, and each
+    /// side's line saying why takes the taller answer's lines, at most two,
+    /// so the sides' names and images stay level.
+    fn render_images(
+        &self,
+        sides: [&crate::worker::ImageSide; 2],
+        width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let opener = self.opener(cx);
+        let file = self.selected_file.and_then(|index| self.files().get(index));
+        let names = ["Before", "After"];
+        let captions = [0, 1].map(|index| {
+            if sides[index].animation.is_some() {
+                format!("{} · first frame", names[index])
+            } else {
+                names[index].to_owned()
+            }
+        });
+        let targets = [0, 1].map(|index| {
+            let side = sides[index];
+            let (Some(bytes), Some(offer)) = (&side.captured, side.system_preview) else {
+                return None;
+            };
+            let path = file
+                .and_then(|file| {
+                    if index == 0 {
+                        file.old_path.as_deref()
+                    } else {
+                        file.new_path.as_deref()
+                    }
+                })
+                .unwrap_or(std::path::Path::new("image.bin"));
+            let target = opener.target(
+                ("image-system-preview", index),
+                names[index],
+                bytes,
+                path,
+                "image",
+                offer,
+            );
+            Some((target, offer))
+        });
+        let rem = window.rem_size();
+        let text = appearance::ui_text(11.);
+        // A side's half, less its padding either side.
+        let inner = ((width - rem * 0.5) / 2. - rem).max(Pixels::ZERO);
+        let room = [0, 1]
+            .into_iter()
+            .filter(|index| targets[*index].is_some())
+            .map(|index| {
+                inner
+                    - rem * 0.5
+                    - crate::views::line_widths(&[(captions[index].as_str(), text)], window)
+            })
+            .reduce(|narrower, room| narrower.min(room));
+        let square = appearance::ui_size(28.);
+        let inline = room.is_none_or(|room| room >= square);
+        let offered = room.is_some();
+        let answers = targets
+            .each_ref()
+            .map(|target| target.as_ref().and_then(|(target, _)| target.answered(cx)));
+        let lines = answers
+            .iter()
+            .flatten()
+            .map(|answer| {
+                crate::image_compare::wrapped_lines(answer.brief(), text, inner, window).clamp(1, 2)
+            })
+            .max();
+        let line = crate::image_compare::text_line(text, window);
+        let mut controls = targets.map(|target| {
+            target.map(|(target, offer)| {
+                target.control(offer.form(room.unwrap_or_default(), window), cx)
+            })
+        });
+        let mut answers = answers;
+        div()
+            .size_full()
+            .flex()
+            .gap_2()
+            .children((0..2).map(|index| {
+                let side = sides[index];
+                let control = controls[index].take();
+                let answer = answers[index].take();
+                let (inline_control, beneath) = if inline {
+                    (control, None)
+                } else {
+                    (None, Some(control))
+                };
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .when(offered && inline, |caption| caption.min_h(square))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(text)
+                                    .text_color(rgb(p.muted))
+                                    .child(captions[index].clone()),
+                            )
+                            .children(inline_control),
+                    )
+                    .children(beneath.map(|control| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(square)
+                            .flex_shrink_0()
+                            .children(control)
+                    }))
+                    .children(lines.map(|lines| {
+                        div()
+                            .h(line * lines as f32)
+                            .flex_shrink_0()
+                            .min_w_0()
+                            .children(answer.map(|answer| answer.short_line(Some(lines), cx)))
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when_some(side.render.clone(), |element, image| {
+                                element.child(crate::gif_playback::static_image(image))
+                            })
+                            .when(side.render.is_none(), |element| {
+                                element.child(
+                                    div()
+                                        .text_size(text)
+                                        .text_color(rgb(p.muted))
+                                        .child(side.message.clone().unwrap_or("Absent".into())),
+                                )
+                            }),
+                    )
+            }))
+            .into_any_element()
+    }
+
     /// The selected file, `width` wide as its box is in the frame it is
     /// drawn.
     fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2378,58 +2544,7 @@ impl StashBrowser {
                         .into_any_element()
                 },
             ),
-            Some(Content::Images { old, new }) => div()
-                .size_full()
-                .flex()
-                .gap_2()
-                .children(
-                    [("Before", old), ("After", new)]
-                        .into_iter()
-                        .map(|(label, side)| {
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .p_2()
-                                .child(
-                                    div()
-                                        .text_size(crate::appearance::ui_text(11.))
-                                        .text_color(rgb(p.muted))
-                                        .child(if side.animation.is_some() {
-                                            format!("{label} · first frame")
-                                        } else {
-                                            label.into()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_h_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .when_some(side.render.clone(), |element, image| {
-                                            element.child(crate::gif_playback::static_image(image))
-                                        })
-                                        .when(side.render.is_none(), |element| {
-                                            element.child(
-                                                div()
-                                                    .text_size(crate::appearance::ui_text(11.))
-                                                    .text_color(rgb(p.muted))
-                                                    .child(
-                                                        side.message
-                                                            .clone()
-                                                            .unwrap_or("Absent".into()),
-                                                    ),
-                                            )
-                                        }),
-                                )
-                        }),
-                )
-                .into_any_element(),
+            Some(Content::Images { old, new }) => self.render_images([old, new], width, window, cx),
             Some(Content::Notice(message)) => div()
                 .p_4()
                 .text_size(crate::appearance::ui_text(12.))
@@ -3399,6 +3514,121 @@ mod tests {
                 "rich-sides/body",
             ],
             &["stash-comparison", "stash-detail"],
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A stashed image's sides offer the open control Compare's image
+    /// captions offer, by the same rule, and it is one of the Stashes
+    /// detail's controls, as a stashed document's is: stacked beneath the
+    /// list in a 461 × 490 window at 13 and 18 pt, with focus on Before's
+    /// control and the detail scrolled to its top, away from the
+    /// comparison, Tab onto After's control shows it whole with its ring in
+    /// the detail's view in every frame drawn after the key, the first
+    /// included, its ring unclipped, and the detail holds focus. A click
+    /// that opens nothing says why on the line beneath After's caption.
+    /// Stashes once drew a stashed image's sides with no open control.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_image_side_offers_its_open_control_in_the_detail(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::system_preview::tests::{latest_note, png, queue, seen_as_svg};
+        use crate::tags::tests::{content_mask, draw, holds, rendered};
+        let fixture = tempfile::tempdir().unwrap();
+        let picture = ("picture.png", png(Some(b"first")), png(Some(b"second")));
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[picture],
+            (461., 490., 13),
+            (0, "image-system-preview-1"),
+        );
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let after = "image-system-preview-1";
+        let slack = px(0.01);
+        for size in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(size, 12, window, cx));
+            draw(cx);
+            let room = cx.read(appearance::button_ring_room);
+            let whole = |control: Bounds<Pixels>, view: Bounds<Pixels>| {
+                let ring = control.dilate(room);
+                ring.top() + slack >= view.top() && ring.bottom() <= view.bottom() + slack
+            };
+            cx.update(|window, cx| {
+                detail
+                    .focus(("image-system-preview", 0_usize), cx)
+                    .focus(window, cx)
+            });
+            draw(cx);
+            cx.update(|window, _| {
+                detail.scroll().set_offset(point(px(0.), px(0.)));
+                window.refresh();
+            });
+            draw(cx);
+            assert!(
+                !whole(rendered(cx, after), rendered(cx, "stash-detail")),
+                "{size} pt: at its top the detail does not show After's open control whole"
+            );
+            detail.take_painted();
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| detail.focused(window)),
+                Some(("image-system-preview", 1_usize).into()),
+                "{size} pt: Tab moves from Before's open control onto After's"
+            );
+            assert!(
+                cx.update(|window, cx| detail.holds_focus(window, cx)),
+                "{size} pt: the detail holds focus"
+            );
+            // The key's change of input modality draws a frame before focus
+            // moves, with Before's control focused in the comparison's left
+            // half; the frames after it hold After's.
+            let middle = rendered(cx, "stash-comparison").center().x;
+            let frames: Vec<_> = detail
+                .take_painted()
+                .into_iter()
+                .skip_while(|frame| frame.control.is_some_and(|control| control.left() < middle))
+                .collect();
+            assert!(!frames.is_empty(), "{size} pt: Tab paints the detail");
+            for (index, frame) in frames.iter().enumerate() {
+                let control = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{size} pt: frame {index} draws After's control"));
+                assert!(
+                    whole(control, frame.viewport),
+                    "{size} pt: frame {index} of {} paints After's control {control:?} with its \
+                     ring outside the detail {:?}",
+                    frames.len(),
+                    frame.viewport
+                );
+            }
+            let (ring, mask) = (rendered(cx, after).dilate(room), content_mask(cx, after));
+            assert!(
+                holds(mask, ring),
+                "{size} pt: After's ring {ring:?} is clipped to {mask:?}"
+            );
+        }
+        // A click that opens nothing says why beneath After's caption.
+        queue(Err(seen_as_svg("a PNG image")));
+        let center = rendered(cx, after).center();
+        cx.simulate_click(center, Modifiers::none());
+        cx.run_until_parked();
+        draw(cx);
+        let (answer, failed) = cx.read(latest_note).expect("a line says why");
+        assert!(
+            failed && answer.starts_with("Could not open After."),
+            "the answer {answer:?}"
+        );
+        let line = rendered(cx, "image-system-preview-1/note");
+        let (control, comparison) = (rendered(cx, after), rendered(cx, "stash-comparison"));
+        assert!(
+            line.top() >= control.bottom() - slack
+                && line.left() >= comparison.center().x - slack
+                && line.right() <= comparison.right() + slack,
+            "the line {line:?} lies beneath After's control {control:?}, in After's half of \
+             {comparison:?}"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
