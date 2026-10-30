@@ -2482,6 +2482,11 @@ impl Render for StashBrowser {
                 .flex_col()
                 .gap_2()
                 .flex_shrink_0()
+                // Beside the list the footer ends at the browser's foot,
+                // where the dialog's content clips: it keeps the room of the
+                // ring of Details…, on its last line, inside, which the clip
+                // cut at 13 pt in a 1480 × 980 window.
+                .when(pinned, |actions| actions.pb(room))
                 .when(!pinned, |actions| {
                     actions.on_children_prepainted(reveal_note(
                         self.reveal_note.clone(),
@@ -3882,10 +3887,15 @@ mod tests {
     /// gives the first line of Git's report, in 1480 × 980 and 461 × 490
     /// windows at 13 and 18 pt, whether the report runs past that line, as
     /// a corrupt index's does, or is that one line, as a truncated index's
-    /// is: one line beside the list, and no more than the stacked detail
-    /// keeps beneath it, whole in the browser, and not in the window's
-    /// error. Details… beside it opens the whole report above Stashes, which
-    /// Escape closes back to Stashes. A report that opens with an empty line
+    /// is: one or two lines, one where the stacked detail is about 60 px
+    /// tall (18 pt in 461 × 490), whole in what the window shows of the
+    /// detail, its scrolling view stacked and its column beside the list,
+    /// and not in the window's error. Review restore…, which the press left
+    /// focused, keeps focus, whole in that view with its ring. Details…
+    /// beside the note, whole there with its ring as Tab reaches it, opens
+    /// the whole report with Copy details above Stashes, and Escape closes
+    /// it back to Stashes with focus on Details… again, whole with its ring.
+    /// A report that opens with an empty line
     /// gives its first line that says anything. The note took Git's whole
     /// report, its stderr line after line, unclamped beside the list and
     /// with no Details… to read or copy it; a report of one line had no
@@ -3902,6 +3912,8 @@ mod tests {
         cx.update(|_, cx| cx.set_reduce_motion(true));
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let _git = two_stashes(&repository);
+        // The app's palette, whose accent draws the keyboard ring.
+        crate::focus_ring::sweep::prepare(&app, cx);
         let index = repository.join(".git").join("index");
         let kept = std::fs::read(&index).expect("the index");
         let slack = px(0.5);
@@ -3955,42 +3967,87 @@ mod tests {
                         None,
                         "{at}: Stashes says it, not the window"
                     );
-                    let [note, browser] = ["stash-restore-refusal", "stash-browser"].map(|name| {
-                        cx.debug_bounds(name)
-                            .unwrap_or_else(|| panic!("{at}: no {name}"))
-                    });
+                    // What the window shows of the detail: stacked, the
+                    // detail's scrolling view, which the footer scrolls in;
+                    // beside the list, its column, whose footer lies below
+                    // the view.
+                    let stacked = width < 800.;
+                    let shown = if stacked {
+                        "stash-detail"
+                    } else {
+                        "stash-detail-column"
+                    };
+                    let [note, restore, view] =
+                        ["stash-restore-refusal", "restore-saved-stash", shown].map(|name| {
+                            cx.debug_bounds(name)
+                                .unwrap_or_else(|| panic!("{at}: no {name}"))
+                        });
                     let one = cx.update(|window, _| {
                         crate::image_compare::text_line(appearance::ui_text(10.), window)
                     });
                     let lines = (f32::from(note.size.height) / f32::from(one)).round() as usize;
-                    // Beside the list the note keeps two lines.
-                    let keeps = if width < 800. {
-                        stashes.read_with(cx, |stashes, _| stashes.note_lines.get())
-                    } else {
-                        2
+                    // One line where the stacked detail is about 60 px tall,
+                    // and two at most elsewhere.
+                    let keeps = if stacked && interface == 18 { 1 } else { 2 };
+                    assert!(
+                        (1..=keeps).contains(&lines) && inside(note, view),
+                        "{at}: the note {note:?} keeps {lines} lines, at most {keeps}, whole in {view:?}"
+                    );
+                    // Review restore…, which the press left focused, keeps
+                    // focus, whole in view with its ring, as the failure
+                    // lands: its row is taller than the paused refusal's,
+                    // with Details… beside the note.
+                    assert_eq!(
+                        cx.update(|window, cx| stashes.read(cx).detail.focused(window)),
+                        Some("restore-saved-stash".into()),
+                        "{at}: Review restore… keeps focus"
+                    );
+                    let ring = ring_around(cx, restore).unwrap_or_else(|| {
+                        panic!("{at}: Review restore… {restore:?} draws no ring")
+                    });
+                    assert!(
+                        ring.whole && inside(restore, view),
+                        "{at}: Review restore… {restore:?} and its ring {ring:?} are whole in {view:?}"
+                    );
+                    // Details… opens the whole report above Stashes, and
+                    // Escape closes it back to Stashes, focus on Details…
+                    // again, whole in view with its ring.
+                    let details_whole = |cx: &mut gpui::VisualTestContext, when: &str| {
+                        assert_eq!(
+                            cx.update(|window, cx| stashes.read(cx).detail.focused(window)),
+                            Some("stash-restore-details".into()),
+                            "{at}: Details… holds focus {when}"
+                        );
+                        let [details, view] = ["stash-restore-details", shown].map(|name| {
+                            cx.debug_bounds(name)
+                                .unwrap_or_else(|| panic!("{at}: no {name} {when}"))
+                        });
+                        let ring = ring_around(cx, details)
+                            .unwrap_or_else(|| panic!("{at}: Details… draws no ring {when}"));
+                        assert!(
+                            ring.whole && inside(details, view),
+                            "{at}: Details… {details:?} and its ring {ring:?} are whole in {view:?} {when}"
+                        );
                     };
-                    assert!(
-                        lines <= keeps && inside(note, browser),
-                        "{at}: the note {note:?} keeps {lines} lines, at most {keeps}, whole in {browser:?}"
-                    );
-                    // Details… opens the whole report above Stashes.
                     tab_to(&stashes, "stash-restore-details", cx);
-                    let details = cx
-                        .debug_bounds("stash-restore-details")
-                        .unwrap_or_else(|| panic!("{at}: no Details…"));
-                    assert!(
-                        inside(details, browser),
-                        "{at}: Details… {details:?} is whole"
-                    );
+                    details_whole(cx, "as Tab reaches it");
                     space(cx);
                     crate::views::tests::draw(cx);
+                    assert!(
+                        cx.debug_bounds("copy-operation-details").is_some(),
+                        "{at}: Details… opens the report, with Copy details"
+                    );
                     cx.simulate_keystrokes("escape");
+                    cx.executor()
+                        .advance_clock(std::time::Duration::from_millis(300));
                     crate::views::tests::draw(cx);
                     assert!(
-                        cx.update(|window, cx| window.has_active_dialog(cx))
+                        cx.debug_bounds("copy-operation-details").is_none()
+                            && cx.update(|window, cx| window.has_active_dialog(cx))
                             && cx.debug_bounds("stash-browser").is_some(),
                         "{at}: Escape closes the report back to Stashes"
                     );
+                    details_whole(cx, "once the report closes");
                     drop(stashes);
                     cx.update(|window, cx| window.close_all_dialogs(cx));
                     crate::views::tests::draw(cx);
