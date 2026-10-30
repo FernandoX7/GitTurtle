@@ -123,8 +123,8 @@ impl GitTurtle {
         self.page = return_page(self.page, self.page_origin, self.repository.is_some());
         if self.page == AppPage::Repository {
             self.resume_repository_page(window, cx);
-            // Leaving cancelled a review's preparation before its end could
-            // run the read Changes asked for meanwhile.
+            // Leaving ran the read a preparation it cancelled had noted
+            // (`show_settings`, `show_projects`); one still noted runs now.
             self.read_deferred_working(window, cx);
         } else {
             self.app_focus.focus(window, cx);
@@ -1028,6 +1028,192 @@ mod tests {
         assert_eq!(
             app.read_with(cx, |app, _| app.operation_error.clone()),
             None
+        );
+    }
+
+    /// `checked_out`'s repository in the first tab, shown, and a second
+    /// repository, `other`, with `draft.txt` new, opened in a second tab and
+    /// read there.
+    async fn beside_another_tab(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        use crate::views::tests::{fixture_git, fixture_repository, settle};
+        let (fixture, app, cx, root) = checked_out(cx).await;
+        let other = fixture_repository(fixture.path().join("other"))
+            .path()
+            .to_owned();
+        std::fs::write(other.join("notes.txt"), "notes\n").unwrap();
+        fixture_git(&other, &["add", "notes.txt"]);
+        fixture_git(&other, &["commit", "--quiet", "-m", "Notes"]);
+        std::fs::write(other.join("draft.txt"), "draft\n").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.path.clone()),
+            Some(root.clone())
+        );
+        (fixture, app, cx, root, other)
+    }
+
+    /// The shown working state's entry for `path`.
+    fn entry(
+        app: &Entity<GitTurtle>,
+        path: &str,
+        cx: &mut VisualTestContext,
+    ) -> gitturtle_core::StatusEntry {
+        app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .find(|entry| entry.path == std::path::Path::new(path))
+                .cloned()
+                .unwrap()
+        })
+    }
+
+    /// Settings and Projects cancel a review's preparation, whose end then
+    /// never runs, so they run the working-state read Changes asked for
+    /// meanwhile themselves. Refresh pressed while Discard… reviewed a row,
+    /// then Settings or Projects opened and the tab clicked back, which
+    /// reads nothing of its own, once never ran: the rows stayed as they
+    /// were, and the read stayed noted for a later preparation's end.
+    #[gpui::test]
+    async fn a_refresh_a_cancelled_preparation_held_back_still_runs(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        type Leave = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let leave: [(&str, Leave); 2] = [
+            ("Settings", |app, window, cx| app.show_settings(window, cx)),
+            ("Projects", |app, window, cx| app.show_projects(window, cx)),
+        ];
+        for (index, (page, leave)) in leave.into_iter().enumerate() {
+            // Discard…'s review, held as a slow disk holds it, and Refresh.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+            let later = format!("later-{index}.txt");
+            std::fs::write(fixture.path().join("narrow").join(&later), "later\n").unwrap();
+            cx.simulate_keystrokes(&primary("r"));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.operation_busy.is_some(), "{page}: the review runs");
+                assert!(app.working_read_pending(), "{page}: Refresh is asked for");
+                assert!(app.status_task.is_none(), "{page}: Refresh waits for it");
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
+            draw(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            draw(cx);
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.page == AppPage::Repository && app.mode == WorkspaceMode::Working,
+                    "{page}: the tab shows Changes again"
+                );
+                assert!(app.operation_busy.is_none(), "{page}");
+                assert!(!app.working_read_pending(), "{page}: no read stays noted");
+            });
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{page}: Refresh ran"
+            );
+        }
+    }
+
+    /// A tab switch or close cancels Discard…'s review and drops the
+    /// working read Changes asked for meanwhile with the tab's other reads:
+    /// shown again, a tab reads quietly. The read once stayed noted, and the
+    /// end of a later preparation in the tab read the working state unasked.
+    #[gpui::test]
+    async fn a_tab_switch_or_close_drops_the_read_its_tab_asked_for(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, root, other) = beside_another_tab(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+
+        // Refresh asked for while the review runs, and the other tab shown.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        cx.simulate_keystrokes(&primary("r"));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.status_task.is_none()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&root));
+            assert!(app.mode == WorkspaceMode::Working);
+            assert!(!app.working_read_pending(), "the switch dropped the read");
+        });
+        // A later review's end opens its confirmation and reads nothing.
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        let reads = app.update(cx, |app, _| app.operations.hold());
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert!(app.operation_busy.is_none(), "the review ended");
+            assert!(app.status_task.is_none(), "no read the tab did not ask for");
+        });
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        cx.update(|window, cx| window.close_dialog(cx));
+        drop(reads);
+        settle(&app, cx).await;
+
+        // Refresh asked for while the review runs, and the tab closed.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        cx.simulate_keystrokes(&primary("r"));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.working_read_pending()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(0, window, cx)));
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert_eq!(
+                app.working_read_deferred, None,
+                "the closed tab's read is dropped"
+            );
+        });
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "nothing stays busy"
         );
     }
 

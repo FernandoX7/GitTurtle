@@ -398,6 +398,10 @@ impl GitTurtle {
         self.cancel_interactive_rebase_action();
         self.cancel_discard_action();
         self.page = AppPage::Settings;
+        // A preparation cancelled above never reaches its end, which would
+        // have run the read Changes asked for meanwhile: clicking the tab
+        // back, which reads nothing, once left Refresh unrun.
+        self.read_deferred_working(window, cx);
         self.column_menu = false;
         self.column_drag = None;
         self.image_drag = None;

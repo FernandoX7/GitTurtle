@@ -406,7 +406,7 @@ impl GitTurtle {
                                 .label("Cancel")
                                 .debug_selector(|| "cancel-create-tag".into())
                                 .on_click(move |_, window, cx| {
-                                    form.update(cx, |form, cx| form.cancel(cx));
+                                    form.update(cx, |form, cx| form.cancel(window, cx));
                                     window.close_dialog(cx);
                                 })
                         })
@@ -416,8 +416,8 @@ impl GitTurtle {
                     submit.update(cx, |this, cx| this.submit(window, cx));
                     false
                 })
-                .on_cancel(move |_, _, cx| {
-                    cancel.update(cx, |form, cx| form.cancel(cx));
+                .on_cancel(move |_, window, cx| {
+                    cancel.update(cx, |form, cx| form.cancel(window, cx));
                     true
                 })
         });
@@ -645,10 +645,14 @@ impl TagForm {
         })
     }
     /// Ends the form's preparation and its read, as Cancel or Escape closes
-    /// the dialog.
-    fn cancel(&mut self, cx: &mut Context<Self>) {
+    /// the dialog, and runs the working-state read asked for meanwhile,
+    /// which the cancelled preparation's end would have run.
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preparing = None;
-        let _ = self.owner.update(cx, |this, _| this.cancel_tag_action());
+        let _ = self.owner.update(cx, |this, cx| {
+            this.cancel_tag_action();
+            this.read_deferred_working(window, cx);
+        });
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Refused at once while a write runs, as Review tag is announced

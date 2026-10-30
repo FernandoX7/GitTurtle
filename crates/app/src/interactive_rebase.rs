@@ -46,6 +46,8 @@ fn close_rebase_dialog(
     let _ = owner.update(cx, |this, cx| {
         if this.path.as_deref() == path && this.page == AppPage::Repository {
             this.cancel_interactive_rebase_action();
+            // The cancelled preparation's end never runs.
+            this.read_deferred_working(window, cx);
             this.app_focus.focus(window, cx);
         }
     });

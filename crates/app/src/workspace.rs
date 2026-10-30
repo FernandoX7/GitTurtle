@@ -1834,6 +1834,9 @@ impl GitTurtle {
         self.capture_page_return_focus(window, cx);
         self.page = AppPage::Projects;
         self.page_origin = AppPage::Repository;
+        // A preparation cancelled above never reaches its end, which would
+        // have run the read Changes asked for meanwhile.
+        self.read_deferred_working(window, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
@@ -2159,10 +2162,13 @@ impl GitTurtle {
     /// ([`Self::refresh_worktree`]) and none runs now. Every write, clone,
     /// create and preparation calls it as it ends, whichever repository it
     /// ran in: Changes may have been opened in another tab meanwhile, whose
-    /// rows the write's own reads never touch. Returning to the repository
-    /// page calls it too, for a preparation that leaving it cancelled. A
-    /// read another tab asked for is dropped: that tab reads quietly when it
-    /// is shown again, and the shown one did not ask.
+    /// rows the write's own reads never touch. So does whatever cancels a
+    /// preparation, whose end then never runs: Settings, Projects and a
+    /// form's Cancel. A tab switch or close drops the read instead
+    /// (`retain_active_tab`, `close_repository_tab`): the tab reads quietly
+    /// when it is shown again. A read another tab asked for is dropped too,
+    /// as the shown one did not ask. A cancel once left the read noted, so
+    /// Refresh never ran, or ran unasked at the end of a later preparation.
     pub(super) fn read_deferred_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() || self.working_read_deferred.is_none() {
             return;

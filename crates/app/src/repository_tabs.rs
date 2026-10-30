@@ -818,6 +818,9 @@ impl GitTurtle {
         self.worker.release_history();
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
+        // A working read the tab asked for while a write or preparation ran
+        // is dropped with its rows' reads: restored, it reads quietly.
+        self.working_read_deferred = None;
         self.integration_task = None;
         self.cancel_discard_action();
         self.file_history.pause_for_tab();
@@ -1257,6 +1260,7 @@ impl GitTurtle {
         let active = self.repository_tabs.active == Some(index);
         if active {
             self.cancel_discard_action();
+            self.working_read_deferred = None;
             self.persist_commit_draft(window, cx);
             self.invalidate_read();
             self.worker.release_history();

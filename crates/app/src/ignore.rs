@@ -65,10 +65,14 @@ impl GitTurtle {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false
                 })
-                .on_cancel(move |_, _, cx| {
+                .on_cancel(move |_, window, cx| {
                     cancel.update(cx, |form, cx| {
                         form.pending = false;
-                        let _ = form.owner.update(cx, |this, _| this.cancel_ignore_action());
+                        let _ = form.owner.update(cx, |this, cx| {
+                            this.cancel_ignore_action();
+                            // The cancelled preparation's end never runs.
+                            this.read_deferred_working(window, cx);
+                        });
                     });
                     true
                 })
