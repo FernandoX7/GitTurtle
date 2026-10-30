@@ -1,6 +1,6 @@
 # GitTurtle patch to gpui-component 0.6.0
 
-This directory contains the exact crates.io `gpui-component` 0.6.0 source under Apache-2.0. `LICENSE-APACHE` is byte-for-byte preserved, and `.cargo_vcs_info.json` identifies published source revision `94a313a72a2513aee2780240cd322d552b2395f0` (`crates/component`). The registry archive checksum is `9bd7938c395be32cea6127b92f7206501ad1fe7e121a609de1aafdedcb4d98be`. Dependency versions are unchanged. The registry-only `.cargo-ok`, `.cargo-checksum.json`, and package lockfile are omitted; GitTurtle uses the workspace lockfile.
+This directory contains the exact crates.io `gpui-component` 0.6.0 source under Apache-2.0. `LICENSE-APACHE` is byte-for-byte preserved, and `.cargo_vcs_info.json` identifies published source revision `94a313a72a2513aee2780240cd322d552b2395f0` (`crates/component`). The registry archive checksum is `9bd7938c395be32cea6127b92f7206501ad1fe7e121a609de1aafdedcb4d98be`. Dependency versions are unchanged. The registry-only `.cargo-ok`, `.cargo-checksum.json`, and package lockfile are omitted; GitTurtle uses the workspace lockfile. `upstream-files/` adds two files of that revision's repository that the package omits and the crate's tests include, test data only, described in the test-layout part at the end of this note.
 
 The input patch modifies `src/input/input.rs` and `src/input/state.rs`. The styled Input previously attached its role, name, author identifier, placeholder, value and SetValue action to the surrounding frame, while the shared text editing state owned the active keyboard FocusHandle on a different element without a role. GPUI 0.3.4 only records a focused accessibility node when that same element has a node; otherwise its tree falls back to the window root. This was a separate source defect from the macOS first-responder adapter attachment.
 
@@ -645,14 +645,12 @@ runs those app paths, including
 composes `SyntaxHighlighter::styles` with the patch decorations, and the
 Markdown source view's find. The crate's own `highlighter` tests, among them
 `test_unique_styles`, cover the sentinel directly. Both sets pass with and
-without the patch; without it the build only warns. The crate's lib test
-target does not compile as packaged: test code includes three files from the
-upstream repository that the crates.io package omits, and two input
-accessibility probes in `src/input/input.rs` fail the borrow checker. Its
-highlighter tests therefore ran in a scratch workspace with the root patches
-and lockfile, `--features tree-sitter-languages`, placeholders for those files
-and the input test module compiled out. Remove this part of the patch when
-upstream drops the import.
+without the patch; without it the build only warns. The highlighter tests
+need `--features tree-sitter-languages`, which
+`scripts/vendor-crate-test.sh` does not pass (its arguments go to the test
+harness), so they ran in a scratch workspace with the root patches and
+lockfile and that feature. Remove this part of the patch when upstream drops
+the import.
 
 The injection-deadline patch also modifies `src/highlighter/highlighter.rs`.
 Upstream stops each injected layer's parse (a Markdown file's inline layer, a
@@ -1210,3 +1208,28 @@ Remove this part of the patch when upstream's dismiss callback no longer
 holds the shared state strongly, and that test passes without it; since no
 app menu uses the kit's context menu, a kit update may instead drop it rather
 than carry it forward.
+
+The test-layout part is test-only and changes no built code. The crate's lib
+test target compiles only beside its upstream repository: `src/dock/mod.rs`
+includes gpui-base's `crates/base/src/dock/mod.rs`, `src/text/compat.rs` the
+story crate's `crates/story/examples/fixtures/test.md`, and
+`src/theme/schema.rs` the repository's `themes/aurora.json`, none of which the
+crates.io package carries. `upstream-files/` holds the latter two at their
+repository paths, byte for byte from revision
+`94a313a72a2513aee2780240cd322d552b2395f0` under the repository's Apache-2.0
+license (SHA-256 `996a637a69f8b3fe7c6ca6a8f29ccd45776759b433bbb9e9dd59a7783f5cbadb`
+and `7ef8be1ae1179787c294cdc9d09a8767820b5a30ec85d2adad5c20fe6b99ca22`).
+`scripts/vendor-crate-test.sh vendor/gpui-component` lays them out at those
+paths, and `vendor/gpui-base`, the same revision's `crates/base`, at its own,
+beside the copy it builds, so the dock test compares this module with the
+gpui-base the application builds. In `src/input/input.rs`,
+`editable_input_offers_accessibility_write_action` and
+`input_emits_accessibility_id` kept the styled Input's rendered frame in a
+`_frame` binding while they rendered its state; the frame, the
+`impl IntoElement` that `RenderOnce::render` returns, holds the `window` and
+`cx` borrows until it drops, so neither probe borrow-checked (E0499, E0500). Each
+now drops the frame before it renders the state. The frame projects into the
+state as it renders, so what the probes read is unchanged. Remove
+`upstream-files/` when a kit update's tests include no file outside its
+package, and drop the probe change with the input patch or when upstream's
+probes compile.

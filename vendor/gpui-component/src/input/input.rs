@@ -799,7 +799,9 @@ mod tests {
                 let state = self.state.clone();
                 let emitted = self.emitted.clone();
                 div().on_prepaint(move |_, window, cx| {
-                    let _frame = Input::new(&state).render(window, cx);
+                    // The frame projects into the state as it renders, and
+                    // holds `window` and `cx` until it is dropped.
+                    drop(Input::new(&state).render(window, cx));
                     let node = state.update(cx, |state, cx| {
                         let input = state.render(window, cx).into_element();
                         let mut node = gpui::accesskit::Node::new(input.a11y_role().unwrap());
@@ -865,7 +867,7 @@ mod tests {
                 let emitted = self.emitted.clone();
                 div().on_prepaint(move |_, window, cx| {
                     let mut author_id_of = |input: Input| {
-                        let _frame = input.render(window, cx);
+                        drop(input.render(window, cx));
                         state.update(cx, |state, cx| {
                             let input = state.render(window, cx).into_element();
                             let mut node = gpui::accesskit::Node::new(input.a11y_role().unwrap());
