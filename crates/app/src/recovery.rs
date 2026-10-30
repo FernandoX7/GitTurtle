@@ -3298,15 +3298,23 @@ mod tests {
     /// experiment", then "Index only" chosen: the preparation is cancelled
     /// at once, Review restore… can be pressed again, and once Git would
     /// have answered no review of "Layout experiment" opens; pressed again,
-    /// it reviews "Index only". Restore staged state chosen meanwhile: no
-    /// review of the restoration without it opens, and pressed again the
-    /// review restores it. Stashes closed with Escape: nothing opens and
-    /// nothing is said. Stacked at 18 pt in a 461 × 490 window, with a merge
-    /// paused: no refusal lands under the stash chosen meanwhile. Each
-    /// answered what had been asked once
-    /// it landed: the old stash's review opened, the refusal lay under the
-    /// other stash, the review restored without the staged state, and the
-    /// review popped up after Stashes had closed.
+    /// it reviews "Index only". The list read again meanwhile, as Refresh
+    /// reads it: cancelled at once, and no review opens. Restore staged
+    /// state chosen meanwhile: no review of the restoration without it
+    /// opens, and pressed again the review restores it. Stashes closed with
+    /// Escape: its browser's release cancels, and nothing opens or is said.
+    /// An answer that outruns the
+    /// cancellations, here for a choice changed behind their back, is
+    /// dropped by the answer check: no review for the other Restore staged
+    /// state, no refusal under a selection moved on. Stacked at 18 pt in a
+    /// 461 × 490 window, with a merge paused: no refusal lands under the
+    /// stash chosen meanwhile, and a refusal that lands with another stash
+    /// chosen before a frame draws it does not scroll that stash's detail
+    /// to its foot once its inspection lands. Each answered what had been
+    /// asked once it landed: the old stash's review opened, the refusal lay
+    /// under the other stash, the review restored without the staged state,
+    /// and the review popped up after Stashes had closed; and the refusal's
+    /// reveal, still due, scrolled the next stash's detail to its foot.
     #[gpui::test]
     async fn review_restore_answers_only_what_stashes_still_shows(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
@@ -3374,6 +3382,26 @@ mod tests {
         drop(stashes);
         close(cx);
 
+        // The list read again while Git prepares, as Refresh, Previous and
+        // More read it.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        assert!(preparing(cx), "Git prepares the restoration");
+        cx.update(|window, cx| stashes.update(cx, |stashes, cx| stashes.load_page(0, window, cx)));
+        StashBrowser::lands(&stashes, cx);
+        assert!(!preparing(cx), "reading the list again cancels it");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            reviewed(cx),
+            None,
+            "no review opens once the list is read again"
+        );
+        drop(stashes);
+        close(cx);
+
         // The other Restore staged state chosen while Git prepares.
         open_selected_stash(&app, cx).await;
         let stashes = browser(cx);
@@ -3403,7 +3431,8 @@ mod tests {
         drop(stashes);
         close(cx);
 
-        // Stashes closed while Git prepares.
+        // Stashes closed while Git prepares, its dialog holding the
+        // browser's only handle: the browser's release cancels.
         open_selected_stash(&app, cx).await;
         let stashes = browser(cx);
         let held = app.update(cx, |app, _| app.operations.hold());
@@ -3429,8 +3458,33 @@ mod tests {
             "and nothing is said"
         );
 
+        // An answer that outruns the cancellations, for the other Restore
+        // staged state chosen behind their back: the answer check drops it.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        stashes.update(cx, |stashes, _| {
+            stashes.restore_index = !stashes.restore_index
+        });
+        assert!(preparing(cx), "nothing cancels the preparation");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            reviewed(cx),
+            None,
+            "no review for the choice no longer shown"
+        );
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Stashes stays open"
+        );
+        drop(stashes);
+        close(cx);
+
         // Stacked, with a merge paused: another stash chosen while Git
-        // prepares, then a refusal landed but not drawn.
+        // prepares, a refusal that outruns the cancellations, and one that
+        // lands as another stash is chosen.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
         git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
@@ -3454,6 +3508,54 @@ mod tests {
             "no refusal lands under Index only"
         );
         assert!(cx.debug_bounds("stash-restore-refusal").is_none());
+        // The selection moved on behind the cancellations' back: the answer
+        // check drops the refusal.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        stashes.update(cx, |stashes, _| {
+            stashes.generation = stashes.generation.wrapping_add(1)
+        });
+        assert!(preparing(cx), "nothing cancels the preparation");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+            None,
+            "no refusal for the selection no longer shown"
+        );
+        // "Layout experiment" chosen as Index only's refusal lands, before a
+        // frame draws it, as a click handled before the display's next
+        // frame is: the test window draws as soon as the refusal's update
+        // ends, so the choice is made from an observer, which runs first.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+        let chooses = cx.update(|window, cx| {
+            window.observe(&stashes, cx, |stashes, window, cx| {
+                let refused = stashes.read(cx);
+                if refused.restore_line.is_some() && refused.selected == Some(1) {
+                    stashes.update(cx, |stashes, cx| stashes.select_stash(0, window, cx));
+                }
+            })
+        });
+        drop(held);
+        recovery_lands(&app, cx);
+        drop(chooses);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| (
+                stashes.refusals,
+                stashes.selected,
+                stashes.restore_line.clone()
+            )),
+            (refusals + 1, Some(0), None),
+            "Index only is refused, then Layout experiment chosen"
+        );
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.detail.scroll().offset().y),
+            px(0.),
+            "Layout experiment's detail opens at its top"
+        );
         git(&["merge", "--abort"]);
         drop(stashes);
         close(cx);
