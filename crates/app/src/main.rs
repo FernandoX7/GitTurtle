@@ -404,6 +404,11 @@ struct GitTurtle {
     preview_showing: system_preview::Showing,
     operation_task: Option<Task<()>>,
     status_task: Option<Task<()>>,
+    /// The `work_generation` of the status read a write that changes only
+    /// the working state asked for as it ended (Stage, Unstage, Discard,
+    /// Ignore, Delete untracked file…, Resolve, a stash's recovery): menus
+    /// refuse writes while that read runs (`GitTurtle::write_unsettled`).
+    status_after_write: Option<u64>,
     work_generation: u64,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
     working_paths: working_selection::FilterState,
@@ -769,6 +774,7 @@ impl GitTurtle {
             preview_showing: system_preview::Showing::next(),
             operation_task: None,
             status_task: None,
+            status_after_write: None,
             work_generation: 0,
             work_status: None,
             working_paths: working_selection::FilterState::default(),

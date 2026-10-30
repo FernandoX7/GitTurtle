@@ -4255,6 +4255,80 @@ mod tests {
         a_row_menu_waits_for_its_writes_reload(cx, Opening::Keyboard).await;
     }
 
+    /// A working row's menu, opened as `opening` opens it, stays refused
+    /// once a Stage of its file ends, until the status read the Stage asks
+    /// for as it ends lands, held here, as a write's quiet reload is waited
+    /// for (`a_row_menu_waits_for_its_writes_reload`). Built again as the
+    /// Stage ended, from the status the window still showed, it offered
+    /// Delete untracked file… for the file the Stage had just added, until
+    /// the read landed and built it once more.
+    async fn a_row_menu_waits_for_its_writes_status_read(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("gamma.txt")],
+            },
+        );
+        assert_eq!(delete(cx), Some(false), "{opening:?}: while the Stage runs");
+        // The status read the Stage asks for as it ends waits behind this.
+        let status = app.update(cx, |app, _| app.operations.hold());
+        drop(write);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()
+                && app.status_task.is_some()),
+            "{opening:?}: the Stage ended, and its status read is held"
+        );
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "{opening:?}: refused until the Stage's status read lands"
+        );
+        drop(status);
+        crate::views::tests::settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.work_status.as_ref().and_then(|status| {
+                status
+                    .entries
+                    .iter()
+                    .find(|entry| entry.path == std::path::Path::new("gamma.txt"))
+                    .map(|entry| entry.untracked)
+            })),
+            Some(false),
+            "{opening:?}: gamma is staged"
+        );
+        assert_eq!(
+            delete(cx),
+            None,
+            "{opening:?}: nothing offers to delete gamma once the read lands"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waits_for_its_writes_status_read(cx: &mut TestAppContext) {
+        a_row_menu_waits_for_its_writes_status_read(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_waits_for_its_writes_status_read(cx: &mut TestAppContext) {
+        a_row_menu_waits_for_its_writes_status_read(cx, Opening::Keyboard).await;
+    }
+
     /// A History window on a clean worktree, wide enough for the action bar
     /// and the navigator, with the app's keys bound. Keep the returned
     /// directory until the test ends.

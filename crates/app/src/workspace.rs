@@ -2628,7 +2628,12 @@ impl GitTurtle {
                                 if let Some((index, area)) = this.working_selected { this.select_working(index, area, window, cx); }
                             } else if !this.reload_tracked_inspection(window, cx) && let Some(index) = this.selected_file { this.load_file(index, window, cx); }
                         }
-                    } else { this.refresh_worktree(window,cx); }
+                    } else {
+                        // Menus wait for this read as for a reload
+                        // (`write_unsettled`).
+                        this.refresh_worktree(window, cx);
+                        this.status_after_write = Some(this.work_generation);
+                    }
                 }
                 cx.notify();
             });
@@ -2690,12 +2695,17 @@ impl GitTurtle {
     /// holds off (`quiet_reads_held`), as Blame or File history open as the
     /// write ends, refuses nothing until it can run: menus stayed refused
     /// there, with nothing to say why, until the window returned to History
-    /// or Changes. A read the watcher asked for refuses nothing.
+    /// or Changes. A write that changes only the working state, as a Stage,
+    /// reads the status again instead (`status_after_write`), which menus
+    /// wait for as well: built as the write ended, a working row's menu
+    /// offered Delete untracked file… for a file the Stage had just added.
+    /// A read the watcher asked for refuses nothing.
     pub(super) fn write_unsettled(&self) -> bool {
         self.operation_busy.is_some()
             || self
                 .automatic
                 .reloading_after_write(!self.quiet_reads_held())
+            || (self.status_task.is_some() && self.status_after_write == Some(self.work_generation))
     }
 
     /// `width` is the inspector's width where the window pins it, otherwise
