@@ -1457,7 +1457,8 @@ impl StashBrowser {
             // one left the list out of the Tab order, whatever the element
             // asked.
             stash_focus: cx.focus_handle().tab_stop(true),
-            file_focus: cx.focus_handle(),
+            // The saved files likewise: Tab passed them by.
+            file_focus: cx.focus_handle().tab_stop(true),
             loading: None,
             error: None,
             preview_error: None,
@@ -2398,6 +2399,12 @@ impl Render for StashBrowser {
                 .focus_ring
                 .edge(&self.stash_focus, rgb(p.accent))
         });
+        // The saved files draw it as their own 1 px edge, as the rebase
+        // sequence does.
+        let files_ringed = self
+            .owner
+            .upgrade()
+            .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.file_focus));
         // While its rows overflow it, as the stacked list's one row does when
         // two stashes are saved, the list shows its scrollbar, decided for
         // its height in the frame it is drawn (`in_frame`): it once showed
@@ -2651,7 +2658,15 @@ impl Render for StashBrowser {
                     .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
-                    .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").debug_selector(|| "stash-files".into()).role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
+                    // The saved files, one Tab stop with the arrow keys
+                    // inside. They are no taller than the detail's view holds
+                    // with their ring, its content box inside the ring's room
+                    // (`max_h` of it), so the keyboard reveals them whole:
+                    // stacked beneath the list at 18 pt in a 461 × 490 window
+                    // they took 85 px of a 63.5 px detail, which no reveal
+                    // could show whole, and the detail's clip cut their ring.
+                    // Their rows scroll inside them.
+                    .child(div().flex().flex_col().flex_shrink_0().h(px(if narrow { 85. } else { 130. })).max_h(relative(1.)).on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").debug_selector(|| "stash-files".into()).role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).flex_1().min_h_0().border_1().border_color(rgb(if files_ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected_file, this.files().len()) {
                                 cx.stop_propagation();
@@ -3342,6 +3357,106 @@ mod tests {
                 cx.simulate_keystrokes("escape");
                 draw(cx);
             }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The saved files are one Tab stop, with the arrow keys inside, at 13
+    /// pt in a 1480 × 980 window and at 18 pt in a 461 × 490 one: Tab
+    /// reaches them, and they draw the keyboard ring whole on their own edge
+    /// in the detail's view; Down moves the selection to the first and then
+    /// the second of four files and End to the last, each whole in the list,
+    /// which keeps focus. Stacked beneath the saved-work list at 18 pt, where
+    /// the detail is about 60 px tall, they are no taller than it holds with
+    /// their ring. Their focus handle was no Tab stop, so Tab passed them by,
+    /// and at 85 px in that detail no reveal showed them whole: its clip cut
+    /// their ring.
+    #[gpui::test]
+    async fn the_saved_files_are_one_stop_whole_in_the_detail(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["alpha.txt", "beta.txt", "delta.txt", "gamma.txt"] {
+            std::fs::write(repo.path().join(name), format!("{name}\n")).unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["stash", "push", "-m", "four files"]);
+        let (app, cx) = window(cx, &repo);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        let bounds = |cx: &mut VisualTestContext, name: &'static str| {
+            cx.debug_bounds(name).unwrap_or_else(|| panic!("no {name}"))
+        };
+        for (width, height, interface) in [(1480., 980., 13), (461., 490., 18)] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            open_selected_stash(&app, cx).await;
+            let stashes = app
+                .read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .expect("Stashes is open");
+            assert_eq!(
+                stashes.read_with(cx, |stashes, _| (stashes.area, stashes.files().len())),
+                (StashArea::Staged, 4),
+                "{at}: four saved files"
+            );
+            // Tab reaches the saved files, from the stash list.
+            let files = stashes.read_with(cx, |stashes, _| stashes.file_focus.clone());
+            let focused =
+                |cx: &mut VisualTestContext| cx.update(|window, _| files.is_focused(window));
+            let mut reached = false;
+            for _ in 0..12 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                if focused(cx) {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "{at}: Tab reaches the saved files");
+            draw(cx);
+            let [list, view] = [bounds(cx, "stash-files"), bounds(cx, "stash-detail")];
+            assert!(
+                inside(list, view),
+                "{at}: the saved files {list:?} lie whole in the detail's view {view:?}"
+            );
+            let ring = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .find(|outline| outline.bounds == list)
+                .unwrap_or_else(|| panic!("{at}: the saved files {list:?} draw no ring"));
+            assert!(ring.whole, "{at}: their ring {ring:?} is whole");
+            // The arrow keys move the selection inside them.
+            for (key, index, row) in [
+                ("down", 0, "stash-file-0"),
+                ("down", 1, "stash-file-1"),
+                ("end", 3, "stash-file-3"),
+            ] {
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                assert_eq!(
+                    stashes.read_with(cx, |stashes, _| stashes.selected_file),
+                    Some(index),
+                    "{at}: {key} selects file {index}"
+                );
+                let [row, list] = [bounds(cx, row), bounds(cx, "stash-files")];
+                assert!(
+                    inside(row, list),
+                    "{at}: {key} shows file {index} {row:?} whole in the list {list:?}"
+                );
+                assert!(focused(cx), "{at}: the saved files keep focus after {key}");
+            }
+            drop(stashes);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
@@ -4273,7 +4388,7 @@ mod tests {
         let in_view = |cx: &mut gpui::VisualTestContext| {
             let [files, view] =
                 ["stash-files", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
-            // Taller than the detail, they show what of them it holds.
+            // In view, at least in part.
             (
                 files.bottom() > view.top() + slack && files.top() < view.bottom() - slack,
                 files,
