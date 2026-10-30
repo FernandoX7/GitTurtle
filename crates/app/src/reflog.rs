@@ -1,4 +1,5 @@
 //! A local reflog is an expiring Git record, separate from app activity.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
@@ -375,6 +376,14 @@ pub(crate) struct ReflogBrowser {
     /// details or below Review recovery branch…, the content's last line
     /// ([`reveal_landed`]).
     reveal_error: bool,
+    /// Whether the error the last read ended with is a polite live region,
+    /// announced to assistive technology once it has read what it is
+    /// saying: an entry's read that fails while keyboard focus is on its
+    /// Cancel, which hands focus to the entry and shows the entry rather
+    /// than the error. At 18 pt in a 461 × 490 half tile the entry and its
+    /// error cannot both show, so nothing in view or in speech reported the
+    /// failure. It holds while the error stands, until the next read.
+    announce_error: bool,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
     /// The entries whose text the last layout cut.
@@ -452,6 +461,7 @@ impl ReflogBrowser {
             entries: FocusReveal::new(Trigger::Keyboard),
             reveal_filter: false,
             reveal_error: false,
+            announce_error: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
@@ -608,6 +618,7 @@ impl ReflogBrowser {
         self.cancellation.cancel();
         self.pending = true;
         self.error = None;
+        self.announce_error = false;
         if self.reading || self.repeat.is_some() {
             self.waiting = Some(Box::new(move |this, window, cx| {
                 this.submit(operation, receive, window, cx)
@@ -691,10 +702,15 @@ impl ReflogBrowser {
                 // staying where it is, so a failed read is never out of
                 // view. Focus that leaves an entry's Cancel for the entry,
                 // far above the error, is revealed instead, so the entry it
-                // lands on draws its ring.
+                // lands on draws its ring, and the error, which may then lie
+                // below the fold, is announced politely, after the entry.
                 match place {
                     ReadPlace::Log => this.reveal_filter = true,
-                    ReadPlace::Entry => this.reveal_error = this.error.is_some() && !left_cancel,
+                    ReadPlace::Entry => {
+                        let failed = this.error.is_some();
+                        this.reveal_error = failed && !left_cancel;
+                        this.announce_error = failed && left_cancel;
+                    }
                     ReadPlace::Recovery => this.reveal_error = this.error.is_some(),
                 }
                 cx.notify();
@@ -943,6 +959,7 @@ impl Render for ReflogBrowser {
             label("reflog-error", error.clone())
                 .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.warning))
+                .when(self.announce_error, |error| error.polite())
                 .when(reveal_error, |error| {
                     error.on_prepaint(reveal_landed(self.content.scroll().clone(), room))
                 })
@@ -1356,9 +1373,10 @@ mod tests {
     /// whose focus reveal is due, as when a quick reply lands before the
     /// frame that draws the key's move of focus; a later scroll stays where
     /// it takes the content. Focus that leaves the read's Cancel for the
-    /// entry as the error lands is shown instead, the entry's ring whole.
-    /// The error lay out of view, focus on the entry, and nothing in view
-    /// said the read had failed.
+    /// entry as the error lands is shown instead, the entry's ring whole,
+    /// and the error, then below the fold, is announced politely, after the
+    /// entry. The error lay out of view, focus on the entry, and nothing in
+    /// view said the read had failed; after Cancel, nothing in speech did.
     #[gpui::test]
     async fn an_entry_read_error_scrolls_into_view(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -1437,6 +1455,23 @@ mod tests {
             "focus moves from Cancel to the entry"
         );
         crate::tags::tests::assert_rings_whole(cx, &["reflog-entry-1"]);
+        // The content shows the entry, its error below the fold, so the
+        // error is announced instead, politely, once the entry has been.
+        let content = rendered(cx, "reflog-browser-content");
+        let error = rendered(cx, "reflog-error");
+        assert!(
+            !shows_whole(content, error),
+            "the error {error:?} lies past the content {content:?}"
+        );
+        assert_eq!(
+            native_accessibility::written::announced("reflog-error"),
+            Some(native_accessibility::written::Announced {
+                live: gpui::accesskit::Live::Polite,
+                atomic: true,
+                busy: false,
+            }),
+            "the error is announced politely"
+        );
     }
 
     /// Down held past the last entry while a commit's read is slow selects
