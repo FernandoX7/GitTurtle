@@ -1293,3 +1293,57 @@ async fn a_read_landing_while_its_cancel_holds_focus_moves_focus_to_the_first_fi
         "Escape closes the manager"
     );
 }
+
+/// The manager's error line is said once, at once, from the window's alert,
+/// in the frame that draws it in place: a folder name of two parts refuses
+/// Review create. Drawing the line again says nothing more, and the same
+/// press refused again is said again, from a fresh node. The line was no
+/// live region, and nothing was said.
+#[gpui::test]
+async fn the_managers_error_is_said_as_its_line_appears(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::alerted;
+    use crate::views::tests::draw;
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    settle_manager(&app, cx).await;
+    let manager = app
+        .read_with(cx, |app, _| app.worktree_management.draft.clone())
+        .expect("the manager opens");
+    cx.update(|window, cx| {
+        manager.update(cx, |manager, cx| {
+            manager
+                .folder
+                .update(cx, |folder, cx| folder.set_value("one/two", window, cx))
+        })
+    });
+    draw(cx);
+    assert_eq!(alerted(cx), None, "nothing is said before a press");
+    let press = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| manager.prepare_create(window, cx))
+        });
+        draw(cx);
+    };
+    press(cx);
+    let error = manager
+        .read_with(cx, |manager, _| manager.error.clone())
+        .expect("two parts are refused");
+    assert!(
+        cx.debug_bounds("worktree-error").is_some(),
+        "the line stands in place"
+    );
+    let (first, said) = alerted(cx).expect("the frame that draws the line says it");
+    assert_eq!(said, error);
+    draw(cx);
+    assert_eq!(
+        alerted(cx).map(|(id, _)| id),
+        Some(first.clone()),
+        "drawing the line again says nothing more"
+    );
+    press(cx);
+    let (second, said) = alerted(cx).expect("refused again, it is said again");
+    assert!(
+        second != first && said == error,
+        "a fresh node says it again"
+    );
+}

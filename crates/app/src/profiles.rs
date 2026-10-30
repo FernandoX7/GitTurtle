@@ -436,7 +436,7 @@ impl GitTurtle {
                         if let Some(form) = &form {
                             let _ = form.update(cx, |form, cx| {
                                 form.pending = false;
-                                form.error = Some(error);
+                                crate::tags::set_error_line(&mut form.error, error, window, cx);
                                 cx.notify();
                             });
                         }
@@ -618,7 +618,7 @@ impl ProfileForm {
             signing: self.capture_signing.then(|| self.signing.clone()),
         };
         if let Err(error) = definition.validate() {
-            self.error = Some(format!("{error:#}"));
+            crate::tags::set_error_line(&mut self.error, format!("{error:#}"), window, cx);
             cx.notify();
             return;
         }
@@ -639,7 +639,12 @@ impl ProfileForm {
             .unwrap_or(false);
         self.pending = accepted;
         if !accepted {
-            self.error = Some("Wait for the current operation before editing profiles.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Wait for the current operation before editing profiles.",
+                window,
+                cx,
+            );
         }
         cx.notify();
     }

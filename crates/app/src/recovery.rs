@@ -1711,16 +1711,18 @@ impl StashBrowser {
                     "Stash listing was interrupted. Refresh to try again."
                 ))
             });
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.generation != generation {
                     return;
                 }
                 this.metadata_task = None;
                 this.loading = None;
                 if !this.is_current(cx) {
-                    this.error = Some(
-                        "The repository changed. Close this inspector and open Stashes again."
-                            .into(),
+                    crate::tags::set_error_line(
+                        &mut this.error,
+                        "The repository changed. Close this inspector and open Stashes again.",
+                        window,
+                        cx,
                     );
                     cx.notify();
                     return;
@@ -1731,7 +1733,12 @@ impl StashBrowser {
                         this.offset = offset;
                         this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => crate::tags::set_error_line(
+                        &mut this.error,
+                        format!("{error:#}"),
+                        window,
+                        cx,
+                    ),
                 }
                 cx.notify();
             });
@@ -1782,14 +1789,19 @@ impl StashBrowser {
                     "Stash inspection was interrupted. Select the stash again."
                 ))
             });
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.generation != generation {
                     return;
                 }
                 this.metadata_task = None;
                 this.loading = None;
                 if !this.is_current(cx) {
-                    this.error = Some("The repository changed. Open Stashes again.".into());
+                    crate::tags::set_error_line(
+                        &mut this.error,
+                        "The repository changed. Open Stashes again.",
+                        window,
+                        cx,
+                    );
                     cx.notify();
                     return;
                 }
@@ -1802,7 +1814,12 @@ impl StashBrowser {
                         this.snapshot = Some(Arc::new(snapshot));
                         this.file_scroll.scroll_to_item(0, ScrollStrategy::Top);
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => crate::tags::set_error_line(
+                        &mut this.error,
+                        format!("{error:#}"),
+                        window,
+                        cx,
+                    ),
                 }
                 cx.notify();
             });

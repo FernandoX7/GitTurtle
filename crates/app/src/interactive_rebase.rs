@@ -463,7 +463,12 @@ impl RebaseForm {
                                     form.acknowledged = false;
                                     form.focus.focus(window, cx);
                                 }
-                                Err(error) => form.error = Some(format!("{error:#}")),
+                                Err(error) => crate::tags::set_error_line(
+                                    &mut form.error,
+                                    format!("{error:#}"),
+                                    window,
+                                    cx,
+                                ),
                             }
                             cx.notify();
                         });
@@ -474,7 +479,12 @@ impl RebaseForm {
             })
             .unwrap_or(false);
         if !self.pending {
-            self.error = Some("The repository changed or another operation is busy. Reopen this review after it finishes.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "The repository changed or another operation is busy. Reopen this review after it finishes.",
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -511,23 +521,37 @@ impl RebaseForm {
             return;
         }
         let Some(plan) = self.plan.clone() else {
-            self.error = Some("Load and review the affected commits first.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Load and review the affected commits first.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         };
         if let Err(error) = plan.validate_steps(&self.steps) {
-            self.error = Some(error.to_string());
+            crate::tags::set_error_line(&mut self.error, error.to_string(), window, cx);
             cx.notify();
             return;
         }
         if self.base.read(cx).value().trim() != plan.base_revision {
-            self.error =
-                Some("The base field changed. Load commits again before reviewing.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "The base field changed. Load commits again before reviewing.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }
         if !plan.known_published_refs.is_empty() && !self.acknowledged {
-            self.error = Some("Acknowledge the remote-tracking warning before continuing.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Acknowledge the remote-tracking warning before continuing.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -753,7 +777,7 @@ impl MessageForm {
             if !matches!(event, InputEvent::Change) { return; }
             if editor.read(cx).text().len() > 1024 * 1024 || editor.read(cx).value().contains('\0') {
                 editor.update(cx, |editor, cx| editor.set_value(this.accepted.clone(), window, cx));
-                this.error = Some("Message edits are limited to 1 MiB without NUL bytes. The previous draft is preserved.".into());
+                crate::tags::set_error_line(&mut this.error, "Message edits are limited to 1 MiB without NUL bytes. The previous draft is preserved.", window, cx);
                 cx.notify(); return;
             }
             let value = editor.read(cx).value().to_string();
@@ -803,8 +827,12 @@ impl MessageForm {
         if message.as_ref().is_some_and(|message| {
             message.trim().is_empty() || message.len() > 1024 * 1024 || message.contains('\0')
         }) {
-            self.error =
-                Some("Enter a nonempty message of at most 1 MiB without NUL bytes.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Enter a nonempty message of at most 1 MiB without NUL bytes.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }

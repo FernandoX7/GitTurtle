@@ -232,7 +232,7 @@ impl IgnoreForm {
                             let explanation = format!("{}\n\nDestination:\n{}\n\nExact rule{}:\n{}\n\n{}{}\n\nExisting content and line endings are preserved. No files are untracked, deleted, or staged. If the destination changes, this action requires a fresh preview.", scope, plan.destination_path.display(), if plan.rule_is_utf8() { "" } else { " (non-UTF-8 bytes shown as \\xHH)" }, plan.rule_display(), if plan.directory { "This directory rule applies to its untracked descendants. " } else { "This rule names only this repository-relative path. " }, if plan.tracked_paths > 0 { format!("{} tracked paths remain tracked and continue to appear when modified.", plan.tracked_paths) } else { "Tracked files remain tracked even when an ignore rule matches them.".into() });
                             this.confirm_git_write("Apply ignore rule".into(), explanation, "Add ignore rule", WriteCommand::Ignore(Arc::new(plan)), window, cx);
                         }
-                        Err(error) => { let _ = form.update(cx, |form, cx| { form.error = Some(format!("{error:#}")); cx.notify(); }); }
+                        Err(error) => { let _ = form.update(cx, |form, cx| { crate::tags::set_error_line(&mut form.error, format!("{error:#}"), window, cx); cx.notify(); }); }
                     }
                     cx.notify();
                 });
@@ -240,7 +240,12 @@ impl IgnoreForm {
         }).ok().flatten();
         self.preparing = accepted;
         if accepted.is_none() {
-            self.error = Some("The repository changed or another operation is running. Reopen Ignore after it finishes.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "The repository changed or another operation is running. Reopen Ignore after it finishes.",
+                window,
+                cx,
+            );
         }
         cx.notify();
     }

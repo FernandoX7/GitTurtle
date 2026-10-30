@@ -17,6 +17,28 @@ const PREPARING: &str = "Reading tags…";
 /// below its last control gives the room back by narrowing this gap.
 pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 
+/// Sets a dialog form's error line, `slot`, to `text`, and has the window's
+/// alert say it once, at once, bounded (`bounded_accessible_text`), in the
+/// frame that draws the line, while the line stands in place. Each form
+/// sets its line only here, as an action fails or is refused, so the alert
+/// is said again only for a new answer, never as frames draw the line again.
+/// The forms' lines were no live regions, so a failure was heard only by
+/// moving onto it.
+pub(crate) fn set_error_line(
+    slot: &mut Option<String>,
+    text: impl Into<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let text = text.into();
+    crate::copy_feedback::alert(
+        window,
+        cx,
+        native_accessibility::bounded_accessible_text(text.as_str()),
+    );
+    *slot = Some(text);
+}
+
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's
 /// compact frame (`button_frame`, through `button`): 28 px high at the
 /// interface size, with its padding, label size and focus ring, as every
@@ -948,13 +970,18 @@ impl TagForm {
                         let explanation = format!("Create local tag '{}' at commit {}.\n\n{}{}\n\n{}\n\nNo remote is contacted. Your branches, index, and working files stay as they are.", plan.name, plan.target_oid, if plan.annotation.is_some() { "Annotated tag." } else { "Lightweight tag." }, if plan.signing { " Git's configured signing is enabled." } else { " Git's configured signing behavior is preserved." }, plan.annotation.as_deref().unwrap_or("This tag has no annotation."));
                         this.confirm_git_write("Create local tag".into(), explanation, "Create tag", WriteCommand::Tag(Arc::new(TagCommand::Create(plan))), window, cx);
                     }
-                    Err(error) => { let _ = form.update(cx, |form, cx| { form.error = Some(format!("{error:#}")); cx.notify(); }); }
+                    Err(error) => { let _ = form.update(cx, |form, cx| { crate::tags::set_error_line(&mut form.error, format!("{error:#}"), window, cx); cx.notify(); }); }
                 }
             }, window, cx).then_some(this.tag_actions.generation)
         }).ok().flatten();
         self.preparing = preparing;
         if preparing.is_none() {
-            self.error = Some("The repository changed or another operation is running. Reopen Create tag when it finishes.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "The repository changed or another operation is running. Reopen Create tag when it finishes.",
+                window,
+                cx,
+            );
         }
         cx.notify();
     }
@@ -1898,6 +1925,57 @@ pub(crate) mod tests {
     /// Create tag opened over a tagged repository in a 1480 × 980 window,
     /// naming a lightweight tag, which needs no annotation: the window and
     /// its form.
+    /// Create tag's failure is said once, at once, from the window's alert,
+    /// in the frame that draws its line in place: a name already taken
+    /// fails the tag's read, and the frame that draws the form's error line
+    /// draws the alert saying it. Frames that draw the line again say
+    /// nothing more, and the same press refused again is said again, from a
+    /// fresh node. The form's line was no live region, and nothing was said.
+    #[gpui::test]
+    async fn create_tags_failure_is_said_as_its_line_appears(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::alerted;
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.name
+                    .update(cx, |name, cx| name.set_value("v0.1", window, cx))
+            })
+        });
+        draw(cx);
+        assert_eq!(alerted(cx), None, "nothing is said before a press");
+        let press = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| form.update(cx, |form, cx| form.submit(window, cx)));
+        };
+        press(cx);
+        read_lands(&app, cx).await;
+        draw(cx);
+        let error = form
+            .read_with(cx, |form, _| form.error.clone())
+            .expect("a taken name fails the read");
+        assert!(
+            cx.debug_bounds("tag-preparation-error").is_some(),
+            "the line stands in place"
+        );
+        let (first, said) = alerted(cx).expect("the frame that draws the line says it");
+        assert_eq!(said, error);
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            alerted(cx).map(|(id, _)| id),
+            Some(first.clone()),
+            "drawing the line again says nothing more"
+        );
+        press(cx);
+        read_lands(&app, cx).await;
+        draw(cx);
+        let (second, said) = alerted(cx).expect("refused again, it is said again");
+        assert!(
+            second != first && said == error,
+            "a fresh node says the same failure again"
+        );
+    }
+
     fn create_lightweight_tag<'a>(
         cx: &'a mut TestAppContext,
         fixture: &std::path::Path,

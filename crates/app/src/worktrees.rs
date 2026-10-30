@@ -396,7 +396,7 @@ impl WorktreeManager {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Worktree read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { crate::tags::set_error_line(&mut this.error, "The repository context changed or an operation started. Reopen Worktrees when it finishes.", window, cx); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => crate::tags::set_error_line(&mut this.error, format!("{error:#}"), window, cx) } } cx.notify(); });
         }));
         cx.notify();
     }
@@ -472,7 +472,7 @@ impl WorktreeManager {
         });
         cx.spawn_in(window, async move |this, cx| {
             let response = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match response {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.into_iter().next() {
@@ -480,8 +480,15 @@ impl WorktreeManager {
                         }
                     }
                     Ok(Ok(None)) => {}
-                    Ok(Err(error)) => this.error = Some(error.to_string()),
-                    Err(_) => this.error = Some("Folder picker was interrupted.".into()),
+                    Ok(Err(error)) => {
+                        crate::tags::set_error_line(&mut this.error, error.to_string(), window, cx)
+                    }
+                    Err(_) => crate::tags::set_error_line(
+                        &mut this.error,
+                        "Folder picker was interrupted.",
+                        window,
+                        cx,
+                    ),
                 }
                 cx.notify();
             });
@@ -502,8 +509,12 @@ impl WorktreeManager {
                 Some(std::path::Component::Normal(_))
             )
         {
-            self.error =
-                Some("Enter one new folder name; use Choose parent to select its location.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Enter one new folder name; use Choose parent to select its location.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }

@@ -228,7 +228,12 @@ impl LfsDownloadForm {
         self.error = None;
         let remote = self.remote.read(cx).value().trim().to_owned();
         if remote.is_empty() {
-            self.error = Some("Choose a configured remote for this LFS object. Add a remote from the branch menu if this repository has none.".into());
+            crate::tags::set_error_line(
+                &mut self.error,
+                "Choose a configured remote for this LFS object. Add a remote from the branch menu if this repository has none.",
+                window,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -248,11 +253,16 @@ impl LfsDownloadForm {
                     "LFS source inspection was interrupted. Read the source again."
                 ))
             });
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.pending = false;
                 match result {
                     Ok(plan) => this.plan = Some(plan),
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => crate::tags::set_error_line(
+                        &mut this.error,
+                        format!("{error:#}"),
+                        window,
+                        cx,
+                    ),
                 };
                 cx.notify();
             });
@@ -268,7 +278,7 @@ impl LfsDownloadForm {
             return;
         };
         let _ = self.owner.update(cx, |owner, cx| {
-            if owner.path.as_deref() != Some(this_path(&self.repo)) || owner.operation_busy.is_some() { self.error = Some("The repository changed or another operation started. Reopen this download after it finishes.".into()); cx.notify(); return; }
+            if owner.path.as_deref() != Some(this_path(&self.repo)) || owner.operation_busy.is_some() { crate::tags::set_error_line(&mut self.error, "The repository changed or another operation started. Reopen this download after it finishes.", window, cx); cx.notify(); return; }
             window.close_dialog(cx);
             owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {} bytes\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. The download can be cancelled from the operation bar.\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, plan.size, plan.remote, plan.source), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
         });
