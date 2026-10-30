@@ -238,8 +238,11 @@ gap to its ring's width.
 covers the side it takes,
 `point_positioning_keeps_its_ring_off_the_pointers_device_row` the gap at
 scales 1, 2, 1.25 and 1.5, `point_room_is_the_room_on_the_side_with_more`
-the room, and `a_popup_above_a_point_moves_up_to_a_whole_pixel` a popup
-100.5 px tall prepainted above a point at scale 2, through
+the room, `a_popup_above_a_point_moves_up_to_a_whole_pixel` a popup
+100.5 px tall prepainted above a point at scale 2, and
+`a_popup_at_a_point_keeps_its_ring_off_the_pointers_row_at_scale_1_25` a
+popup prepainted below and above a pointer late in its pixel in a window of
+scale 1.25, which the window's scale places, through
 `scripts/vendor-crate-test.sh vendor/gpui-base positioner::`;
 `cargo test --locked -p gitturtle an_inputs_menu_opens` covers it in the
 app at scales 1 and 2, the drawn edge on the row below the Working Changes

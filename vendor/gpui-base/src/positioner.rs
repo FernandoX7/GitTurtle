@@ -871,6 +871,74 @@ mod tests {
         assert_eq!(popup.top(), px(248.), "{popup:?}");
     }
 
+    /// GitTurtle patch: in a window of scale 1.25, as Omarchy sets, a popup
+    /// prepainted at a pointer late in its pixel keeps its ring off the
+    /// device row under the pointer, below it and above it: the point is
+    /// placed on the window's device pixels. Placed on a scale of 1 instead,
+    /// the ring below a pointer at 149.9 started at 150, which GPUI paints
+    /// from device row 187, the pointer's (149.9 × 1.25 = 187.4), and the
+    /// ring above one at 350.1 ended at 350, painted through device row 437,
+    /// the pointer's.
+    #[gpui::test]
+    fn a_popup_at_a_point_keeps_its_ring_off_the_pointers_row_at_scale_1_25(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{InteractiveElement as _, Styled as _};
+        const SCALE: f32 = 1.25;
+
+        struct Harness {
+            y: f32,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().child(
+                    Positioner::point(point(px(100.), px(self.y)))
+                        .offset(px(1.))
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "point-popup".into())
+                                .w(px(40.))
+                                .h(px(100.)),
+                        ),
+                )
+            }
+        }
+
+        // A pointer with room below, and one near the foot, above which the
+        // popup goes; the fill's edge each is placed at.
+        for (y, side, edge) in [
+            (149.9, Placement::Bottom, 152.),
+            (350.1, Placement::Top, 348.),
+        ] {
+            let (_, cx) = cx.add_window_view(move |_, _| Harness { y });
+            cx.simulate_resize(Size::new(px(500.), px(400.)));
+            cx.update(|window, cx| {
+                window.set_scale_factor(SCALE);
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
+            });
+            let popup = cx.debug_bounds("point-popup").expect("the popup");
+            let ring = popup.dilate(px(1.));
+            let pointer_row = (y * SCALE).floor();
+            match side {
+                Placement::Bottom => {
+                    assert_eq!(popup.top(), px(edge), "{y}: {popup:?}");
+                    assert!(
+                        (f32::from(ring.top()) * SCALE).floor() > pointer_row,
+                        "{y}: the ring {ring:?} reaches device row {pointer_row}"
+                    );
+                }
+                _ => {
+                    assert_eq!(popup.bottom(), px(edge), "{y}: {popup:?}");
+                    assert!(
+                        (f32::from(ring.bottom()) * SCALE).ceil() <= pointer_row,
+                        "{y}: the ring {ring:?} reaches device row {pointer_row}"
+                    );
+                }
+            }
+        }
+    }
+
     // Migrated from the tooltip module when its private positioning logic was
     // merged into this one. They passed unchanged across that move, which is
     // what proves the merge preserved tooltip placement behavior.
