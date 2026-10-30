@@ -994,8 +994,14 @@ impl Panel {
     }
     /// Sends `operation`, a request of `kind`, as the window's busy spell
     /// ([`GitTurtle::submit_github_request`]) and hands its reply to
-    /// `receive`. Returns whether it was sent: while a request of the panel
-    /// or a Git write runs, nothing is, and the panel says why.
+    /// `receive`. Returns whether it was sent. Nothing is, and nothing more
+    /// is said, while the panel's own request runs, which its busy line
+    /// names and whose controls are disabled meanwhile, so no press reaches
+    /// here then, or once the panel has closed, with no line to say it in.
+    /// Nothing is sent either while the window's busy spell runs a Git
+    /// write, a preparation or a request the panel left running as it
+    /// closed, and then the panel's failure line says why, in the spell's
+    /// own reason ([`GitTurtle::busy_reason`]).
     fn run<T: Send + 'static>(
         &mut self,
         kind: RequestKind,
