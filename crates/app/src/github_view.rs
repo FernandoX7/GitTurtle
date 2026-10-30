@@ -5139,8 +5139,7 @@ mod tests {
         ];
         assert_scroll_cue(cx, &app, &scroll, "github-panel", room, &controls);
         // The content gives the gutter up: the track and the ring's room beside it.
-        let ring = appearance::BUTTON_FOCUS_RING;
-        let gutter = gpui_kit::component::scroll::Scrollbar::width() + ring.gap + ring.width;
+        let gutter = crate::tags::ScrollCue::gutter();
         let (body, content) = (
             cx.debug_bounds("github-panel").expect("the body"),
             cx.debug_bounds("github-panel-content")
