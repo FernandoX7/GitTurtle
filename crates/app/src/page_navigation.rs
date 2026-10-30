@@ -437,6 +437,16 @@ mod tests {
         panic!("a quiet read asked for never ran");
     }
 
+    /// Whether the status read Changes' Refresh asked for runs, or is noted
+    /// to run as a write or a preparation ends. `working_read_pending` also
+    /// counts a quiet read, such as the opening rescan, which runs on the
+    /// window's reader that `settle` does not wait for and cannot start off
+    /// the repository page: on a loaded host these tests once read it as
+    /// Refresh's read left noted.
+    fn status_read_pending(app: &GitTurtle) -> bool {
+        app.status_task.is_some() || app.working_read_deferred.is_some()
+    }
+
     /// Opening Working Changes while a write runs, in the write's tab or
     /// another, queues no read behind the write: the read waits for the write
     /// to end, which then reads the shown tab's working state whichever tab
@@ -1358,7 +1368,7 @@ mod tests {
             draw(cx);
             app.read_with(cx, |app, _| {
                 assert!(app.operation_busy.is_some(), "{page}: the review runs");
-                assert!(app.working_read_pending(), "{page}: Refresh is asked for");
+                assert!(status_read_pending(app), "{page}: Refresh is asked for");
                 assert!(app.status_task.is_none(), "{page}: Refresh waits for it");
             });
             cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
@@ -1377,7 +1387,7 @@ mod tests {
                     "{page}: the tab shows Changes again"
                 );
                 assert!(app.operation_busy.is_none(), "{page}");
-                assert!(!app.working_read_pending(), "{page}: no read stays noted");
+                assert!(!status_read_pending(app), "{page}: no read stays noted");
             });
             assert!(
                 entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
@@ -1444,7 +1454,7 @@ mod tests {
             std::fs::write(fixture.path().join("narrow").join(&later), "later\n").unwrap();
             cx.simulate_keystrokes(&primary("r"));
             draw(cx);
-            assert!(app.read_with(cx, |app, _| app.working_read_pending()));
+            assert!(app.read_with(cx, |app, _| status_read_pending(app)));
             cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
             draw(cx);
             let opened = focused(cx);
@@ -1459,7 +1469,7 @@ mod tests {
             draw(cx);
             app.read_with(cx, |app, _| {
                 assert!(app.page == page, "{name} still shows");
-                assert!(!app.working_read_pending(), "{name}: the read landed");
+                assert!(!status_read_pending(app), "{name}: the read landed");
                 assert!(
                     app.working_selected.is_some(),
                     "{name}: the row stays selected"
@@ -1625,7 +1635,7 @@ mod tests {
         std::fs::write(fixture.path().join("narrow").join("later.txt"), "later\n").unwrap();
         cx.simulate_keystrokes(&primary("r"));
         draw(cx);
-        assert!(app.read_with(cx, |app, _| app.working_read_pending()));
+        assert!(app.read_with(cx, |app, _| status_read_pending(app)));
         cx.simulate_keystrokes(&primary("1"));
         draw(cx);
         app.read_with(cx, |app, _| {
@@ -1648,7 +1658,7 @@ mod tests {
         app.read_with(cx, |app, _| {
             assert!(app.mode == WorkspaceMode::History);
             assert_eq!(app.operation_busy, None);
-            assert!(!app.working_read_pending(), "no read stays noted");
+            assert!(!status_read_pending(app), "no read stays noted");
         });
         assert!(
             entries(&app, cx).is_some_and(|entries| entries.contains(&"later.txt".to_owned())),
