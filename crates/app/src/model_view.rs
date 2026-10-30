@@ -624,12 +624,11 @@ thread_local! {
     static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The Copy source control's label, laid out.
     static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// The views menu's readings, the camera's Reset and Edges at their
-    /// wider reading and the link's, laid out.
+    /// The views menu's readings and the camera's Reset, laid out; Edges and
+    /// the link are toggles, laid out at both their readings
+    /// (`system_preview::HeaderControl::toggle`).
     static VIEW_NAMES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RESET: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static EDGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static LINK: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// The views menu labelled at its widest reading, a standard view's name or
@@ -933,34 +932,34 @@ fn render_side<T: 'static>(
         // draw their icons there, each label in its tooltip; Edges takes one
         // form whether it reads Edges or Solid.
         let control = match id {
-            1 | 4 => {
-                let (icon, readings, cache) = if id == 1 {
-                    ("reset", &["Reset"][..], &RESET)
-                } else {
-                    ("edges", &["Edges", "Solid"][..], &EDGES)
-                };
-                crate::system_preview::HeaderControl::new(
-                    ("model-camera", camera),
-                    format!("model-camera-{camera}"),
-                    text,
-                    name,
-                    icon,
-                    text_button_width(readings, cache, window),
-                )
-                .active(id == 4 && wireframe)
-                .button(line_room)
-            }
+            1 => crate::system_preview::HeaderControl::new(
+                ("model-camera", camera),
+                format!("model-camera-{camera}"),
+                text,
+                name,
+                "reset",
+                text_button_width(&["Reset"], &RESET, window),
+            )
+            .button(line_room),
+            4 => crate::system_preview::HeaderControl::toggle(
+                ("model-camera", camera),
+                format!("model-camera-{camera}"),
+                ["Edges", "Solid"],
+                name,
+                "edges",
+                wireframe,
+                window,
+            )
+            .button(line_room),
             _ => button(("model-camera", camera), text, "", false)
                 .debug_selector(move || format!("model-camera-{camera}"))
                 .accessibility_label(name),
         };
-        let control = control
-            .when(id == 4, |button| button.toggled(wireframe))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.change(partner.as_deref(), action);
-                window.refresh();
-                cx.notify();
-            }));
+        let control = control.on_click(cx.listener(move |_, _, window, cx| {
+            target.change(partner.as_deref(), action);
+            window.refresh();
+            cx.notify();
+        }));
         controls = controls.child(held.track(("model-camera", camera), control, cx));
     }
     let selected_view = selected_standard_view(camera);
@@ -1015,11 +1014,10 @@ fn render_side<T: 'static>(
         // One form whether it reads Linked or Independent: labelled where
         // the wider fits a line of the header, otherwise the link icon, its
         // reading its tooltip.
-        let reading = if linked { "Linked" } else { "Independent" };
-        let link = crate::system_preview::HeaderControl::new(
+        let link = crate::system_preview::HeaderControl::toggle(
             ("model-link", index),
             format!("model-link-{index}"),
-            reading,
+            ["Independent", "Linked"],
             format!(
                 "{label}: {}",
                 if linked {
@@ -1029,11 +1027,10 @@ fn render_side<T: 'static>(
                 }
             ),
             "link",
-            text_button_width(&["Linked", "Independent"], &LINK, window),
+            linked,
+            window,
         )
-        .active(linked)
         .button(line_room)
-        .toggled(linked)
         .on_click(cx.listener(move |_, _, window, cx| {
             target.set_linked(&partner, !linked);
             window.refresh();

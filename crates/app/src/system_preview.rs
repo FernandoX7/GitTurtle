@@ -893,7 +893,18 @@ pub(crate) struct HeaderControl {
     short: Option<(SharedString, Pixels)>,
     labelled_icon: bool,
     menu: Option<SharedString>,
-    active: bool,
+    /// A toggle's state ([`HeaderControl::toggle`]).
+    on: Option<bool>,
+    /// The readings a toggle's form was measured at, for a test.
+    #[cfg(test)]
+    measured: Vec<&'static str>,
+}
+
+thread_local! {
+    /// Each toggle's two readings laid out, by its readings.
+    static TOGGLE_WIDTHS: std::cell::RefCell<
+        std::collections::BTreeMap<[&'static str; 2], (crate::views::LineKey, Pixels)>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
 /// How a [`HeaderControl`] was last drawn, for a test to read back by its
@@ -909,6 +920,9 @@ pub(crate) struct DrawnControl {
     pub(crate) icon: Option<&'static str>,
     pub(crate) tooltip: Option<String>,
     pub(crate) name: String,
+    /// The readings a toggle's form was measured at; none for a control
+    /// that is not a toggle.
+    pub(crate) measured: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -940,7 +954,46 @@ impl HeaderControl {
             short: None,
             labelled_icon: false,
             menu: None,
-            active: false,
+            on: None,
+            #[cfg(test)]
+            measured: Vec::new(),
+        }
+    }
+
+    /// The toggle `id`, found by tests as `selector` and named `name` in
+    /// every form, that reads `readings[1]` while `on` and `readings[0]`
+    /// otherwise, drawn selected and announced toggled while on, whose icon
+    /// is `icon`. Its form is measured at both readings, so a click never
+    /// changes it: Edges and Solid, the model's Linked and Independent, the
+    /// page view's Linked pages and Independent pages.
+    pub(crate) fn toggle(
+        id: impl Into<ElementId>,
+        selector: String,
+        readings: [&'static str; 2],
+        name: impl Into<SharedString>,
+        icon: &'static str,
+        on: bool,
+        window: &Window,
+    ) -> Self {
+        // What its form is measured at, which a test reads back.
+        let measured: &[&'static str] = &readings;
+        let key = crate::views::LineKey::current(window);
+        let widest = TOGGLE_WIDTHS.with(|widths| {
+            let mut widths = widths.borrow_mut();
+            match widths.get(&readings) {
+                Some((laid_out, width)) if *laid_out == key => *width,
+                _ => {
+                    let width = crate::text_button_width_now(measured, window);
+                    widths.insert(readings, (key, width));
+                    width
+                }
+            }
+        });
+        Self {
+            on: Some(on),
+            #[cfg(test)]
+            measured: measured.to_vec(),
+            ..Self::new(id, selector, readings[usize::from(on)], name, icon, widest)
         }
     }
 
@@ -961,12 +1014,6 @@ impl HeaderControl {
     /// which follow its reading there in its other forms.
     pub(crate) fn menu(mut self, choices: impl Into<SharedString>) -> Self {
         self.menu = Some(choices.into());
-        self
-    }
-
-    /// Drawn selected, as a toggle that is on is.
-    pub(crate) fn active(mut self, active: bool) -> Self {
-        self.active = active;
         self
     }
 
@@ -1003,17 +1050,24 @@ impl HeaderControl {
                     icon,
                     tooltip: tooltip.as_ref().map(ToString::to_string),
                     name: self.name.to_string(),
+                    measured: self.measured.clone(),
                 },
             )
         });
         let selector = self.selector;
-        crate::button(self.id, shows, icon.unwrap_or_default(), self.active)
-            .when(labelled && self.menu.is_some(), |button| {
-                button.dropdown_caret(true)
-            })
-            .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
-            .debug_selector(move || selector)
-            .accessibility_label(self.name)
+        crate::button(
+            self.id,
+            shows,
+            icon.unwrap_or_default(),
+            self.on == Some(true),
+        )
+        .when(labelled && self.menu.is_some(), |button| {
+            button.dropdown_caret(true)
+        })
+        .when_some(self.on, |button, on| button.toggled(on))
+        .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
+        .debug_selector(move || selector)
+        .accessibility_label(self.name)
     }
 }
 
@@ -1752,11 +1806,14 @@ pub(crate) mod tests {
         control.left() >= header.left() - px(0.01) && control.right() <= header.right() + px(0.01)
     }
 
-    /// Every control of a side's own header lies across the side whole with
-    /// its ring at every width down to the narrowest side whose line holds
-    /// an icon, at 13 and 18 pt, labelled where its widest reading fits and
-    /// otherwise its icon: the model's clip menu, once always labelled with
-    /// the clip's name, was cut at a narrow side's edge. The page number
+    /// Each control of a side's own header that the side header helper
+    /// draws ([`HeaderControl`]; not the open control, Copy source, the page
+    /// arrows or the zooms, which it does not draw) lies across the side
+    /// whole with its ring at every width down to the narrowest side whose
+    /// line holds an icon, at 13 and 18 pt, labelled where its widest
+    /// reading fits and otherwise its icon: the model's clip menu, once
+    /// always labelled with the clip's name, was cut at a narrow side's
+    /// edge. The page number
     /// gives way through three forms, "Page 108 / 111", "108/111" and its
     /// page icon, the whole reading its tooltip where it shows less, each
     /// named the same (that each is measured at its widest page is
@@ -1992,7 +2049,7 @@ pub(crate) mod tests {
                     ("labelled", "Independent pages", None, None),
                     ("icon", "", Some("link"), Some("Independent pages")),
                 ],
-                "Before: linked PDF page navigation",
+                "Before: Pages independent. Link pages to this page",
             ),
             (
                 "pdf-link-1",
@@ -2000,7 +2057,7 @@ pub(crate) mod tests {
                     ("labelled", "Independent pages", None, None),
                     ("icon", "", Some("link"), Some("Independent pages")),
                 ],
-                "After: linked PDF page navigation",
+                "After: Pages independent. Link pages to this page",
             ),
         ];
         let [model_sides, document_sides] = document_sides(3, 0);
@@ -2034,6 +2091,8 @@ pub(crate) mod tests {
                         let drawn = seen
                             .get(&(text, selector.to_string(), *form))
                             .unwrap_or_else(|| panic!("at {text} pt {selector} is drawn {form}"));
+                        // What a toggle's form was measured at is
+                        // `a_side_header_s_toggles_take_one_form_in_both_states`.
                         assert_eq!(
                             drawn,
                             &DrawnControl {
@@ -2042,12 +2101,129 @@ pub(crate) mod tests {
                                 icon: *icon,
                                 tooltip: tooltip.map(str::to_owned),
                                 name: name.to_string(),
+                                measured: drawn.measured.clone(),
                             },
                             "at {text} pt {selector} drawn {form}"
                         );
                     }
                 }
             }
+        }
+    }
+
+    /// Flips every toggle of `sides`' headers: each model side's Edges and
+    /// link, and each page view side's link, on both sides as a click does.
+    #[cfg(target_os = "linux")]
+    fn flip_toggles(sides: &Entity<Sides>, cx: &mut gpui_kit::VisualTestContext) {
+        sides.update(cx, |sides, cx| {
+            let crate::worker::Content::Rich(comparison) = &sides.content else {
+                panic!("a document comparison");
+            };
+            for side in [&comparison.old, &comparison.new] {
+                if let Some(model) = &side.model {
+                    let mut bookmark = model.bookmark();
+                    bookmark.linked = !bookmark.linked;
+                    bookmark.wireframe = !bookmark.wireframe;
+                    model.restore(bookmark);
+                }
+                if let Some(document) = &side.pdf {
+                    crate::pdf_view::tests::flip_link(document);
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    /// Each toggle of a side's own header, the model's Edges and link and
+    /// the page view's link, takes one form in both its states at every
+    /// width down to the narrowest side whose line holds an icon, at 13 and
+    /// 18 pt, labelled or its icon, each reading lying whole with its ring
+    /// on its line, and its form is measured at both its readings. Measured
+    /// at "Linked" alone, an unlinked model's "Independent" could be cut
+    /// where "Linked" fits, and measured at "Edges" alone, "Solid" where it
+    /// is the wider: the tests' font gives every character one width, so
+    /// the readings each form was measured at are checked as well.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_toggles_take_one_form_in_both_states(cx: &mut gpui_kit::TestAppContext) {
+        const TOGGLES: [(&str, [&str; 2]); 6] = [
+            ("model-camera-4", ["Edges", "Solid"]),
+            ("model-camera-9", ["Edges", "Solid"]),
+            ("model-link-0", ["Independent", "Linked"]),
+            ("model-link-1", ["Independent", "Linked"]),
+            ("pdf-link-0", ["Independent pages", "Linked pages"]),
+            ("pdf-link-1", ["Independent pages", "Linked pages"]),
+        ];
+        // What a control reads: its label, or where it draws its icon, the
+        // reading leading its tooltip.
+        let reading = |control: &DrawnControl| match control.form {
+            "icon" => control.tooltip.clone().unwrap_or_default(),
+            _ => control.shows.clone(),
+        };
+        let mut reached = std::collections::BTreeSet::new();
+        let mut measured = std::collections::BTreeMap::<_, Vec<_>>::new();
+        let [model, document] = document_sides(3, 0);
+        for content in [model, document] {
+            walk_side_widths(cx, content, 4, |cx, sides, (text, width), drawn| {
+                let at = |selector: &str| format!("{text} pt, {width} px: {selector}");
+                for (selector, _) in TOGGLES {
+                    if drawn.contains_key(selector) {
+                        assert!(
+                            lies_on_its_line(cx, selector),
+                            "{} lies on its line",
+                            at(selector)
+                        );
+                    }
+                }
+                flip_toggles(sides, cx);
+                DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
+                crate::tags::tests::draw(cx);
+                crate::pdf_view::tests::drain_pages();
+                crate::tags::tests::draw(cx);
+                let flipped = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+                for (selector, readings) in TOGGLES {
+                    let (Some(one), Some(other)) = (drawn.get(selector), flipped.get(selector))
+                    else {
+                        continue;
+                    };
+                    let at = format!("{}, {one:?} and flipped {other:?}", at(selector));
+                    assert_eq!(one.form, other.form, "{at}: one form in both states");
+                    let mut read = [reading(one), reading(other)];
+                    read.sort();
+                    assert_eq!(read, readings, "{at}: each state reads its own reading");
+                    assert!(
+                        lies_on_its_line(cx, selector),
+                        "{at}: flipped, it lies on its line"
+                    );
+                    for state in [one, other] {
+                        reached.insert((text, selector, state.form, reading(state)));
+                        measured
+                            .entry(selector)
+                            .or_default()
+                            .push(state.measured.clone());
+                    }
+                }
+            });
+        }
+        for (selector, readings) in TOGGLES {
+            for text in [13, 18] {
+                for form in ["labelled", "icon"] {
+                    for read in readings {
+                        assert!(
+                            reached.contains(&(text, selector, form, read.to_owned())),
+                            "at {text} pt {selector} is drawn {form} reading {read}"
+                        );
+                    }
+                }
+            }
+            let at_both = measured[selector]
+                .iter()
+                .all(|measured| measured.as_slice() == readings);
+            assert!(
+                at_both,
+                "{selector}'s form is measured at both {readings:?}: {:?}",
+                measured[selector]
+            );
         }
     }
 

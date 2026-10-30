@@ -2102,12 +2102,18 @@ fn text_button_width(
     cache: &'static std::thread::LocalKey<views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    let widest = views::cached_text_width(cache, &labels.join("\n"), window, || {
-        labels
-            .iter()
-            .map(|label| views::line_widths(&[(label, appearance::ui_text(12.))], window))
-            .fold(px(0.), Pixels::max)
-    });
+    views::cached_text_width(cache, &labels.join("\n"), window, || {
+        text_button_width_now(labels, window)
+    })
+}
+
+/// [`text_button_width`] laid out now, for a caller that keeps the width
+/// itself, as a side header's toggle does (`system_preview::HeaderControl`).
+fn text_button_width_now(labels: &[&str], window: &Window) -> Pixels {
+    let widest = labels
+        .iter()
+        .map(|label| views::line_widths(&[(label, appearance::ui_text(12.))], window))
+        .fold(px(0.), Pixels::max);
     (appearance::ui_size(LABEL_INSET * 2.) + widest).max(appearance::ui_size(28.))
 }
 

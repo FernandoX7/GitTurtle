@@ -447,16 +447,16 @@ thread_local! {
     /// Each side header's heading, laid out.
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// Read page text's, Retry page's, the link's at its wider reading and
-    /// each side's page number, whole and short, at its widest for the
-    /// side's count, laid out.
+    /// Read page text's, Retry page's and each side's page number, whole
+    /// and short, at its widest for the side's count, laid out; the link is
+    /// a toggle, laid out at both its readings
+    /// (`system_preview::HeaderControl::toggle`).
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static BEFORE_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static BEFORE_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static LINK_PAGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// The room the first line of side `index`'s header leaves its open control
@@ -599,9 +599,10 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(partner) = partner {
             let linked = document.linked.load(Ordering::Relaxed);
             let target = document.clone();
-            let reading = if linked {"Linked pages"} else {"Independent pages"};
-            let link = HeaderControl::new(("pdf-link",index), format!("pdf-link-{index}"), reading, format!("{label}: linked PDF page navigation"), "link", text_button_width(&["Linked pages", "Independent pages"], &LINK_PAGES, window)).active(linked).button(line_room);
-            header = header.child(held.track(("pdf-link",index), link.toggled(linked).on_click(cx.listener(move |_,_,window,cx| {
+            // Named for the state it shows, as the model's link is.
+            let name = if linked {"Pages linked. Switch to independent pages"} else {"Pages independent. Link pages to this page"};
+            let link = HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), ["Independent pages", "Linked pages"], format!("{label}: {name}"), "link", linked, window).button(line_room);
+            header = header.child(held.track(("pdf-link",index), link.on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }
                 window.refresh(); cx.notify();
@@ -655,6 +656,13 @@ pub(crate) mod tests {
     /// handles the answers.
     pub(crate) fn drain_pages() {
         renderer().drain();
+    }
+
+    /// Links `document`'s pages to its partner's where they are independent,
+    /// and otherwise makes them independent, as its link's click does on
+    /// both sides.
+    pub(crate) fn flip_link(document: &Document) {
+        document.linked.fetch_xor(true, Ordering::Relaxed);
     }
 
     /// `preview`, a changed PDF's comparison, as the page view draws it
