@@ -1160,6 +1160,11 @@ impl GitTurtle {
                 .is_some_and(|repo| repo.path() == self.repository_tabs.tabs[index].path)
         {
             self.page = AppPage::Repository;
+            // Quiet reads held while another page was shown start now, as
+            // Back starts them (`return_from_page`): a write's reload that
+            // waited for the window's return otherwise waited for the next
+            // local change, every menu that follows writes refused.
+            self.try_automatic_refresh(window, cx);
             self.repaint_page(window, cx);
             return;
         }

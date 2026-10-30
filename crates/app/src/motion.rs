@@ -5077,6 +5077,53 @@ mod tests {
         a_row_selected_as_a_writes_reload_runs_keeps_its_menu_refused(cx, Opening::Keyboard).await;
     }
 
+    /// A write that ends while Settings is shown leaves its quiet reload
+    /// waiting for the repository, and returning there through the
+    /// repository's own tab, as its entry in the tab strip, the tab menu,
+    /// the tab's shortcut and opening the project again do
+    /// (`switch_repository_tab`), starts it, as Back does
+    /// (`return_from_page`). It once waited for the next local change or a
+    /// regained focus, every menu that follows writes refused meanwhile.
+    #[gpui::test]
+    async fn returning_through_the_active_tab_runs_a_writes_reload(cx: &mut TestAppContext) {
+        const FIND: &str = "Find or create a branch…";
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        let write = held(&app, cx, checkout_main());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        next_frame(cx);
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Settings
+                && app.operation_busy.is_none()
+                && app.automatic.quiet_read_requested()),
+            "the write ended on Settings, and its reload waits for the repository"
+        );
+        let tab = app.read_with(cx, |app, _| {
+            app.repository_tabs.active.expect("the repository's tab")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.switch_repository_tab(tab, window, cx))
+        });
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Repository
+                && app.automatic.quiet_read_running()),
+            "back on the repository through its tab, the write's reload runs"
+        );
+        quiet_reads_land(&app, cx);
+        next_frame(cx);
+        press(cx, "current-branch");
+        assert_eq!(
+            offered(cx, FIND),
+            Some(true),
+            "the picker's menu once the reload lands"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's
