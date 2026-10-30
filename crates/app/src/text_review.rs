@@ -620,13 +620,19 @@ fn more_context(options: Options) -> Option<Options> {
 /// The context control's label, led by what it does and showing the context
 /// each hunk has now, in the full row and the Options menu alike.
 fn context_label(context: usize) -> String {
-    format!("More context ({context} lines)")
+    format!(
+        "More context ({})",
+        crate::counted(context, "line", "lines")
+    )
 }
 
 /// The context control's accessible name, its label in words, for the full
 /// row's button and the Options menu's item alike.
 fn context_name(context: usize) -> String {
-    format!("More context, {context} lines shown")
+    format!(
+        "More context, {} shown",
+        crate::counted(context, "line", "lines")
+    )
 }
 
 /// The full row's context button. Its accessible name says what it does and

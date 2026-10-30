@@ -113,11 +113,11 @@ impl GitTurtle {
                 match result {
                     Ok(plan) => {
                         let title = if rebase { format!("Rebase {} onto {}", plan.branch, plan.target_label) } else { format!("Merge {} into {}", plan.target_label, plan.branch) };
-                        let explanation = format!("{} has {} unique commits; {} has {}.\n\n{}\n\n{} paths differ between these branch tips.{}",
-                            plan.branch, plan.ahead, plan.target_label, plan.behind,
+                        let explanation = format!("{} has {}; {} has {}.\n\n{}\n\n{} between these branch tips.{}",
+                            plan.branch, crate::counted(plan.ahead, "unique commit", "unique commits"), plan.target_label, plan.behind,
                             if rebase { "Replay this branch's commits on the target. Replayed commits receive new IDs; use this for local work that others do not depend on. A clean working tree is required." }
                             else { "Bring the target's commits into this branch. Git fast-forwards when possible or creates a merge commit. Conflicts pause the merge for resolution." },
-                            plan.affected_paths.len(),
+                            crate::counted(plan.affected_paths.len(), "path differs", "paths differ"),
                             if plan.affected_paths.is_empty() { String::new() } else { format!("\n{}{}", plan.affected_paths.iter().take(8).map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n"), if plan.affected_paths.len() > 8 { "\n…" } else { "" }) });
                         this.confirm_git_write(title, explanation, if rebase { "Rebase branch" } else { "Merge branches" }, WriteCommand::Integration(if rebase { IntegrationCommand::Rebase { plan } } else { IntegrationCommand::Merge { plan } }), window, cx);
                     }
@@ -157,7 +157,7 @@ impl GitTurtle {
             ));
         }
         self.confirm_git_write(format!("Continue {} on {}", operation.kind.label().to_lowercase(), operation.branch),
-            format!("Continue with {} staged {}. Git uses its configured hooks and signing.\n\n{}\n\nIf another tool changes the staged contents, refresh and review them again.", operation.staged_paths.len(), if operation.staged_paths.len() == 1 { "file" } else { "files" }, staged),
+            format!("Continue with {}. Git uses its configured hooks and signing.\n\n{}\n\nIf another tool changes the staged contents, refresh and review them again.", crate::counted(operation.staged_paths.len(), "staged file", "staged files"), staged),
             "Continue operation", WriteCommand::Integration(IntegrationCommand::Continue { expected: operation }), window, cx);
     }
 
@@ -283,10 +283,9 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
                             .child(format!(
-                                "{} · {} unresolved {}",
+                                "{} · {}",
                                 operation.target_label,
-                                unresolved,
-                                if unresolved == 1 { "file" } else { "files" }
+                                crate::counted(unresolved, "unresolved file", "unresolved files")
                             )),
                     ),
             )

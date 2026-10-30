@@ -53,7 +53,7 @@ fn effect_group(
     let heading = if count == 0 {
         format!("No {plural}")
     } else {
-        format!("{count} {}", if count == 1 { singular } else { plural })
+        crate::counted(count, singular, plural)
     };
     div()
         .id(id)
@@ -78,12 +78,15 @@ fn effect_group(
                         .id((id, EFFECT_ROWS))
                         .debug_selector(move || format!("{id}-overflow")),
                     format!(
-                        "{} additional files will also be deleted",
-                        count - EFFECT_ROWS
+                        "{} will also be deleted",
+                        crate::counted(count - EFFECT_ROWS, "additional file", "additional files")
                     ),
                 )
                 .text_color(rgb(colors.muted))
-                .child(format!("… and {} more files", count - EFFECT_ROWS)),
+                .child(format!(
+                    "… and {}",
+                    crate::counted(count - EFFECT_ROWS, "more file", "more files")
+                )),
             )
         })
 }

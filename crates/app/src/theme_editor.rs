@@ -2553,8 +2553,8 @@ impl ThemeForm {
                 .track_focus(&self.warnings_focus)
                 .role(Role::Group)
                 .aria_label(format!(
-                    "Readability, {count} warning{}",
-                    if count == 1 { "" } else { "s" }
+                    "Readability, {}",
+                    crate::counted(count, "warning", "warnings")
                 ))
                 .rounded(px(8.))
                 .border_1()
@@ -2578,10 +2578,7 @@ impl ThemeForm {
                                 div()
                                     .text_color(rgb(p.muted))
                                     .font_weight(FontWeight::NORMAL)
-                                    .child(format!(
-                                        "{count} warning{}",
-                                        if count == 1 { "" } else { "s" }
-                                    )),
+                                    .child(crate::counted(count, "warning", "warnings")),
                             )
                         }),
                 )

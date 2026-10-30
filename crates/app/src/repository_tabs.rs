@@ -2310,7 +2310,7 @@ impl Render for LibraryView {
             .child(crate::native_accessibility::clips_children(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
-                    let description=format!("{group} · {count} {}", if count == 1 { "repository" } else { "repositories" });
+                    let description=format!("{group} · {}", crate::counted(count, "repository", "repositories"));
                     let add_label=self.active.as_ref().map_or_else(||format!("Add current repository to workspace {group}; no repository is open"), |path|format!("Add repository {} to workspace {group}", self.project_identity(path)));
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-name", index), description.clone()).flex_1())
                         .child(button(("open-workspace",index),"Open","",false).accessibility_label(format!("Open workspace {description}")).disabled(count==0).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_group(&open,window,cx));})))

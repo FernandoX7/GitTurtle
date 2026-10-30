@@ -304,6 +304,7 @@ Use the bottom strip for local refresh state, loaded/visible history count, sele
 - Refresh means reread local Git state. Describe remote-tracking references as locally available; never imply refresh fetched from a server. A status timestamp should explicitly mean last local refresh.
 - Local filesystem and Git metadata notifications, plus window activation, request quiet refreshes. Coalesce bursts and defer work behind foreground reads or writes. Keep selection, scroll, search, editor focus, and manual conflict drafts stable; leave unchanged previews intact and refresh changed mutable content in its existing editor. A missing scoped branch retains the displayed context with an explanation. Watcher errors leave explicit Refresh available. Never start network operations or repository writes automatically.
 - Authentication, SSH, credential-helper, hook, and signing failures preserve Git's original diagnostic and add a relevant next step. Long details belong in a scrollable operation-details view. Do not silently retry a write whose result is uncertain.
+- Every count shown or announced agrees with its noun, and a verb that follows it with the count ("1 commit", "2 commits", "1 path differs"), built by one helper (`counted` in the app; its counterpart in the preview crate's metadata, which cannot reach the app's). A count with a fixed plural once read "1 shortcuts", "1 matches" and "1 channels".
 - Motion: only where it explains a change the user caused, and never under reduced motion (see Motion below).
 
 ## Motion

@@ -194,10 +194,10 @@ pub(super) fn target(command: &gitturtle_core::WriteCommand, fallback: &str) -> 
     use gitturtle_core::*;
     match command {
         WriteCommand::DownloadLfs(plan) => format!(
-            "{} · sha256:{} · {} bytes from remote {}",
+            "{} · sha256:{} · {} from remote {}",
             plan.target.path.display(),
             plan.oid,
-            plan.size,
+            crate::counted(plan.size, "byte", "bytes"),
             plan.remote
         ),
         WriteCommand::Stage { paths } | WriteCommand::Unstage { paths } => format!(

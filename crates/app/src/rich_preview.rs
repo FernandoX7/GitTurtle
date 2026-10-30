@@ -923,11 +923,14 @@ mod tests {
                     .details
                     .contains(&format!("{} captured bytes", bytes.len()))
             );
+            // The triangle count, agreeing with its noun ("1 triangle").
             assert!(
                 side.metadata
                     .details
                     .iter()
-                    .any(|detail| detail.contains("triangles"))
+                    .any(|detail| detail.contains(" triangle")),
+                "{name}: {:?}",
+                side.metadata.details
             );
             assert!(
                 !side

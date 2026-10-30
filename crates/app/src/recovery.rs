@@ -1076,9 +1076,8 @@ fn commit_menu(
 
 fn append_paths(explanation: &mut String, paths: &[PathBuf]) {
     explanation.push_str(&format!(
-        "\n\n{} affected {}",
-        paths.len(),
-        if paths.len() == 1 { "path" } else { "paths" }
+        "\n\n{}",
+        crate::counted(paths.len(), "affected path", "affected paths")
     ));
     for path in paths.iter().take(24) {
         explanation.push_str(&format!("\n{}", path.display()));

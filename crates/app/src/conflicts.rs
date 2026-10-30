@@ -704,8 +704,8 @@ impl Render for ConflictView {
             "No unresolved blocks in the result".into()
         } else {
             format!(
-                "{} unresolved blocks · selected {} · result line {}",
-                self.blocks.len(),
+                "{} · selected {} · result line {}",
+                crate::counted(self.blocks.len(), "unresolved block", "unresolved blocks"),
                 self.block_selected + 1,
                 self.blocks[self.block_selected].first_line
             )

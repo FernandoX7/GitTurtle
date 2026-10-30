@@ -1222,10 +1222,7 @@ impl GitTurtle {
         } else if self.commit_title.read(cx).value().trim().is_empty() {
             "Write a commit title".to_owned()
         } else {
-            format!(
-                "Commit {staged} {}",
-                if staged == 1 { "file" } else { "files" }
-            )
+            format!("Commit {}", crate::counted(staged, "file", "files"))
         }
     }
 
@@ -2332,11 +2329,11 @@ impl GitTurtle {
             .iter()
             .filter(|entry| entry.staged.is_some())
             .count();
-        let plural = if changes == 1 { "" } else { "s" };
+        let said = crate::counted(changes, "working change", "working changes");
         match (changes, staged) {
             (0, _) => "No working changes".into(),
-            (_, 0) => format!("{changes} working change{plural}"),
-            _ => format!("{changes} working change{plural} · {staged} staged"),
+            (_, 0) => said,
+            _ => format!("{said} · {staged} staged"),
         }
     }
 

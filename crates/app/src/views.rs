@@ -1349,7 +1349,7 @@ impl GitTurtle {
     ) -> AnyElement {
         let colors = palette(cx);
         let count: SharedString = if self.history_search_active() {
-            format!("{} commits", self.visible.len())
+            crate::counted(self.visible.len(), "commit", "commits")
         } else {
             format!(
                 "{}–{}",
@@ -2272,14 +2272,13 @@ impl GitTurtle {
         // References column's badge as in narrow History's pill.
         let (listing, listed) = names.map_or(("", ""), |refs| (" · References: ", &*refs.listed));
         let name = format!(
-            "{}{}{} · {} · {} · {} parent{}{}",
+            "{}{}{} · {} · {} · {}{}",
             subject,
             listing,
             listed,
             author,
             short_oid(&commit.oid),
-            commit.parents.len(),
-            if commit.parents.len() == 1 { "" } else { "s" },
+            crate::counted(commit.parents.len(), "parent", "parents"),
             if commit.parents.len() > 1 {
                 " · merge commit"
             } else {
@@ -25372,6 +25371,39 @@ pub(crate) mod tests {
             report.starts_with(kept),
             "the report's start, cut between characters"
         );
+    }
+
+    /// A History search's count agrees with its noun: one matching commit
+    /// reads "1 commit" in the scope toolbar, where it read "1 commits".
+    #[gpui::test]
+    async fn a_search_counts_one_commit_as_one(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |input, cx| {
+                    input.set_value("fixture notes 1", window, cx)
+                });
+                app.history_query_changed(window, cx);
+            })
+        });
+        wait_until(cx, &app, "the search to finish", |app| {
+            app.history_search_active() && !app.history_search_pending()
+        });
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.visible.len()),
+            1,
+            "one match"
+        );
+        assert!(
+            cx.debug_bounds("history-scope-count").is_some(),
+            "the count is drawn"
+        );
+        let count =
+            SCOPE_COUNT.with(|cache| cache.borrow().as_ref().map(|(_, text, _)| text.clone()));
+        assert_eq!(count.as_deref(), Some("1 commit"));
     }
 
     #[gpui::test]

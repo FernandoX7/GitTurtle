@@ -1026,8 +1026,9 @@ impl GitTurtle {
                     false,
                     false,
                     format!(
-                        "{} {name} · {projects} projects",
-                        if *collapsed { "Expand" } else { "Collapse" }
+                        "{} {name} · {}",
+                        if *collapsed { "Expand" } else { "Collapse" },
+                        crate::counted(*projects, "project", "projects")
                     ),
                     if *collapsed {
                         "Expand this group".to_owned()

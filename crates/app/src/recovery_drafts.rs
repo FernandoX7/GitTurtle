@@ -567,7 +567,11 @@ impl RecoveryList {
                 div()
                     .text_size(appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
-                    .child(format!("{bytes} bytes · source {}", &key.source[..12])),
+                    .child(format!(
+                        "{} · source {}",
+                        crate::counted(bytes, "byte", "bytes"),
+                        &key.source[..12]
+                    )),
             )
             .child(
                 div()

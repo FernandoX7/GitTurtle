@@ -1491,11 +1491,10 @@ impl GitTurtle {
             format!("{} · {}", card.name, card.description)
         } else {
             format!(
-                "{} · {} · {} readability warning{}",
+                "{} · {} · {}",
                 card.name,
                 card.description,
-                card.warnings,
-                if card.warnings == 1 { "" } else { "s" }
+                crate::counted(card.warnings, "readability warning", "readability warnings")
             )
         };
         Button::new(id)
@@ -2086,10 +2085,7 @@ impl GitTurtle {
             .when(is_active, |row| row.child(icon("check", 12., p.accent)))
             .child(div().flex_1())
             .when(warnings > 0, |row| {
-                let text = format!(
-                    "{warnings} readability warning{}",
-                    if warnings == 1 { "" } else { "s" }
-                );
+                let text = crate::counted(warnings, "readability warning", "readability warnings");
                 row.child(
                     native_accessibility::static_text(
                         div().id(("custom-theme-warnings", id as usize)),

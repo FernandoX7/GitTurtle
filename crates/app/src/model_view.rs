@@ -1071,8 +1071,8 @@ fn render_side<T: 'static>(
         views = views.child(held.track(("model-link", index), link, cx));
     }
     let summary = format!(
-        "{} triangles · view span {:.4} {}",
-        document.scene.triangle_count(),
+        "{} · view span {:.4} {}",
+        crate::counted(document.scene.triangle_count(), "triangle", "triangles"),
         camera.span,
         document.scene.units.label()
     );
@@ -1231,9 +1231,13 @@ fn render_side<T: 'static>(
                                                 document.scene.appearance_label()
                                             ))
                                             .child(format!(
-                                                "{} · {} triangles · {}",
+                                                "{} · {} · {}",
                                                 document.scene.appearance_label(),
-                                                document.scene.triangle_count(),
+                                                crate::counted(
+                                                    document.scene.triangle_count(),
+                                                    "triangle",
+                                                    "triangles"
+                                                ),
                                                 document.scene.units.label()
                                             )),
                                     )
@@ -1294,7 +1298,7 @@ fn model_canvas<T: 'static>(
     let has_frame = frame.is_some();
     div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(colors.border))
         .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
-        .aria_label(format!("{label} interactive 3D model, {} triangles",document.scene.triangle_count()))
+        .aria_label(format!("{label} interactive 3D model, {}",crate::counted(document.scene.triangle_count(), "triangle", "triangles")))
         .aria_description(format!(
             "{} Orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
             if has_frame { "Completed view." } else { "No completed view yet." }, camera.yaw.to_degrees(), camera.pitch.to_degrees(), camera.target[0], camera.target[1], camera.target[2], camera.span, document.scene.units.label()

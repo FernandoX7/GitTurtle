@@ -1412,11 +1412,19 @@ impl Panel {
                                             .hover(move |style| style.bg(rgb(hover)))
                                             .role(Role::ListBoxOption)
                                             .aria_label(format!(
-                                                "{} · {} · {} additions, {} deletions",
+                                                "{} · {} · {}, {}",
                                                 file.filename,
                                                 file.status,
-                                                file.additions,
-                                                file.deletions
+                                                crate::counted(
+                                                    file.additions,
+                                                    "addition",
+                                                    "additions"
+                                                ),
+                                                crate::counted(
+                                                    file.deletions,
+                                                    "deletion",
+                                                    "deletions"
+                                                )
                                             ))
                                             .aria_selected(selected)
                                             .cursor_pointer()
@@ -1762,7 +1770,7 @@ impl Panel {
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         div().flex().flex_col().gap_2()
-            .child(label("github-review-heading",format!("{} inline comments in this review",self.review.comments.len())).ml(super::text_inset()).font_weight(FontWeight::SEMIBOLD))
+            .child(label("github-review-heading",format!("{} in this review",crate::counted(self.review.comments.len(),"inline comment","inline comments"))).ml(super::text_inset()).font_weight(FontWeight::SEMIBOLD))
             .when(self.review.comments.is_empty(),|element|element.child(label("github-review-empty","Select changed lines in Files to add inline feedback, or send a review summary below.").ml(super::text_inset()).text_color(rgb(p.muted))))
             .child(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))

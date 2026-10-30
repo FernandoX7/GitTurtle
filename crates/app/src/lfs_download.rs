@@ -280,7 +280,7 @@ impl LfsDownloadForm {
         let _ = self.owner.update(cx, |owner, cx| {
             if owner.path.as_deref() != Some(this_path(&self.repo)) || owner.operation_busy.is_some() { crate::tags::set_error_line(&mut self.error, "The repository changed or another operation started. Reopen this download after it finishes.", window, cx); cx.notify(); return; }
             window.close_dialog(cx);
-            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {} bytes\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. The download can be cancelled from the operation bar.\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, plan.size, plan.remote, plan.source), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
+            owner.confirm_git_write("Download selected LFS object".into(), format!("File: {}\nObject: sha256:{}\nSize: {}\nRemote: {}\n{}\n\nThis explicit transfer fetches only this object's pointer. Git LFS uses your configured credentials and SSH host verification. The download can be cancelled from the operation bar.\n\nGitTurtle verifies the object's SHA-256 and size before previewing it. Working files and the index remain unchanged; no checkout, smudge, prune, or push is performed.", plan.target.path.display(), plan.oid, crate::counted(plan.size, "byte", "bytes"), plan.remote, plan.source), "Download object", WriteCommand::DownloadLfs(Arc::new(plan)), window, cx);
         });
     }
 }
@@ -294,7 +294,7 @@ impl Render for LfsDownloadForm {
         let pointer = gitturtle_preview::detect_lfs_pointer(&self.target.pointer);
         crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll()
             .child(label("lfs-download-file", format!("File: {}", self.target.path.display())).text_size(appearance::ui_text(13.)))
-            .when_some(pointer.as_ref(), |element, pointer| element.child(label("lfs-download-object", format!("sha256:{}\n{} bytes", pointer.oid, pointer.size)).text_size(appearance::ui_text(12.))))
+            .when_some(pointer.as_ref(), |element, pointer| element.child(label("lfs-download-object", format!("sha256:{}\n{}", pointer.oid, crate::counted(pointer.size, "byte", "bytes"))).text_size(appearance::ui_text(12.))))
             .child(label("lfs-download-source-label", "Choose the configured source").text_size(appearance::ui_text(12.)))
             .child(Input::new(&self.remote).aria_label("Git LFS download remote"))
             .child(div().flex().flex_wrap().gap_2().children(self.remotes.iter().take(12).enumerate().map(|(index, name)| { let name = name.clone(); button(("lfs-source-remote", index), name.clone(), "", false).disabled(self.pending).on_click(cx.listener(move |this, _, window, cx| { this.remote.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); this.prepare(window, cx); })) })))

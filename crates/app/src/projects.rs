@@ -555,7 +555,7 @@ impl ProjectHub {
                     .child(
                         hub_text("recent-projects-count", if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() })
                             .role(Role::Status)
-                            .aria_label(if searching { format!("{} matching projects out of {} recent projects", self.filtered.len(), self.recent.len()) } else { format!("{} recent projects", self.recent.len()) })
+                            .aria_label(if searching { format!("{} out of {}", crate::counted(self.filtered.len(), "matching project", "matching projects"), crate::counted(self.recent.len(), "recent project", "recent projects")) } else { crate::counted(self.recent.len(), "recent project", "recent projects") })
                             .polite()
                             .px_2().py_0p5().rounded(px(6.))
                             .bg(colors.secondary).text_size(crate::appearance::ui_text(11.))

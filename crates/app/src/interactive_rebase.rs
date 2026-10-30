@@ -718,7 +718,7 @@ impl Render for RebaseForm {
             .child(div().flex().gap_2().items_center().child(div().flex_1().child(Input::new(&self.base).aria_label("Exclusive base revision")))
                 .child(refusing(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).debug_selector(|| "load-rebase-commits".into()), "load-rebase-commits", self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
             .when_some(self.plan.as_ref(), |element, plan| element
-                .child(label("rebase-resolved-base", format!("{} · {} commits · base {} · branch tip {}", plan.branch, plan.commits.len(), &plan.base[..10], &plan.head[..10])).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+                .child(label("rebase-resolved-base", format!("{} · {} · base {} · branch tip {}", plan.branch, crate::counted(plan.commits.len(), "commit", "commits"), &plan.base[..10], &plan.head[..10])).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_1().children([RebaseAction::Pick, RebaseAction::Reword, RebaseAction::Squash, RebaseAction::Fixup, RebaseAction::Drop].into_iter().map(|action| {
                     let active = self.steps.get(self.selected).is_some_and(|step| step.action == action);
                     button(action.label(), action.label(), "", active).toggled(active).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.choose(action, cx)))
@@ -846,9 +846,13 @@ impl MessageForm {
             .collect::<Vec<_>>()
             .join("\n");
         let explanation = format!(
-            "Continue rebasing {} with {} staged paths.\n\n{}\n\n{}\n\nGit applies its normal message cleanup, hooks and signing. Later message edits and conflicts pause again. Closing this review keeps the operation paused.",
+            "Continue rebasing {} with {}.\n\n{}\n\n{}\n\nGit applies its normal message cleanup, hooks and signing. Later message edits and conflicts pause again. Closing this review keeps the operation paused.",
             expected.operation.branch,
-            expected.operation.staged_paths.len(),
+            crate::counted(
+                expected.operation.staged_paths.len(),
+                "staged path",
+                "staged paths"
+            ),
             staged,
             message
                 .as_deref()
@@ -886,7 +890,7 @@ impl Render for MessageForm {
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .child(div().flex().flex_col().gap_3()
-            .child(label("rebase-resume-state", format!("{} · Base: {} · {} staged paths", self.expected.operation.branch, self.expected.operation.target_label, self.expected.operation.staged_paths.len())).text_size(crate::appearance::ui_text(12.)))
+            .child(label("rebase-resume-state", format!("{} · Base: {} · {}", self.expected.operation.branch, self.expected.operation.target_label, crate::counted(self.expected.operation.staged_paths.len(), "staged path", "staged paths"))).text_size(crate::appearance::ui_text(12.)))
             .when_some(self.expected.operation.commit.as_ref(), |element, commit| element.child(label("rebase-resume-commit", format!("Replaying original commit {commit}")).text_size(crate::appearance::ui_text(12.))))
             .child(label("rebase-message-explanation", "Review Git's pending commit message. Git uses its configured cleanup rules for comments and whitespace, hooks, author identity, and signing. Your edited draft is retained when this dialog closes.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when_some(self.recovered.clone(), |element, recovered| {

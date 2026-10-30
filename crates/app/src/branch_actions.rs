@@ -738,7 +738,7 @@ impl GitTurtle {
             let deletion_note = if !plan.checked_out_in.is_empty() {
                 format!("Checked out in {}. Switch that worktree to another branch before deleting.{}", path_list(&plan.checked_out_in), if other_worktree { " Rename and upstream changes belong in that worktree." } else { "" })
             } else if let Some(count) = plan.unmerged_commits.filter(|count| *count > 0) {
-                format!("{count} commits are outside {}. Merge or preserve them before deleting this branch.", plan.merge_target.as_ref().map_or("HEAD", |target| short_reference(&target.name)))
+                format!("{} outside {}. Merge or preserve that work before deleting this branch.", crate::counted(count, "commit is", "commits are"), plan.merge_target.as_ref().map_or("HEAD", |target| short_reference(&target.name)))
             } else if let Some(target) = &plan.merge_target { format!("All commits are retained by {}.", short_reference(&target.name)) } else { "No retained target is available to verify safe deletion. Create or select a branch that contains these commits first.".into() };
             let metadata = format!("{}{} · {}", if current { "Current branch · " } else { "" }, short_oid(&plan.oid), plan.upstream.as_deref().map_or("No upstream".into(), |upstream| format!("Tracks {}", short_reference(upstream))));
             let content = div().flex().flex_col().gap_3()
@@ -920,7 +920,7 @@ impl GitTurtle {
             let current = repo.remote_configs()?.into_iter().find(|remote| remote.name == expected.name)
                 .ok_or_else(|| anyhow::anyhow!("This remote no longer exists; refresh the remote list."))?;
             anyhow::ensure!(current == *expected, "The remote or its tracking references changed; review it again.");
-            let mut explanation = format!("Remove local configuration for {}. The remote server is unchanged.\n\n{} upstream relationships will be disconnected; {} unshared remote-tracking references will be removed. Local branches and working files stay in place.", current.name, current.upstream_branches.len(), current.tracking_refs.len());
+            let mut explanation = format!("Remove local configuration for {}. The remote server is unchanged.\n\n{} will be disconnected; {} will be removed. Local branches and working files stay in place.", current.name, crate::counted(current.upstream_branches.len(), "upstream relationship", "upstream relationships"), crate::counted(current.tracking_refs.len(), "unshared remote-tracking reference", "unshared remote-tracking references"));
             append_names(&mut explanation, "Upstream branches", current.upstream_branches.iter().map(String::as_str));
             append_names(&mut explanation, "Remote-tracking references", current.tracking_refs.iter().map(|reference| short_reference(&reference.name)));
             Ok(Prepared::Confirmation { title: format!("Remove remote {}", current.name), explanation, action: "Remove remote", command: WriteCommand::Branch(BranchCommand::RemoveRemote { expected: current }.into()) })
@@ -1436,7 +1436,7 @@ impl Render for RemoteManager {
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                             .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM).child(remote.name.clone()))
                             .child(div().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(remote.urls.first().map_or("No fetch URL configured".into(), |url| workspace::display_remote_url(url))))
-                            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{} fetch URLs · {} upstream branches", remote.urls.len(), remote.upstream_branches.len()))))
+                            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{} · {}", crate::counted(remote.urls.len(), "fetch URL", "fetch URLs"), crate::counted(remote.upstream_branches.len(), "upstream branch", "upstream branches")))))
                         .child(button(("edit-remote", *index), "Edit…", "", false).track_focus(&edit_focus).debug_selector({ let index = *index; move || format!("edit-remote-{index}") }).on_click(move |_, window, cx| {
                             let _ = owner.update(cx, |this, cx| { if this.path == path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.open_remote_form(Some(Arc::clone(&edit)), window, cx); } });
                         }))

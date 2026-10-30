@@ -1317,10 +1317,10 @@ impl GitTurtle {
                 self.history_updates.captured(&snapshot);
                 self.history_paging = history_paging::State::from_snapshot(&snapshot);
                 self.status = format!(
-                    "Local snapshot · {:.0} ms · {} branches · {} worktrees",
+                    "Local snapshot · {:.0} ms · {} · {}",
                     snapshot.elapsed.as_secs_f64() * 1000.,
-                    snapshot.branches.len(),
-                    snapshot.worktrees.len()
+                    counted(snapshot.branches.len(), "branch", "branches"),
+                    counted(snapshot.worktrees.len(), "worktree", "worktrees")
                 );
                 self.refs = snapshot.refs;
                 self.branches = snapshot.branches;
@@ -2307,10 +2307,8 @@ fn format_bytes(bytes: usize) -> String {
 }
 /// The status bar's count of a commit's or comparison's changed files.
 fn changed_files(count: usize) -> String {
-    format!("{count} changed file{}", if count == 1 { "" } else { "s" })
+    counted(count, "changed file", "changed files")
 }
-/// `count` with the noun that agrees with it: `one` for exactly one, `many`
-/// otherwise, as in "1 match", "0 matches" and "2 matches".
 /// The " · "-separated phrases of `text`, each but the last ending in its
 /// separator, for a line laid out as one wrapping item per phrase: it breaks
 /// between two phrases, and inside one only where that phrase alone is wider
@@ -2324,8 +2322,16 @@ fn phrase_runs(text: &str) -> Vec<SharedString> {
         .chain([last.into()])
         .collect()
 }
-fn counted(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
+/// `count` with the noun that agrees with it: `one` for exactly one, `many`
+/// otherwise, as in "1 match", "0 matches" and "2 matches". Every count shown
+/// or announced with its noun is built here, so none reads "1 shortcuts" or
+/// "1 matches", as Keyboard Shortcuts and Quick Open once did; a noun phrase
+/// can carry its verb ("path differs", "paths differ").
+fn counted<T>(count: T, one: &str, many: &str) -> String
+where
+    T: std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", if count == T::from(1) { one } else { many })
 }
 fn mono() -> &'static str {
     if cfg!(target_os = "macos") {

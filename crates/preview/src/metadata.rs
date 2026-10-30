@@ -112,6 +112,16 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
         .to_ascii_lowercase()
 }
+/// `count` with the noun that agrees with it ("1 channel", "2 channels"),
+/// as the app's `counted` builds every count it shows; this crate cannot
+/// reach the app's, so every count this crate words is built here. A mono
+/// WAV read "1 channels".
+pub(crate) fn counted<T>(count: T, one: &str, many: &str) -> String
+where
+    T: std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", if count == T::from(1) { one } else { many })
+}
 fn u16le(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
         bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
@@ -232,7 +242,7 @@ pub fn container(bytes: &[u8]) -> Option<Container> {
 pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
     let mut result = Metadata {
         format: "Binary / unknown encoding".into(),
-        details: vec![format!("{} captured bytes", bytes.len())],
+        details: vec![counted(bytes.len(), "captured byte", "captured bytes")],
         source: None,
     };
     let ext = extension(name);
@@ -314,7 +324,8 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         .into();
         if let Some(tables) = u16be(bytes, 12) {
             result.details.push(format!(
-                "{tables} declared font tables; font is not installed"
+                "{}; font is not installed",
+                counted(tables, "declared font table", "declared font tables")
             ));
         }
     } else if container == Some(Container::Gzip) {
@@ -402,8 +413,8 @@ fn wav(bytes: &[u8], details: &mut Vec<String>) {
             let data = &bytes[at + 8..end];
             let codec = u16le(data, 0).unwrap();
             details.push(format!(
-                "{} channels · {} Hz · {} bits/sample · WAV codec {}",
-                u16le(data, 2).unwrap(),
+                "{} · {} Hz · {} bits/sample · WAV codec {}",
+                counted(u16le(data, 2).unwrap(), "channel", "channels"),
                 u32le(data, 4).unwrap(),
                 u16le(data, 14).unwrap(),
                 codec
@@ -439,7 +450,8 @@ fn zip(bytes: &[u8], result: &mut Metadata) {
         return;
     };
     result.details.push(format!(
-        "{count} declared entries; listing at most 64, without extraction"
+        "{}; listing at most 64, without extraction",
+        counted(count, "declared entry", "declared entries")
     ));
     for _ in 0..usize::from(count).min(64) {
         if bytes.get(at..at.saturating_add(4)) != Some(b"PK\x01\x02") {
@@ -468,9 +480,13 @@ fn zip(bytes: &[u8], result: &mut Metadata) {
             result.format = "OpenDocument / XML package".into();
         }
         result.details.push(format!(
-            "{} · {} uncompressed bytes",
+            "{} · {}",
             visible(name),
-            u32le(bytes, at + 24).unwrap_or_default()
+            counted(
+                u32le(bytes, at + 24).unwrap_or_default(),
+                "uncompressed byte",
+                "uncompressed bytes"
+            )
         ));
         at = at.saturating_add(
             46 + usize::from(name_len) + usize::from(extra_len) + usize::from(comment_len),
@@ -487,7 +503,8 @@ fn font(bytes: &[u8], details: &mut Vec<String>) {
         return;
     };
     details.push(format!(
-        "{count} declared font tables; font is not installed"
+        "{}; font is not installed",
+        counted(count, "declared font table", "declared font tables")
     ));
     for index in 0..usize::from(count).min(128) {
         let at = 12 + index * 16;
@@ -589,29 +606,35 @@ mod tests {
             }
         }
     }
+    /// A WAV's channels, rate and duration, the channel count agreeing with
+    /// its noun: a mono file read "1 channels".
     #[test]
     fn wav_reports_channels_rate_and_duration() {
-        let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
-        bytes.extend_from_slice(&[1, 0, 2, 0]);
-        bytes.extend_from_slice(&48000u32.to_le_bytes());
-        bytes.extend_from_slice(&192000u32.to_le_bytes());
-        bytes.extend_from_slice(&[4, 0, 16, 0]);
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&1920u32.to_le_bytes());
-        bytes.resize(bytes.len() + 1920, 0);
-        let metadata = inspect(&bytes, Path::new("sound.bin"));
-        assert!(
-            metadata
-                .details
-                .iter()
-                .any(|line| line.contains("2 channels · 48000 Hz · 16 bits"))
-        );
-        assert!(
-            metadata
-                .details
-                .iter()
-                .any(|line| line.contains("0.01 seconds"))
-        );
+        for (channels, said) in [(2u8, "2 channels · 48000 Hz"), (1, "1 channel · 48000 Hz")] {
+            let mut bytes = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0".to_vec();
+            bytes.extend_from_slice(&[1, 0, channels, 0]);
+            bytes.extend_from_slice(&48000u32.to_le_bytes());
+            bytes.extend_from_slice(&192000u32.to_le_bytes());
+            bytes.extend_from_slice(&[4, 0, 16, 0]);
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&1920u32.to_le_bytes());
+            bytes.resize(bytes.len() + 1920, 0);
+            let metadata = inspect(&bytes, Path::new("sound.bin"));
+            assert!(
+                metadata
+                    .details
+                    .iter()
+                    .any(|line| line.starts_with(said) && line.contains(" · 16 bits")),
+                "{said}: {:?}",
+                metadata.details
+            );
+            assert!(
+                metadata
+                    .details
+                    .iter()
+                    .any(|line| line.contains("0.01 seconds"))
+            );
+        }
     }
     #[test]
     fn zip_metadata_lists_entries_without_expanding_or_following_them() {
@@ -631,6 +654,15 @@ mod tests {
         bytes.extend(end);
         let result = inspect(&bytes, Path::new("wrong.zip"));
         assert_eq!(result.format, "Word / OOXML package");
+        // One entry, counted as one: it read "1 declared entries".
+        assert!(
+            result
+                .details
+                .iter()
+                .any(|d| d.starts_with("1 declared entry;")),
+            "{:?}",
+            result.details
+        );
         assert!(
             result
                 .details

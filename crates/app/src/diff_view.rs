@@ -468,8 +468,8 @@ impl DiffView {
                                     ))
                                     .disabled(self.partial_busy)
                                     .tooltip(format!(
-                                        "{action} all {} changed lines in this hunk",
-                                        ids.len()
+                                        "{action} all {} in this hunk",
+                                        crate::counted(ids.len(), "changed line", "changed lines")
                                     ))
                                     .on_click(cx.listener(move |this, event, _, cx| {
                                         if this.click_matches_row(event, row, cx) {
@@ -581,8 +581,8 @@ impl DiffView {
                     .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(palette.muted))
                     .child(format!(
-                        "{count} {} selected",
-                        if count == 1 { "line" } else { "lines" }
+                        "{} selected",
+                        crate::counted(count, "line", "lines")
                     )),
             )
             .child(

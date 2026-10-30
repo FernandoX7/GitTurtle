@@ -1371,7 +1371,9 @@ fn execute(
                         old_bytes,
                         new_bytes,
                     } => Content::Notice(format!(
-                        "Text preview exceeds the display budget · before {old_bytes} bytes · after {new_bytes} bytes."
+                        "Text preview exceeds the display budget · before {} · after {}.",
+                        crate::counted(old_bytes, "byte", "bytes"),
+                        crate::counted(new_bytes, "byte", "bytes")
                     )),
                     TextPreview::Submodule { old_oid, new_oid } => Content::Notice(format!(
                         "Submodule · {} → {}",
@@ -1809,8 +1811,8 @@ fn captured_model_side(
             return crate::rich_preview::Side::prepare(local, path, || cancellation.check());
         }
         Ok(None) => format!(
-            "This model’s LFS object is unavailable in the local store ({} bytes). No download was attempted.",
-            pointer.size
+            "This model’s LFS object is unavailable in the local store ({}). No download was attempted.",
+            crate::counted(pointer.size, "byte", "bytes")
         ),
         Err(error) => format!(
             "This model’s local LFS object could not be verified: {error:#}. No download was attempted."
@@ -2188,8 +2190,8 @@ fn working_image_side(
             }
             bytes = local.ok_or_else(|| {
                 anyhow!(
-                    "Git LFS object is unavailable in the local store · {} bytes. No download was attempted.",
-                    pointer.size
+                    "Git LFS object is unavailable in the local store · {}. No download was attempted.",
+                    crate::counted(pointer.size, "byte", "bytes")
                 )
             })?;
         }
