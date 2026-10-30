@@ -1510,8 +1510,11 @@ impl Render for ShortcutHelpView {
                     _ => String::new(),
                 }).h(px(1.)).overflow_hidden())
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                // Every key the list takes: it named Up and Down alone.
-                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.",
+                // Every key the list takes: it named Up and Down alone. The
+                // search keeps its other editing keys, Shift-Home and
+                // Shift-End among them; it said text editing kept its own
+                // keys, while its Home and End browse the list.
+                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; the search keeps its other editing keys.",
                     key_label("pageup"), key_label("pagedown"), key_label("home"), key_label("end"), DialogKeys::Shortcuts.escape_help()))))
     }
 }
@@ -2951,5 +2954,31 @@ mod list_tests {
             assert_eq!(hints, Some(expected), "{at}: the status bar's hints");
             close(cx);
         }
+    }
+
+    /// The search keeps Shift-Home and Shift-End, which select from the
+    /// caret to the start and end of its text, while Home and End browse the
+    /// list: at 13 pt in a 1200 × 800 window, with "tab" typed and the caret
+    /// moved one character back, Shift-Home selects "ta", and from that
+    /// selection's end Shift-End selects "b", each as the field copies it.
+    #[gpui::test]
+    async fn the_search_keeps_shift_home_and_shift_end(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        cx.simulate_input("tab");
+        draw(cx);
+        let copy = resolve_key("primary-c", cfg!(target_os = "macos"));
+        for (keys, selected) in [("left shift-home", "ta"), ("right shift-end", "b")] {
+            press(cx, &format!("{keys} {copy}"));
+            let copied = cx.read_from_clipboard().and_then(|item| item.text());
+            assert_eq!(
+                copied.as_deref(),
+                Some(selected),
+                "{keys} selects {selected:?} in the search"
+            );
+        }
+        close(cx);
     }
 }
