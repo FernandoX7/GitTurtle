@@ -28,10 +28,10 @@ pub struct State {
 impl State {
     /// Whether the quiet reload a write asked for as it ended
     /// (`refresh_after_write`) runs, or waits for nothing but what starts it
-    /// as it ends (a running read, a status read, a write): until it lands
-    /// the window shows what the write found, and menus refuse writes
-    /// (`GitTurtle::write_unsettled`). `may_start` is false while another
-    /// page or a passive reader holds quiet reads
+    /// as it ends (a running read, a history load or search, a status read,
+    /// a write): until it lands the window shows what the write found, and
+    /// menus refuse writes (`GitTurtle::write_unsettled`). `may_start` is
+    /// false while another page or an open inspection holds quiet reads
     /// (`GitTurtle::quiet_reads_held`), so the reload that waits then refuses
     /// nothing until the window returns to it: the menus of a window left on
     /// Blame or Settings once stayed refused, with nothing to say why. A read
@@ -46,6 +46,11 @@ impl State {
     #[cfg(test)]
     pub(crate) fn hold_quiet_reads(&mut self, held: bool) {
         self.held = held;
+    }
+    /// Whether a quiet read runs, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn quiet_read_running(&self) -> bool {
+        self.inflight.is_some()
     }
     pub(super) fn watch_warning(&self) -> Option<&str> {
         self.watch_warning.as_deref()
@@ -282,18 +287,30 @@ impl GitTurtle {
     /// then starts them: a history load or search, File history, a revision
     /// inspection or Blame.
     fn passive_reading(&self) -> bool {
-        self.loading.is_some()
-            || self.history_search_pending()
-            || self.file_history.is_active()
+        self.loading.is_some() || self.history_search_pending() || self.inspection_open()
+    }
+
+    /// Whether File history, a revision inspection or Blame is open, which
+    /// holds quiet reads off until it closes.
+    fn inspection_open(&self) -> bool {
+        self.file_history.is_active()
             || self.revision_inspection.is_active()
             || self.blame.is_visible()
     }
 
     /// Whether the window holds quiet reads off for as long as it stays as
     /// it is: another page is shown, as returning to the repository starts
-    /// them, or a passive reader runs or is open ([`Self::passive_reading`]).
+    /// them, or an inspection is open ([`Self::inspection_open`]). A history
+    /// load or search holds them only while it runs: one starts as a commit
+    /// or a row is selected, putting a running read back to wait
+    /// ([`Self::cancel_automatic_read`]), and starts it again as it ends or
+    /// as the read that replaces it does. Counted here, it let a write's
+    /// reload refuse nothing while a selection's read ran, so a commit's
+    /// menu opened then offered Revert and Undo of a commit an Undo had just
+    /// taken away, and one open showed its items available, refused and
+    /// available again, its cursor reset at each.
     pub(super) fn quiet_reads_held(&self) -> bool {
-        self.page != AppPage::Repository || self.passive_reading()
+        self.page != AppPage::Repository || self.inspection_open()
     }
 
     pub(super) fn try_automatic_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {

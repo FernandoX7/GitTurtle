@@ -4848,6 +4848,235 @@ mod tests {
         drop(fixture);
     }
 
+    /// Lets the quiet reload a write asked for as it ended, held until now,
+    /// start, and leaves it running.
+    fn reload_runs(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(false);
+                app.try_automatic_refresh(window, cx);
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_running()),
+            "the write's reload runs"
+        );
+    }
+
+    /// Asserts that a selection's read runs, which has put the write's
+    /// reload back to wait for it (`cancel_automatic_read`).
+    fn selection_holds_the_reload(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_some()
+                && !app.automatic.quiet_read_running()
+                && app.automatic.quiet_read_requested()),
+            "the selection's read runs, and the write's reload waits for it"
+        );
+    }
+
+    /// A commit selected while a write's quiet reload runs puts the reload
+    /// back to wait for the selection's read, which starts it again as it
+    /// lands; menus stay refused throughout. Down, Up and Shift-F10 on HEAD,
+    /// pressed as an Undo's reload ran, once opened HEAD's menu offering
+    /// Revert, Cherry-pick, Amend and Undo of the commit the Undo had just
+    /// taken away: a reload waiting for a selection's read refused nothing,
+    /// as one an open inspection holds does, so the menu's items were
+    /// available, refused once the read landed and the reload ran, and
+    /// available again, its cursor reset at each.
+    #[gpui::test]
+    async fn a_commit_selected_as_a_writes_reload_runs_keeps_menus_refused(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        let head = app.read_with(cx, |app, _| {
+            let head = app
+                .work_status
+                .as_ref()
+                .and_then(|status| status.head.clone());
+            app.commits
+                .iter()
+                .position(|commit| Some(&commit.oid) == head.as_ref())
+                .expect("HEAD in History")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_history(window, cx);
+                app.select_commit(head, window, cx);
+                app.pane = Pane::History;
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        hold_quiet_reads(&app, cx, true);
+        let write = held(&app, cx, checkout_main());
+        release(&app, write, cx).await;
+        next_frame(cx);
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        reload_runs(&app, cx);
+        // Each key is taken at once, before the selection's read can land.
+        cx.update(|window, cx| {
+            for key in ["down", "up", "shift-f10"] {
+                window.dispatch_keystroke(Keystroke::parse(key).expect("a keystroke"), cx);
+            }
+        });
+        next_frame(cx);
+        selection_holds_the_reload(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.selected_commit == Some(head)
+                && app.commit_menu.is_some()),
+            "Down and Up came back to HEAD, and Shift-F10 opened its menu"
+        );
+        keyed_items(
+            &app,
+            cx,
+            &COMMIT_ITEMS,
+            false,
+            "while the selection's read holds the write's reload",
+        );
+        // Held, the reload the landing read starts waits here rather than
+        // landing on the reader's thread while the read is settled.
+        app.update(cx, |app, _| app.automatic.hold_quiet_reads(true));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.loading.is_none()
+                && app.automatic.quiet_read_requested()),
+            "the selection's read landed, and the write's reload waits to run again"
+        );
+        keyed_items(
+            &app,
+            cx,
+            &COMMIT_ITEMS,
+            false,
+            "once the selection's read lands, before the write's reload",
+        );
+        hold_quiet_reads(&app, cx, false);
+        keyed_items(
+            &app,
+            cx,
+            &COMMIT_ITEMS,
+            true,
+            "once the write's reload lands",
+        );
+        close_keyed_menu(&app, cx, "HEAD's menu");
+        drop(fixture);
+    }
+
+    /// A working row selected while a write's quiet reload runs, as a click
+    /// on another row after a Commit, puts the reload back to wait for the
+    /// row's read; the row's menu, opened as `opening` opens it before that
+    /// read lands, stays refused until the reload lands. It was built from
+    /// the row's entry as the write had left it, before the reload, as a
+    /// just-committed file's Delete untracked file… or Discard changes….
+    async fn a_row_selected_as_a_writes_reload_runs_keeps_its_menu_refused(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        const DELETE: &str = "Delete untracked file…";
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        hold_quiet_reads(&app, cx, true);
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::CreateBranch {
+                name: "side-q9".into(),
+                start_point: None,
+            },
+        );
+        release(&app, write, cx).await;
+        next_frame(cx);
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        reload_runs(&app, cx);
+        // The click and the menu are taken at once, before the row's read
+        // can land.
+        let press = |window: &mut Window, cx: &mut App, button, position| {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    position,
+                    modifiers: Modifiers::default(),
+                    button,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    position,
+                    modifiers: Modifiers::default(),
+                    button,
+                    click_count: 1,
+                }),
+                cx,
+            );
+        };
+        cx.update(|window, cx| {
+            press(window, cx, gpui::MouseButton::Left, row.center());
+            list.focus(window, cx);
+        });
+        next_frame(cx);
+        cx.update(|window, cx| match opening {
+            Opening::RightClick => press(
+                window,
+                cx,
+                gpui::MouseButton::Right,
+                point(row.left() + px(16.), row.center().y),
+            ),
+            Opening::Keyboard => {
+                window.dispatch_keystroke(Keystroke::parse("shift-f10").expect("a keystroke"), cx);
+            }
+        });
+        next_frame(cx);
+        next_frame(cx);
+        selection_holds_the_reload(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app
+                .working_selected
+                .and_then(|(index, _)| app.work_status.as_ref()?.entries.get(index))
+                .is_some_and(
+                    |entry| entry.path.as_os_str() == std::ffi::OsStr::new("gamma.txt")
+                )),
+            "{opening:?}: the click selected gamma"
+        );
+        assert_eq!(
+            offered(cx, DELETE),
+            Some(false),
+            "{opening:?}: refused while the row's read holds the write's reload"
+        );
+        crate::views::tests::settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, DELETE),
+            Some(true),
+            "{opening:?}: available once the write's reload lands"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+    }
+
+    #[gpui::test]
+    async fn a_row_selected_as_a_writes_reload_runs_keeps_its_right_click_menu_refused(
+        cx: &mut TestAppContext,
+    ) {
+        a_row_selected_as_a_writes_reload_runs_keeps_its_menu_refused(cx, Opening::RightClick)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_row_selected_as_a_writes_reload_runs_keeps_its_keyboard_menu_refused(
+        cx: &mut TestAppContext,
+    ) {
+        a_row_selected_as_a_writes_reload_runs_keeps_its_menu_refused(cx, Opening::Keyboard).await;
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's

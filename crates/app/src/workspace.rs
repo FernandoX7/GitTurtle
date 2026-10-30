@@ -2691,15 +2691,17 @@ impl GitTurtle {
     /// window still shows what the write found. Built in between, a menu
     /// offered its items for that state: a commit's Revert of a commit an
     /// Undo had just taken away, or a branch's actions on a name a delete
-    /// had just removed. A reload that another page or a passive reader
+    /// had just removed. A reload that another page or an open inspection
     /// holds off (`quiet_reads_held`), as Blame or File history open as the
     /// write ends, refuses nothing until it can run: menus stayed refused
     /// there, with nothing to say why, until the window returned to History
-    /// or Changes. A write that changes only the working state, as a Stage,
-    /// reads the status again instead (`status_after_write`), which menus
-    /// wait for as well: built as the write ended, a working row's menu
-    /// offered Delete untracked file… for a file the Stage had just added.
-    /// A read the watcher asked for refuses nothing.
+    /// or Changes. One that waits for a history load or search, as a
+    /// selection's read puts it back to wait, still refuses, since the read
+    /// starts it as it ends. A write that changes only the working state, as
+    /// a Stage, reads the status again instead (`status_after_write`), which
+    /// menus wait for as well: built as the write ended, a working row's
+    /// menu offered Delete untracked file… for a file the Stage had just
+    /// added. A read the watcher asked for refuses nothing.
     pub(super) fn write_unsettled(&self) -> bool {
         self.operation_busy.is_some()
             || self
