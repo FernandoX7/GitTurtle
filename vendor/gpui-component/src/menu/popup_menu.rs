@@ -1690,12 +1690,23 @@ impl PopupMenu {
     /// and Undo items when its commit becomes HEAD. Once the frame is drawn
     /// GPUI reports the row that arrived under the pointer hovered, and
     /// upstream gave it the selection, so Enter ran an item the person never
-    /// pointed at. As after a wheel ([`PopupMenu::rows_scrolled`]), a
-    /// pointer's selection is given up and no row takes it until the pointer
-    /// moves; a keyboard's stays where it is. The first layout moves
+    /// pointed at. As after a wheel ([`PopupMenu::rows_scrolled`]), no row
+    /// takes the selection until the pointer moves, and a keyboard's stays
+    /// where it is. A pointer's selection stays while its row stays under the
+    /// pointer, as after a move sideways or by less than a row, where GPUI
+    /// reports no change of hover: the person put it there and it is still
+    /// there. Its row leaving the pointer gives it up as that report runs
+    /// (the hover listener), and one on a row the pointer had already left,
+    /// as a submenu's row keeps it, is given up here. The first layout moves
     /// nothing. Compared by its origin alone, a menu that grew in place let
     /// the row that arrived take the selection, a keyboard's cursor among
     /// it.
+    ///
+    /// A notify in prepaint only marks the view: the frame being drawn has
+    /// rendered it already, and the draw clears the mark without asking for
+    /// another, so a row cleared here, or lit only by a hover a still pointer
+    /// no longer draws, stayed drawn lit while Enter did nothing. The next
+    /// frame is asked for from outside the draw.
     fn surface_laid_out(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -1711,10 +1722,10 @@ impl PopupMenu {
             return;
         }
         self.still_pointer = Some(pointer);
-        if !self.keyboard_selection {
+        if !self.keyboard_selection && self.selected_index != self.hovered_index {
             self.selected_index = None;
         }
-        cx.notify();
+        cx.defer_in(window, |_, _, cx| cx.notify());
     }
 
     /// Calculate the anchor corner and left offset for child submenu
@@ -1817,6 +1828,11 @@ impl PopupMenu {
                         // The pointer took the selection, a keyboard's
                         // cursor among it, off this row.
                         this.pointer_selection = true;
+                    } else if still && !this.keyboard_selection && this.selected_index == Some(ix) {
+                        // The row the pointer selected moved out from under
+                        // the still pointer, which selects nothing until it
+                        // moves ([`PopupMenu::surface_laid_out`]).
+                        this.selected_index = None;
                     }
                 }
 
@@ -2147,8 +2163,11 @@ impl Render for PopupMenu {
             // its offset and, being as tall as the column, made a menu whose
             // rows fit scroll by the column's padding. Each layout also
             // measures the fold, and a menu whose rows met its cap otherwise
-            // than this frame drew is drawn again. A surface laid out
-            // elsewhere than the last frame's moved its rows under the
+            // than this frame drew asks for the next frame, from outside the
+            // draw: a notify here only marks the view, and the draw clears
+            // the mark, so the menu kept the fold it was first drawn with
+            // until something else drew it. A surface laid out at another
+            // place or size than the last frame's moved its rows under the
             // pointer.
             .on_prepaint(move |bounds, window, cx| {
                 view.update(cx, |menu, cx| {
@@ -2158,7 +2177,7 @@ impl Render for PopupMenu {
                         let measured = menu.measured_fold(rows, max_height, window);
                         menu.fold = Some(measured);
                         if Some(measured) != fold {
-                            cx.notify();
+                            cx.defer_in(window, |_, _, cx| cx.notify());
                         }
                     }
                 })
@@ -2738,14 +2757,20 @@ mod tests {
     }
 
     /// A focused menu of `items` that run into `ran`, drawn at the window's
-    /// top left at the size its rows give it, with the menu keys bound.
+    /// top left at the size its rows give it, with the menu keys bound and
+    /// its fills painted.
     fn placed<'a>(
         cx: &'a mut TestAppContext,
         items: &'static [(&'static str, bool)],
         ran: &Ran,
-    ) -> (Entity<PopupMenu>, &'a mut VisualTestContext) {
+    ) -> (Entity<Placed>, Entity<PopupMenu>, &'a mut VisualTestContext) {
         cx.update(|cx| {
-            cx.set_global(Theme::default());
+            // The kit's default colors are transparent; the pointer's fill
+            // and the keyboard cursor's are set so the frame paints them.
+            let mut colors = crate::theme::ThemeColor::default();
+            colors.accent = gpui::red();
+            colors.list_active = gpui::blue();
+            cx.set_global(Theme::from(&colors));
             init(cx);
         });
         let ran = ran.clone();
@@ -2761,7 +2786,32 @@ mod tests {
         });
         draw(cx);
         let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
-        (menu, cx)
+        (placed, menu, cx)
+    }
+
+    /// The items of [`FOUR`] drawn with a fill of their own, read from the
+    /// frame on screen: the pointer's selection or hover, or the keyboard's
+    /// cursor.
+    fn lit(cx: &mut VisualTestContext) -> Vec<&'static str> {
+        FOUR.iter()
+            .map(|(name, _)| *name)
+            .filter(|name| {
+                let row = drawn_item(cx, name);
+                cx.update(|window, _| {
+                    let scale = window.scale_factor();
+                    let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                        (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+                    };
+                    window.painted_quads().iter().any(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), row.left())
+                            && near(quad.bounds.top(), row.top())
+                            && near(quad.bounds.right(), row.right())
+                            && near(quad.bounds.bottom(), row.bottom())
+                    })
+                })
+            })
+            .collect()
     }
 
     /// Builds the open menu again with `items` that run into `ran`.
@@ -2880,7 +2930,7 @@ mod tests {
             ("Undo the last local commit on this branch…", true),
         ];
         let ran = Ran::default();
-        let (menu, cx) = placed(cx, FOUR, &ran);
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
         cx.simulate_keystrokes("down down down");
         draw(cx);
         assert_eq!(cursor(&menu, cx).as_deref(), Some("Three"), "Down thrice");
@@ -2924,7 +2974,7 @@ mod tests {
             ("Five", true),
         ];
         let ran = Ran::default();
-        let (menu, cx) = placed(cx, FOUR, &ran);
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
         let selection = |cx: &mut VisualTestContext| {
             menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
         };
@@ -2955,6 +3005,125 @@ mod tests {
         );
         draw(cx);
         assert_eq!(selection(cx), (Some(5), false), "the moved pointer on Five");
+    }
+
+    /// A menu moved sideways, or down by less than a row, under the pointer
+    /// on Three keeps Three selected, drawn lit, and Enter runs it, in the
+    /// frames the move itself asks for: the item under the pointer is the
+    /// one the person put it on. A keyboard's cursor on One with the pointer
+    /// on Three, which draws its hover, keeps only the cursor drawn once a
+    /// move makes the pointer still. The prepaint once gave the pointer's
+    /// selection up with a notify that asked for no frame, so Three stayed
+    /// drawn lit while Enter did nothing, until something else drew the
+    /// menu; and the still pointer's hover stayed drawn.
+    #[gpui::test]
+    fn a_menu_moved_under_the_pointer_keeps_the_item_still_under_it(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (placed, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        // Moves the menu with no draw of its own: the frames are those the
+        // move asks for, as the app's are.
+        let moved = |cx: &mut VisualTestContext, left: Pixels, top: Pixels| {
+            placed.update(cx, |placed, cx| {
+                placed.left = left;
+                placed.top = top;
+                cx.notify();
+            });
+        };
+        let three = drawn_item(cx, "Three");
+        let pitch = three.top() - drawn_item(cx, "Two").top();
+        let pointer = three.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(3), false), "the pointer on Three");
+        assert_eq!(lit(cx), ["Three"], "Three lit");
+
+        for (left, top, at) in [
+            (px(8.), px(0.), "moved 8 px sideways"),
+            (px(8.), pitch / 3., "moved down a third of a row"),
+        ] {
+            moved(cx, left, top);
+            assert!(
+                drawn_item(cx, "Three").contains(&pointer),
+                "{at}: Three still under the pointer"
+            );
+            assert_eq!(selection(cx), (Some(3), false), "{at}: Three selected");
+            assert_eq!(lit(cx), ["Three"], "{at}: Three drawn lit");
+        }
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Three"], "Enter runs Three");
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(3), false),
+            "the moved pointer on Three"
+        );
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("One"),
+            "the cursor on One"
+        );
+        assert_eq!(
+            lit(cx),
+            ["One", "Three"],
+            "the cursor on One, the pointer's hover on Three"
+        );
+        moved(cx, px(0.), pitch / 3.);
+        assert!(
+            drawn_item(cx, "Three").contains(&(pointer + gpui::point(px(1.), px(0.)))),
+            "moved 8 px back, Three still under the pointer"
+        );
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "the cursor kept");
+        assert_eq!(
+            lit(cx),
+            ["One"],
+            "only the cursor drawn under the still pointer"
+        );
+    }
+
+    /// A capped menu whose rows are not the heights it estimates before its
+    /// first layout, as a tall element row is not, draws the fold that
+    /// layout measures in the frame the measure asks for, without another
+    /// draw. The measure's notify once ran in prepaint, which asks for no
+    /// frame, so the menu kept the estimated fold it was first drawn with,
+    /// cutting a row or leaving a sliver of one, until something else drew
+    /// it.
+    #[gpui::test]
+    fn a_capped_menu_draws_its_measured_fold_without_another_draw(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, TWELVE);
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| {
+                    let tall = PopupMenuItem::element(|_, _| div().h(px(90.)).child("Tall"));
+                    entries(menu.item(tall), TWELVE)
+                        .max_h(px(160.))
+                        .scrollable(true)
+                })
+            })
+        });
+        let (fold, drawn) = menu.read_with(cx, |menu, _| {
+            (menu.fold, menu.scroll_handle.bounds().size.height)
+        });
+        assert_eq!(
+            fold,
+            Some(Fold::At(drawn)),
+            "the items column drawn as tall as the measured fold"
+        );
+        assert!(
+            cx.debug_bounds("popup-menu-scrollbar").is_some(),
+            "the fold drawn with its scrollbar"
+        );
     }
 
     /// Rows that move under a pointer that has not moved, while the

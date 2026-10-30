@@ -966,8 +966,13 @@ shows; it never ends after a separator or a heading whose rows lie below
 the kit draws its entries at, each length snapped to device pixels as GPUI's
 layout snaps it (`estimated_fold`), and each layout measures it from the rows'
 bounds the column's scroll handle records (`measured_fold`); a menu whose
-measured fold differs from the one it drew is drawn again (the Working Actions
-menu's estimate matches its layout at 13 and 18 pt, so it draws once). While
+measured fold differs from the one it drew asks for the next frame, which draws
+it again (the Working Actions menu's estimate matches its layout at 13 and 18
+pt, so it draws once). The request is deferred out of the draw
+(`Context::defer_in`): a notify in prepaint only marks the view, which that
+frame has already rendered, and the draw clears the mark without asking for a
+frame, so a fold the estimate missed stayed drawn at the estimate until
+something else drew the menu. While
 rows lie past the fold the column keeps a gutter of the scrollbar's width at
 their right and the scrollbar, in a test build named `popup-menu-scrollbar`, is
 always visible there, as a scrolling list's is; a menu whose rows fit draws
@@ -1028,8 +1033,18 @@ surface's prepaint (`surface_laid_out`, beside the bounds it records) now
 compares the bounds the surface is laid out at with the last frame's
 (`surface`); where they differ with the pointer over the surface then or
 now, it does what a wheel does, before that frame's hover reports run: it
-records the pointer's place, a pointer selection gives the selection up and
-a keyboard one stays. The first layout moves nothing. Compared by its origin
+records the pointer's place, so no row takes the selection until the pointer
+moves, and a keyboard's selection stays. A pointer's selection stays while
+its row stays under the pointer, as after a move sideways or by less than a
+row, where GPUI reports no change of hover: the person put it there and it
+is still there. That row's report as it leaves the still pointer gives the
+selection up (the hover listener), and a pointer's selection on a row the
+pointer had already left, as a submenu's row keeps one, is given up at once.
+The prepaint then asks for the next frame from outside the draw, as the fold
+measure does: given up there with a notify in prepaint, the pointer's
+selection stayed drawn lit while Enter did nothing, and a hover the still
+pointer no longer draws stayed drawn, until something else drew the menu.
+The first layout moves nothing. Compared by its origin
 alone, a menu that grew at its place under a pointer resting just beside or
 below it let the row that arrived take the selection, a keyboard's cursor
 among it, and Enter ran that row.
@@ -1070,11 +1085,22 @@ again with Five under a pointer resting 6 px below it and reads nothing
 selected and nothing run until a 1 px move selects Five; and
 `rows_scrolled_under_the_still_pointer_keep_the_keyboards_cursor` scrolls a
 capped menu a row under the pointer, the cursor on Item 0, and reads the
-cursor kept until a 1 px move selects Item 2. Without `surface_laid_out` the
-app test reads Stage lit and the crate's reads Two selected; compared by the
+cursor kept until a 1 px move selects Item 2.
+`a_menu_moved_under_the_pointer_keeps_the_item_still_under_it` moves a menu
+8 px sideways and then a third of a row down under the pointer on Three, with
+no draw of its own, and reads Three selected and drawn lit and Enter running
+Three; then, the keys' cursor on One and the pointer's hover drawn on Three, a
+move draws only the cursor.
+`a_capped_menu_draws_its_measured_fold_without_another_draw` caps a menu
+whose tall element row the estimate misses and reads the drawn column as tall
+as the measured fold. Without `surface_laid_out` the app test reads Stage lit
+and the crate's reads Two selected; without the leaving row's report giving
+the selection up, the crate's reads Three still selected; compared by the
 origin alone, the taller menu's Five takes the selection; without the hover's
 keyboard rule, Item 2 takes the cursor; without both, the wider menu's Two
-takes it and Enter runs Two. Remove this part of the patch when upstream
+takes it and Enter runs Two; giving the pointer's selection up in the
+prepaint fails the sideways move, and a prepaint notify fails the moved
+menu's last step and, for the fold, the capped menu. Remove this part of the patch when upstream
 lights at most the row under the pointer after a wheel or a move of the
 menu and those tests pass without it.
 
