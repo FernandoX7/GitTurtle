@@ -1710,21 +1710,33 @@ impl PopupMenu {
     /// row, as onto the menu's padding, gave the selection to whichever item
     /// a later rebuild put at that index, far from the pointer, a keyboard's
     /// cursor among it, and Enter ran it.
+    ///
+    /// A move that finds no reported row drawn under it, as one in the frame
+    /// after a rebuild, before the layout has recorded the new rows, or one
+    /// that lands between a recorded row and the hit area GPUI snapped for
+    /// it, leaves the pointer still at its new place, so the next move
+    /// decides: cleared there, the row under the pointer stayed unlit until
+    /// the pointer crossed into another row, since GPUI reports no hover for
+    /// a row the pointer stays on and every later move found the pointer no
+    /// longer still.
     fn pointer_moved(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.still_pointer.is_none_or(|at| at == event.position) {
             return;
         }
-        self.still_pointer = None;
         let under = |ix: &usize| {
             self.rows
                 .get(*ix)
                 .is_some_and(|row| row.contains(&event.position))
         };
-        if let Some(ix) = self.hovered_index.filter(under) {
-            self.selected_index = Some(ix);
-            self.keyboard_selection = false;
-            self.kept_cursor = None;
-            self.pointer_selection = true;
+        match self.hovered_index.filter(under) {
+            Some(ix) => {
+                self.still_pointer = None;
+                self.selected_index = Some(ix);
+                self.keyboard_selection = false;
+                self.kept_cursor = None;
+                self.pointer_selection = true;
+            }
+            None => self.still_pointer = Some(event.position),
         }
         cx.notify();
     }
@@ -3412,6 +3424,124 @@ mod tests {
             "Enter runs nothing: {:?}",
             ran.borrow()
         );
+    }
+
+    /// The row GPUI last reported under the pointer takes the selection on
+    /// a move only where the last frame drew it under the pointer: with
+    /// that report on Four, an index still in range but a row away from the
+    /// pointer, as a rebuild can leave it, a still pointer's move onto the
+    /// menu's padding selects nothing and Enter runs nothing. Without the
+    /// check that move gave Four the selection.
+    #[gpui::test]
+    fn a_move_onto_padding_selects_no_reported_row_away_from_it(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let pointer = drawn_item(cx, "One").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(1), false), "the pointer on One");
+        // Built again under the resting pointer, which is still from there.
+        rebuilt_acting(&menu, cx, FOUR, &ran);
+        assert!(
+            menu.read_with(cx, |menu, _| menu.still_pointer.is_some()),
+            "still after the rebuild"
+        );
+        // GPUI's last report, by index, on Four, away from the pointer.
+        let four = drawn_item(cx, "Four");
+        menu.update(cx, |menu, _| menu.hovered_index = Some(4));
+        assert!(!four.contains(&pointer), "Four away from the pointer");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let padding = gpui::point(four.center().x, surface.top() + px(2.));
+        let heading = cx
+            .debug_bounds("menu-item: Heading · Label")
+            .expect("Heading drawn");
+        assert!(
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .map(|name| drawn_item(cx, name))
+                .chain([heading])
+                .all(|row| !row.contains(&padding)),
+            "no row at {padding:?}"
+        );
+
+        cx.simulate_mouse_move(padding, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "on no row, nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+    }
+
+    /// A pointer move in the frame after a rebuild, before the layout has
+    /// recorded the new rows, finds no row drawn under it and selects
+    /// nothing, but leaves the pointer still at its new place, so the next
+    /// move, after the layout, selects the row under it. Cleared there, the
+    /// pointer was no longer still, so each later move within the row
+    /// returned at once, and GPUI reports no hover for a row the pointer
+    /// stays on: the row stayed unselected, and Enter ran nothing, until the
+    /// pointer crossed into another row.
+    #[gpui::test]
+    fn a_move_before_rebuilt_rows_are_laid_out_lets_the_next_move_decide(
+        cx: &mut TestAppContext,
+    ) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let two = drawn_item(cx, "Two");
+        let pointer = gpui::point(two.left() + px(8.), two.center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Two");
+
+        // Built again, and the pointer moves within Two before a frame lays
+        // the new rows out.
+        let r = ran.clone();
+        let moved = pointer + gpui::point(px(2.), px(0.));
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| acting(menu, FOUR, &r))
+            });
+            assert!(
+                menu.read(cx).rows.is_empty(),
+                "no rows laid out since the rebuild"
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: moved,
+                    pressed_button: None,
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        });
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "the move found no row laid out");
+
+        // The next move within Two, after the layout, selects it.
+        cx.simulate_mouse_move(
+            moved + gpui::point(px(2.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(2), false),
+            "the next move within Two selects it"
+        );
+        assert_eq!(lit(cx), ["Two"], "and only Two is lit");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Two"], "Enter runs Two");
     }
 
     #[gpui::test]

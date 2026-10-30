@@ -1050,7 +1050,14 @@ menu built again without Five and then with a separator above Two, which put
 Four at Five's index, gave Four the selection on the pointer's first move
 onto the menu's padding, where no row lies, a keyboard's cursor among it, and
 Enter ran Four. A rebuild also forgets a hovered index past its drawn rows
-and the rows laid out for the old items. A wheel that moves nothing, over a menu whose rows
+and the rows laid out for the old items. A move that finds no reported row
+drawn under it, as one in the frame after a rebuild, before the layout has
+recorded the new rows, or one between a recorded row and the hit area GPUI
+snapped for it, leaves the pointer still at its new place, so the next move
+decides; it once cleared the pointer's stillness, and since GPUI reports no
+hover for a row the pointer stays on and every later move then returned at
+once, the row under the pointer stayed unselected, Enter running nothing,
+until the pointer crossed into another row. A wheel that moves nothing, over a menu whose rows
 fit or at the end of its rows, changes nothing.
 
 A menu laid out at another place or size moves its rows under a still pointer
@@ -1161,6 +1168,13 @@ until a 1 px move selects Item 9.
 pointer on Five, builds the menu again without Five and then with a separator
 that puts Four at Five's index away from the pointer, and moves the pointer
 onto the menu's top padding: nothing is selected and Enter runs nothing.
+`a_move_onto_padding_selects_no_reported_row_away_from_it` leaves GPUI's last
+report on Four, an index in range but a row away from the still pointer, and
+moves the pointer onto the padding: nothing is selected and Enter runs
+nothing. `a_move_before_rebuilt_rows_are_laid_out_lets_the_next_move_decide`
+rests the pointer on Two, builds the menu again and moves the pointer within
+Two before a frame lays the rows out, then moves it again: the first move
+selects nothing and the second selects Two, which Enter runs.
 Without `surface_laid_out` the app test reads Stage lit
 and the crate's reads Two selected; without the leaving row's report giving
 the selection up, the crate's reads Three still selected; compared by the
@@ -1172,7 +1186,10 @@ menu's last step and, for the fold, the capped menu; without the rebuild's
 still pointer, Item 9 takes the selection from the menu built again shorter;
 without both the row check and the rebuild's forgetting of a hovered index
 past its rows, Four takes the selection on the move onto the padding, which
-either alone prevents. Remove this part of the patch when upstream
+either alone prevents, and without the row check alone Four takes it in
+`a_move_onto_padding_selects_no_reported_row_away_from_it`; with the
+pointer's stillness cleared by a move that finds no row, the second move
+within Two selects nothing. Remove this part of the patch when upstream
 lights at most the row under the pointer after a wheel, a move of the menu or
 a rebuild and those tests pass without it.
 
