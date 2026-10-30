@@ -124,7 +124,8 @@ impl GitTurtle {
         if self.page == AppPage::Repository {
             self.resume_repository_page(window, cx);
             // Leaving ran the read a preparation it cancelled had noted
-            // (`show_settings`, `show_projects`); one still noted runs now.
+            // (`show_settings`, `show_projects`); one still noted runs now,
+            // and then the quiet refresh the page held back.
             self.read_deferred_working(window, cx);
         } else {
             self.app_focus.focus(window, cx);
@@ -1267,6 +1268,107 @@ mod tests {
             !cx.update(|window, cx| window.has_active_dialog(cx)),
             "no plan opens over the other tab"
         );
+    }
+
+    /// A quiet refresh refused while a write or a review's preparation ran
+    /// runs as it ends. Restored in History during a Fetch in the first tab,
+    /// the second tab's rescan waited for the Fetch, and with no watch to
+    /// register behind it, as when the host's inotify instances have run
+    /// out, the tab kept its history and rows as they were after the Fetch
+    /// ended, until something else read them. A change reported during a
+    /// review's preparation in the shown tab waited the same way.
+    #[gpui::test]
+    async fn a_quiet_refresh_held_back_by_a_write_runs_as_it_ends(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, settle};
+        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.watch_through(crate::local_refresh::Backend::Unavailable, window, cx)
+            })
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        // A write in the first tab held open, as a Fetch from an unreachable
+        // remote stays, and the other tab shown meanwhile, its reads landed.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert!(app.mode == WorkspaceMode::History);
+            assert!(app.operation_busy.is_some());
+            assert_eq!(app.commits[0].subject, "Notes");
+        });
+        // A commit made in a terminal meanwhile, and a new file.
+        std::fs::write(other.join("later.txt"), "later\n").unwrap();
+        fixture_git(&other, &["add", "later.txt"]);
+        fixture_git(&other, &["commit", "--quiet", "-m", "Later"]);
+        std::fs::write(other.join("loose.txt"), "loose\n").unwrap();
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert_eq!(app.operation_busy, None);
+            assert_eq!(app.commits[0].subject, "Later", "History caught up");
+        });
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "loose.txt".to_owned()]),
+            "and its working state"
+        );
+
+        // A change reported while main's branch actions are prepared.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_contextual_branch("main".into(), false, window, cx)
+            })
+        });
+        assert!(app.read_with(cx, |app, _| app.operation_busy.is_some()));
+        fixture_git(
+            &other,
+            &["commit", "--quiet", "--allow-empty", "-m", "Again"],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None);
+            assert_eq!(app.commits[0].subject, "Again", "History caught up");
+        });
+        cx.update(|window, cx| window.close_dialog(cx));
+        settle(&app, cx).await;
     }
 
     #[test]

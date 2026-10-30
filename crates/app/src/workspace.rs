@@ -2169,15 +2169,22 @@ impl GitTurtle {
     /// when it is shown again. A read another tab asked for is dropped too,
     /// as the shown one did not ask. A cancel once left the read noted, so
     /// Refresh never ran, or ran unasked at the end of a later preparation.
+    ///
+    /// Then the quiet refresh the running write or preparation refused
+    /// starts ([`Self::try_automatic_refresh`]), or, behind a read just
+    /// asked for here, starts as that read lands. A change reported during
+    /// a review's preparation, or a tab restored during a Fetch in another
+    /// with no watch registered behind it, once kept the history and rows
+    /// last read after the end, until something else read them.
     pub(super) fn read_deferred_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.operation_busy.is_some() || self.working_read_deferred.is_none() {
-            return;
+        if self.operation_busy.is_none() && self.working_read_deferred.is_some() {
+            if self.working_read_deferred == self.path {
+                self.refresh_worktree(window, cx);
+            } else {
+                self.working_read_deferred = None;
+            }
         }
-        if self.working_read_deferred == self.path {
-            self.refresh_worktree(window, cx);
-        } else {
-            self.working_read_deferred = None;
-        }
+        self.try_automatic_refresh(window, cx);
     }
 
     /// Whether the shown repository's working state is being read, or is to
