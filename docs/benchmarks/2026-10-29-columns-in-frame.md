@@ -263,3 +263,133 @@ The tools ran from a working directory outside the repository. The versioned cop
 - The UI thread ran below 3.0 GHz in about 70% of windows in both builds, and launches were pinned to all eight performance cores (4–11), not to one cluster. The host was not idle: the IDE used about a core, and seven orphaned `fc-match` polling loops ran throughout. Alternating the builds within each cell exposes both to the same drift.
 - `WAYLAND_DEBUG=1` adds libwayland's formatting to every message in both builds. It is inside the UI CPU figures and adds only the `done` line's print to the draw boundary.
 - The cause of the candidate's second frame on a width step is inferred from the diff and was not traced.
+
+## Rerun 2026-10-30: width steps of `aeab555`
+
+This reruns only the width steps above against `aeab555a`, the I line: `3e9aa590` (`fix(app): draw each Compare width step in one frame`), `876a1b6d` (a file-list scroll still waiting to apply wins over the list's resize reveal) and the vendored `eaa93062` (an open popup follows its trigger in the frame that moves it). The base is this record's candidate, `5e128852`. The question is whether Compare's extra frame per width step is gone, and whether every step still ends settled. The data is in [`2026-10-29-columns-in-frame/rerun-2026-10-30/`](2026-10-29-columns-in-frame/rerun-2026-10-30/): per-window rows in `raw/windows.csv`, per-frame rows in `raw/frames.csv.gz`, the statistics in `raw/summary.json` and `raw/summary.txt`, the tables below in `raw/tables.md`, the run log in `raw/runs.txt`, the load in `raw/load-per-launch.txt`, and the designation, the fixed order and the display checks in `raw/designation.txt`. The scripts are in `tools/`.
+
+### Result
+
+- **Compare's extra frame is gone at 1480 ↔ 1000.** The base draws 2 frames on every one of its 64 Compare steps there (32 text, 32 image, 13 and 18 pt). The candidate draws 1 frame on every one of its 64. The removed frame is the base's paced second frame: 4.3–6.7 ms at p50 per row, and 10.2–16.5 ms at p95 counting the draws requested one to two ticks after their `done`.
+- **Every step still ends settled, in both builds.** The settle check found 0 changed pixels on all 160 steps per build: History, text and image Compare at 1480 ↔ 1000, History at 461 ↔ 980 at both sizes, and text and image Compare at 461 ↔ 980, 18 pt.
+- **Last frame after the command, Compare at 1480 ↔ 1000.** The candidate is at 25.0–44.8 ms at p50 against the base's 44.8–73.1 ms, and at 40.3–61.7 ms at p95 against 73.3–96.8 ms. Δp50 runs from −9.7 to −41.9 ms. Seven of the eight intervals exclude zero; image 1000 → 1480 at 13 pt does not (−9.7 [−46.6, +16.8]).
+- **UI CPU per Compare step at 1480 ↔ 1000.** The candidate is at 19.2–39.4 ms at p50 against the base's 24.3–48.9 ms. Δp50 is negative in seven of eight rows, from −27.1 to −4.6 ms, and +0.2 in the eighth. Only text 1480 → 1000 at 13 pt resolves: −27.1 [−37.9, −4.7]. The other intervals are 33–60 ms wide and include zero.
+- **The first frame did not get cheaper.** Configure to first frame request moves both ways between builds, row by row: 18.7–39.7 ms at p50 in the candidate against 19.0–38.3 ms in the base. The saving is the second frame and the tick wait before it.
+- **Unchanged: History, and every step at 461 ↔ 980.** History draws 2 frames on every step in both builds, at both widths and sizes, as `3e9aa590`'s message says it still does for its table's columns. The tiled 461 ↔ 980 steps of text and image Compare at 18 pt also draw 2 frames on all 16 steps per surface in **both** builds. Their second frame is paced (a `wl_callback.done` and then a draw) in 27 of 32 candidate steps. The commit's one-frame claim therefore holds for Compare at 1480 ↔ 1000, not for the narrow tiled steps. That is not a regression: the base draws the same frames there, as `5e12885` did in the 2026-10-29 run. The cause of that second frame was not traced. History's 1000 → 1480 row at 13 pt reads +21.2 ms UI CPU and +14.3 ms to the last frame at p50. Both intervals include zero ([−18.0, +35.2], [−18.2, +40.6]), and the same row at 18 pt moves the other way (−9.1, −11.3).
+- **This record's inferred cause was wrong.** The Verdict above attributed the second frame to `fit_container`'s `cx.notify()`. `3e9aa590`'s message reports a different source, the changed-file list's viewport probe deferring a window refresh as it painted, plus a popup that asked for a frame. This run measures the result and does not trace either cause.
+
+### Verdict
+
+`aeab555` removes the extra frame from every Compare width step at 1480 ↔ 1000 and keeps every step settled. The last frame comes 10–42 ms sooner at p50, resolved in seven of eight rows, and the UI CPU per step points down without resolving outside one row. There is no regression: History, and every step at 461 ↔ 980, draw the same frames in both builds and stay settled. Step-to-step noise is large: the bootstrap intervals of the per-step deltas are 21–70 ms wide, so a change in UI CPU or last frame smaller than about 10–35 ms, depending on the row, would not be detected. Narrow tiled Compare steps still draw 2 frames in both builds, so "each Compare width step in one frame" is true here only for the 1480 ↔ 1000 steps.
+
+### Setup
+
+- **Host:** as above, the Apple M2 Pro running Asahi Linux (Omarchy), on Linux 7.1.12-2-7-ARCH, Hyprland, native Wayland. Display: eDP-1, 120 Hz, scale 2, one tick 8.33 ms.
+- **Quiet host and load:** the build hold (`.local/build-slots/quiet`) was in place from 14:42:44 to 15:21:43 UTC on 2026-10-30, 39 minutes. A workspace `clippy`/`check` that was already running finished before the first launch at 14:43:08. Every launch waited until `pgrep -x rustc` and `pgrep cargo` found nothing, and all 32 recorded `builds 0`.
+  - AT-SPI was off, `IsEnabled false`, read before every launch.
+  - Notifications were silenced with the shell's do-not-disturb (`omarchy-shell notifications setDnd on`; it was off before and was restored to off afterwards). A notification card that was already on screen stayed in the top-right corner, over part of the window's header at 1480 px, in every launch of both builds.
+  - The orphaned `fc-match` loops of the first run were gone.
+  - One-minute load average: 0.43–8.76 at launch starts (8.76 at the first launch, while the builds' load decayed; at most 3.05 from the third launch on), and 0.43–3.05 at ends.
+  - Cores 4–11 were 74–98% idle (median 95%) over the 2 s before each launch.
+  - Window-start frequency of the UI thread's CPU: 1.70 GHz at p50 in both builds, below 3.0 GHz in 139 of 160 base and 130 of 160 candidate step windows. That is lower than in the first run (2.40 GHz), so absolute times are not comparable with the tables above. Only the same-session base is.
+- **Builds:** release executables from clean trees (`--build-info`), each embedding its own full revision and not the other's (`strings <exe> | grep <sha>`: 2 matches against 0, and 1 against 0). The base was designated in writing before the first measured launch:
+  - Base `5e128852bd46e79fd0f6b7fbd91259cdca40f887`, sha256 `e581ae28a6462695c756a14b488d824bd01d6b8cb7bb9ac8aaa2959af11a1114`, the executable this record measured as its candidate.
+  - Candidate `aeab555a2805617f1d23226ac972477d0b3e442a`, `source_tree` clean, aarch64-unknown-linux-gnu, release, rustc 1.99.0 (b940084d7 2026-09-28), build_unix_seconds 1793370923, sha256 `819bf2d618fc2a418bcaf1fe2720e486539f63f7b9a06646866502d15108518b`.
+- **Fixture:** *cols* from `tools/make-fixtures.sh`, regenerated for this run with the same HEAD `27503ee` and HEAD~1 `7d2a777`, and copied fresh for each launch.
+- **Cells and launch:** the same four cells, launch settings, preferences (Midnight, 13 or 18 pt, project pane off), workspace 9 and empty absolute `XDG_*` homes per launch. The launch homes and fixture copies were deleted afterwards.
+- **Cache state:** warm. The executables and fixture had run before, and every launch is a new process with an empty preview cache.
+- **Order:** fixed in writing before the first measured launch: `tools/run-all.sh 1 4`. Four rounds of cells L13, L18, S13 and S18, both builds per cell, base first in rounds 1 and 3 and candidate first in rounds 2 and 4. That gives 4 launches per build and cell, 32 in all. No launch failed, was dropped or was repeated. One trial launch of the candidate (`trial-aeab555-L13`) timed the driver. It ran before the hold, while builds were running, and is not a result.
+
+### Method and boundaries
+
+`tools/drive.py BIN CELL LABEL steps` adds a width-steps-only mode to this record's driver. The run goes:
+
+1. Idle for 2 s, then Home (unrecorded).
+2. Four History steps.
+3. Enter twice into text Compare on `long.txt`, then four steps.
+4. Escape twice, Down, then Enter twice into image Compare on `photo.png`, then four steps.
+5. Idle for 2 s.
+
+There is no wheel, held-key, text-mode, zoom, pan or image-mode phase. The text diff therefore stays in its default Diff mode, which is also where the first run's mode choices ended. The image stays at Fit, where the first run had stepped it at 200% in Side by side. Without a wheel phase, no step began inside a scroll animation. That was the cause of the first run's 62–64-frame outliers at 461 × 490. S13 runs History only, as before. Each step and its settle check are unchanged. The step parks the pointer on the status bar, samples, sends one `hyprctl` resize, waits 1.5 s and samples. Each step got exactly one `xdg_toplevel.configure`, in all 320 step windows.
+
+The boundaries:
+
+- **Frames per step:** main-surface `wl_surface.attach`es between the driver's sample before the resize command and its sample 1.5 s later.
+- **Last frame after the command:** from the driver's sample, taken just before it runs `hyprctl`'s resize, to the last main-surface attach in the window.
+  - *What it covers:* the `hyprctl` process, the compositor's handling, configure delivery, the app's configure handling and every draw of the step, up to Mesa's attach.
+  - *What it excludes:* GPU execution, compositing and scan-out after the attach.
+  - *Tick grid:* GPUI draws a configure without waiting for a frame callback, so a one-frame step has no tick floor. A second frame follows a `wl_callback.done`, so a two-frame step cannot end sooner than the first attach plus the wait for the next tick (up to 8.33 ms) plus the second draw. The candidate's Compare saving is that term, and a two-frame build cannot reach a one-frame build's value on this metric by construction.
+- **Configure to first frame request:** from libwayland's dispatch of `xdg_toplevel.configure` to the first `wl_surface.frame` request on the main surface. It covers the configure handler and the whole first draw (request_layout, layout, prepaint with the `InFrame` builds, paint). It excludes present, the GPU and compositing. It starts from an event, not a tick, so the grid puts no floor under it. Note that the first run's table column "Configure to first frame request" is computed by `summary.py` from the driver's sample, as is this run's "Command to first frame request". The first run's column therefore spans the command to the first request, not the configure.
+- **Paced draw:** as above, from a main-surface `wl_callback.done` to the next frame request when that comes 0.5 ms to one tick later. The view "with 1–2-tick draws" adds requests one to two ticks after the `done`. Its ceiling is two ticks by construction.
+- **UI CPU per step:** the main thread's schedstat run time between the driver's two samples. It includes every draw, the configure handling and libwayland's debug formatting. The idle windows read 0.03–0.22 ms over 2 s with no frames, in every launch of both builds.
+- **Settle check:** as above. A count of 0 means the step left the final screen without further input. It does not show what each frame drew.
+
+Statistics are as above: pooled nearest-rank percentiles, n = 8 steps per build, cell, surface and direction (2 per launch), and a two-level bootstrap of candidate minus base (4,000 resamples, seed 1, 95% interval).
+
+### Width steps
+
+| Cell | Surface | Step | Build | n | Frames p50 / max | Frames (count of steps) | Final without further input | UI CPU p50 / p95 / max (ms) | Configure to first frame request p50 / p95 (ms) | Last frame after the command p50 / p95 / max (ms) | Δ UI CPU p50 (ms) | Δ last frame p50 (ms) |
+| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1480 × 980, 13 pt | History | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 32.4 / 61.3 / 61.3 | 24.3 / 52.6 | 53.9 / 80.4 / 80.4 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 28.4 / 78.9 / 78.9 | 21.5 / 69.3 | 43.5 / 97.0 / 97.0 | -4.0 [-29.8, +25.7] | -10.4 [-36.5, +24.3] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 39.8 / 64.7 / 64.7 | 29.4 / 50.1 | 70.5 / 88.6 / 88.6 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 61.0 / 64.8 / 64.8 | 47.0 / 50.7 | 84.8 / 92.2 / 92.2 | +21.2 [-18.0, +35.2] | +14.3 [-18.2, +40.6] |
+|  | Text Compare | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 46.3 / 57.7 / 57.7 | 35.0 / 45.9 | 66.9 / 82.8 / 82.8 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 19.2 / 41.2 / 41.2 | 18.7 / 40.3 | 25.0 / 45.5 / 45.5 | -27.1 [-37.9, -4.7] | -41.9 [-51.8, -16.4] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 48.9 / 58.5 / 58.5 | 38.3 / 46.5 | 68.4 / 80.8 / 80.8 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 26.9 / 47.3 / 47.3 | 26.5 / 47.5 | 32.7 / 53.2 / 53.2 | -22.0 [-29.8, +17.6] | -35.7 [-45.9, -0.1] |
+|  | Image Compare | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 47.1 / 61.8 / 61.8 | 34.6 / 45.3 | 67.7 / 88.1 / 88.1 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 33.1 / 45.3 / 45.3 | 32.0 / 45.8 | 36.1 / 51.3 / 51.3 | -14.0 [-43.9, +4.0] | -31.6 [-57.1, -12.4] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 39.2 / 72.7 / 72.7 | 25.8 / 56.8 | 54.5 / 96.8 / 96.8 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 39.4 / 55.0 / 55.0 | 39.7 / 55.4 | 44.8 / 60.4 / 60.4 | +0.2 [-29.1, +31.3] | -9.7 [-46.6, +16.8] |
+| 1480 × 980, 18 pt | History | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 39.6 / 65.0 / 65.0 | 27.7 / 58.0 | 57.3 / 88.0 / 88.0 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 43.2 / 55.3 / 55.3 | 32.9 / 47.4 | 63.5 / 74.2 / 74.2 | +3.6 [-35.1, +15.9] | +6.2 [-35.6, +23.6] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 36.3 / 59.5 / 59.5 | 27.2 / 46.9 | 61.6 / 80.5 / 80.5 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 27.2 / 60.2 / 60.2 | 22.2 / 47.9 | 50.2 / 91.1 / 91.1 | -9.1 [-34.0, +22.0] | -11.3 [-34.1, +27.8] |
+|  | Text Compare | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 41.7 / 55.1 / 55.1 | 31.4 / 43.3 | 58.2 / 73.3 / 73.3 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 34.3 / 39.1 / 39.1 | 34.4 / 38.4 | 41.4 / 44.6 / 44.6 | -7.3 [-20.7, +12.0] | -16.9 [-36.2, -3.2] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 37.5 / 57.9 / 57.9 | 29.0 / 47.1 | 58.1 / 77.9 / 77.9 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 23.1 / 44.6 / 44.6 | 22.8 / 44.7 | 29.7 / 49.9 / 49.9 | -14.4 [-33.6, +5.8] | -28.4 [-45.8, -11.9] |
+|  | Image Compare | 1480 → 1000 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 24.3 / 55.0 / 55.0 | 19.0 / 41.7 | 44.8 / 73.5 / 73.5 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 19.6 / 36.8 / 36.8 | 18.7 / 36.6 | 26.0 / 40.3 / 40.3 | -4.6 [-36.1, +11.0] | -18.8 [-48.6, -4.9] |
+|  |  | 1000 → 1480 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 48.8 / 65.8 / 65.8 | 37.4 / 53.3 | 73.1 / 88.9 / 88.9 |  |  |
+|  |  |  | `aeab555` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 31.3 / 57.7 / 57.7 | 30.2 / 55.8 | 36.9 / 61.7 / 61.7 | -17.5 [-37.9, +5.3] | -36.2 [-54.2, -9.9] |
+| 461 × 490, 13 pt | History | 461 → 980 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 38.8 / 73.5 / 73.5 | 34.0 / 60.3 | 61.4 / 93.7 / 93.7 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 35.6 / 77.7 / 77.7 | 27.6 / 61.9 | 62.4 / 98.2 / 98.2 | -3.2 [-31.5, +38.3] | +1.0 [-23.0, +36.5] |
+|  |  | 980 → 461 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 15.5 / 32.9 / 32.9 | 21.5 / 38.6 | 45.0 / 66.2 / 66.2 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 17.8 / 33.3 / 33.3 | 18.1 / 28.9 | 39.1 / 57.7 / 57.7 | +2.3 [-14.5, +18.7] | -5.9 [-22.1, +22.2] |
+| 461 × 490, 18 pt | History | 461 → 980 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 38.5 / 72.1 / 72.1 | 45.8 / 60.9 | 74.6 / 96.9 / 96.9 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 32.8 / 42.8 / 42.8 | 30.0 / 40.1 | 63.8 / 73.6 / 73.6 | -5.7 [-38.8, +10.7] | -10.8 [-28.6, +9.1] |
+|  |  | 980 → 461 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 16.4 / 30.9 / 30.9 | 18.4 / 35.7 | 41.5 / 64.9 / 64.9 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 14.9 / 22.3 / 22.3 | 14.1 / 20.1 | 40.9 / 50.7 / 50.7 | -1.5 [-15.2, +6.0] | -0.6 [-15.9, +8.7] |
+|  | Text Compare | 461 → 980 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 24.8 / 53.7 / 53.7 | 20.3 / 51.5 | 43.3 / 89.0 / 89.0 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 29.5 / 46.8 / 46.8 | 30.1 / 43.5 | 59.6 / 81.7 / 81.7 | +4.7 [-34.9, +22.6] | +16.3 [-36.0, +34.4] |
+|  |  | 980 → 461 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 15.4 / 32.2 / 32.2 | 19.3 / 35.7 | 44.8 / 67.6 / 67.6 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 14.1 / 28.1 / 28.1 | 16.1 / 30.8 | 38.8 / 62.1 / 62.1 | -1.3 [-17.4, +15.0] | -6.0 [-21.0, +10.6] |
+|  | Image Compare | 461 → 980 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 24.1 / 52.1 / 52.1 | 25.9 / 43.8 | 55.2 / 87.1 / 87.1 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 21.9 / 43.4 / 43.4 | 26.1 / 37.0 | 45.5 / 70.3 / 70.3 | -2.2 [-15.2, +10.3] | -9.7 [-23.5, +21.1] |
+|  |  | 980 → 461 | `5e12885` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 16.2 / 23.7 / 23.7 | 19.6 / 26.2 | 40.2 / 55.9 / 55.9 |  |  |
+|  |  |  | `aeab555` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 12.5 / 33.2 / 33.2 | 12.5 / 39.6 | 37.1 / 62.9 / 62.9 | -3.7 [-11.7, +18.0] | -3.1 [-21.1, +21.6] |
+
+The per-row command-to-first-request figures and the paced draws inside the step windows are in `raw/tables.md`.
+
+### Limits
+
+- The run covers one host, one display at 120 Hz, Midnight only and a warm cache. It has 4 launches per build and cell, which is 8 steps per row, and 16 Compare steps per surface at 461 × 490, 18 pt only.
+- The UI thread ran at 1.70 GHz at p50, below 3.0 GHz in about 84% of step windows. Launches were pinned to all eight performance cores (4–11).
+- The first launch started at a load of 8.76, while the builds' load decayed. Its cell (L13, base, round 1) is one of four base launches in that cell.
+- The image comparison was stepped at Fit, not at 200%, and the text diff in its default mode. The first run's mode, zoom and scroll states before the steps were not reproduced.
+- The settle check reads the screen after a step, not each frame. A notification card covered part of the window's header at 1480 px in both builds, and a difference under it would not be counted.
+- The cause of the second frame on narrow tiled Compare steps, in both builds, was not traced.
+- Product source was not changed.
+
+### Commands
+
+```sh
+tools/make-fixtures.sh                       # fixtures/pristine/cols (and many, unused)
+tools/run-all.sh 1 4                         # 32 width-step launches, base first in odd rounds
+python3 tools/analyse.py r*-*                # raw/windows.csv, raw/frames.csv (then gzip)
+python3 tools/summary.py > raw/summary.txt; python3 tools/tables.py > raw/tables.md
+```
+
+As in the first run, the tools ran from a working directory outside the repository (`.local/bench-columns-rerun-2026-10-30`), with `GITTURTLE_RELEASES` and `GITTURTLE_QA_TOOLS` set to the release and native-QA tool directories. The versioned copies are byte-identical to what ran.
