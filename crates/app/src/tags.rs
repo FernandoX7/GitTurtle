@@ -164,6 +164,12 @@ impl ScrollCue {
             // track fades in the frame that shrinks it.
             .child(edge_fades(self.rows.clone(), self.reveal.clone()));
         if scrollbar {
+            // The kit's scrollbar lays itself over the list already; this
+            // wrapper only carries its debug selector, which the kit's
+            // element takes none of. It stays: a test tells a list that
+            // draws no scrollbar from one that leaves a bar behind painting
+            // nothing, which a pointer would still meet, only by it, where a
+            // painted thumb shows only what is painted.
             cue.child(
                 div()
                     .debug_selector(move || id.into())
