@@ -649,15 +649,17 @@ pub(crate) struct Template {
     pub revision: String,
     pub body: String,
 }
+/// The PR templates at `revision` in the local repository, read until
+/// `cancellation` stops them.
 pub(crate) fn local_templates(
     repo: &gitturtle_core::GitRepository,
     revision: &str,
+    cancellation: &gitturtle_core::HistoryCancellation,
 ) -> Result<Vec<Template>> {
-    let cancellation = gitturtle_core::HistoryCancellation::default();
     let listing = repo.search_tracked_paths(
         &gitturtle_core::PathScope::Revision(revision.into()),
         "pull_request_template",
-        &cancellation,
+        cancellation,
     )?;
     let revision = match listing.scope {
         gitturtle_core::PathScope::Revision(oid) => oid,
@@ -689,6 +691,10 @@ pub(crate) fn local_templates(
         if !applicable || !matches!(entry.mode.as_str(), "100644" | "100755") {
             continue;
         }
+        ensure!(
+            !cancellation.is_cancelled(),
+            "Reading the PR templates was cancelled"
+        );
         ensure!(
             templates.len() < 32,
             "More than 32 PR templates are present; choose a narrower supported template set"
@@ -1021,7 +1027,12 @@ mod tests {
         )
         .unwrap();
         let repo = gitturtle_core::GitRepository::open(temp.path()).unwrap();
-        let templates = local_templates(&repo, "main").unwrap();
+        let templates = local_templates(
+            &repo,
+            "main",
+            &gitturtle_core::HistoryCancellation::default(),
+        )
+        .unwrap();
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].body, "Captured template\n");
         assert_eq!(templates[0].revision.len(), 40);

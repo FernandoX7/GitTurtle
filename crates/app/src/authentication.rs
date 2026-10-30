@@ -20,10 +20,13 @@ const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
 /// Cancel changing its label moves nothing.
 pub(crate) const CANCEL_LABELS: [&str; 2] = ["Cancel operation", "Cancelling…"];
 
-/// Cancel's accessible name in either form, labelled or its icon.
+/// Cancel's accessible name in either form, labelled or its icon, while a
+/// Git operation runs; a request of the GitHub panel names itself
+/// (`github_view::RequestKind::cancel`).
 pub(crate) const CANCEL_NAME: &str = "Cancel the running Git operation";
 
-const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
+/// What Cancel's tooltip says it stops while a Git operation runs.
+pub(crate) const CANCEL_TOOLTIP: &str = "Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.";
 
 /// One string supplies the prompt's visible guidance and the static text it
 /// is read as.
@@ -174,19 +177,40 @@ impl GitTurtle {
             .map_or_else(|| div().into_any_element(), IntoElement::into_any_element)
     }
 
+    /// What Cancel cancels while the busy spell runs: its accessible name
+    /// and its tooltip's account of what stops, the running GitHub panel
+    /// request's own (`github_view::RequestKind::cancel`) or else the Git
+    /// operation's ([`CANCEL_NAME`], [`CANCEL_TOOLTIP`]). While the panel
+    /// connected an account, Cancel was named "Cancel the running Git
+    /// operation" and said it stopped Git and its child processes.
+    fn cancel_wording(&self) -> (&'static str, &'static str) {
+        self.operation_busy
+            .and_then(crate::github_view::running_request)
+            .map_or(
+                (CANCEL_NAME, CANCEL_TOOLTIP),
+                crate::github_view::RequestKind::cancel,
+            )
+    }
+
     /// Cancel for the running write: labelled, or where `icon` the shared
     /// 28 px control with its icon, its label leading its tooltip. Either
-    /// keeps one accessible name ([`CANCEL_NAME`]).
+    /// keeps one accessible name, which says what it cancels
+    /// ([`Self::cancel_wording`]).
     pub(super) fn operation_cancel(&self, icon: bool, cx: &mut Context<Self>) -> Option<Button> {
         let control = self.authentication.control.as_ref()?;
         let label = CANCEL_LABELS[usize::from(control.is_cancelled())];
+        let (name, stops) = self.cancel_wording();
+        let tooltip: SharedString = if icon {
+            format!("{label} · {stops}").into()
+        } else {
+            stops.into()
+        };
+        crate::views::note_control_tooltip(&"cancel-git-operation".into(), &tooltip);
         let cancel = if icon {
-            let tooltip = format!("{label} · {CANCEL_TOOLTIP}");
-            crate::views::note_control_tooltip(&"cancel-git-operation".into(), &tooltip);
             crate::views::compact_control_name(
                 crate::button("cancel-git-operation", "", "close", false),
                 "cancel-git-operation",
-                CANCEL_NAME,
+                name,
             )
             .tooltip(tooltip)
         } else {
@@ -194,8 +218,8 @@ impl GitTurtle {
                 .secondary()
                 .small()
                 .label(label)
-                .tooltip(CANCEL_TOOLTIP)
-                .accessibility_label(CANCEL_NAME)
+                .tooltip(tooltip)
+                .accessibility_label(name)
         };
         Some(
             cancel

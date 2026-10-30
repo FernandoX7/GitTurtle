@@ -356,6 +356,39 @@ impl RequestKind {
             Self::Templates => "Wait for the pull request templates to load",
         }
     }
+    /// The operation bar's Cancel while this runs as the busy spell
+    /// (`GitTurtle::operation_cancel`): its accessible name, which says what
+    /// it cancels, and its tooltip, which says what stops and what may
+    /// already have happened. It once named "the running Git operation" and
+    /// said it stopped Git and its child processes.
+    pub(crate) fn cancel(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Load => (
+                "Cancel the running GitHub request",
+                "Stop the GitHub request. It only reads, so nothing on GitHub changes.",
+            ),
+            Self::Send => (
+                "Cancel the running GitHub request",
+                "Stop the GitHub request. GitHub may already have applied it; check the destination before submitting again.",
+            ),
+            Self::Connect => (
+                "Cancel connecting your GitHub account",
+                "Stop connecting. Authorization may already be stored; Disconnect removes it.",
+            ),
+            Self::Disconnect => (
+                "Cancel disconnecting GitTurtle from GitHub",
+                "Keep GitTurtle's stored authorization, unless its removal has already begun.",
+            ),
+            Self::Compare => (
+                "Cancel the pull request comparison",
+                "Stop comparing the PR's changes locally. Nothing changes.",
+            ),
+            Self::Templates => (
+                "Cancel reading the pull request templates",
+                "Stop reading the PR templates locally. Nothing changes.",
+            ),
+        }
+    }
     /// Whether it sends an outbound action, whose outcome may be uncertain
     /// once cancelled: the panel stays open while it runs.
     fn writing(self) -> bool {
@@ -1159,7 +1192,18 @@ impl Panel {
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         let revision = self.base.read(cx).value().to_string();
-        self.run(RequestKind::Templates,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        let cancellation = HistoryCancellation::default();
+        self.local_control = Some(cancellation.clone());
+        let stop = cancellation.clone();
+        let sent = self.run(RequestKind::Templates,move|_|github::local_templates(&repo,&revision,&cancellation),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        // The read goes through its own cancellation, as a PR's Changes
+        // does, which the panel's Cancel and the operation bar's stop; it
+        // once read on to the end and showed the templates after Cancel.
+        if sent {
+            let _ = self
+                .owner
+                .update(cx, |owner, _| owner.cancel_with_operation(stop));
+        }
     }
     fn review_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -2461,6 +2505,121 @@ mod tests {
                 assert!(panel.error.is_some(), "{button}: the panel says why");
             });
         }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// While a request of the panel runs, the operation bar's Cancel, labelled
+    /// or as its icon, is named after what it cancels and its tooltip says
+    /// what stops, from the request's kind (`RequestKind::cancel`): it was
+    /// named "Cancel the running Git operation" and said it stopped "Git and
+    /// its child processes" while the panel connected an account. A Git
+    /// write's Cancel still names the Git operation. A new PR's templates,
+    /// read in the local repository, stop at the bar's Cancel, as its name
+    /// says: the read once ran to its end and showed them.
+    #[gpui::test]
+    async fn the_operation_bars_cancel_names_what_it_cancels(cx: &mut TestAppContext) {
+        use crate::authentication::{CANCEL_LABELS, CANCEL_NAME, CANCEL_TOOLTIP};
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Cancel as the window would build it now, labelled or as its icon:
+        // its accessible name and its tooltip.
+        let cancel = |icon: bool, cx: &mut VisualTestContext| {
+            let owner = app.clone();
+            let node = crate::views::tests::view_node(cx, move |window, cx| {
+                use gpui::Element as _;
+                let button = owner
+                    .update(cx, |app, cx| app.operation_cancel(icon, cx))
+                    .expect("Cancel")
+                    .base(window, cx);
+                let element = RenderOnce::render(button, window, cx).into_element();
+                let mut node =
+                    gpui::accesskit::Node::new(element.a11y_role().expect("Cancel's role"));
+                element.write_a11y_info(&mut node);
+                node
+            });
+            let tooltip = crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("cancel-git-operation").cloned());
+            (node.label().map(str::to_owned), tooltip)
+        };
+        let says = |name: &str, stops: &str, icon: bool| {
+            let tooltip = if icon {
+                format!("{} · {stops}", CANCEL_LABELS[0])
+            } else {
+                stops.to_owned()
+            };
+            (Some(name.to_owned()), Some(tooltip))
+        };
+        for kind in RequestKind::ALL {
+            // The request held as a slow network holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let sent = cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.run(
+                        kind,
+                        |_| Ok(()),
+                        |_: anyhow::Result<()>, _, _, _| {},
+                        window,
+                        cx,
+                    )
+                })
+            });
+            assert!(sent, "{kind:?} is sent");
+            let (name, stops) = kind.cancel();
+            for icon in [false, true] {
+                assert_eq!(
+                    cancel(icon, cx),
+                    says(name, stops, icon),
+                    "{kind:?}: Cancel{} names what it cancels",
+                    if icon { " as its icon" } else { "" }
+                );
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+        }
+        // A Git write's Cancel names the Git operation.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        for icon in [false, true] {
+            assert_eq!(
+                cancel(icon, cx),
+                says(CANCEL_NAME, CANCEL_TOOLTIP, icon),
+                "a Git write"
+            );
+        }
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+
+        // The templates read, held, then the bar's Cancel.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.load_templates(window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(RequestKind::Templates.label()),
+            "the templates read runs as the busy spell"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.cancel_operation(window, cx)));
+        assert!(
+            panel.read_with(cx, |panel, _| panel
+                .local_control
+                .as_ref()
+                .is_some_and(HistoryCancellation::is_cancelled)),
+            "the bar's Cancel stops the templates read"
+        );
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }
