@@ -694,11 +694,10 @@ impl GitTurtle {
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         let opened = browser.clone();
         self.recovery.browser = Some(browser.downgrade());
+        // The dialog holds the browser's only handle, so however it closes,
+        // the browser's release stops a Review restore… nobody is waiting
+        // for (`StashBrowser::new`).
         window.open_alert_dialog(cx, move |dialog, window, _| {
-            // Closed by Escape, Close or its backdrop, Stashes stops
-            // preparing a Review restore… nobody is waiting for; closed any
-            // other way, its release does (`StashBrowser::new`).
-            let closing = browser.downgrade();
             dialog
                 .title(native_accessibility::dialog_title(
                     "stashes-title",
@@ -707,9 +706,6 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .button_props(DialogButtonProps::default().ok_text("Close"))
-                .on_close(move |_, _, cx| {
-                    let _ = closing.update(cx, |browser, cx| browser.cancel_restore(cx));
-                })
                 // In the dialog's content rather than its scrolling body,
                 // whose scroller lays the browser out at the height it asks
                 // for and cut its lines mid-line where the cap left less:
@@ -1458,8 +1454,11 @@ impl StashBrowser {
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
             restore_at: Default::default(),
         };
-        // Released however its dialog closed, Stashes stops preparing a
-        // Review restore… nobody is waiting for.
+        // Released however its dialog closes, Stashes stops preparing a
+        // Review restore… nobody is waiting for. A close callback of the
+        // dialog's would never run: the alert dialog drops an `on_close`
+        // given to it as it builds its surface (as `authentication.rs`
+        // notes), so one cancelled nothing even while the browser was kept.
         cx.on_release(|this, cx| this.cancel_restore(cx)).detach();
         this.load_page(0, window, cx);
         this
