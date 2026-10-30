@@ -923,12 +923,18 @@ mod tests {
                     .details
                     .contains(&format!("{} captured bytes", bytes.len()))
             );
-            // The triangle count, agreeing with its noun ("1 triangle").
+            // The triangle count, agreeing with its noun: the binary STL's
+            // one facet reads "1 triangle", where it read "1 triangles".
+            let counted = if name == "binary.STL" {
+                "1 triangle ·"
+            } else {
+                " triangles ·"
+            };
             assert!(
                 side.metadata
                     .details
                     .iter()
-                    .any(|detail| detail.contains(" triangle")),
+                    .any(|detail| detail.contains(counted)),
                 "{name}: {:?}",
                 side.metadata.details
             );

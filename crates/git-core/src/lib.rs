@@ -723,7 +723,9 @@ impl GitRepository {
                 old_bytes,
                 new_bytes,
             } => format!(
-                "Text preview is limited to 2 MiB and 100,000 lines per side.\nBefore: {old_bytes} bytes\nAfter: {new_bytes} bytes\n"
+                "Text preview is limited to 2 MiB and 100,000 lines per side.\nBefore: {}\nAfter: {}\n",
+                counted(old_bytes, "byte", "bytes"),
+                counted(new_bytes, "byte", "bytes")
             ),
             TextPreview::Submodule { old_oid, new_oid } => format!(
                 "Submodule commit\n- {}\n+ {}\n",
@@ -1163,6 +1165,16 @@ fn validate_oid(oid: &str) -> Result<()> {
 
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// `count` with the noun that agrees with it ("1 byte", "2 bytes"), as the
+/// app's `counted` builds every count it shows; this crate cannot reach the
+/// app's, so every count core words is built here.
+pub(crate) fn counted<T>(count: T, one: &str, many: &str) -> String
+where
+    T: std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", if count == T::from(1) { one } else { many })
 }
 
 // Remove exactly Git's line terminator, never whitespace in a directory name.

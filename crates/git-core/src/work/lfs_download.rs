@@ -220,11 +220,7 @@ impl GitRepository {
             "Git LFS finished without making the selected object available. Check the configured source and server object; no working files were changed."
         );
         Ok(WriteOutcome {
-            message: format!(
-                "Downloaded and verified LFS preview for {} · {} bytes. Working files and the index are preserved.",
-                plan.target.path.display(),
-                plan.size
-            ),
+            message: downloaded(&plan.target.path, plan.size),
             commit_oid: None,
             up_to_date: false,
         })
@@ -361,9 +357,28 @@ impl Drop for LfsTemporary {
     }
 }
 
+/// What a verified download of `path`'s object, `size` bytes, says it did,
+/// its size agreeing with its noun: a one-byte object read "1 bytes".
+fn downloaded(path: &Path, size: u64) -> String {
+    format!(
+        "Downloaded and verified LFS preview for {} · {}. Working files and the index are preserved.",
+        path.display(),
+        crate::counted(size, "byte", "bytes")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::require_patched_lfs;
+
+    #[test]
+    fn a_download_counts_its_bytes_with_their_noun() {
+        assert_eq!(
+            super::downloaded(std::path::Path::new("tiny.bin"), 1),
+            "Downloaded and verified LFS preview for tiny.bin · 1 byte. Working files and the index are preserved."
+        );
+        assert!(super::downloaded(std::path::Path::new("image.png"), 2).contains(" · 2 bytes."));
+    }
 
     #[test]
     fn lfs_downloads_require_a_release_with_the_configuration_command_fixes() {

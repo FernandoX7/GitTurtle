@@ -94,6 +94,16 @@ impl State {
     }
 }
 
+/// A thread's line counting the comments it shows of all it has, the
+/// total agreeing with its noun ("1 of 1 comment", where it read "1 of 1
+/// comments").
+fn comments_shown(shown: usize, total: u32) -> String {
+    format!(
+        "{shown} of {}",
+        crate::counted(total, "comment", "comments")
+    )
+}
+
 fn reply_matches(thread: &Thread, target: &CapturedThread, account: Option<&str>) -> bool {
     thread.target == *target && account == Some(target.account.as_str()) && thread.reply_available()
 }
@@ -657,7 +667,7 @@ impl Panel {
                             .child(button(("github-thread-resolution",index),if resolved{"Reopen"}else{"Resolve"},"",false).disabled(self.pending||!can_resolve).on_click(cx.listener(move|this,_,window,cx|this.review_resolution(resolve.clone(),!resolved,window,cx))))
                             .child(button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
-                            .child(label(("github-thread-count",index),format!("{} of {} comments",thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
+                            .child(label(("github-thread-count",index),comments_shown(thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
                         .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
                 })))))
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
@@ -674,6 +684,12 @@ mod tests {
     use core::prelude::v1::test;
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn a_thread_counts_its_comments_with_their_noun() {
+        assert_eq!(comments_shown(1, 1), "1 of 1 comment");
+        assert_eq!(comments_shown(2, 5), "2 of 5 comments");
+    }
 
     #[test]
     fn conversation_paging_keeps_forward_navigation_and_reports_real_bounds() {

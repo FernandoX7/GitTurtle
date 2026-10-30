@@ -229,7 +229,7 @@ impl IgnoreForm {
                         Ok(plan) => {
                             window.close_dialog(cx);
                             let scope = match plan.destination { IgnoreDestination::Shared => "Shared .gitignore: this rule can be committed and shared with collaborators. The file is not staged automatically.", IgnoreDestination::Local => "Repository-local excludes: this rule remains in Git metadata and is not committed. Linked worktrees share this excludes file." };
-                            let explanation = format!("{}\n\nDestination:\n{}\n\nExact rule{}:\n{}\n\n{}{}\n\nExisting content and line endings are preserved. No files are untracked, deleted, or staged. If the destination changes, this action requires a fresh preview.", scope, plan.destination_path.display(), if plan.rule_is_utf8() { "" } else { " (non-UTF-8 bytes shown as \\xHH)" }, plan.rule_display(), if plan.directory { "This directory rule applies to its untracked descendants. " } else { "This rule names only this repository-relative path. " }, if plan.tracked_paths > 0 { format!("{} tracked, and changes to them still appear.", crate::counted(plan.tracked_paths, "tracked path remains", "tracked paths remain")) } else { "Tracked files remain tracked even when an ignore rule matches them.".into() });
+                            let explanation = format!("{}\n\nDestination:\n{}\n\nExact rule{}:\n{}\n\n{}{}\n\nExisting content and line endings are preserved. No files are untracked, deleted, or staged. If the destination changes, this action requires a fresh preview.", scope, plan.destination_path.display(), if plan.rule_is_utf8() { "" } else { " (non-UTF-8 bytes shown as \\xHH)" }, plan.rule_display(), if plan.directory { "This directory rule applies to its untracked descendants. " } else { "This rule names only this repository-relative path. " }, if plan.tracked_paths > 0 { tracked_note(plan.tracked_paths) } else { "Tracked files remain tracked even when an ignore rule matches them.".into() });
                             this.confirm_git_write("Apply ignore rule".into(), explanation, "Add ignore rule", WriteCommand::Ignore(Arc::new(plan)), window, cx);
                         }
                         Err(error) => { let _ = form.update(cx, |form, cx| { crate::tags::set_error_line(&mut form.error, format!("{error:#}"), window, cx); cx.notify(); }); }
@@ -270,11 +270,40 @@ impl Render for IgnoreForm {
     }
 }
 
+/// What the ignore review says of the `tracked` paths a rule matches, which
+/// stay tracked: counted, its verb and pronoun agreeing ("1 tracked path
+/// remains tracked, and changes to it still appear.").
+fn tracked_note(tracked: usize) -> String {
+    format!(
+        "{}.",
+        crate::counted(
+            tracked,
+            "tracked path remains tracked, and changes to it still appear",
+            "tracked paths remain tracked, and changes to them still appear"
+        )
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
+
+    /// The tracked paths a rule matches are counted with their verb and
+    /// pronoun: one read "1 tracked path remains tracked, and changes to
+    /// them still appear.".
+    #[test]
+    fn the_tracked_note_agrees_with_its_count() {
+        assert_eq!(
+            tracked_note(1),
+            "1 tracked path remains tracked, and changes to it still appear."
+        );
+        assert_eq!(
+            tracked_note(3),
+            "3 tracked paths remain tracked, and changes to them still appear."
+        );
+    }
 
     /// The ignore form between two tab stops the probe owns.
     struct Probe {

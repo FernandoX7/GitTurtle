@@ -1067,12 +1067,7 @@ impl GitTurtle {
                         .border_color(rgb(colors.accent))
                 })
                 .aria_expanded(*expanded)
-                .aria_label(format!(
-                    "{} {} · {} branches",
-                    if *expanded { "Collapse" } else { "Expand" },
-                    label,
-                    count
-                ))
+                .aria_label(folder_name(*expanded, label, *count))
                 .w_full()
                 .h(crate::appearance::ui_size(30.))
                 .pl(nav_row_inset(*depth, self.nav_cursor == Some(index)))
@@ -5947,6 +5942,17 @@ fn scope_count_width(count: &str, window: &Window) -> Pixels {
     cached_text_width(&SCOPE_COUNT, count, window, || {
         line_widths(&[(count, appearance::ui_text(10.))], window)
     })
+}
+
+/// A navigator folder's accessible name: what activating it does, its
+/// name, and its branches counted with their noun ("Expand feature · 1
+/// branch", where it read "1 branches").
+fn folder_name(expanded: bool, label: &str, count: usize) -> String {
+    format!(
+        "{} {label} · {}",
+        if expanded { "Collapse" } else { "Expand" },
+        crate::counted(count, "branch", "branches")
+    )
 }
 
 /// What the compact scope toolbar leaves its scope name and count in a
@@ -25472,6 +25478,37 @@ pub(crate) mod tests {
             report.starts_with(kept),
             "the report's start, cut between characters"
         );
+    }
+
+    /// A navigator folder's name counts its branches with their noun: a
+    /// folder holding one branch reads "Expand feature · 1 branch", where it
+    /// read "1 branches".
+    #[gpui::test]
+    async fn a_folder_counts_one_branch_as_one(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(2, 1)).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&repository, &["branch", "feature/one"]);
+        press_refresh(&app, cx).await;
+        draw(cx);
+        let said = app
+            .read_with(cx, |app, _| {
+                app.nav_rows.iter().find_map(|row| match row {
+                    NavRow::Folder {
+                        label,
+                        count,
+                        expanded,
+                        ..
+                    } if label == "feature" => Some(folder_name(*expanded, label, *count)),
+                    _ => None,
+                })
+            })
+            .expect("the feature folder");
+        assert_eq!(said, "Expand feature · 1 branch");
+        assert_eq!(
+            folder_name(true, "origin", 2),
+            "Collapse origin · 2 branches"
+        );
+        drop(fixture);
     }
 
     /// A History search's count agrees with its noun: one matching commit

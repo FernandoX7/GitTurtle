@@ -277,7 +277,7 @@ impl Response {
                 let wait = self
                     .headers
                     .get("retry-after")
-                    .map(|v| format!(" Retry after {v} seconds."))
+                    .map(|v| retry_after(v))
                     .or_else(|| {
                         self.headers
                             .get("x-ratelimit-reset")
@@ -754,10 +754,34 @@ pub(crate) fn validate_text(value: &str, required: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a `retry-after` header says to wait, as a sentence after the
+/// refusal: its seconds agreeing with their noun ("Retry after 1 second.",
+/// where it read "1 seconds"), or the date the header can give instead.
+pub(crate) fn retry_after(value: &str) -> String {
+    match value.trim().parse::<u64>() {
+        Ok(seconds) => format!(
+            " Retry after {}.",
+            crate::counted(seconds, "second", "seconds")
+        ),
+        Err(_) => format!(" Retry after {}.", value.trim()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    /// The wait a refusal names agrees with its noun, and a date stays a
+    /// date.
+    #[test]
+    fn retry_after_counts_its_seconds() {
+        assert_eq!(retry_after("1"), " Retry after 1 second.");
+        assert_eq!(retry_after("30"), " Retry after 30 seconds.");
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2026 07:28:00 GMT"),
+            " Retry after Wed, 21 Oct 2026 07:28:00 GMT."
+        );
+    }
     #[derive(Default)]
     struct Mock {
         requests: Vec<Request>,

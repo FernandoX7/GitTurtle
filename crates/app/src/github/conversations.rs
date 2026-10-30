@@ -494,7 +494,7 @@ impl<T: Transport> Client<T> {
                 let wait = response
                     .headers
                     .get("retry-after")
-                    .map(|value| format!(" Retry after {value} seconds."))
+                    .map(|value| super::retry_after(value))
                     .or_else(|| {
                         response
                             .headers
