@@ -1035,8 +1035,9 @@ struct ShortcutHelpView {
     /// toolkit's virtual list, which takes each row's height, rather than a
     /// `uniform_list`, which gives every row the first one's.
     scroll: gpui_kit::base::VirtualListScrollHandle,
-    /// The list's height as last laid out: when the dialog's height cap
-    /// changes it, the list keeps the selected entry in view.
+    /// The list's height inside its border as last laid out: when the
+    /// dialog's height cap changes it, the list keeps the selected entry in
+    /// view.
     list_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
@@ -1291,8 +1292,13 @@ impl Render for ShortcutHelpView {
                     let (span, content) = (self.layout.span(&self.rows, self.selected), self.layout.content());
                     move |bounds, _, _| {
                         if seen.replace(bounds.size.height) != bounds.size.height && let Some(span) = span {
-                            // Inside the list's 1 px border.
-                            let (offset, view) = (scroll.offset(), bounds.size.height - px(2.));
+                            // The canvas fills the list inside its 1 px
+                            // border, as the rows' list does, so its height
+                            // is the list's view. Taken 2 px shorter, it
+                            // ended an entry it revealed from below 2 px
+                            // above the list's foot and, at the floor, cut
+                            // the entry's top.
+                            let (offset, view) = (scroll.offset(), bounds.size.height);
                             if let Some(to) = span.reveal(-offset.y, view, content, Reveal::Nearest) {
                                 scroll.set_offset(point(offset.x, -to));
                             }
@@ -1997,6 +2003,82 @@ mod list_tests {
                     );
                 }
             }
+            close(cx);
+        }
+    }
+
+    /// A shorter list brings the selected entry its foot cuts back from
+    /// below, scrolled the least that shows it whole, its foot on the
+    /// list's: at 13 and 18 pt, with the last entry a 1200 × 800 window's
+    /// list holds whole at its top selected, a 700 px tall window ends the
+    /// entry at the shorter list's foot, and a 300 px one, whose list is at
+    /// its floor and holds the entry but not its heading too, shows it whole
+    /// there; opened at its floor, the list shows its first entry so. Read
+    /// 2 px shorter than it is drawn, the list ended the entry 2 px above its
+    /// foot and, at the floor, cut its top: 2 px at 13 pt, 1 px at 18 pt.
+    #[gpui::test]
+    async fn a_shorter_list_brings_an_entry_its_foot_cuts_back_to_its_foot(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let last = entries
+                .iter()
+                .rposition(|&entry| shown.whole(cx, entry))
+                .unwrap();
+            for _ in 0..last {
+                press(cx, "down");
+            }
+            let selected = entries[last];
+            // How far below the list's top the entry ends.
+            let mut ends = shown.at(cx, selected).bottom() - shown.top;
+            for height in [700., 300.] {
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                shown.relist(cx);
+                assert!(
+                    ends > shown.view(),
+                    "{text} pt: a {height} px tall window's list, {:?} inside its border, \
+                     cuts entry {selected}, which ended {ends:?} below its top",
+                    shown.view()
+                );
+                let drawn = shown.at(cx, selected);
+                assert!(
+                    (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, selected),
+                    "{text} pt: a {height} px tall window brings entry {selected} whole to \
+                     its list's foot, {:?}: {drawn:?}",
+                    shown.foot
+                );
+                ends = drawn.bottom() - shown.top;
+            }
+            // The list is at its floor, which holds an entry but not a
+            // heading with it.
+            let floor = appearance::ui_size(SHORTCUT_LIST_FLOOR) - px(2.);
+            assert!(
+                (shown.view() - floor).abs() <= EDGE
+                    && shown.entry <= shown.view()
+                    && shown.view() < shown.heading + shown.entry,
+                "{text} pt: a 300 px tall window gives the list its floor, {floor:?}, \
+                 an entry {:?} tall but not a heading too: {:?}",
+                shown.entry,
+                shown.view()
+            );
+            close(cx);
+            open(&app, cx, text, (1200., 300.));
+            shown.relist(cx);
+            let first = entries[0];
+            let drawn = shown.at(cx, first);
+            assert!(
+                (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, first),
+                "{text} pt: the list opened at its floor shows entry {first} whole at its \
+                 foot, {:?}: {drawn:?}",
+                shown.foot
+            );
             close(cx);
         }
     }
