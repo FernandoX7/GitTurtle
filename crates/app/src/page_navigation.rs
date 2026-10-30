@@ -58,9 +58,9 @@ impl GitTurtle {
     /// | Tags, a tag's details, Create tag's review | cancelled | dropped | dropped | dropped |
     /// | Ignore…'s review, Preview rule | cancelled | dropped | dropped | dropped |
     /// | Discard…, Delete untracked file…'s review | cancelled | dropped | dropped | dropped |
-    /// | Recovery plans: Amend…, Revert…, Review restore… | cancelled | dismissed | wanted again | dropped |
-    /// | Edit local commits, a paused rebase's Continue | cancelled | dismissed | wanted again | dropped |
-    /// | Branch actions | cancelled | dismissed | wanted again | dropped |
+    /// | Recovery plans: Amend…, Revert…, Review restore… | cancelled | dismissed | History's wanted again, Changes' dropped | dropped |
+    /// | Edit local commits, a paused rebase's Continue | cancelled | dismissed | History's wanted again, Changes' dropped | dropped |
+    /// | Branch actions | cancelled | dismissed | History's wanted again, Changes' dropped | dropped |
     ///
     /// A cancel drops the preparation and ends its busy state at once. Its
     /// end, which reads the working state asked for meanwhile, never runs,
@@ -71,7 +71,12 @@ impl GitTurtle {
     /// stop, ends as it would, keeping the busy state until then, and its
     /// end reads; History shown again wants a plan it asked for back, which
     /// then opens there ([`Self::dismiss_history_plans`]). Only those three
-    /// carry a dismissal of their own. The rest are dropped: cancelled, so
+    /// carry a dismissal of their own, and each records whether Changes
+    /// asked for it as it starts (`recovery_asked_in_changes`): History
+    /// shown again drops one Changes asked for, as it drops Changes'
+    /// Discard…, rather than want it, which once opened Amend last commit's
+    /// form, a branch picker action's or Continue's over History. The rest
+    /// are dropped: cancelled, so
     /// nothing they bring opens, while the window keeps their busy state
     /// until the executor reaches a marker queued behind their read, whose
     /// end reads ([`Self::wait_for_dropped_preparation`]). Cancelled
@@ -117,8 +122,20 @@ impl GitTurtle {
                 self.read_noted_working(window, cx);
                 return;
             }
-            PageSwitch::ToChanges | PageSwitch::ToHistory => {
-                self.dismiss_history_plans(switch == PageSwitch::ToChanges);
+            PageSwitch::ToChanges => self.dismiss_history_plans(true),
+            PageSwitch::ToHistory => {
+                // A plan Changes asked for is dropped, as its Discard…'s
+                // review is; one History asked for is wanted again.
+                if self.recovery_asked_in_changes() {
+                    self.cancel_recovery_read();
+                }
+                if self.interactive_rebase_asked_in_changes() {
+                    self.cancel_interactive_rebase_action();
+                }
+                if self.branch_action_asked_in_changes() {
+                    self.cancel_branch_action();
+                }
+                self.dismiss_history_plans(false);
             }
             PageSwitch::Tab => {
                 self.cancel_recovery_read();
@@ -1311,6 +1328,68 @@ mod tests {
             assert!(
                 dialog_open(cx),
                 "{plan}: back in History, its plan opens there"
+            );
+            close_dialogs(cx);
+        }
+    }
+
+    /// A plan Changes asks for opens over Changes only: Amend last
+    /// commit…, main's branch actions or a paused rebase's Continue asked
+    /// for there, then Primary + 1, and History drops it, as it drops
+    /// Changes' Discard…, keeping the busy state until its read ends, whose
+    /// end reads the working state Refresh asked for meanwhile. The plan
+    /// recorded no view that asked for it, so History shown again wanted it
+    /// as one of its own, and its form opened over History.
+    #[gpui::test]
+    async fn a_plan_changes_asked_for_opens_nothing_over_history(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        for (index, (plan, prepare)) in plans().into_iter().enumerate() {
+            if plan == "Continue rebase" {
+                pause_a_reword(&app, &root, cx).await;
+            }
+            cx.simulate_keystrokes(&primary("2"));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            // Asked for in Changes, held as a slow disk holds it, and
+            // Refresh asked for meanwhile.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, commit, window, cx)));
+            let label = app.read_with(cx, |app, _| app.operation_busy);
+            assert!(label.is_some(), "{plan} is prepared");
+            let later = format!("later-{index}.txt");
+            std::fs::write(root.join(&later), "later\n").unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.mode == WorkspaceMode::History, "{plan}: History shows");
+                assert_eq!(
+                    app.operation_busy, label,
+                    "{plan}: busy until its read ends"
+                );
+                assert!(
+                    app.status_task.is_none(),
+                    "{plan}: no read queues behind it"
+                );
+            });
+            drop(held);
+            preparation_ends(&app, cx).await;
+            assert!(!dialog_open(cx), "{plan}: nothing opens over History");
+            assert!(
+                app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+                "{plan}: History stays"
+            );
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.operation_busy, None, "{plan}: the busy state ends");
+                assert!(!status_read_pending(app), "{plan}: no read stays noted");
+            });
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{plan}: the read Refresh asked for runs"
             );
             close_dialogs(cx);
         }

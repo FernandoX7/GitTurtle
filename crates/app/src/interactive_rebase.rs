@@ -25,6 +25,10 @@ pub(super) struct State {
     /// Whether the running preparation's outcome is no longer wanted
     /// ([`GitTurtle::dismiss_interactive_rebase_action`]).
     dismissed: bool,
+    /// Whether Changes asked for the running preparation, which History
+    /// shown again drops rather than wants again
+    /// ([`GitTurtle::interactive_rebase_asked_in_changes`]).
+    asked_in_changes: bool,
     draft: Option<Entity<RebaseForm>>,
     message: Option<Entity<MessageForm>>,
 }
@@ -90,6 +94,14 @@ impl GitTurtle {
     /// ([`Self::dismiss_recovery_read`]).
     pub(super) fn dismiss_interactive_rebase_action(&mut self, dismissed: bool) {
         self.interactive_rebase.dismissed = dismissed && self.interactive_rebase.task.is_some();
+    }
+
+    /// Whether the running preparation is one Changes asked for, as a
+    /// paused rebase's Continue there asks: History shown again drops it
+    /// rather than want what it brings, which would open over History
+    /// ([`Self::recovery_asked_in_changes`]).
+    pub(super) fn interactive_rebase_asked_in_changes(&self) -> bool {
+        self.interactive_rebase.task.is_some() && self.interactive_rebase.asked_in_changes
     }
 
     /// A selected commit may be supplied as the exclusive base; otherwise the
@@ -240,6 +252,7 @@ impl GitTurtle {
         let path = repo.path().to_owned();
         self.cancel_interactive_rebase_action();
         let generation = self.interactive_rebase.generation;
+        self.interactive_rebase.asked_in_changes = self.mode == WorkspaceMode::Working;
         self.operation_busy = Some(PREPARING);
         let response = self.operations.submit_read(move || prepare(repo));
         self.interactive_rebase.task = Some(cx.spawn_in(window, async move |this, cx| {

@@ -70,6 +70,10 @@ pub(super) struct State {
     /// Whether the running preparation's plan is no longer wanted
     /// ([`GitTurtle::dismiss_recovery_read`]).
     dismissed: bool,
+    /// Whether Changes asked for the running preparation, which History
+    /// shown again drops rather than wants again
+    /// ([`GitTurtle::recovery_asked_in_changes`]).
+    asked_in_changes: bool,
     amend: Option<Entity<AmendForm>>,
     stash: Option<Entity<StashForm>>,
     /// The Stashes dialog opened last, which keeps its own Review restore…
@@ -158,6 +162,14 @@ impl GitTurtle {
     /// again ([`Self::dismiss_history_plans`]).
     pub(super) fn dismiss_recovery_read(&mut self, dismissed: bool) {
         self.recovery.dismissed = dismissed && self.recovery.task.is_some();
+    }
+
+    /// Whether the running preparation is one Changes asked for, as its
+    /// Amend last commit… asks: History shown again drops it rather than
+    /// want its plan, which would open over History
+    /// (`GitTurtle::end_preparations`).
+    pub(super) fn recovery_asked_in_changes(&self) -> bool {
+        self.recovery.task.is_some() && self.recovery.asked_in_changes
     }
 
     /// Reports that a recovery action refuses while an integration is
@@ -308,6 +320,7 @@ impl GitTurtle {
         let path = repo.path().to_owned();
         self.cancel_recovery_read();
         let generation = self.recovery.generation;
+        self.recovery.asked_in_changes = self.mode == WorkspaceMode::Working;
         self.operation_busy = Some(PREPARING);
         self.operation_error = None;
         let response = self.operations.submit_read(move || prepare(repo));

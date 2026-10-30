@@ -22,6 +22,10 @@ pub(super) struct State {
     /// Whether the running preparation's outcome is no longer wanted
     /// ([`GitTurtle::dismiss_branch_action`]).
     dismissed: bool,
+    /// Whether Changes asked for the running preparation, which History
+    /// shown again drops rather than wants again
+    /// ([`GitTurtle::branch_action_asked_in_changes`]).
+    asked_in_changes: bool,
     /// The list of the chooser or remote manager opened last, for tests.
     #[cfg(test)]
     list: Option<FocusReveal>,
@@ -112,6 +116,14 @@ impl GitTurtle {
     /// ([`Self::dismiss_recovery_read`]).
     pub(super) fn dismiss_branch_action(&mut self, dismissed: bool) {
         self.branch_actions.dismissed = dismissed && self.branch_actions.task.is_some();
+    }
+
+    /// Whether the running preparation is one Changes asked for, as its
+    /// branch picker's actions ask: History shown again drops it rather
+    /// than want what it brings, which would open over History
+    /// ([`Self::recovery_asked_in_changes`]).
+    pub(super) fn branch_action_asked_in_changes(&self) -> bool {
+        self.branch_actions.task.is_some() && self.branch_actions.asked_in_changes
     }
 
     /// Replaces the existing picker; its frequent switch actions remain first.
@@ -577,6 +589,7 @@ impl GitTurtle {
         let path = repo.path().to_owned();
         self.cancel_branch_action();
         let generation = self.branch_actions.generation;
+        self.branch_actions.asked_in_changes = self.mode == WorkspaceMode::Working;
         self.operation_busy = Some(PREPARING);
         self.operation_error = None;
         let response = self.operations.submit_read(move || prepare(repo));
