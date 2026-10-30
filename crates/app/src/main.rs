@@ -2107,9 +2107,27 @@ fn text_button_width(
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The labels [`text_button_width_now`] last laid out, for a test to
+    /// read what a width was measured from.
+    static LAID_OUT_LABELS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The labels [`text_button_width_now`] last laid out.
+#[cfg(test)]
+fn laid_out_labels() -> Vec<String> {
+    LAID_OUT_LABELS.with_borrow(Clone::clone)
+}
+
 /// [`text_button_width`] laid out now, for a caller that keeps the width
 /// itself, as a side header's toggle does (`system_preview::HeaderControl`).
 fn text_button_width_now(labels: &[&str], window: &Window) -> Pixels {
+    #[cfg(test)]
+    LAID_OUT_LABELS.with_borrow_mut(|laid_out| {
+        *laid_out = labels.iter().map(|label| label.to_string()).collect();
+    });
     let widest = labels
         .iter()
         .map(|label| views::line_widths(&[(label, appearance::ui_text(12.))], window))

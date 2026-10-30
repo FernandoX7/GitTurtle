@@ -895,15 +895,24 @@ pub(crate) struct HeaderControl {
     menu: Option<SharedString>,
     /// A toggle's state ([`HeaderControl::toggle`]).
     on: Option<bool>,
-    /// The readings a toggle's form was measured at, for a test.
+    /// The labels a toggle's form was measured at, for a test.
     #[cfg(test)]
-    measured: Vec<&'static str>,
+    measured: Vec<String>,
 }
 
 thread_local! {
     /// Each toggle's two readings laid out, by its readings.
     static TOGGLE_WIDTHS: std::cell::RefCell<
         std::collections::BTreeMap<[&'static str; 2], (crate::views::LineKey, Pixels)>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The labels each toggle's width in [`TOGGLE_WIDTHS`] was laid out
+    /// from, as the measure itself recorded them, by its readings.
+    static TOGGLE_MEASURED: std::cell::RefCell<
+        std::collections::BTreeMap<[&'static str; 2], Vec<String>>,
     > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
@@ -920,9 +929,9 @@ pub(crate) struct DrawnControl {
     pub(crate) icon: Option<&'static str>,
     pub(crate) tooltip: Option<String>,
     pub(crate) name: String,
-    /// The readings a toggle's form was measured at; none for a control
-    /// that is not a toggle.
-    pub(crate) measured: Vec<&'static str>,
+    /// The labels a toggle's form was measured at, as its measure laid
+    /// them out; none for a control that is not a toggle.
+    pub(crate) measured: Vec<String>,
 }
 
 #[cfg(test)]
@@ -975,15 +984,18 @@ impl HeaderControl {
         on: bool,
         window: &Window,
     ) -> Self {
-        // What its form is measured at, which a test reads back.
-        let measured: &[&'static str] = &readings;
         let key = crate::views::LineKey::current(window);
         let widest = TOGGLE_WIDTHS.with(|widths| {
             let mut widths = widths.borrow_mut();
             match widths.get(&readings) {
                 Some((laid_out, width)) if *laid_out == key => *width,
                 _ => {
-                    let width = crate::text_button_width_now(measured, window);
+                    let width = crate::text_button_width_now(&readings, window);
+                    // What the measure laid out, which a test reads back.
+                    #[cfg(test)]
+                    TOGGLE_MEASURED.with_borrow_mut(|measured| {
+                        measured.insert(readings, crate::laid_out_labels())
+                    });
                     widths.insert(readings, (key, width));
                     width
                 }
@@ -992,7 +1004,8 @@ impl HeaderControl {
         Self {
             on: Some(on),
             #[cfg(test)]
-            measured: measured.to_vec(),
+            measured: TOGGLE_MEASURED
+                .with_borrow(|measured| measured.get(&readings).cloned().unwrap_or_default()),
             ..Self::new(id, selector, readings[usize::from(on)], name, icon, widest)
         }
     }
@@ -2145,7 +2158,9 @@ pub(crate) mod tests {
     /// at "Linked" alone, an unlinked model's "Independent" could be cut
     /// where "Linked" fits, and measured at "Edges" alone, "Solid" where it
     /// is the wider: the tests' font gives every character one width, so
-    /// the readings each form was measured at are checked as well.
+    /// the labels each form's measure laid out are checked as well, as the
+    /// measure recorded them. The check once read back the readings the
+    /// toggle was given, so a measure of one of them passed it.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_side_header_s_toggles_take_one_form_in_both_states(cx: &mut gpui_kit::TestAppContext) {
