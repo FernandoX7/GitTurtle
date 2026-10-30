@@ -91,6 +91,10 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
       - A passive status refresh landing a conflicted preview moves focus into the resolution editor (`conflicts.rs:368-372`, `:438`).
       - The Linux fallback menu ignores the status-bar inset (`fallback.rs:121`).
     - → **F3** (rebase F onto the head + these), after the security re-review.
+  - **F2 security re-review: pass with fixes.** F's Low finding is fixed on every remembered path, including (a)–(d). Enter, Space and the accessibility Click cannot act at rest.
+    - Low (pre-existing): once the pointer touches a keyboard-opened menu, the next rebuild seats the cursor on the builder's first action. At 461 px 18 pt that is Stage on a Working row, so Enter stages.
+    - **Decision:** a pointer-owned selection rests on nothing after a rebuild.
+    - → **F3** (`briefs-q9/F3.md`): rebases F + F2 onto the head, then this, F2's two should-fixes, and the Linux fallback menu kept above the status bar.
   - **HB line reviewed** (`c3ba5a61..df84fd67`): all items are fixed and there is no blocker. The arrangement measures only on a cache miss, the icon Cancel's name and tooltip are correct, and `body_size` is used throughout.
     - Should fix:
       - `disabled_git_actions_keep_their_shape_on_the_toolbar` keeps HB's relative-bounds relaxation, so a page pushed down passes (confirmed by mutation).
@@ -108,6 +112,7 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - Follow-ups: S's Stashes `cancel_recovery_preparation` runs no noted working read; `tags.rs` `REVIEW_TAG_BUSY_REASON` (already R2m item 1).
     - Landed as `…35628d02` (tree equal to `af6328f7` except HANDOFF.md); gate log `.local/gate-R-35628d02.log`.
   - **R and S2g landed and pushed:** R `…35628d02` (gate green 96 s); S2g as `f76bfd37` `7066f8ec` `d9fda194` (the `copy_feedback.rs` module doc merged by hand to say both S2g's withdraw and R's Reflog announcement; `docs/native-accessibility.md` by sentence; gate green, `.local/gate-S2g-d9fda194.log`). Removed: every R worktree except R2k's `a3fa8572` (R2m reads its scratch), the S2f and S2g worktrees, the superseded R2h leftover `ae6eecf4`, and refs `pick/r-ws`, `pick/r-comb`.
+  - **J-int and HB'' started** from `f1973206` (both implementer-hard, in new `isolation: worktree` worktrees, branches `worktree-agent-*`). Briefs: `briefs-q9/J-int.md`, `briefs-q9/HB3.md`. Each returns a chain on `f1973206`. Land J first, then re-pick HB'' onto it. R2m (`briefs-q9/R2m.md`) waits for HB''.
   - **J rebase brief** written: `briefs-q9/J-int.md` (implementer-hard; the J line `b7f643d2..d389b8e6`, 25 commits, onto the head after S2g, plus J3e's nits). HB'' runs in parallel; R2m waits for HB'' (both touch the operation Cancel).
   - **R2k verified: no blocker.** Item 1 is confirmed by the reviewer's own mutation under the probe (exactly the 3 plus the create test fail). `busy_reason()` cannot confuse a write with a request, the local cancellation cannot hit a later operation, and `close_blame`'s read goes through `can_start`.
     - Should fix (reachability uncertain): Create tag's Review tag (`tags.rs:710-712`, `:747`) still says "current Git operation" during a GitHub request, against DESIGN.md:284; use `busy_reason()`.
@@ -139,6 +144,26 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - **Verified clean** (the reviewer's mutation of the withdraw fails the test; `withdraw` cannot remove another feature's alert, since it is generation-checked). It lands right after R, because R also changes `copy_feedback.rs`. Afterwards remove `abf2d0b0` (S2f) and the S2g worktree.
   - **T landed and pushed:** `c3ba5a61..384e7ab3` (T4–T6) cherry-picked cleanly, ending at `c40f8080`, with the diff equal to the line's own. Fast gate green (`.local/gate-T-c40f8080.log`). Removed after landing: the T worktrees `a1a88f32`, `a04d30f6`, `a7f8e110`; the I worktrees `aa7562e3`, `adeaabc4`, `a2de7a78`, `a991068f`; the S worktrees `ade8ef97`, `acc15d69`, `ab82d8f3`, and `.local/wt-int`; refs `pick/i-int`, `pick/s-int`. `abf2d0b0` (S2f) stays until S2g ends.
   - **Width-step rerun started:** clean release `.local/item8-2026-10-27/gitturtle-aeab555` (embeds `aeab555a`, not `5e128852`; sha256 `819bf2d6…`) against `gitturtle-5e12885`. A performance-reviewer runs it under `.local/build-slots/quiet`; its output goes to `docs/benchmarks/2026-10-29-columns-in-frame/rerun-2026-10-30/` plus a new section in the record. If the session stops mid-run, delete the quiet file.
+  - **Next session starts here (continued session).** Pushed head `f1973206`: the I, S (with S2g), T and R lines have landed, plus the width-step rerun.
+    - **In flight** (new worktrees `.claude/worktrees/agent-*`, each a chain on `f1973206`; if this session stopped, check each worktree's `git log f1973206..HEAD` and status, and give a stopped one a fresh agent with its brief):
+      - **J-int** (`briefs-q9/J-int.md`): J's 25 commits plus J3e's nits.
+      - **HB''** (`briefs-q9/HB3.md`): HB's 3 commits plus the review's fixes.
+      - **F3** (`briefs-q9/F3.md`): F/F2's 5 commits plus the security Low and the F2 findings.
+    - **Landing order:** J (short verification first) → HB'' (short verification; re-pick onto J with `cp.sh`) → F3 (code + security verification; re-pick) → R2m (`briefs-q9/R2m.md`, from the head after HB''). Each: `cp.sh`, gate on `.local/target-coord`, push, remove its worktrees (old J chain `a09d62b7 a135ded6 a27ae44c a4a30150 a82de15a a99ebc5b aa73aff2 afc6bcd1`, HB `a7d9d968 ac703f2e`, F `a9211ca3`, R2k `a3fa8572` after R2m).
+    - **Follow-ups found this session** (on top of the earlier list in the "Session 2026-10-30" bullet):
+      - narrow (461 ↔ 980) Compare and History width steps still draw 2 frames: trace them;
+      - `scripts/vendor-crate-test.sh` cannot build gpui-component's tests (sibling `include_str!`s, `input.rs` borrow errors);
+      - the views menu joins its names every render;
+      - the side header's controls region has a degenerate thumb at its floor (design call);
+      - S's Stashes `cancel_recovery_preparation` runs no noted read;
+      - a passive status refresh landing a conflicted preview moves focus into the resolution editor (`conflicts.rs:368-372`, `:438`);
+      - nothing is announced when a menu's cursor rests (design);
+      - a cancelled PR Changes shows the Fetch error;
+      - `github-error` is hidden while a conversation is active (`github_view.rs:1340`);
+      - R2j's optional shared `atspi_state_tests::next_frame`;
+      - `CHROME_WIDTHS`/`STATUS_WIDTHS` single slots shared across windows;
+      - the TOML-escaped `[patch]` header in the vendor runner.
+    - **Then** the rest of the prompt's step 2, the clean release, native QA (one native-qa agent, sheets 86 onward, with every native-QA note recorded in these bullets), the design review (include HB's status-bar placement and F's resting cursor), `docs(validation)`; then step 3 (Orca) and step 4 (parity).
   - **Rules from the stop:** mutations and probes are applied in place, so a stopped agent can leave one in its tree. Before committing or reviewing in a resumed worktree, run `grep -rnE '// ?MUTATION|Q9_MUT|Q9_PROBE|PROBE_SLOW' crates vendor`; implementers tag their mutations and probes so this grep finds them. Update this file as each line lands.
 - **Session 2026-10-30 (read the "continued" bullet above first).** Started at `c3ba5a61` (pushed). Housekeeping: `/home` 199 G free; all 14 kept worktrees clean at the tips the bullet below records (no uncommitted work); `pick/e-combined` = `aa35064b`. Code-review common rules for verification rounds: `.local/item8-2026-10-27/tools/review-code-common-q9.md`; new briefs go in `tools/briefs-q9/`.
   - **Started:** verification reviews of E3d' (`aa35064b..cb73c4d0`), S2b (`62bbca50..7adbae09`), R2f (`672b6acd..9ccd7ab2`), R2e (`8f7b3c56..eea684b2`, also re-checking R2d's findings for R2i), J3c (`a284c0c0..3f099b91`, also re-checking J3b's findings for J3d); implementer **I6** (`briefs-q9/I6.md`, from `76c4a6ba`: the probe skips its reveal while a scroll request is pending, an open popup follows its trigger, a vendor test of the Popup branch; vendor, so a security re-review of its delta); implementer **HB** (`briefs-q9/HB.md`, from `c3ba5a61`: the header's busy progress and Cancel keep the trailing controls in place and count in the wrap decision; `narrow` and the Projects/Settings forms from the body width, `status_bar_top` from snapped insets); implementer **T4** (`briefs-q9/T4.md`, from `c3ba5a61`: a group's first entry reveals its heading on every path, foot-clamp and Down-past-the-foot tests, Shortcuts tests against rendered bounds).
