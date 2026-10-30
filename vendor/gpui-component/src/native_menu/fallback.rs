@@ -243,3 +243,65 @@ pub(super) fn show(
         overlay.show(items, position, action_context, window, cx);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Icon, IconName};
+    use gpui::{Action, TestAppContext};
+    use serde::Deserialize;
+
+    #[derive(Action, Clone, PartialEq, Deserialize)]
+    #[action(namespace = fallback_menu_tests, no_json)]
+    struct TestAction;
+
+    fn item(label: &'static str, checked: bool, icon: Option<IconName>) -> NativeMenuItem {
+        NativeMenuItem::Item {
+            label: label.into(),
+            disabled: false,
+            checked,
+            icon: icon.map(|icon| Box::new(Icon::new(icon))),
+            action: Some(Box::new(TestAction)),
+        }
+    }
+
+    /// GitTurtle patch: a ticked native item stays a check item, ticked,
+    /// with an icon or without, and an unticked one is a plain item, not an
+    /// unchecked check item.
+    #[gpui::test]
+    fn only_a_ticked_item_is_a_check_item(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::default()));
+        let cx = cx.add_empty_window();
+        let menu = cx.update(|window, cx| {
+            build_popup(
+                vec![
+                    item("Ticked", true, None),
+                    item("Ticked, with an icon", true, Some(IconName::Inbox)),
+                    item("Plain", false, None),
+                    item("Plain, with an icon", false, Some(IconName::Inbox)),
+                ],
+                None,
+                None,
+                window,
+                cx,
+            )
+        });
+        let states = cx.update(|_, cx| {
+            menu.read(cx)
+                .menu_items
+                .iter()
+                .map(|item| match item {
+                    PopupMenuItem::Item {
+                        checkable, checked, ..
+                    } => (*checkable, *checked),
+                    _ => panic!("an action item"),
+                })
+                .collect::<Vec<_>>()
+        });
+        // (checkable, checked) for each, in order.
+        assert_eq!(
+            states,
+            [(true, true), (true, true), (false, false), (false, false)]
+        );
+    }
+}

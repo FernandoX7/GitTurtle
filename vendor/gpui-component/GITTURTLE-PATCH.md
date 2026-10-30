@@ -659,8 +659,13 @@ builds a check item only for a ticked one, as the kit's `with_menu_items`
 makes only a ticked platform action checkable, and a plain item otherwise.
 `cargo test --locked -p gitturtle an_inputs_menu_announces_its_items_as_plain_items`
 right-clicks the Working Changes filter and reads each item's role in its
-debug selector as a plain menu item. Remove this part when upstream builds
-the fallback's unticked items plain and that test passes without it.
+debug selector as a plain menu item, and
+`scripts/vendor-crate-test.sh vendor/gpui-component native_menu` runs
+`native_menu::fallback::tests::only_a_ticked_item_is_a_check_item`, which
+builds ticked and unticked items, with an icon and without, and reads each
+ticked one a ticked check item and each unticked one plain. Remove this
+part when upstream builds the fallback's unticked items plain and those
+tests pass without it.
 
 Where the fallback menu's focus goes: its actions go to `action_context`,
 the focus the window held as it opened, and focus the menu holds returns
