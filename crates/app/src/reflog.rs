@@ -1531,9 +1531,10 @@ mod tests {
     /// 400 the content's fold lies above the list, which the dialog draws none
     /// of, and cuts the filter before it: the list reports a pixel beyond a
     /// corner, past the fold, outside which every entry lies, where its
-    /// layout kept every entry inside it. So it does at the height
-    /// where the list starts exactly on that fold (about 640 × 423.5), where
-    /// a pixel against the fold lay inside the list and one against its foot
+    /// layout kept every entry inside it. So it does at the tallest height
+    /// at which the list still starts on that fold or below it, by less than
+    /// a quarter of a device pixel (about 640 × 423.5), where a pixel
+    /// against the fold lay inside the list and one against its foot
     /// met the entries it runs on with past it. Each is walked with the
     /// filter the content draws before the list, beside which AccessKit keeps
     /// the list as the child past the fold, visible but not showing and
@@ -1569,7 +1570,7 @@ mod tests {
             y1: f64::from(f32::from(bounds.bottom())) * scale,
         };
 
-        // The height at which the list starts exactly on the content's fold
+        // The height at which the list starts on the content's fold
         // follows the text's metrics, and how fast the gap closes with it
         // follows the layout: the fold moves with the window's foot and the
         // list with the dialog's centre, about half as far. So it is found by

@@ -2226,8 +2226,9 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
 /// corner of a list the window draws none of, whose own pixel lies there, or
 /// lies in the ancestor's border: GPUI draws a container's children inside
 /// its bounds less its border, so `clip` reaches past `mask`, and a wrapped
-/// row with only its foot under a list's 1 px top border is drawn nowhere,
-/// while a pixel beside it in that border would lie inside the list.
+/// row with only its head under a drawn list's 1 px bottom border is drawn
+/// nowhere, while the pixel beyond its top left corner lies in the list's
+/// left border, inside the list; it takes its bottom left, below the list.
 ///
 /// It was a strip a pixel across along the container's own extent, beside
 /// its leading edge across the axis the mask left it out along (its left
@@ -3358,14 +3359,15 @@ mod tests {
                 Some(rect(-1., 99., 0., 100.)),
                 rect(-1., 130., 0., 131.),
             ),
-            // Under a drawn list's 1 px top border, which the list's bounds
-            // hold and the mask leaves out: beyond its top left corner, above
-            // the list, where a strip beside it lay in the list's border.
+            // With its head half a pixel under a drawn list's 1 px bottom
+            // border, where the pixel beyond its top left corner would lie in
+            // the list's left border, which the list's bounds hold and the
+            // mask leaves out: beyond its bottom left, below the list.
             (
                 1.,
-                rect(1., 170., 599., 199.5),
-                Some(rect(0., 199., 600., 600.)),
-                rect(0., 169., 1., 170.),
+                rect(0., 600.5, 600., 630.),
+                Some(rect(-1., 199., 601., 601.)),
+                rect(-1., 630., 0., 631.),
             ),
             // On the right fold, where the top right corner would meet the
             // clip: beyond its bottom right.
@@ -3391,14 +3393,17 @@ mod tests {
     }
 
     /// A wrapped row that a list scrolled down draws none of, with only its
-    /// foot under the list's 1 px top border, reports bounds outside the
-    /// list's, so AccessKit's filter keeps it only as the neighbour of the
-    /// first row drawn, not the row before it as its neighbour, and AT-SPI
-    /// reads it as off screen. GPUI draws the rows inside the list's bounds
-    /// less its border, and the list reports its bounds whole: both strips
-    /// beside the row lay in the list's side borders, inside those bounds,
-    /// so the filter measured the row inside the list, kept the row before
-    /// it too, and AT-SPI read the row as showing.
+    /// foot under the list's 1 px top border, or only its head under its
+    /// bottom border, reports bounds outside the list's, so AccessKit's
+    /// filter keeps it only as the neighbour of the nearest row drawn, not
+    /// the row past it as its neighbour, and AT-SPI reads it as off screen.
+    /// GPUI draws the rows inside the list's bounds less its border, and the
+    /// list reports its bounds whole: both strips beside the row lay in the
+    /// list's side borders, inside those bounds, so the filter measured the
+    /// row inside the list, kept the row past it too, and AT-SPI read the
+    /// row as showing. Under the bottom border the pixel beyond the row's
+    /// top left corner lies in the left border, inside the list, so the row
+    /// takes the one beyond its bottom left, below the list.
     #[gpui::test]
     fn a_row_under_its_lists_border_lies_outside_the_list(cx: &mut TestAppContext) {
         const ROWS: usize = 8;
@@ -3498,6 +3503,52 @@ mod tests {
             assert!(
                 row.state.contains(State::Visible) && !row.state.contains(State::Showing),
                 "the second row is visible but off screen: {row:?}"
+            );
+        }
+
+        // 21.5 px down, the fifth row starts half a pixel inside the bottom
+        // border.
+        scroll.set_offset(point(px(0.), px(-21.5)));
+        written::forget();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let row = physical(cx.debug_bounds("bordered-row-4").expect("the fifth row"));
+        assert!(
+            row.y0 < layout.y1 && row.y0 > layout.y1 - scale && row.x0 > layout.x0,
+            "the fifth row {row:?} starts inside the list's {layout:?} bottom border"
+        );
+        let reported = clipping_node("bordered-row-4")
+            .and_then(|node| node.bounds())
+            .expect("the wrapped row clips what it holds");
+        assert!(
+            reported.intersect(list).is_empty(),
+            "the fifth row, drawn nowhere, reports {reported:?} inside the list's {list:?}"
+        );
+        let found = reachable(assembly().tree(window, None));
+        let rows: Vec<_> = found
+            .iter()
+            .filter(|node| node.role == Role::Button)
+            .filter_map(|node| node.label.clone())
+            .collect();
+        assert_eq!(
+            rows,
+            (0..5)
+                .map(|index| format!("Row {index}"))
+                .collect::<Vec<_>>(),
+            "AccessKit's filter keeps the fifth row as the last drawn row's neighbour, and not \
+             the sixth"
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            use accesskit_atspi_common::State;
+            let found = atspi_state_tests::reached(assembly().tree(window, None));
+            let row = found
+                .iter()
+                .find(|node| node.name == "Row 4")
+                .expect("AT-SPI reaches the fifth row");
+            assert!(
+                row.state.contains(State::Visible) && !row.state.contains(State::Showing),
+                "the fifth row is visible but off screen: {row:?}"
             );
         }
     }
