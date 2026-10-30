@@ -13702,6 +13702,10 @@ pub(crate) mod tests {
         std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         settle(&app, cx).await;
+        // The counts are the rows', prepared on the path filter's thread,
+        // which `settle` does not wait for: a loaded host once read the
+        // rows of the status before, one staged file, beside the new one.
+        crate::path_filter::filters_land(&app, cx);
         assert_eq!(
             app.read_with(cx, |app, _| (
                 app.working_paths.staged_count,
