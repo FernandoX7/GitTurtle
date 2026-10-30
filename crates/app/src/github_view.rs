@@ -274,6 +274,7 @@ impl GitTurtle {
         Some((control, replied))
     }
 }
+#[derive(Clone)]
 struct Confirmation {
     action: Action,
     account: String,
@@ -884,6 +885,10 @@ impl Panel {
         self.draft_issue = Some(issue);
         self.presses.issue = self.presses.issue.wrapping_add(1);
     }
+    /// Sends `operation` as the window's busy spell
+    /// ([`GitTurtle::submit_github_request`]) and hands its reply to
+    /// `receive`. Returns whether it was sent: while a request of the panel
+    /// or a Git write runs, nothing is, and the panel says why.
     fn run<T: Send + 'static>(
         &mut self,
         writing: bool,
@@ -891,9 +896,9 @@ impl Panel {
         receive: impl FnOnce(anyhow::Result<T>, &mut Self, &mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.pending || self.closed {
-            return;
+            return false;
         }
         let repository = self.repo.path().to_owned();
         let submitted = self.owner.update(cx, |owner, cx| {
@@ -901,7 +906,7 @@ impl Panel {
         });
         let Ok(submitted) = submitted else {
             self.refuse("The repository window is unavailable.");
-            return;
+            return false;
         };
         let Some((control, response)) = submitted else {
             self.refuse(format!(
@@ -909,7 +914,7 @@ impl Panel {
                 crate::workspace::BUSY_REASON
             ));
             cx.notify();
-            return;
+            return false;
         };
         self.control = Some(control);
         self.request_generation = self.request_generation.wrapping_add(1);
@@ -946,6 +951,7 @@ impl Panel {
             });
         }));
         cx.notify();
+        true
     }
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.review.fixture {
@@ -1133,14 +1139,17 @@ impl Panel {
         self.focus_confirmation(window, cx);
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(confirmation) = self.confirm.take() else {
+        // The confirmation goes once its action is sent: one a running Git
+        // write refuses stays for Send once the write ends. Taken first, it
+        // went with the refusal, and the submission had to be reviewed again.
+        let Some(confirmation) = self.confirm.clone() else {
             return;
         };
         self.save_draft(window, cx);
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
         let sent_action = confirmation.action.clone();
-        self.run(true, move |control| {
+        let sent = self.run(true, move |control| {
             let transport = UiTransport::open(fixture, moved)?;
             anyhow::ensure!(transport.login() == confirmation.account, "The connected GitHub account changed. Review the destination again before submitting.");
             let destination = format!("{} · account {}", confirmation.action.destination(), confirmation.account);
@@ -1173,6 +1182,9 @@ impl Panel {
                 if this.conversations.active.is_some() { this.focus_visible_section(window,cx); }
             },
         }, window, cx);
+        if sent {
+            self.confirm = None;
+        }
     }
     /// Says the lines the panel shows through the window's announcements, once each, as the
     /// panel opens with them and whenever they change: its notice politely
@@ -1366,7 +1378,7 @@ impl Render for Panel {
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
-                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
+                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|{this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx);}))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
@@ -1973,6 +1985,119 @@ mod tests {
                 "{request}: the read asked for meanwhile ran as it ended"
             );
         }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// The panel over a window showing History, on the offline fixture,
+    /// signed in as its reviewer with its destination named, as
+    /// `a_working_read_waits_for_a_github_request_and_says_why` opens it.
+    async fn busy_fixture_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        use crate::views::tests::{history_script, history_window_from};
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            panel
+        });
+        settle_panel(&app, cx).await;
+        (fixture, app, panel, cx)
+    }
+
+    /// A review comment confirmed for sending.
+    fn confirmed_comment() -> Confirmation {
+        let repository = Repository::parse("gitturtle-fixture/native-review").unwrap();
+        Confirmation {
+            action: Action::Comment {
+                pull: github::review::fixture_pull(false).capture(repository),
+                body: "Looks right.".into(),
+            },
+            account: "offline-reviewer".into(),
+        }
+    }
+
+    /// Send pressed while a Git write runs is refused: the panel says why
+    /// and sends nothing, and the confirmation stays, so Send sends it once
+    /// the write has ended. The refusal once took the confirmation with it,
+    /// and the submission had to be reviewed again before it could be sent.
+    #[gpui::test]
+    async fn a_confirmation_a_git_write_refuses_stays_to_send(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Stage all, held as a slow disk holds it.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.confirm = Some(confirmed_comment());
+                panel.submit(window, cx);
+            })
+        });
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending, "nothing is sent");
+            assert!(panel.confirm.is_some(), "the confirmation stays");
+            assert_eq!(
+                panel.error.as_deref(),
+                Some("Wait for the current Git operation to finish, then try again.")
+            );
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some("Staging files…"),
+            "the write still runs"
+        );
+        assert!(cx.debug_bounds("github-confirmation").is_some());
+        assert!(cx.debug_bounds("github-error").is_some(), "it says why");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        // Send again, the write ended: the confirmed comment is sent.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.submit(window, cx)));
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.pending, "the comment is sent");
+            assert!(panel.confirm.is_none(), "its confirmation goes");
+            assert_eq!(panel.error, None);
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(SENDING)
+        );
+        assert!(cx.debug_bounds("github-confirmation").is_none());
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        panel.read_with(cx, |panel, _| {
+            assert!(!panel.pending, "it answered");
+            assert_eq!(panel.error, None, "the fixture accepted it");
+        });
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }
