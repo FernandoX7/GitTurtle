@@ -3082,6 +3082,80 @@ mod tests {
         );
     }
 
+    /// Settings and Projects, opened from a tab that did not ask for a
+    /// dropped review, end its wait there as in the tab that asked, by the
+    /// label it shows there, "Finishing another tab's review…"
+    /// (`DroppedPreparation::holds`): they stay the way out of a read that
+    /// never ends, from any tab, and its end, which never runs, opens and
+    /// reads nothing once the read ends. Ended only under the review's own
+    /// label, the wait would keep that tab's busy state, and every action
+    /// Projects offers, until the read ended.
+    #[gpui::test]
+    async fn settings_and_projects_end_another_tabs_dropped_review(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        type Leave = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let leave: [(&str, AppPage, Leave); 2] = [
+            ("Settings", AppPage::Settings, |app, window, cx| {
+                app.show_settings(window, cx)
+            }),
+            ("Projects", AppPage::Projects, |app, window, cx| {
+                app.show_projects(window, cx)
+            }),
+        ];
+        for (index, (page, shown, leave)) in leave.into_iter().enumerate() {
+            if index > 0 {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle(&app, cx).await;
+                quiet_reads_land(&app, cx);
+            }
+            // Discard…'s review in the first tab, held as a slow disk holds
+            // it, dropped as the second tab shows.
+            cx.simulate_keystrokes(&primary("2"));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.path.as_ref(), Some(&other), "{page}");
+                assert_eq!(
+                    app.operation_busy,
+                    Some("Finishing another tab's review…"),
+                    "{page}: the second tab waits for the review"
+                );
+            });
+
+            cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == shown, "{page} opens");
+                assert_eq!(app.operation_busy, None, "{page}: the label clears");
+                assert!(
+                    app.dropped_preparation.is_none(),
+                    "{page}: the wait ends with it"
+                );
+            });
+
+            // The read ends; off the repository page no quiet read starts.
+            drop(held);
+            preparation_ends(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.page == shown, "{page} still shows");
+                assert_eq!(app.operation_busy, None, "{page}");
+                assert!(!status_read_pending(app), "{page}: no read stays noted");
+            });
+            assert!(!dialog_open(cx), "{page}: the dropped review opens nothing");
+        }
+    }
+
     /// Settings and Projects drop the branch comparison Merge… or Rebase…
     /// asked for, as a tab switch does, and end its busy state with it: Git's
     /// answer opens no confirmation over either page, and nothing stays
