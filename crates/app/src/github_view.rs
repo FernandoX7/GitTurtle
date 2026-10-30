@@ -289,6 +289,7 @@ struct Confirmation {
 struct Heard {
     notice: Option<String>,
     error: Option<String>,
+    cancelled: Option<&'static str>,
     issue: Option<DraftIssue>,
     presses: Presses,
 }
@@ -389,6 +390,20 @@ impl RequestKind {
             ),
         }
     }
+    /// What the panel says in its failure's place once Cancel stopped this
+    /// request before it changed anything ([`Panel::outcome`]), where the
+    /// request can tell: a local read stopped by its cancellation ends with
+    /// [`gitturtle_core::ReadCancelled`]. A cancelled PR comparison once
+    /// showed the failure telling the person to Fetch. A request to GitHub
+    /// has none: the GitHub CLI's stop reaches it as a failure, and a sent
+    /// action's outcome stays uncertain.
+    fn cancelled(self) -> Option<&'static str> {
+        match self {
+            Self::Load | Self::Send | Self::Connect | Self::Disconnect => None,
+            Self::Compare => Some("Cancelled · the PR's changes were not compared"),
+            Self::Templates => Some("Cancelled · the PR templates were not read"),
+        }
+    }
     /// Whether it sends an outbound action, whose outcome may be uncertain
     /// once cancelled: the panel stays open while it runs.
     fn writing(self) -> bool {
@@ -406,6 +421,13 @@ pub(crate) fn running_request(label: &str) -> Option<RequestKind> {
 #[cfg(test)]
 pub(crate) fn request_labels() -> [&'static str; RequestKind::ALL.len()] {
     RequestKind::ALL.map(RequestKind::label)
+}
+/// Whether a request's failure is its cancellation, which stopped it before
+/// it changed anything, rather than a failure it met on its own.
+fn stopped_by_cancel(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<gitturtle_core::ReadCancelled>()
+        .is_some()
 }
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
@@ -594,6 +616,9 @@ struct Panel {
     /// cleared as it closes, so that it says again what it reopens with.
     heard: Heard,
     error: Option<String>,
+    /// That Cancel stopped the last request ([`RequestKind::cancelled`]),
+    /// said in `error`'s place until the next request.
+    cancelled: Option<&'static str>,
     /// The presses answered with `error` and `draft_issue` ([`Presses`]).
     presses: Presses,
     pending: bool,
@@ -641,7 +666,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,cancelled:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -1035,6 +1060,7 @@ impl Panel {
         self.pending = true;
         self.request = kind;
         self.error = None;
+        self.cancelled = None;
         self.notice = None;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response
@@ -1053,7 +1079,17 @@ impl Panel {
                     this.focus_visible_section(window, cx);
                 }
                 if !this.closed {
-                    receive(result, this, window, cx);
+                    // Cancel stopped it: the panel says so where a failure
+                    // would stand, in place of what asked for the cancel. A
+                    // failure the request met before the cancel reached it
+                    // ends with its own error and is shown as one.
+                    match (result, kind.cancelled()) {
+                        (Err(error), Some(line)) if stopped_by_cancel(&error) => {
+                            this.cancelled = Some(line);
+                            this.notice = None;
+                        }
+                        (result, _) => receive(result, this, window, cx),
+                    }
                 }
                 // `run` cleared the failure line, so one there now is this press's answer.
                 if this.error.is_some() {
@@ -1351,6 +1387,7 @@ impl Panel {
         let shown = Heard {
             notice: self.notice.clone(),
             error: self.error.clone(),
+            cancelled: self.cancelled,
             issue: self.draft_issue,
             presses: self.presses,
         };
@@ -1359,10 +1396,20 @@ impl Panel {
         }
         let heard = std::mem::replace(&mut self.heard, shown);
         let shown = &self.heard;
-        let notice = shown
-            .notice
-            .clone()
-            .filter(|_| shown.notice != heard.notice);
+        // A cancel the person asked for is said politely, as the notice is, not as an alert.
+        let notice = [
+            shown
+                .notice
+                .clone()
+                .filter(|_| shown.notice != heard.notice),
+            shown
+                .cancelled
+                .filter(|_| shown.cancelled != heard.cancelled)
+                .map(str::to_owned),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|notice, cancelled| format!("{notice} {cancelled}"));
         // A failure and refused input that change together, or that presses answer together,
         // are one alert, as the alert node holds one.
         let alert = [
@@ -1389,6 +1436,25 @@ impl Panel {
                 copy_feedback::alert(window, cx, alert);
             }
         });
+    }
+    /// The line in the failure's place, `failure` or `cancelled` its id: the last request's
+    /// failure in the warning colour, or, where its Cancel stopped it, that it was cancelled
+    /// ([`RequestKind::cancelled`]), muted as the notice is, since the person asked for it.
+    /// Both are statuses; the window says the failure as an alert and the cancel politely
+    /// ([`Self::announce`]).
+    fn outcome(
+        &self,
+        failure: &'static str,
+        cancelled: &'static str,
+        cx: &App,
+    ) -> Option<native_accessibility::StaticText<Stateful<Div>>> {
+        let p = palette(cx);
+        match (&self.error, self.cancelled) {
+            (Some(error), _) => Some(label(failure, error.clone()).text_color(rgb(p.warning))),
+            (None, Some(line)) => Some(label(cancelled, line).text_color(rgb(p.muted))),
+            (None, None) => None,
+        }
+        .map(|line| line.role(Role::Status))
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.request.writing() {
@@ -1534,7 +1600,7 @@ impl Render for Panel {
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
-            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
+            .when_some(self.outcome("github-error","github-cancelled",cx).filter(|_|self.conversations.active.is_none()),|element,line|element.child(line.ml(text_inset())))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",self.request.label()).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
@@ -2678,9 +2744,106 @@ mod tests {
             assert_eq!(app.operation_busy, None, "Changes ended");
             assert!(!app.revision_inspection.is_active(), "no comparison opens");
         });
+        assert_eq!(
+            panel.read_with(cx, |panel, _| (panel.error.clone(), panel.cancelled)),
+            (None, RequestKind::Compare.cancelled()),
+            "the panel says it did not compare, as cancelled"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// A PR's Changes stopped by Cancel, the panel's own or the operation
+    /// bar's, says so in the failure's place: "Cancelled", muted, a status
+    /// the window says politely rather than as an alert, since the person
+    /// asked for it, until the next request clears it as it clears a
+    /// failure. It once showed the failure telling the person to Fetch. A
+    /// failure the comparison met before the cancel reached it, as a
+    /// captured revision Git cannot take, still shows its error there.
+    #[gpui::test]
+    async fn a_cancelled_prs_changes_say_they_were_cancelled(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::{alerted, announced, click};
+        use crate::native_accessibility::written;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Opened at rest, so a click lands where the last frame drew its button.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.pull = Some(pull.clone()));
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        let line = RequestKind::Compare
+            .cancelled()
+            .expect("Changes says it was cancelled");
+
+        // Changes, held as a large comparison holds it, then the panel's Cancel.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.changes(window, cx)));
+        draw(cx);
+        click(cx, "github-cancel");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
         assert!(
-            panel.read_with(cx, |panel, _| panel.error.is_some()),
-            "the panel says it did not compare"
+            !app.read_with(cx, |app, _| app.revision_inspection.is_active()),
+            "no comparison opens"
+        );
+        assert_eq!(
+            panel.read_with(cx, |panel, _| (panel.error.clone(), panel.cancelled)),
+            (None, Some(line)),
+            "it says it was cancelled, not that it failed"
+        );
+        assert!(cx.debug_bounds("github-error").is_none(), "no failure line");
+        let cancelled = cx
+            .debug_bounds("github-cancelled")
+            .expect("the cancel's line");
+        assert_eq!(
+            written::get("github-cancelled").map(|line| line.node.role()),
+            Some(Role::Status),
+            "a status"
+        );
+        assert_eq!(
+            announced(cx).map(|(_, text)| text).as_deref(),
+            Some(line),
+            "said politely"
+        );
+        assert_eq!(alerted(cx), None, "not as an alert");
+
+        // A captured base Git cannot take fails before the bar's Cancel reaches the
+        // comparison. Sending it clears the cancel's line, as it clears a failure.
+        let mut broken = pull;
+        broken.base.sha = String::new();
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.pull = Some(broken)));
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.changes(window, cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-cancelled").is_none(),
+            "the next request clears the cancel's line"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.cancel_operation(window, cx)));
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.cancelled),
+            None,
+            "a failure is no cancel"
+        );
+        let failure = cx
+            .debug_bounds("github-error")
+            .expect("the failure it met shows");
+        assert_eq!(
+            failure.top(),
+            cancelled.top(),
+            "the cancel's line stood in the failure's place"
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;

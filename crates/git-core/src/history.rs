@@ -162,10 +162,27 @@ impl HistoryCancellation {
     }
 
     fn check(&self) -> Result<()> {
-        ensure!(!self.is_cancelled(), "History read cancelled");
+        if self.is_cancelled() {
+            return Err(ReadCancelled.into());
+        }
         Ok(())
     }
 }
+
+/// The error a read ends with when its [`HistoryCancellation`] stopped it,
+/// found with `downcast_ref` through any context added on the way out, so a
+/// caller can tell a cancel the person asked for from a failure the read met
+/// before the cancel reached it, which still ends with its own error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadCancelled;
+
+impl std::fmt::Display for ReadCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("History read cancelled")
+    }
+}
+
+impl std::error::Error for ReadCancelled {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistorySearchStop {
