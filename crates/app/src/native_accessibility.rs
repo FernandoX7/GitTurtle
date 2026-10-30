@@ -479,11 +479,12 @@ impl KeyboardMenu {
     }
 
     /// Builds the menu again in place with `build`, as it opened, its
-    /// keyboard cursor on its first action: the row's file changed under it,
-    /// and its items act on what the row now shows. A cursor the keys had
-    /// moved further returns to that first action; a right-click's menu
-    /// built again ([`PointerMenu::built_from`]) loses its highlight, as the
-    /// kit's rebuild clears it.
+    /// keyboard cursor on its first item that can act, or on none while
+    /// every item is refused: the row's file changed under it, and its items
+    /// act on what the row now shows. A cursor the keys had moved further
+    /// returns to that first item; a right-click's menu built again
+    /// ([`PointerMenu::built_from`]) loses its highlight, as the kit's
+    /// rebuild clears it.
     pub(super) fn rebuild(
         &self,
         build: impl FnOnce(PopupMenu) -> PopupMenu,
@@ -1178,6 +1179,7 @@ pub(crate) trait AppContextMenu:
             build: std::rc::Rc::new(build),
             writes: None,
             inputs: None,
+            preparing: None,
         }
     }
 }
@@ -1206,6 +1208,9 @@ pub(crate) struct PointerMenu<E> {
     writes: Option<WeakEntity<crate::GitTurtle>>,
     /// What the row builds its menu from in this frame ([`Self::built_from`]).
     inputs: Option<BuiltFrom>,
+    /// Whether that app is preparing the rows that replace the row's
+    /// ([`Self::waits_while`]).
+    preparing: Option<fn(&crate::GitTurtle) -> bool>,
 }
 
 /// What a row built its open menu from, compared by value.
@@ -1231,10 +1236,13 @@ impl<E> PointerMenu<E> {
     /// frame's, so its items act on what the row now shows, as a write's
     /// start or end builds it again ([`Self::follows_writes`]). A menu kept
     /// as it opened offered to delete an untracked file that had since been
-    /// added and edited, which the delete then refused. Built again, the menu
-    /// highlights nothing, since the kit's `PopupMenu::rebuild` clears its
-    /// selection, where a keyboard's menu built again puts its cursor on its
-    /// first action ([`KeyboardMenu::rebuild`]).
+    /// added and edited, which the delete then refused. What a write's start
+    /// or end changes stays out of `inputs`, which `follows_writes` follows
+    /// already: in both, it built the menu twice for each. Built again, the
+    /// menu highlights nothing, since the kit's `PopupMenu::rebuild` clears
+    /// its selection, where a keyboard's menu built again puts its cursor
+    /// back on its first item that can act, or on none while every item is
+    /// refused ([`KeyboardMenu::rebuild`]).
     // TODO(F): keep the highlighted item, by its label, across a rebuild
     // once the vendored menu can select an item by label.
     pub(crate) fn built_from<T: PartialEq + 'static>(mut self, inputs: T) -> Self {
@@ -1252,6 +1260,39 @@ impl<E> PointerMenu<E> {
     pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
         self.writes = Some(app);
         self
+    }
+
+    /// The row is one of a list's rows that `preparing` finds being
+    /// replaced in the app the menu follows ([`Self::follows_writes`]), as
+    /// Working Changes' rows are while those of a newer status are prepared:
+    /// the rows still drawn then are the previous status's, held in place,
+    /// and nothing acts on them. While `preparing` holds, the open menu is
+    /// built again neither from the row's inputs nor as a write starts or
+    /// ends; once the new rows are drawn, it is built again from them, once,
+    /// where either changed meanwhile or it opened meanwhile, which its
+    /// builder answers by refusing its items until then. A Working row's
+    /// menu built again as a Stage's status read landed, before the read's
+    /// rows had, offered Delete untracked file… for a file the read had
+    /// found added, as the previous rows still showed it, until the rows
+    /// landed.
+    pub(crate) fn waits_while(mut self, preparing: fn(&crate::GitTurtle) -> bool) -> Self {
+        self.preparing = Some(preparing);
+        self
+    }
+
+    /// Whether `writes`, the app the menu follows, is preparing the rows
+    /// that replace the row's, as `preparing` reads it now
+    /// ([`Self::waits_while`]).
+    fn preparing(
+        preparing: Option<fn(&crate::GitTurtle) -> bool>,
+        writes: Option<&WeakEntity<crate::GitTurtle>>,
+        cx: &App,
+    ) -> bool {
+        preparing.is_some_and(|preparing| {
+            writes
+                .and_then(WeakEntity::upgrade)
+                .is_some_and(|app| preparing(app.read(cx)))
+        })
     }
 
     fn shared(id: &GlobalElementId, window: &mut Window) -> SharedPointerMenu {
@@ -1278,6 +1319,10 @@ struct PointerMenuState {
     built: Option<(LatestBuild, Option<BuiltFrom>)>,
     /// Builds the open menu with that builder, as it opened.
     open_with: Option<std::rc::Rc<OpenMenu>>,
+    /// The menu waited, its row's rows being prepared, to be built again
+    /// for a write, or opened while they were: built again once they are
+    /// drawn ([`PointerMenu::waits_while`]).
+    waited: bool,
     /// Holds this state weakly: a strong hold was a cycle through the app's
     /// subscriber set that kept the menu after its row was gone.
     _dismiss: Option<Subscription>,
@@ -1369,6 +1414,22 @@ impl OpenPointerMenus {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How often each right-click menu has been built, its opening among
+    /// them, by the menu's entity ([`pointer_menu_builds`]).
+    static POINTER_MENU_BUILDS: std::cell::RefCell<std::collections::HashMap<EntityId, usize>> =
+        Default::default();
+}
+
+/// How often the right-click menu `menu` has been built, its opening among
+/// them, for tests that count its rebuilds: one its row builds again is
+/// notified in that frame's draw, which no observer of the menu hears.
+#[cfg(test)]
+pub(crate) fn pointer_menu_builds(menu: EntityId) -> usize {
+    POINTER_MENU_BUILDS.with(|builds| builds.borrow().get(&menu).copied().unwrap_or_default())
+}
+
 /// The right-click menus recorded open, for tests that hold one weakly to
 /// see that it is let go once it closes.
 #[cfg(test)]
@@ -1418,17 +1479,27 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         let pressed = shown.as_ref().map(|(_, pressed)| pressed.clone());
         let overlay = shown.map(|(menu, pressed)| {
             // Built from what the row showed when it was built; the row
-            // shows something else now, so it is built again from that.
+            // shows something else now, so it is built again from that. Its
+            // rows being replaced, it waits for the new ones.
+            let preparing = Self::preparing(self.preparing, self.writes.as_ref(), cx);
             let rebuild = {
                 let mut state = shared.borrow_mut();
-                let open_with = state.open_with.clone();
-                match (&mut state.built, &self.inputs, open_with) {
-                    (Some((build, then)), Some(now), Some(open_with))
-                        if !then.as_ref().is_some_and(|then| then.same_as(now)) =>
-                    {
-                        *build.borrow_mut() = self.build.clone();
-                        *then = Some(now.clone());
-                        Some(open_with)
+                let state = &mut *state;
+                match (&mut state.built, &state.open_with) {
+                    (Some((build, then)), Some(open_with)) if !preparing => {
+                        let changed = self.inputs.as_ref().is_some_and(|now| {
+                            !then.as_ref().is_some_and(|then| then.same_as(now))
+                        });
+                        if changed || state.waited {
+                            *build.borrow_mut() = self.build.clone();
+                            if let Some(now) = &self.inputs {
+                                *then = Some(now.clone());
+                            }
+                            state.waited = false;
+                            Some(open_with.clone())
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 }
@@ -1519,7 +1590,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         element.paint(window, cx);
         let shared = Self::shared(id.expect("the menu's id"), window);
         let (build, writes, hitbox) = (self.build.clone(), self.writes.clone(), hitbox.clone());
-        let inputs = self.inputs.clone();
+        let (inputs, preparing) = (self.inputs.clone(), self.preparing);
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
                 return;
@@ -1551,6 +1622,10 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 let latest = build.clone();
                 let open: std::rc::Rc<OpenMenu> = std::rc::Rc::new(
                     move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+                        #[cfg(test)]
+                        POINTER_MENU_BUILDS.with(|builds| {
+                            *builds.borrow_mut().entry(cx.entity_id()).or_default() += 1;
+                        });
                         let build = latest.borrow().clone();
                         let menu = build(menu, window, cx);
                         // No action context: an action item dispatches from
@@ -1561,6 +1636,10 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     },
                 );
                 let open_with = open.clone();
+                // Opened on rows being replaced, it is built again once the
+                // new ones are drawn ([`PointerMenu::waits_while`]).
+                let waited = Self::preparing(preparing, writes.as_ref(), cx);
+                let waiting = std::rc::Rc::downgrade(&shared);
                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                     let viewport = window.viewport_size();
                     cx.observe_window_bounds(window, move |_, window, cx| {
@@ -1576,6 +1655,15 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                             let now = MenuInputs::of(app.read(cx));
                             if now != inputs {
                                 inputs = now;
+                                // Its rows being replaced, the builder would
+                                // read the rows the window no longer acts
+                                // on: the rows' landing builds it again.
+                                if preparing.is_some_and(|preparing| preparing(app.read(cx))) {
+                                    if let Some(state) = waiting.upgrade() {
+                                        state.borrow_mut().waited = true;
+                                    }
+                                    return;
+                                }
                                 menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
                             }
                         })
@@ -1662,6 +1750,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 state._dismiss = Some(dismiss);
                 state.built = Some((build, inputs));
                 state.open_with = Some(open_with);
+                state.waited = waited;
                 window.refresh();
             });
         });

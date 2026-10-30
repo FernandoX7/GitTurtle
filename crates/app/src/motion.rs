@@ -4417,6 +4417,202 @@ mod tests {
         a_row_menu_waits_for_its_writes_status_read(cx, Opening::Keyboard).await;
     }
 
+    /// Reads the working state again quietly, as the local watcher does
+    /// after a change outside the app, and lands the read but not the rows
+    /// it brings, which a hold on the filter's thread keeps preparing.
+    fn quietly_read_while_rows_held(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_paths.pending),
+            "the read landed and its rows are being prepared"
+        );
+    }
+
+    /// A working row's right-click menu is built again once for each change
+    /// it follows, by the window or by its row: once as a write starts,
+    /// once as it ends, once for the status read the write asks for, as the
+    /// read's rows land rather than as the read does, and once as its
+    /// file's status changes outside the app. Built again from the file and
+    /// the write's state together, by its row, and for the write as well,
+    /// by the window, it was built twice as each write started, and twice
+    /// more as the read landed, before its rows.
+    #[gpui::test]
+    async fn a_right_click_working_menu_is_built_once_per_change(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
+        let menu = cx
+            .update(|_, cx| crate::native_accessibility::open_pointer_menus(cx))
+            .pop()
+            .expect("gamma's menu")
+            .entity_id();
+        // How often the menu has been built again since the last count, as
+        // the window or its row builds it.
+        let mut counted = crate::native_accessibility::pointer_menu_builds(menu);
+        let mut built = move || {
+            let builds = crate::native_accessibility::pointer_menu_builds(menu);
+            builds - std::mem::replace(&mut counted, builds)
+        };
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("zeta.txt")],
+            },
+        );
+        next_frame(cx);
+        assert_eq!(built(), 1, "built once as the write starts");
+        assert_eq!(delete(cx), Some(false), "while the write runs");
+        // The status read the Stage asks for as it ends waits behind this.
+        let status = app.update(cx, |app, _| app.operations.hold());
+        drop(write);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()
+                && app.status_task.is_some()),
+            "the write ended, and its status read is held"
+        );
+        assert_eq!(built(), 1, "built once as the write ends");
+        // The read lands; the rows it brings wait behind this. It is
+        // answered and handled where the window handles it, not taken and
+        // awaited, which would leave no read in flight before it landed.
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        drop(status);
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.pending),
+            "the read landed, and its rows are held"
+        );
+        assert_eq!(built(), 0, "not built while its rows are prepared");
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(built(), 1, "built once as its rows land");
+        assert_eq!(delete(cx), Some(true), "once the rows land");
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
+        quietly_refreshed(&app, cx);
+        next_frame(cx);
+        assert_eq!(built(), 1, "built once as gamma's status changes");
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "for gamma's edit"
+        );
+    }
+
+    /// A working row's right-click menu waits for the rows a status read
+    /// brings: a Stage of zeta ends after gamma, untracked as the menu
+    /// opened, was added and edited outside the app, and the Stage's read
+    /// lands with its rows held. The menu keeps its items refused as the
+    /// write left them, rather than offering Delete untracked file… for the
+    /// file as the previous rows, still drawn, show it, and once the rows
+    /// land it offers Discard changes…. A menu opened on the previous rows
+    /// while new ones are prepared refuses its items, as a click on those
+    /// rows refuses, until the rows land and build it again. Built again as
+    /// the read landed, the menu offered Delete untracked file… for a file
+    /// the read had found added, until the rows landed.
+    #[gpui::test]
+    async fn a_right_click_working_menu_waits_for_its_rows(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        let discard = |cx: &mut VisualTestContext| offered(cx, "Discard changes…");
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("zeta.txt")],
+            },
+        );
+        assert_eq!(delete(cx), Some(false), "while the Stage runs");
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        // The Stage ends and its status read lands where the window handles
+        // it, the read not taken and awaited.
+        drop(write);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.pending),
+            "the Stage and its read landed, and its rows are held"
+        );
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "refused while the rows are prepared, not offered for gamma as the previous rows show it"
+        );
+        assert_eq!(discard(cx), None, "built from the previous rows no more");
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            discard(cx),
+            Some(true),
+            "for gamma's edit once its rows land"
+        );
+        assert_eq!(delete(cx), None, "once its rows land");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        // Opened on the previous rows while a new file's rows are prepared.
+        let gamma: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
+        quietly_read_while_rows_held(&app, cx);
+        right_click(cx, gamma);
+        assert_eq!(
+            discard(cx),
+            Some(false),
+            "a menu opened on rows being replaced refuses its items"
+        );
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(discard(cx), Some(true), "available once the rows land");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+    }
+
     /// A History window on a clean worktree, wide enough for the action bar
     /// and the navigator, with the app's keys bound. Keep the returned
     /// directory until the test ends.
