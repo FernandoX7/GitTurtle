@@ -985,7 +985,7 @@ enum Reveal {
     /// palette and Quick Open.
     Centre,
     /// Scrolled the least that shows it whole, for a click on it or a list
-    /// whose height changed under it.
+    /// whose new height would cut it.
     Nearest,
 }
 
@@ -1050,6 +1050,12 @@ impl Span {
     /// it placed there can read a rounding error past it here.
     const ROUNDING: Pixels = px(0.01);
 
+    /// Whether the entry itself, without its group's heading, lies whole in
+    /// a list `view` tall scrolled by `scrolled`.
+    fn whole(self, scrolled: Pixels, view: Pixels) -> bool {
+        self.top >= scrolled - Self::ROUNDING && self.bottom <= scrolled + view + Self::ROUNDING
+    }
+
     /// The scroll, from the list's top, that brings the span whole into a
     /// list `view` tall that holds `content` and is scrolled by `scrolled`,
     /// or `None` where it lies whole there already.
@@ -1090,10 +1096,11 @@ struct ShortcutHelpView {
     /// toolkit's virtual list, which takes each row's height, rather than a
     /// `uniform_list`, which gives every row the first one's.
     scroll: gpui_kit::base::VirtualListScrollHandle,
-    /// The list's height inside its border as last laid out: when the
-    /// dialog's height cap changes it, the list keeps the selected entry in
-    /// view.
-    list_height: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// The list's height inside its border as last laid out, and the
+    /// interface size its rows were measured at then: when the dialog's
+    /// height cap changes the height, the list keeps a selected entry it
+    /// showed whole in view.
+    list_height: std::rc::Rc<std::cell::Cell<(Pixels, f32)>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
     _subscription: Subscription,
@@ -1381,19 +1388,31 @@ impl Render for ShortcutHelpView {
                 // holds both: the toolkit's nearest row brought a first entry
                 // the wheel had passed back alone to the list's top, its
                 // heading cut above it.
+                //
+                // A window resized under the list moves it only to keep a
+                // selected entry it showed whole from being cut, and
+                // otherwise leaves it where the wheel or a key left it, as
+                // the toolkit clamps it to its rows: the person put it
+                // there. It brought the selection back on every frame of a
+                // resize, undoing the wheel. As the list opens, and after a
+                // text size chosen with it open, which changes every row's
+                // height under the scroll, the selection comes into view.
                 .on_prepaint({
                     let (seen, scroll) = (self.list_height.clone(), self.scroll.clone());
-                    let (span, content) = (self.layout.span(&self.rows, self.selected), self.layout.content());
+                    let (span, content, scale) = (self.layout.span(&self.rows, self.selected), self.layout.content(), self.layout.scale);
                     move |bounds, _, _| {
-                        if seen.replace(bounds.size.height) != bounds.size.height && let Some(span) = span {
-                            // The canvas fills the list inside its 1 px
-                            // border, as the rows' list does, so its height
-                            // is the list's view. Taken 2 px shorter, it
-                            // ended an entry it revealed from below 2 px
-                            // above the list's foot and, at the floor, cut
-                            // the entry's top.
-                            let (offset, view) = (scroll.offset(), bounds.size.height);
-                            if let Some(to) = span.reveal(-offset.y, view, content, Reveal::Nearest) {
+                        // The canvas fills the list inside its 1 px border,
+                        // as the rows' list does, so its height is the
+                        // list's view. Taken 2 px shorter, it ended an entry
+                        // it revealed from below 2 px above the list's foot
+                        // and, at the floor, cut the entry's top.
+                        let view = bounds.size.height;
+                        let (was, measured) = seen.replace((view, scale));
+                        if was != view && let Some(span) = span {
+                            let offset = scroll.offset();
+                            let resized = was > px(0.) && measured.to_bits() == scale.to_bits();
+                            let cut = span.whole(-offset.y, was) && !span.whole(-offset.y, view);
+                            if (!resized || cut) && let Some(to) = span.reveal(-offset.y, view, content, Reveal::Nearest) {
                                 scroll.set_offset(point(offset.x, -to));
                             }
                         }
@@ -2073,17 +2092,17 @@ mod list_tests {
         close(cx);
     }
 
-    /// A list that changes height keeps the selected entry in view, scrolled
-    /// the least that shows it whole and, where it is a group's first entry,
-    /// with its group's heading where the list holds both: at 13 and 18 pt,
-    /// with the second group's first entry selected and the wheel past it, a
-    /// 560 px tall window, whose list is shorter, brings heading and entry
-    /// back to the list's top, and with the wheel then cutting the heading
-    /// 10 px, the 800 px window again brings it back whole. The toolkit's
-    /// nearest row brought the entry back alone, its heading cut above the
-    /// list's top, and left a heading the wheel cut as it was.
+    /// A window resized under a list the wheel moved away from the selected
+    /// entry keeps the list where the wheel left it, clamped to its rows:
+    /// at 13 and 18 pt, with the second group's first entry selected and the
+    /// wheel leaving it 5 px above a 1200 × 800 window's list, a 560 px tall
+    /// window and then the 800 px one again leave every row where it was
+    /// drawn from the list's top, the entry and its heading still above it;
+    /// and with the wheel at the 560 px list's end, the 800 px window keeps
+    /// the last row's foot at the list's foot. A resize brought the
+    /// selection back on each frame, undoing the wheel.
     #[gpui::test]
-    async fn a_list_of_another_height_brings_a_groups_first_entry_back_with_its_heading(
+    async fn a_resize_keeps_the_wheels_scroll_where_the_selection_lies_outside_the_list(
         cx: &mut TestAppContext,
     ) {
         let fixture = tempfile::tempdir().unwrap();
@@ -2099,59 +2118,130 @@ mod list_tests {
                 press(cx, "down");
             }
             // The wheel leaves the entry 5 px above the list's top, its
-            // heading above it.
+            // heading above it; the row below it is cut 5 px there.
+            let below = first + 1;
             let by = shown.at(cx, first).bottom() - shown.top + px(5.);
-            shown.wheel(cx, by, first + 1);
-            assert!(
-                !shown.whole(cx, first) && !shown.whole(cx, heading),
-                "{text} pt: the wheel leaves entry {first} and its heading above the list"
-            );
+            shown.wheel(cx, by, below);
+            let rest = shown.at(cx, below).top() - shown.top;
             for (height, list) in [(560., "shorter"), (800., "taller")] {
                 let view = shown.view();
                 cx.simulate_resize(size(px(1200.), px(height)));
                 draw(cx);
                 shown.relist(cx);
                 assert!(
-                    (shown.view() - view).abs() > EDGE
-                        && shown.heading + shown.entry <= shown.view(),
-                    "{text} pt: a {height} px tall window gives the list {:?}, not \
-                     {view:?}, holding a heading and an entry",
+                    (shown.view() - view).abs() > EDGE,
+                    "{text} pt: a {height} px tall window gives the list {:?}, not {view:?}",
                     shown.view()
                 );
-                let drawn = shown.drawn(cx, heading).map(|row| row.top());
+                let now = shown.at(cx, below).top() - shown.top;
                 assert!(
-                    drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE)
-                        && shown.whole(cx, first),
-                    "{text} pt: a {list} list brings group {heading}'s heading back to \
-                     its top with entry {first}: the heading is drawn at {drawn:?}, the \
-                     list from {:?}",
-                    shown.top
+                    (now - rest).abs() <= EDGE
+                        && !shown.whole(cx, first)
+                        && !shown.whole(cx, heading),
+                    "{text} pt: a {list} list keeps the wheel's scroll, row {below} {rest:?} \
+                     below its top, with entry {first} and its heading above it: row {below} \
+                     is drawn {now:?} below it"
                 );
-                if height == 560. {
-                    // The wheel cuts the heading 10 px at the list's top.
-                    shown.wheel(cx, px(10.), first);
-                    assert!(
-                        !shown.whole(cx, heading) && shown.whole(cx, first),
-                        "{text} pt: the wheel cuts group {heading}'s heading"
-                    );
-                }
             }
+            cx.simulate_resize(size(px(1200.), px(560.)));
+            draw(cx);
+            shown.relist(cx);
+            // Far past the list's end, which the list holds.
+            scroll_down(
+                cx,
+                shown.centre,
+                ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+            );
+            let last = shown.rows.len() - 1;
+            let ends = |shown: &Shown, cx: &mut VisualTestContext| {
+                shown.drawn(cx, last).map(|row| row.bottom() - shown.foot)
+            };
+            assert!(
+                ends(&shown, cx).is_some_and(|off| off.abs() <= EDGE),
+                "{text} pt: the wheel takes the list to its end: row {last} ends {:?} off \
+                 its foot",
+                ends(&shown, cx)
+            );
+            cx.simulate_resize(size(px(1200.), px(800.)));
+            draw(cx);
+            shown.relist(cx);
+            assert!(
+                ends(&shown, cx).is_some_and(|off| off.abs() <= EDGE) && !shown.whole(cx, first),
+                "{text} pt: a taller list keeps its end at its foot, entry {first} above \
+                 it: row {last} ends {:?} off its foot",
+                ends(&shown, cx)
+            );
             close(cx);
         }
     }
 
-    /// Whether the list holds a group's heading with its first entry is
-    /// judged at the list's height to the pixel: at 13 and 18 pt, with the
-    /// wheel leaving the second group's first entry 5 px above a 1200 × 800
-    /// window's list, a window whose list is a pixel taller than the heading
-    /// and the entry brings the heading back to its top with the entry whole
-    /// below it, and one whose list is a pixel shorter brings the entry back
-    /// whole to its top without the heading. Judged 2 px short, the taller
-    /// list brought the entry alone, its heading above the list; judged 2 px
-    /// long, the shorter one brought the heading and cut the entry at its
-    /// foot. No other list test's list lies within 2 px of both.
+    /// A window resized under a list that shows the selected entry whole
+    /// brings it back only where the new height would cut it: at 13 and
+    /// 18 pt, with the second group's first entry selected and the wheel
+    /// cutting its heading 10 px at a 1200 × 800 window's list's top, a
+    /// 560 px tall window, whose list still holds the entry whole, moves
+    /// nothing and leaves the heading cut, and a 300 px one, whose list at
+    /// its floor would cut the entry's foot, brings the entry whole to the
+    /// list's foot. Before, the 560 px window brought the heading back.
     #[gpui::test]
-    async fn a_list_a_pixel_past_a_heading_and_an_entry_holds_both_and_one_a_pixel_short_the_entry(
+    async fn a_resize_brings_back_only_a_selected_entry_it_would_cut(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                press(cx, "down");
+            }
+            let by = shown.at(cx, heading).top() - (shown.top - px(10.));
+            shown.wheel(cx, by, first);
+            assert!(
+                !shown.whole(cx, heading) && shown.whole(cx, first),
+                "{text} pt: the wheel cuts group {heading}'s heading above entry {first}"
+            );
+            let rest = shown.at(cx, heading).top() - shown.top;
+            cx.simulate_resize(size(px(1200.), px(560.)));
+            draw(cx);
+            shown.relist(cx);
+            let now = shown.at(cx, heading).top() - shown.top;
+            assert!(
+                (now - rest).abs() <= EDGE && shown.whole(cx, first),
+                "{text} pt: a shorter list that holds entry {first} whole keeps the wheel's \
+                 scroll, group {heading}'s heading {rest:?} from its top: {now:?}"
+            );
+            cx.simulate_resize(size(px(1200.), px(300.)));
+            draw(cx);
+            shown.relist(cx);
+            let drawn = shown.drawn(cx, first);
+            assert!(
+                drawn.is_some_and(|row| (row.bottom() - shown.foot).abs() <= EDGE)
+                    && shown.whole(cx, first),
+                "{text} pt: a list at its floor, {:?}, that would cut entry {first} brings it \
+                 whole to its foot, {:?}: {drawn:?}",
+                shown.view(),
+                shown.foot
+            );
+            close(cx);
+        }
+    }
+
+    /// Whether a resize cuts the selected entry is judged at the list's
+    /// height to the pixel: at 13 and 18 pt, with the wheel bringing the
+    /// second group's heading to a 1200 × 800 window's list's top and its
+    /// first entry, selected, whole below it, a window whose list is a pixel
+    /// taller than the heading and the entry keeps both whole where they
+    /// were, and one whose list is a pixel shorter, which would cut the
+    /// entry's foot, brings the entry whole to its foot, the heading cut a
+    /// pixel above its top. Judged 2 px short, the taller list counted the
+    /// entry cut and moved it, its heading above the list; judged 2 px long,
+    /// the shorter one left the entry cut at its foot. No other list test's
+    /// list lies within 2 px of both.
+    #[gpui::test]
+    async fn a_list_a_pixel_past_a_heading_and_an_entry_keeps_both_and_one_a_pixel_short_the_entry(
         cx: &mut TestAppContext,
     ) {
         let fixture = tempfile::tempdir().unwrap();
@@ -2173,8 +2263,8 @@ mod list_tests {
                 for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
                     press(cx, "down");
                 }
-                let by = shown.at(cx, first).bottom() - shown.top + px(5.);
-                shown.wheel(cx, by, first + 1);
+                let by = shown.at(cx, heading).top() - shown.top;
+                shown.wheel(cx, by, first);
                 cx.simulate_resize(size(px(1200.), px(height)));
                 draw(cx);
                 shown.relist(cx);
@@ -2184,20 +2274,23 @@ mod list_tests {
                      {list} than a heading and an entry, {both:?}: {:?}",
                     shown.view()
                 );
-                // The row the list brings to its top: the heading where the
-                // list holds it with the entry, else the entry.
+                // Where the list holds both, the heading stays at its top;
+                // else the entry comes whole to its foot.
                 let holds = view > both;
-                let top = if holds { heading } else { first };
-                let drawn = shown.drawn(cx, top).map(|row| row.top());
+                let (row, edge, off) = if holds {
+                    let off = shown.drawn(cx, heading).map(|row| row.top() - shown.top);
+                    (heading, "top", off)
+                } else {
+                    let off = shown.drawn(cx, first).map(|row| row.bottom() - shown.foot);
+                    (first, "foot", off)
+                };
                 assert!(
-                    drawn.is_some_and(|drawn| (drawn - shown.top).abs() <= EDGE)
+                    off.is_some_and(|off| off.abs() <= EDGE)
                         && shown.whole(cx, first)
                         && shown.whole(cx, heading) == holds,
                     "{text} pt: a list a pixel {list} than group {heading}'s heading and \
-                     entry {first} brings row {top} to its top, {:?}, with the entry whole \
-                     and the heading {}: row {top} is drawn at {drawn:?}, entry {first} at \
-                     {:?}",
-                    shown.top,
+                     entry {first} leaves row {row} at its {edge}, with the entry whole and \
+                     the heading {}: row {row} is drawn {off:?} off it, entry {first} at {:?}",
                     if holds { "whole" } else { "cut" },
                     shown.drawn(cx, first)
                 );
