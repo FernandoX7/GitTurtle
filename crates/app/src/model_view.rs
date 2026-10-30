@@ -804,6 +804,8 @@ fn render_side<T: 'static>(
                 Some(crate::system_preview::OwnHeader {
                     header: header.into_any_element(),
                     foot: None,
+                    // The header's `py_1` above and below.
+                    padding: window.rem_size() * 0.5,
                     held,
                 }),
                 vec![answer],
@@ -1092,6 +1094,7 @@ fn render_side<T: 'static>(
             name,
             Some(crate::system_preview::OwnHeader {
                 header: header.into_any_element(),
+                padding: window.rem_size() * 0.5,
                 // The details, a label, give way before the header's
                 // controls do, their own scroll area shrinking with them
                 // to nothing: its padding scrolls with its lines, since a

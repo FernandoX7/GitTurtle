@@ -11320,7 +11320,10 @@ pub(crate) mod tests {
     /// line shows more than one and gives way below it only for the one line,
     /// with one more line cutting into it where the line shows fewer than it
     /// wraps to; every frame after the answer, and after a 40 px resize, lays
-    /// the line and the page out as the frame they settle in. Linux renders
+    /// the line and the page out as the frame they settle in. Each control
+    /// Tab reaches lies whole with its ring in the header's region, which
+    /// keeps its floor where the page gives way, as at 18 pt in a 461 × 490
+    /// window. Linux renders
     /// no pages, so the test gives After a one-page document by hand, whose
     /// page request fails there as on any build without PDFKit; Before is the
     /// side Linux prepares, with no pages, which the view's other call site
@@ -11368,6 +11371,7 @@ pub(crate) mod tests {
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
         let (mut shown_every, mut shown_fewer, mut scrolled) = (false, false, false);
+        let mut floor_walked = false;
         crate::in_frame::probe::watch();
         for (control, note, region, body, header) in [
             (
@@ -11449,6 +11453,24 @@ pub(crate) mod tests {
                 }
                 let held = format!("{region}/header").leak();
                 scrolled |= side_header_scrolls(cx, &at, held, header, line, content);
+                // The header's region, at its floor where the page gives
+                // way, shows each control Tab reaches whole with its ring.
+                floor_walked |=
+                    (text, width, height) == (18, 461., 490.) && body.size.height < minimum - slack;
+                let side = if region == "pdf-side-0" { 0 } else { 1 };
+                let controls: Vec<_> = [
+                    ("pdf-system", side),
+                    ("pdf-retry", side),
+                    ("pdf-page-number", side),
+                    ("pdf-zoom", side * 3 + 1),
+                    ("pdf-zoom", side * 3),
+                    ("pdf-zoom", side * 3 + 2),
+                ]
+                .into_iter()
+                .map(|(name, index)| crate::focus_reveal::tests::control(name, index))
+                .filter(|(_, selector)| cx.debug_bounds(selector).is_some())
+                .collect();
+                assert_tab_shows_each_control_whole(cx, &app, region, &controls, &at);
                 if lines < wrapped {
                     shown_fewer = true;
                     assert!(
@@ -11475,7 +11497,50 @@ pub(crate) mod tests {
             shown_every && shown_fewer && scrolled,
             "lines shown whole, lines the room cuts short, and a header that scrolls above its line"
         );
+        assert!(
+            floor_walked,
+            "at 18 pt in 461 × 490 the header keeps only its floor"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A side's own header's region `<name>/header`, which never holds less
+    /// than its floor (`system_preview::header_ends`), shows each of
+    /// `controls` whole with its focus ring as Tab reaches it, from the
+    /// first, which takes focus as a page that opens on it does.
+    #[cfg(target_os = "linux")]
+    fn assert_tab_shows_each_control_whole(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        name: &'static str,
+        controls: &[crate::focus_reveal::tests::Control],
+        at: &str,
+    ) {
+        let list = cx
+            .update(|_, cx| crate::system_preview::side_header(app.entity_id(), name, cx))
+            .expect("the side's header");
+        let region = format!("{name}/header").leak();
+        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        for (step, (id, selector)) in controls.iter().enumerate() {
+            if step == 0 {
+                list.reveal_next_focus();
+                cx.update(|window, cx| list.focus(id.clone(), cx).focus(window, cx));
+            } else {
+                cx.simulate_keystrokes("tab");
+            }
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| list.focused(window)).as_ref(),
+                Some(id),
+                "{at}: Tab reaches {selector}"
+            );
+            let shown = cx.debug_bounds(selector).expect("the control").dilate(ring);
+            let held = cx.debug_bounds(region).expect("the header's region");
+            assert!(
+                shown.top() >= held.top() - px(0.01) && shown.bottom() <= held.bottom() + px(0.01),
+                "{at}: {selector} and its ring {shown:?} lie whole in the header's region {held:?}"
+            );
+        }
     }
 
     /// A narrow document side's own header, a 3D model's and the PDF page

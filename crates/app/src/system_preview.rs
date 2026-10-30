@@ -740,15 +740,19 @@ pub(crate) struct HeaderEnd {
 /// The rule beneath the header always keeps its pixel, and the line its one
 /// whole line with its padding where a click answered; the content keeps its
 /// usable minimum ([`crate::image_compare::STAGE_MIN`]) wherever that leaves
-/// the header at least a control's height, and otherwise what is left beyond
-/// that height; the header takes the rest, whole where that holds its controls
+/// the header its floor, room for one control whole with its focus ring
+/// beneath the header's own padding, and otherwise what is left beyond that
+/// floor; the header takes the rest, whole where that holds its controls
 /// and otherwise in a region that tall which scrolls, cued by a scrollbar and
 /// revealing the control Tab moves onto, so its controls stay inside the
 /// preview and the line whole beneath them. A side's `foot`, the model's
 /// details, gives way before the header does. In a narrow side, at 13 and
 /// 18 pt in a 461 × 490 window and at 18 pt in 640 × 680, the controls once
-/// wrapped past the preview's foot and took the line out of view. Tests find
-/// that region as `<name>/header`.
+/// wrapped past the preview's foot and took the line out of view; then the
+/// floor was a control's height alone, which cut the ring of the control
+/// Tab moved onto in a side as short as the rewrite review's scaled 100 px
+/// file box or the Stashes dialog's 120 px floor. Tests find that region as
+/// `<name>/header`.
 pub(crate) fn header_ends(
     name: &'static str,
     side: Option<OwnHeader>,
@@ -756,20 +760,31 @@ pub(crate) fn header_ends(
     end: HeaderEnd,
     body: AnyElement,
 ) -> crate::in_frame::InFrame {
-    let Some(OwnHeader { header, foot, held }) = side else {
+    let Some(OwnHeader {
+        header,
+        foot,
+        padding,
+        held,
+    }) = side
+    else {
         return ends(name, answers, end, body);
     };
     let answered = answers.iter().any(Option::is_some);
-    crate::in_frame::in_frame(move |bounds, window, _| {
+    crate::in_frame::in_frame(move |bounds, window, cx| {
         let height = bounds.size.height;
         // The rule's pixel, and the line's one whole line with its padding
         // where a click answered.
         let line = crate::image_compare::text_line(appearance::ui_text(11.), window);
         let reserve = (px(1.) + if answered { line + end.bottom } else { px(0.) }).min(height);
         // The content keeps its minimum, and the header the rest, where
-        // that is at least a control's height; otherwise the header keeps
-        // that, so its controls stay reachable, and the content the rest.
-        let row = appearance::ui_size(28.).min(height - reserve);
+        // that is at least its floor; otherwise the header keeps its floor,
+        // so each control Tab moves onto shows whole with its ring, and the
+        // content the rest. The floor holds the scaled 28 px control, its
+        // ring's room above and below, which the reveal keeps clear of the
+        // region's edges, and the header's own padding, so a header of one
+        // row shows whole there, unscrolled.
+        let row = (appearance::ui_size(28.) + appearance::button_ring_room(cx) * 2. + padding)
+            .min(height - reserve);
         let most =
             (height - reserve - appearance::ui_size(crate::image_compare::STAGE_MIN)).max(row);
         let content = height - reserve - most;
@@ -822,14 +837,16 @@ pub(crate) fn header_ends(
 }
 
 /// A side's own header for [`header_ends`]: the header, what lies beneath
-/// the side's content (the model's details), and the header's scrolling
-/// state. The foot gives way before the header, shrinking as a column's
-/// child, so a foot that can hold more than it shows is a scroll area of
-/// its own with no minimum height (`min_h_0`) and its padding inside, which
-/// keeps its lines within its reach as it shrinks to nothing.
+/// the side's content (the model's details), the header's own padding above
+/// and below its controls together, which its floor counts, and the header's
+/// scrolling state. The foot gives way before the header, shrinking as a
+/// column's child, so a foot that can hold more than it shows is a scroll
+/// area of its own with no minimum height (`min_h_0`) and its padding
+/// inside, which keeps its lines within its reach as it shrinks to nothing.
 pub(crate) struct OwnHeader {
     pub(crate) header: AnyElement,
     pub(crate) foot: Option<AnyElement>,
+    pub(crate) padding: Pixels,
     pub(crate) held: SideHeader,
 }
 
@@ -1108,6 +1125,119 @@ fn copy_refused(error: &anyhow::Error) -> Failure {
 pub(crate) mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    /// A narrow side's own header at the floor [`header_ends`] keeps it, in
+    /// the rewrite review's scaled 100 px file box and at the Stashes
+    /// dialog's scaled 120 px floor, at 13 and 18 pt beneath a failed open's
+    /// line, shows each control focus moves onto whole with its focus ring,
+    /// under the PDF page view's padding and the 3D model's. The floor was
+    /// once a control's height alone, which held no control's ring.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_floor_shows_a_whole_control(cx: &mut gpui_kit::TestAppContext) {
+        struct Side {
+            height: f32,
+            /// The header's padding above and below, in rems: the PDF page
+            /// view's `p_2` or the model's `py_1`.
+            padding: f32,
+            showing: Showing,
+        }
+        impl Render for Side {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let held = SideHeader::new(
+                    "floor-side",
+                    "floor-side/scrollbar",
+                    cx.entity_id(),
+                    self.showing,
+                    window,
+                    cx,
+                );
+                let mut header = div()
+                    .debug_selector(|| "floor-side-header".into())
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py(window.rem_size() * self.padding);
+                for index in 0..4usize {
+                    let control = crate::button(("floor-control", index), "", "plus", false)
+                        .debug_selector(move || format!("floor-control-{index}"));
+                    header = header.child(held.track(("floor-control", index), control, cx));
+                }
+                let answer = Answer {
+                    id: 0,
+                    key: "floor-control-0/note".into(),
+                    failed: true,
+                    text: "Could not open After.".into(),
+                    brief: NOT_OPENED.into(),
+                };
+                let end = HeaderEnd {
+                    inset: window.rem_size() * 0.5,
+                    bottom: window.rem_size() * 0.5,
+                    right_rule: false,
+                    border: palette(cx).border,
+                };
+                div()
+                    .w(px(88.))
+                    .h(appearance::ui_size(self.height))
+                    .flex()
+                    .flex_col()
+                    .child(header_ends(
+                        "floor-side",
+                        Some(OwnHeader {
+                            header: header.into_any_element(),
+                            foot: None,
+                            padding: window.rem_size() * self.padding * 2.,
+                            held,
+                        }),
+                        vec![Some(answer)],
+                        end,
+                        div().size_full().into_any_element(),
+                    ))
+            }
+        }
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (side, cx) = cx.add_window_view(|_, _| Side {
+            height: 100.,
+            padding: 0.5,
+            showing: Showing::next(),
+        });
+        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (height, padding) in [(100., 0.5), (120., 0.5), (100., 0.25), (120., 0.25)] {
+                side.update(cx, |side, cx| {
+                    side.height = height;
+                    side.padding = padding;
+                    side.showing = Showing::next();
+                    cx.notify();
+                });
+                crate::tags::tests::draw(cx);
+                let at = format!("{text} pt in a scaled {height} px box, padded {padding} rem");
+                let list = cx
+                    .update(|_, cx| side_header(side.entity_id(), "floor-side", cx))
+                    .expect("the side's header");
+                for index in 0..4usize {
+                    list.reveal_next_focus();
+                    cx.update(|window, cx| {
+                        list.focus(("floor-control", index), cx).focus(window, cx)
+                    });
+                    crate::tags::tests::draw(cx);
+                    let selector = format!("floor-control-{index}").leak();
+                    let shown = cx.debug_bounds(selector).expect("the control").dilate(ring);
+                    let held = cx.debug_bounds("floor-side/header").expect("the region");
+                    assert!(
+                        shown.top() >= held.top() - px(0.01)
+                            && shown.bottom() <= held.bottom() + px(0.01),
+                        "{at}: {selector} and its ring {shown:?} lie whole in the header's region {held:?}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
 
     /// Queues what the next click on an open control reports, in place of
     /// launching anything.

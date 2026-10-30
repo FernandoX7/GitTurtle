@@ -502,7 +502,7 @@ pub(super) fn render_comparison<T: 'static>(
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
             let body = body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()));
-            return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, held }), vec![answer], end, body.into_any_element())).into_any_element();
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding: window.rem_size(), held }), vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
         let (page, zoom, pending, error, cached) = {
@@ -575,7 +575,7 @@ pub(super) fn render_comparison<T: 'static>(
         }
         let view=cx.entity().downgrade();
         // Why the last open opened nothing, as the header's last line.
-        div().relative().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, held }), vec![answer], end, body.into_any_element())).child(status)
+        div().relative().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding: window.rem_size(), held }), vec![answer], end, body.into_any_element())).child(status)
             .on_prepaint(move |_,window,cx| { let _=view.update(cx,|_,cx|document.request(window,cx)); }).into_any_element()
     })).into_any_element()
 }
