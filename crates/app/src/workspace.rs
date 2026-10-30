@@ -1795,6 +1795,13 @@ impl GitTurtle {
         self.loading = None;
     }
 
+    /// Reads the working state again, in place of any status read in flight.
+    /// One that replaces the read a write asked for as it ended
+    /// (`status_after_write`), as Refresh or showing Working Changes then
+    /// does, reads for that write in its place, so menus keep waiting for it
+    /// (`write_unsettled`): replaced unmarked, the write's read was no longer
+    /// counted, and a Working row's open menu was built again from the
+    /// status the write had just changed before the new read landed.
     pub(super) fn refresh_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo) = self.repository.clone() else {
             return;
@@ -1808,8 +1815,13 @@ impl GitTurtle {
             self.file_paths.reset();
             self.selected_file = None;
         }
+        let for_write =
+            self.status_task.is_some() && self.status_after_write == Some(self.work_generation);
         self.work_generation = self.work_generation.wrapping_add(1);
         let generation = self.work_generation;
+        if for_write {
+            self.status_after_write = Some(generation);
+        }
         let path = repo.path().to_owned();
         self.status_task = None;
         let response = self

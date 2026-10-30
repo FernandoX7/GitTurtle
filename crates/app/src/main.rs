@@ -406,8 +406,10 @@ struct GitTurtle {
     status_task: Option<Task<()>>,
     /// The `work_generation` of the status read a write that changes only
     /// the working state asked for as it ended (Stage, Unstage, Discard,
-    /// Ignore, Delete untracked file…, Resolve, a stash's recovery): menus
-    /// refuse writes while that read runs (`GitTurtle::write_unsettled`).
+    /// Ignore, Delete untracked file…, Resolve, a stash's recovery), or of
+    /// the read that replaced it, as Refresh does (`refresh_worktree`):
+    /// menus refuse writes while that read runs
+    /// (`GitTurtle::write_unsettled`).
     status_after_write: Option<u64>,
     work_generation: u64,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,

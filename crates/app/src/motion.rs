@@ -4417,6 +4417,82 @@ mod tests {
         a_row_menu_waits_for_its_writes_status_read(cx, Opening::Keyboard).await;
     }
 
+    /// A working row's keyboard menu stays refused once a Stage ends and
+    /// Refresh, pressed while the status read the Stage asked for runs,
+    /// reads the status again in its place, until that new read lands, both
+    /// held here, and offers its items once it has. Replaced unmarked, the
+    /// Stage's read was no longer counted, and the menu was built again from
+    /// the status the window still showed, offering its items, before
+    /// either read had landed.
+    #[gpui::test]
+    async fn a_keyboard_menu_waits_for_a_refresh_in_place_of_its_writes_status_read(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        open_row_menu(&app, cx, "gamma.txt", Opening::Keyboard);
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        assert_eq!(delete(cx), Some(true), "at rest");
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("zeta.txt")],
+            },
+        );
+        assert_eq!(delete(cx), Some(false), "while the Stage runs");
+        // The status read the Stage asks for as it ends, and the one Refresh
+        // asks for in its place, wait behind this.
+        let status = app.update(cx, |app, _| app.operations.hold());
+        drop(write);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        let asked = app.read_with(cx, |app, _| {
+            assert!(
+                app.operation_busy.is_none() && app.status_task.is_some(),
+                "the Stage ended, and its status read is held"
+            );
+            app.work_generation
+        });
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "refused while the Stage's status read runs"
+        );
+        // Refresh's shortcut, pressed in the menu, reaches the window.
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-r"
+        } else {
+            "ctrl-r"
+        });
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.work_generation != asked
+                && app.status_task.is_some()),
+            "Refresh read the status again in place of the Stage's read, held too"
+        );
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "refused until the read that replaced the Stage's lands"
+        );
+        assert!(focus_in_keyed_menu(&app, cx), "focus stays in the menu");
+        drop(status);
+        crate::views::tests::settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_none()
+                && !app.write_unsettled()),
+            "the read that replaced the Stage's landed"
+        );
+        assert_eq!(delete(cx), Some(true), "available once it lands");
+    }
+
     /// Reads the working state again quietly, as the local watcher does
     /// after a change outside the app, and lands the read but not the rows
     /// it brings, which a hold on the filter's thread keeps preparing.
