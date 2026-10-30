@@ -3628,6 +3628,61 @@ mod tests {
             drop(fixture);
         }
 
+        /// A keyboard's Working row menu names the refresh, not the write,
+        /// once a write ends and the status read it asked for has yet to
+        /// land: "Delete untracked file…, available when refreshing
+        /// finishes". Built again only as the write's refusal began or
+        /// ended, it kept naming the write that had ended until the read
+        /// landed.
+        #[gpui::test]
+        async fn a_keyboard_working_menu_names_the_refresh_after_its_write(
+            cx: &mut TestAppContext,
+        ) {
+            let (_fixture, app, cx) = six_files_for_menus(cx).await;
+            open_row_menu(&app, cx, "gamma.txt", Opening::Keyboard);
+            let named = |cx: &mut VisualTestContext, cause: &str| {
+                offered_plainly(
+                    cx,
+                    &format!("Delete untracked file…, available when {cause} finishes"),
+                )
+            };
+            assert_eq!(offered(cx, "Delete untracked file…"), Some(true), "at rest");
+            let write = held(
+                &app,
+                cx,
+                gitturtle_core::WriteCommand::Stage {
+                    paths: vec![PathBuf::from("zeta.txt")],
+                },
+            );
+            next_frame(cx);
+            assert_eq!(named(cx, "working"), Some(false), "while the Stage runs");
+            // The status read the Stage asks for as it ends waits behind
+            // this.
+            let status = app.update(cx, |app, _| app.operations.hold());
+            drop(write);
+            let write = app
+                .update(cx, |app, _| app.operation_task.take())
+                .expect("the write");
+            write.await;
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_none()
+                    && app.status_task.is_some()
+                    && !app.working_paths.pending),
+                "the Stage ended, its status read held, its rows standing"
+            );
+            assert_eq!(
+                named(cx, "refreshing"),
+                Some(false),
+                "refused for the read, saying so"
+            );
+            assert_eq!(named(cx, "working"), None, "the ended Stage named no more");
+            drop(status);
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+        }
+
         /// The label a Fetch runs under, as the window's progress line
         /// shows it.
         const FETCHING: &str = "Fetching remote…";

@@ -4668,7 +4668,7 @@ impl GitTurtle {
                 staged: area == ChangeArea::Staged,
             },
             stage_control,
-            busy: false,
+            wait: None,
             waiting: None,
         });
         let Some(items) = self.working_menu_items(cx) else {
@@ -4702,12 +4702,11 @@ impl GitTurtle {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
-        let (busy, waiting) = (self.write_unsettled(), self.working_rows_wait());
+        let (wait, waiting) = (self.menu_wait(), self.working_rows_wait());
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
-        (followed.busy, followed.waiting) = (busy, waiting);
+        (followed.wait, followed.waiting) = (wait, waiting);
         let (target, stage_control) = (followed.target.clone(), followed.stage_control);
-        let wait = self.menu_wait();
         Some(move |menu| {
             working_row_menu(
                 menu,
@@ -5203,8 +5202,11 @@ pub(super) struct WorkingMenu {
     pub(super) target: MenuRow,
     /// Whether the row had its Stage or Unstage control.
     pub(super) stage_control: bool,
-    /// Whether the items were built refusing writes.
-    pub(super) busy: bool,
+    /// Why a write refused the items as they were last built, which each
+    /// states (`GitTurtle::menu_wait`), or `None` where none did: built
+    /// again as that changes, so an ended write is named no more once its
+    /// status read is all the items wait for.
+    pub(super) wait: Option<native_accessibility::MenuWait>,
     /// Why the items were built refused while the rows were prepared, which
     /// each states (`GitTurtle::working_rows_wait`), or `None` where they
     /// were not: the rows' landing builds them again, and so does a change

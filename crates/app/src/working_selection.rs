@@ -342,7 +342,7 @@ impl GitTurtle {
         };
         if self.working_paths.pending {
             let waiting = self.working_rows_wait();
-            if (!followed.busy && self.write_unsettled())
+            if (followed.wait.is_none() && self.write_unsettled())
                 || (followed.waiting.is_some() && followed.waiting != waiting)
             {
                 let items = self.working_menu_items(cx);
@@ -358,9 +358,8 @@ impl GitTurtle {
             return;
         };
         let changed = (*entry != target.entry).then(|| entry.clone());
-        let rebuild = changed.is_some()
-            || followed.busy != self.write_unsettled()
-            || followed.waiting.is_some();
+        let rebuild =
+            changed.is_some() || followed.wait != self.menu_wait() || followed.waiting.is_some();
         if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
             followed.target.entry = entry;
         }
