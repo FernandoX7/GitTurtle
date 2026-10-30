@@ -2686,9 +2686,16 @@ impl GitTurtle {
     /// window still shows what the write found. Built in between, a menu
     /// offered its items for that state: a commit's Revert of a commit an
     /// Undo had just taken away, or a branch's actions on a name a delete
-    /// had just removed. A read the watcher asked for refuses nothing.
+    /// had just removed. A reload that another page or a passive reader
+    /// holds off (`quiet_reads_held`), as Blame or File history open as the
+    /// write ends, refuses nothing until it can run: menus stayed refused
+    /// there, with nothing to say why, until the window returned to History
+    /// or Changes. A read the watcher asked for refuses nothing.
     pub(super) fn write_unsettled(&self) -> bool {
-        self.operation_busy.is_some() || self.automatic.reloading_after_write()
+        self.operation_busy.is_some()
+            || self
+                .automatic
+                .reloading_after_write(!self.quiet_reads_held())
     }
 
     /// `width` is the inspector's width where the window pins it, otherwise

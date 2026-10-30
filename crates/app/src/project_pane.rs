@@ -1228,7 +1228,9 @@ impl GitTurtle {
         };
         MenuSnapshot {
             name,
-            busy: self.write_unsettled(),
+            // Opening another project reads nothing the window's repository
+            // reloads after a write, so only a running write refuses it.
+            busy: self.operation_busy.is_some(),
             destinations: move_destinations(&self.project_library, key),
         }
     }

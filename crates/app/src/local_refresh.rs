@@ -172,6 +172,13 @@ impl LocalWatcher {
     pub(crate) fn is_inert(&self) -> bool {
         self.inert.is_some()
     }
+
+    /// Reports `change` through an inert subscription, as a native watch
+    /// reports a change made outside the app.
+    pub(crate) fn report(&mut self, change: LocalChange) {
+        let delivery = self.inert.as_mut().expect("an inert subscription");
+        assert!(delivery.send(change), "the subscription is still read");
+    }
 }
 
 impl Drop for LocalWatcher {

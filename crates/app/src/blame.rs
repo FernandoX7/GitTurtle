@@ -199,6 +199,14 @@ impl GitTurtle {
         {
             self.load_file(index, window, cx);
         }
+        // Blame holds quiet reads off while it is shown, as File history
+        // does; they start once this handler has finished. A write's reload
+        // it had held, which menus wait for once it can run
+        // (`write_unsettled`), otherwise waited for the next local change.
+        let owner = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            let _ = owner.update(cx, |this, cx| this.try_automatic_refresh(window, cx));
+        });
         cx.notify();
         true
     }

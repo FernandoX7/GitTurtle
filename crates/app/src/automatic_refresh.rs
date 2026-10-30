@@ -27,12 +27,19 @@ pub struct State {
 
 impl State {
     /// Whether the quiet reload a write asked for as it ended
-    /// (`refresh_after_write`) waits to run or runs: until it lands the
-    /// window shows what the write found, and menus refuse writes
-    /// (`GitTurtle::write_unsettled`). A read the watcher asked for alone
-    /// refuses nothing, so saving a file never dims a menu.
-    pub(super) fn reloading_after_write(&self) -> bool {
-        self.pending.after_write || self.inflight.as_ref().is_some_and(|read| read.after_write)
+    /// (`refresh_after_write`) runs, or waits for nothing but what starts it
+    /// as it ends (a running read, a status read, a write): until it lands
+    /// the window shows what the write found, and menus refuse writes
+    /// (`GitTurtle::write_unsettled`). `may_start` is false while another
+    /// page or a passive reader holds quiet reads
+    /// (`GitTurtle::quiet_reads_held`), so the reload that waits then refuses
+    /// nothing until the window returns to it: the menus of a window left on
+    /// Blame or Settings once stayed refused, with nothing to say why. A read
+    /// the watcher asked for alone refuses nothing, so saving a file never
+    /// dims a menu.
+    pub(super) fn reloading_after_write(&self, may_start: bool) -> bool {
+        self.inflight.as_ref().is_some_and(|read| read.after_write)
+            || (self.pending.after_write && may_start)
     }
     /// Test-only: holds quiet reads from starting, or lets them start
     /// again, so a test can act between a write's end and its reload.
@@ -47,6 +54,17 @@ impl State {
     #[cfg(test)]
     pub(crate) fn rescan_queued(&self) -> bool {
         self.pending.rescan
+    }
+    /// Reports `change` through the repository's subscription, as the
+    /// watcher reports a change made outside the app, for tests in other
+    /// modules: the window takes it as it takes the watcher's
+    /// (`GitTurtle::listen_for_local_changes`).
+    #[cfg(test)]
+    pub(crate) fn report_local_change(&mut self, change: LocalChange) {
+        self.watcher
+            .as_mut()
+            .expect("a watched repository")
+            .report(change);
     }
     /// Whether a quiet read, which reads the working state whatever it was
     /// asked for, waits to run or runs, for tests in other modules.
@@ -259,15 +277,30 @@ impl GitTurtle {
         self.automatic.epoch = self.automatic.epoch.wrapping_add(1);
     }
 
+    /// Whether a passive reader runs or is open, which reads the repository
+    /// as it was asked to and holds quiet reads off until it ends or closes,
+    /// then starts them: a history load or search, File history, a revision
+    /// inspection or Blame.
+    fn passive_reading(&self) -> bool {
+        self.loading.is_some()
+            || self.history_search_pending()
+            || self.file_history.is_active()
+            || self.revision_inspection.is_active()
+            || self.blame.is_visible()
+    }
+
+    /// Whether the window holds quiet reads off for as long as it stays as
+    /// it is: another page is shown, as returning to the repository starts
+    /// them, or a passive reader runs or is open ([`Self::passive_reading`]).
+    pub(super) fn quiet_reads_held(&self) -> bool {
+        self.page != AppPage::Repository || self.passive_reading()
+    }
+
     pub(super) fn try_automatic_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.automatic.can_start(
             self.page == AppPage::Repository,
             self.operation_busy.is_some(),
-            self.loading.is_some()
-                || self.history_search_pending()
-                || self.file_history.is_active()
-                || self.revision_inspection.is_active()
-                || self.blame.is_visible(),
+            self.passive_reading(),
             self.status_task.is_some(),
         ) {
             return;

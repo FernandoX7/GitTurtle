@@ -960,16 +960,20 @@ pub(crate) struct AppDropdown {
 /// What a menu that follows writes reads as it is built
 /// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],
 /// [`KeyboardMenu`]):
-/// whether a write runs or its quiet reload has yet to land
+/// whether a write runs, which alone refuses a project row's Open project
+/// (`GitTurtle::operation_busy`), whether a write runs or its quiet reload
+/// has yet to land, which refuses every other item that writes
 /// (`GitTurtle::write_unsettled`), and whether a merge, rebase, cherry-pick
 /// or revert is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
 /// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save
-/// changes to stash…, Amend and Undo. The menu is built again when either
-/// changes; built again only for the write, a menu open as a cherry-pick
-/// stopped on conflicts offered those items once the write had ended, until
-/// it was opened again.
+/// changes to stash…, Amend and Undo. The menu is built again when any of
+/// them changes; built again only for the write, a menu open as a
+/// cherry-pick stopped on conflicts offered those items once the write had
+/// ended, until it was opened again, and one built again only as the reload
+/// landed kept a project row's Open project refused after the write.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct MenuInputs {
+    running: bool,
     writing: bool,
     paused: bool,
 }
@@ -977,6 +981,7 @@ struct MenuInputs {
 impl MenuInputs {
     fn of(app: &crate::GitTurtle) -> Self {
         Self {
+            running: app.operation_busy.is_some(),
             writing: app.write_unsettled(),
             paused: app.integration_state.is_some(),
         }

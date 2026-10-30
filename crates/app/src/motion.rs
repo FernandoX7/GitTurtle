@@ -4163,13 +4163,43 @@ mod tests {
         next_frame(cx);
     }
 
+    /// Asks for a quiet read as the local watcher does when a file is saved
+    /// outside the app, through the repository's subscription, or as the
+    /// status bar's Refresh does with `refresh`, and notifies, as any other
+    /// change in the window would, which a keyboard's menu follows.
+    fn quiet_read_asked(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, refresh: bool) {
+        if refresh {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.retry_automatic_refresh(window, cx))
+            });
+        } else {
+            // The subscription is made on the operation thread.
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            app.update(cx, |app, _| {
+                app.automatic
+                    .report_local_change(crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    })
+            });
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+            "a quiet read was asked for"
+        );
+        app.update(cx, |_, cx| cx.notify());
+        next_frame(cx);
+    }
+
     /// A working row's menu, opened as `opening` opens it, stays refused
     /// once a write that reloads the repository quietly ends, as Create
     /// branch does, until that reload lands, held here: built again as the
     /// write ended, its items acted on what the window showed before the
     /// write, as a commit's Revert offered a commit an Undo had just taken
     /// away. A quiet read the watcher asks for, as a file saved outside the
-    /// app brings, refuses nothing.
+    /// app brings, or the status bar's Refresh asks for refuses nothing.
     async fn a_row_menu_waits_for_its_writes_reload(cx: &mut TestAppContext, opening: Opening) {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         open_row_menu(&app, cx, "gamma.txt", opening);
@@ -4202,34 +4232,17 @@ mod tests {
             Some(true),
             "{opening:?}: available once it lands"
         );
-        hold_quiet_reads(&app, cx, true);
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.queue_automatic_refresh(
-                    crate::local_refresh::LocalChange {
-                        worktree: true,
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                );
-                // As any other change in the window would, which a
-                // keyboard's menu follows.
-                cx.notify();
-            })
-        });
-        next_frame(cx);
-        assert_eq!(
-            delete(cx),
-            Some(true),
-            "{opening:?}: a watcher's quiet read refuses nothing"
-        );
-        hold_quiet_reads(&app, cx, false);
-        assert_eq!(
-            delete(cx),
-            Some(true),
-            "{opening:?}: after the watcher's read"
-        );
+        for (source, refresh) in [("the watcher", false), ("Refresh", true)] {
+            hold_quiet_reads(&app, cx, true);
+            quiet_read_asked(&app, cx, refresh);
+            assert_eq!(
+                delete(cx),
+                Some(true),
+                "{opening:?}: a quiet read {source} asks for refuses nothing"
+            );
+            hold_quiet_reads(&app, cx, false);
+            assert_eq!(delete(cx), Some(true), "{opening:?}: after {source}'s read");
+        }
     }
 
     #[gpui::test]
@@ -4240,6 +4253,241 @@ mod tests {
     #[gpui::test]
     async fn a_keyboard_menu_waits_for_its_writes_reload(cx: &mut TestAppContext) {
         a_row_menu_waits_for_its_writes_reload(cx, Opening::Keyboard).await;
+    }
+
+    /// A History window on a clean worktree, wide enough for the action bar
+    /// and the navigator, with the app's keys bound. Keep the returned
+    /// directory until the test ends.
+    async fn clean_history_for_menus(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        refreshed(&app, cx).await;
+        (fixture, app, cx)
+    }
+
+    /// A Checkout of the branch already out: it changes nothing, and
+    /// reloads the repository quietly as it ends, as every write that can
+    /// move a ref does (`refresh_after_write`).
+    fn checkout_main() -> gitturtle_core::WriteCommand {
+        gitturtle_core::WriteCommand::Checkout {
+            branch: "main".into(),
+        }
+    }
+
+    /// A navigator branch's keyboard menu stays refused once a write that
+    /// reloads the repository quietly ends, until that reload lands, held
+    /// here, as a working row's menu does
+    /// (`a_row_menu_waits_for_its_writes_reload`): built again as the write
+    /// ended, Branch actions… acted on a branch a delete had just removed.
+    #[gpui::test]
+    async fn a_keyboard_branch_menu_waits_for_its_writes_reload(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        let main = app.read_with(cx, |app, _| {
+            app.nav_rows.iter().position(|row| {
+                matches!(row, crate::NavRow::Branch(branch, _)
+                    if app.branches[*branch].name == "main")
+            })
+        });
+        let main = main.expect("main in the navigator");
+        let item = ["Branch actions…"];
+        open_keyed_menu(&app, cx, KeyedRow::Branch(main), "shift-f10").await;
+        keyed_items(&app, cx, &item, true, "main at rest");
+        hold_quiet_reads(&app, cx, true);
+        let write = held(&app, cx, checkout_main());
+        keyed_items(&app, cx, &item, false, "while the write runs");
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()),
+            "the write ended"
+        );
+        keyed_items(&app, cx, &item, false, "until the write's reload lands");
+        hold_quiet_reads(&app, cx, false);
+        keyed_items(&app, cx, &item, true, "once it lands");
+        close_keyed_menu(&app, cx, "the branch's menu");
+        drop(fixture);
+    }
+
+    /// The branch picker's menu, an AppDropdown opened as a write that
+    /// reloads the repository quietly runs, stays refused once the write
+    /// ends, until that reload lands, held here, as a row's menu does.
+    #[gpui::test]
+    async fn the_branch_picker_waits_for_its_writes_reload(cx: &mut TestAppContext) {
+        const FIND: &str = "Find or create a branch…";
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        hold_quiet_reads(&app, cx, true);
+        let write = held(&app, cx, checkout_main());
+        press(cx, "current-branch");
+        assert_eq!(offered(cx, FIND), Some(false), "while the write runs");
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, FIND),
+            Some(false),
+            "the picker's menu waits for the write's reload"
+        );
+        hold_quiet_reads(&app, cx, false);
+        assert_eq!(
+            offered(cx, FIND),
+            Some(true),
+            "the picker's menu once the reload lands"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
+    /// Blame opened once a write has ended, before its quiet reload lands,
+    /// holds the reload off until it closes: a write closes Blame as it
+    /// starts, and Blame's own read puts a reload that runs back to wait
+    /// (`cancel_automatic_read`), as the reload held here waits. The reload
+    /// refuses nothing meanwhile, so the branch picker's menu offers its
+    /// items while Blame stays open, and closing Blame runs it. Counted
+    /// while it waited, the reload left every menu that follows writes
+    /// refused, with nothing to say why, for as long as Blame stayed open,
+    /// and after it closed until the next local change, which alone started
+    /// the reload.
+    #[gpui::test]
+    async fn blame_held_open_across_a_write_refuses_nothing(cx: &mut TestAppContext) {
+        const FIND: &str = "Find or create a branch…";
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        hold_quiet_reads(&app, cx, true);
+        let write = held(&app, cx, checkout_main());
+        release(&app, write, cx).await;
+        next_frame(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        // Blame now holds the reload as the hold did.
+        hold_quiet_reads(&app, cx, false);
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.operation_busy.is_none(),
+                app.blame.is_visible(),
+                app.automatic.quiet_read_requested()
+            )),
+            (true, true, true),
+            "the write ended, Blame stays open, and the write's reload waits for it"
+        );
+        press(cx, "current-branch");
+        assert_eq!(
+            offered(cx, FIND),
+            Some(true),
+            "the picker's menu offers its items while Blame holds the reload"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.close_blame(window, cx);
+            })
+        });
+        next_frame(cx);
+        quiet_reads_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+            "closing Blame ran the write's reload"
+        );
+        drop(fixture);
+    }
+
+    /// A project row's keyboard menu in the project pane offers Open
+    /// project as soon as a write ends: opening another project reads
+    /// nothing the write's quiet reload brings, so it does not wait for that
+    /// reload as other menus do; on Settings, where no quiet read runs, the
+    /// reload waits for the window's return and refuses nothing meanwhile.
+    /// Read from `write_unsettled`, Open project stayed refused after the
+    /// write until the reload landed, and on Settings until the window
+    /// returned to the repository.
+    #[gpui::test]
+    async fn a_project_row_waits_for_no_writes_reload(cx: &mut TestAppContext) {
+        const OPEN: &str = "Open project";
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        app.update(cx, |app, cx| {
+            let mut library = crate::project_library::ProjectLibrary::default();
+            library.remember(std::path::Path::new("/projects/alpha"));
+            app.set_project_library(library);
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        next_frame(cx);
+        let open_menu = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.move_project_cursor(true, true, window, cx);
+                    window.focus(&app.project_pane.focus, cx);
+                })
+            });
+            next_frame(cx);
+            cx.simulate_keystrokes("shift-f10");
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(
+                offered(cx, OPEN).is_some(),
+                "Shift-F10 opened the project's menu"
+            );
+        };
+        open_menu(cx);
+        assert_eq!(offered(cx, OPEN), Some(true), "at rest");
+        hold_quiet_reads(&app, cx, true);
+        let write = held(&app, cx, checkout_main());
+        assert_eq!(offered(cx, OPEN), Some(false), "while the write runs");
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()
+                && app.automatic.quiet_read_requested()),
+            "the write ended, and its reload is held"
+        );
+        assert_eq!(
+            offered(cx, OPEN),
+            Some(true),
+            "once the write ends, before its reload lands"
+        );
+        hold_quiet_reads(&app, cx, false);
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+
+        // A write that ends while Settings is shown.
+        let write = held(&app, cx, checkout_main());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        next_frame(cx);
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Settings
+                && app.operation_busy.is_none()
+                && app.automatic.quiet_read_requested()),
+            "the write ended on Settings, and its reload waits for the repository"
+        );
+        assert!(
+            !app.read_with(cx, |app, _| app.write_unsettled()),
+            "a reload that waits for the window's return refuses nothing"
+        );
+        open_menu(cx);
+        assert_eq!(
+            offered(cx, OPEN),
+            Some(true),
+            "on Settings once the write ends"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        next_frame(cx);
+        quiet_reads_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+            "returning to the repository ran the write's reload"
+        );
+        drop(fixture);
     }
 
     /// Shift-F10 in an open right-click menu, on a History commit, a
