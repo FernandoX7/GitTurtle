@@ -1217,8 +1217,10 @@ story crate's `crates/story/examples/fixtures/test.md`, and
 crates.io package carries. `upstream-files/` holds the latter two at their
 repository paths, byte for byte from revision
 `94a313a72a2513aee2780240cd322d552b2395f0` under the repository's Apache-2.0
-license (SHA-256 `996a637a69f8b3fe7c6ca6a8f29ccd45776759b433bbb9e9dd59a7783f5cbadb`
-and `7ef8be1ae1179787c294cdc9d09a8767820b5a30ec85d2adad5c20fe6b99ca22`).
+license: `crates/story/examples/fixtures/test.md`, SHA-256
+`7ef8be1ae1179787c294cdc9d09a8767820b5a30ec85d2adad5c20fe6b99ca22`, and
+`themes/aurora.json`, SHA-256
+`996a637a69f8b3fe7c6ca6a8f29ccd45776759b433bbb9e9dd59a7783f5cbadb`.
 `scripts/vendor-crate-test.sh vendor/gpui-component` lays them out at those
 paths, and `vendor/gpui-base`, the same revision's `crates/base`, at its own,
 beside the copy it builds, so the dock test compares this module with the

@@ -17,8 +17,9 @@
 # README (gpui-base's text view test includes it) sits at the root:
 # `upstream-files/README.md`, else the crate's. `upstream-files/` may hold
 # only plainly named regular files and directories, no links, hidden names
-# or toolchain pins, and nothing laid out may land in another's place or
-# hold the copy.
+# or toolchain pins in any letter case, a laid-out crate may hold no
+# symbolic link, and no crate may be laid out where something already is,
+# inside another crate laid out before it or the copy, or around one.
 #
 # The copy is made a workspace root of its own whose `[patch.crates-io]`
 # table points every other crate the root manifest patches at its directory
@@ -79,6 +80,11 @@ dir=$(basename -- "$crate")
 # Other headers and keys are compared without whitespace and quotes, so
 # `["patch"."crates-io".x]` is a patch table too, and one with an escape
 # sequence stops the run, since `"\u0070atch"` is `patch` to cargo.
+# Cargo reads a manifest that starts with a UTF-8 byte-order mark, but the
+# mark would hide the first line's header or key from this reading.
+mark=$(dd if="$root/Cargo.toml" bs=3 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+[ "$mark" != efbbbf ] ||
+  fail "$root/Cargo.toml starts with a UTF-8 byte-order mark, which would hide its first line from this script; remove the mark"
 patches=$(awk -v quote="'" '
   function bare(text) { gsub(/[[:space:]"]/, "", text); gsub(quote, "", text); return text }
   function trim(text) { sub(/^[[:space:]]+/, "", text); sub(/[[:space:]]+$/, "", text); return text }
@@ -164,7 +170,7 @@ if [ -e "$files" ] || [ -L "$files" ]; then
     fail "$files is not a directory"
   fi
   odd=$(find "$files" -mindepth 1 \( \( ! -type f ! -type d \) -o -name '.*' -o -name '*[!A-Za-z0-9_.-]*' \
-    -o -name rust-toolchain -o -name rust-toolchain.toml \) -print | head -n 1)
+    -o -iname rust-toolchain -o -iname rust-toolchain.toml \) -print | head -n 1)
   [ -z "$odd" ] || fail "upstream-files may hold only plainly named regular files and directories, without links, hidden names or toolchain pins: $odd"
   listed=$(CDPATH='' cd -- "$files" && find . -type f | LC_ALL=C sort)
   while read -r file; do
@@ -183,6 +189,7 @@ fi
 revision=$(vcs_field "$crate" sha1)
 case "$revision" in *[!0-9a-f]*) revision='' ;; esac
 [ "${#revision}" -eq 40 ] || revision=''
+laid=''
 if [ -n "$revision" ]; then
   while read -r name path; do
     [ -n "$name" ] || continue
@@ -196,8 +203,21 @@ if [ -n "$revision" ]; then
       fail "$path gives the upstream path $upstream, which cannot be laid out inside the scratch directory"
     case "crates/$dir/" in "$upstream"/*) fail "$path's upstream path $upstream would hold the copy at crates/$dir" ;; esac
     case "$upstream/" in "crates/$dir"/*) fail "$path's upstream path $upstream lies inside the copy at crates/$dir" ;; esac
+    # A crate laid out inside another could pass through that one's links,
+    # so a crate may neither lie inside nor hold another, nor hold a link.
+    while read -r earlier; do
+      [ -n "$earlier" ] || continue
+      case "$upstream/" in "$earlier"/*) fail "$path's upstream path $upstream lies inside $earlier, laid out for another crate" ;; esac
+      case "$earlier/" in "$upstream"/*) fail "$path's upstream path $upstream would hold $earlier, laid out for another crate" ;; esac
+    done <<EOF
+$laid
+EOF
     [ ! -e "$scratch/$upstream" ] ||
-      fail "cannot lay out $path at $upstream: upstream-files or another crate already put something there"
+      fail "cannot lay out $path at $upstream: upstream-files already put something there"
+    link=$(find "$path" -type l -print | head -n 1)
+    [ -z "$link" ] || fail "cannot lay out $path: it holds the symbolic link $link"
+    laid="$laid$upstream
+"
     mkdir -p -- "$scratch/$(dirname -- "$upstream")"
     cp -RP -- "$path" "$scratch/$upstream"
     rm -rf -- "$scratch/$upstream/target" "$scratch/$upstream/rust-toolchain" \
