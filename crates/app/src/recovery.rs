@@ -44,6 +44,14 @@ pub(super) struct CommitTarget {
     parents: Vec<String>,
 }
 
+/// The commit's object ID, which a commit's menu reads to know whether the
+/// commit is HEAD (`native_accessibility::MenuCommit`).
+impl AsRef<str> for CommitTarget {
+    fn as_ref(&self) -> &str {
+        &self.oid
+    }
+}
+
 pub(super) fn commit_target(commit: &Commit) -> Arc<CommitTarget> {
     Arc::new(CommitTarget {
         oid: commit.oid.clone(),
@@ -399,14 +407,17 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
         let commit = commit_target(commit);
+        let head_of = commit.clone();
         commit_actions_trigger(labelled)
             .ml_auto()
             .disabled(self.operation_shown().is_some())
             .app_menu(move |menu, _, cx| {
                 Self::recovery_context_menu(menu, &owner, &repository, &commit, cx)
             })
-            // A write's start or end builds the open menu again.
+            // A write's start or end builds the open menu again, as does the
+            // commit becoming or no longer being HEAD.
             .follows_writes(cx.entity().downgrade())
+            .follows_head_of(head_of)
             .into_any_element()
     }
 
@@ -427,8 +438,8 @@ impl GitTurtle {
     /// The commit's menu as a right-click builds it, for the keyboard to
     /// open below the selected row: built from the window's state it is
     /// given, as the menu opens while the window is being updated and again
-    /// as a write or a pause starts or ends or HEAD moves, which adds or
-    /// takes away Amend and Undo (`KeyboardMenu`).
+    /// as a write or a pause starts or ends or the commit becomes or stops
+    /// being HEAD, which adds or takes away Amend and Undo (`KeyboardMenu`).
     pub(super) fn keyboard_commit_menu(
         owner: WeakEntity<Self>,
         repository: Option<PathBuf>,

@@ -620,6 +620,8 @@ impl GitTurtle {
                 row_menu(menu, &owner, &key, Some(app.menu_snapshot(&key)))
             },
             holds,
+            // A project's or a group's items read nothing HEAD changes.
+            None,
             Self::dismiss_project_menu,
             self,
             window,

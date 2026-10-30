@@ -2792,6 +2792,8 @@ mod tests {
         Commit,
         /// A navigator branch, by its row.
         Branch(usize),
+        /// A navigator worktree, by its row, whose menu holds three items.
+        Worktree(usize),
         /// extra.txt's untracked row in Changes.
         Working,
     }
@@ -2802,10 +2804,18 @@ mod tests {
             match self {
                 Self::Commit => &COMMIT_ITEMS,
                 Self::Branch(_) => &["Branch actions…"],
+                Self::Worktree(_) => &WORKTREE_ITEMS,
                 Self::Working => &["Ignore…", "Delete untracked file…"],
             }
         }
     }
+
+    /// A worktree's menu: every item a write refuses.
+    const WORKTREE_ITEMS: [&str; 3] = [
+        "Worktree actions…",
+        "Remove worktree…",
+        "Force remove worktree…",
+    ];
 
     /// HEAD's menu: every item a write or a paused integration refuses.
     const COMMIT_ITEMS: [&str; 4] = [
@@ -2824,7 +2834,7 @@ mod tests {
         key: &str,
     ) {
         match row {
-            KeyedRow::Commit | KeyedRow::Branch(_) => {
+            KeyedRow::Commit | KeyedRow::Branch(_) | KeyedRow::Worktree(_) => {
                 cx.update(|window, cx| {
                     app.update(cx, |app, cx| {
                         app.show_history(window, cx);
@@ -2844,8 +2854,8 @@ mod tests {
                 crate::views::tests::settle(app, cx).await;
                 cx.update(|window, cx| {
                     app.update(cx, |app, cx| match row {
-                        KeyedRow::Branch(branch) => {
-                            app.nav_cursor = Some(branch);
+                        KeyedRow::Branch(row) | KeyedRow::Worktree(row) => {
+                            app.nav_cursor = Some(row);
                             window.focus(&app.nav_focus, cx);
                         }
                         _ => window.focus(&app.focus, cx),
@@ -2870,7 +2880,7 @@ mod tests {
         next_frame(cx);
         let opened = app.read_with(cx, |app, _| match row {
             KeyedRow::Commit => app.commit_menu.is_some(),
-            KeyedRow::Branch(_) => app.nav_menu.is_some(),
+            KeyedRow::Branch(_) | KeyedRow::Worktree(_) => app.nav_menu.is_some(),
             KeyedRow::Working => app.file_menu.is_some(),
         });
         assert!(opened, "{key} opened {row:?}'s menu");
@@ -3237,6 +3247,16 @@ mod tests {
         drop(fixture);
     }
 
+    /// How a commit's menu opens: as a working row's does
+    /// ([`Opening`]), or from the selected commit's Actions button in the
+    /// inspector's message toolbar.
+    #[derive(Clone, Copy, Debug)]
+    enum CommitOpening {
+        RightClick,
+        Keyboard,
+        Actions,
+    }
+
     /// A commit's menu opened on HEAD, as `opening` opens it, is built again
     /// in place, a keyboard's with focus kept in it, once HEAD moves off the
     /// commit while the commit stays at its row, as a `git reset` outside
@@ -3244,8 +3264,9 @@ mod tests {
     /// longer offers Amend or Undo, which act on HEAD, and offers them again
     /// once HEAD returns. Built again only as a write or a pause started or
     /// ended, it kept offering Amend and Undo of a commit that was no longer
-    /// HEAD.
-    async fn a_commit_menu_follows_head(cx: &mut TestAppContext, opening: Opening) {
+    /// HEAD; HEAD counts for a commit's menu alone, so each names its commit
+    /// to the menu that follows it.
+    async fn a_commit_menu_follows_head(cx: &mut TestAppContext, opening: CommitOpening) {
         const AMEND: &str = "Amend last commit…";
         const UNDO: &str = "Undo last local commit…";
         let (fixture, app, cx) = clean_history_for_menus(cx).await;
@@ -3269,7 +3290,7 @@ mod tests {
                     "{opening:?} {when}: {item} available"
                 );
             }
-            if matches!(opening, Opening::Keyboard) {
+            if matches!(opening, CommitOpening::Keyboard) {
                 assert!(
                     focus_in_keyed_menu(&app, cx),
                     "{opening:?} {when}: focus stays in the menu"
@@ -3278,9 +3299,18 @@ mod tests {
         };
         let opened = head(cx);
         match opening {
-            Opening::Keyboard => open_keyed_menu(&app, cx, KeyedRow::Commit, "shift-f10").await,
+            CommitOpening::Keyboard => {
+                open_keyed_menu(&app, cx, KeyedRow::Commit, "shift-f10").await
+            }
             // HEAD's row, the newest commit.
-            Opening::RightClick => right_click(cx, "history-row-0"),
+            CommitOpening::RightClick => right_click(cx, "history-row-0"),
+            CommitOpening::Actions => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+                crate::views::tests::settle(&app, cx).await;
+                next_frame(cx);
+                press(cx, "commit-recovery-menu");
+                next_frame(cx);
+            }
         }
         available(cx, &COMMIT_ITEMS, "on HEAD");
         git(&["reset", "-q", "--hard", "HEAD~1"]);
@@ -3317,12 +3347,150 @@ mod tests {
 
     #[gpui::test]
     async fn a_keyboard_commit_menu_follows_head(cx: &mut TestAppContext) {
-        a_commit_menu_follows_head(cx, Opening::Keyboard).await;
+        a_commit_menu_follows_head(cx, CommitOpening::Keyboard).await;
     }
 
     #[gpui::test]
     async fn a_right_click_commit_menu_follows_head(cx: &mut TestAppContext) {
-        a_commit_menu_follows_head(cx, Opening::RightClick).await;
+        a_commit_menu_follows_head(cx, CommitOpening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn the_commit_actions_menu_follows_head(cx: &mut TestAppContext) {
+        a_commit_menu_follows_head(cx, CommitOpening::Actions).await;
+    }
+
+    /// Whether the open menu's keyboard cursor is on `item`, available: the
+    /// item's row draws the toolkit's `list_active` fill, which only the
+    /// keyboard's cursor draws.
+    fn cursor_on(cx: &mut VisualTestContext, item: &str) -> bool {
+        let bounds = cx
+            .debug_bounds(format!("menu-item: {item} · MenuItem").leak())
+            .unwrap_or_else(|| panic!("{item} offered"));
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+    }
+
+    /// Commits outside the app, as a terminal beside it does, moving HEAD
+    /// to a new commit of the same tree, which leaves every file's status as
+    /// it was, what is staged included.
+    fn commit_outside(repository: &std::path::Path) {
+        fixture_git(
+            repository,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "--only",
+                "-m",
+                "Outside",
+            ],
+        );
+    }
+
+    /// A working row's right-click menu, its keyboard's cursor moved to
+    /// Delete untracked file…, keeps it there as HEAD moves under it, as a
+    /// commit outside the app moves it: the menu reads nothing HEAD changes
+    /// and is not built again. Built again whenever HEAD moved, it lost its
+    /// highlight.
+    #[gpui::test]
+    async fn a_right_click_working_menu_keeps_its_cursor_as_head_moves(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let head = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone())
+            })
+        };
+        open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
+        cx.simulate_keystrokes("down down");
+        next_frame(cx);
+        assert!(
+            cursor_on(cx, "Delete untracked file…"),
+            "Down twice moved the cursor to Delete untracked file…"
+        );
+        let before = head(cx);
+        commit_outside(&repository);
+        quietly_refreshed(&app, cx);
+        next_frame(cx);
+        assert_ne!(head(cx), before, "the commit moved HEAD");
+        assert!(
+            cursor_on(cx, "Delete untracked file…"),
+            "the cursor stays on Delete untracked file… as HEAD moves"
+        );
+        assert!(!cursor_on(cx, "Ignore…"), "and only there");
+    }
+
+    /// A navigator worktree's keyboard menu, its cursor moved to Remove
+    /// worktree…, keeps it there as HEAD moves, as a commit outside the app
+    /// moves it, which the refresh after it reads with the navigator's rows:
+    /// a branch's or a worktree's menu reads nothing HEAD changes and is not
+    /// built again. Built again whenever HEAD moved, its cursor went back to
+    /// Worktree actions…, so Enter just after the refresh reviewed the
+    /// worktree rather than removing it. A branch's menu, built the same
+    /// way, holds one item, so its cursor cannot show it.
+    #[gpui::test]
+    async fn a_keyboard_worktree_menu_keeps_its_cursor_as_head_moves(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        refs_quietly_refreshed(&app, cx).await;
+        let row = |cx: &mut VisualTestContext| {
+            app.update(cx, |app, cx| {
+                app.nav_mode = crate::NavMode::Worktrees;
+                app.rebuild_navigation(cx);
+                app.nav_rows
+                    .iter()
+                    .position(|row| matches!(row, crate::NavRow::Worktree(_)))
+            })
+        };
+        let row = row(cx).expect("the repository's own worktree in the navigator");
+        let head = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone())
+            })
+        };
+        open_keyed_menu(&app, cx, KeyedRow::Worktree(row), "shift-f10").await;
+        keyed_items(&app, cx, &WORKTREE_ITEMS, true, "at rest");
+        assert!(
+            cursor_on(cx, "Worktree actions…"),
+            "it opens on its first item"
+        );
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert!(cursor_on(cx, "Remove worktree…"), "Down moved the cursor");
+        let before = head(cx);
+        commit_outside(&repository);
+        refs_quietly_refreshed(&app, cx).await;
+        assert_ne!(head(cx), before, "the commit moved HEAD");
+        assert!(
+            app.read_with(cx, |app, _| app.nav_menu.is_some()),
+            "the menu stays open on its row"
+        );
+        keyed_items(&app, cx, &WORKTREE_ITEMS, true, "after HEAD moved");
+        assert!(
+            cursor_on(cx, "Remove worktree…"),
+            "the cursor stays on Remove worktree… as HEAD moves"
+        );
+        assert!(!cursor_on(cx, "Worktree actions…"), "and only there");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
     }
 
     /// A navigator branch's keyboard menu stays open through a quiet refresh

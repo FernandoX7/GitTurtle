@@ -1176,6 +1176,8 @@ impl GitTurtle {
             self.nav_focus.clone(),
             build,
             holds,
+            // A branch's or a worktree's items read nothing HEAD changes.
+            None,
             Self::dismiss_nav_menu,
             self,
             window,
@@ -2251,6 +2253,7 @@ impl GitTurtle {
         let recovery_owner = cx.entity().downgrade();
         let recovery_repository = self.path.clone();
         let recovery_commit = recovery::commit_target(commit);
+        let head_of = recovery_commit.clone();
         // The row is as wide as the table, which runs sideways past the
         // list's viewport, under the inspector and past the window's edge;
         // its node reports the part of it the list draws, as the list's own
@@ -2267,8 +2270,10 @@ impl GitTurtle {
                 cx,
             )
         })
-        // A write's start or end builds the open menu again.
+        // A write's start or end builds the open menu again, as does the
+        // commit becoming or no longer being HEAD.
         .follows_writes(cx.entity().downgrade())
+        .follows_head_of(head_of)
         .into_any_element()
     }
 
@@ -2662,6 +2667,7 @@ impl GitTurtle {
                     .get(index)
                     .is_some_and(|commit| commit.oid == oid)
         };
+        let head_of = commit.clone();
         let build = Self::keyboard_commit_menu(owner, repository, commit);
         self.commit_menu = Some(
             native_accessibility::KeyboardMenu::following(
@@ -2669,6 +2675,9 @@ impl GitTurtle {
                 self.focus.clone(),
                 build,
                 holds,
+                // Built again as the commit becomes or stops being HEAD,
+                // which adds or takes away Amend and Undo.
+                Some(head_of),
                 Self::dismiss_commit_menu,
                 self,
                 window,

@@ -250,7 +250,8 @@ impl ListRow {
 /// A menu whose items read the window's state follows writes and pauses as
 /// a right-click menu does ([`Self::following`], [`MenuInputs`]): built
 /// again in place, still focused, when a write starts or ends, an
-/// integration pauses or ends or HEAD moves, its keyboard's cursor back on
+/// integration pauses or ends or, for a commit's, its commit becomes or
+/// stops being HEAD, its keyboard's cursor back on
 /// its first item that can act, or on none while every item is refused,
 /// since the kit's rebuild forgets which item held it; and closed, focus
 /// back on its list or tree, once its row no longer holds what it was
@@ -312,7 +313,9 @@ impl KeyboardMenu {
     /// `app` as it opens, while the window is being updated, and from the
     /// window itself after. It is built again in place, as [`Self::rebuild`]
     /// builds it, when a write starts or ends or an integration pauses or
-    /// ends ([`MenuInputs`]), and closes through `dismissed`, which returns
+    /// ends, and a commit's menu, its `commit` given, also once that commit
+    /// becomes or stops being HEAD ([`MenuInputs`]), and closes through
+    /// `dismissed`, which returns
     /// focus to its list or tree, as soon as `holds` finds that its row no
     /// longer holds what the menu acts on, at the place the menu opened
     /// beside: a write's quiet reload can take a commit from History's row
@@ -324,6 +327,7 @@ impl KeyboardMenu {
         focus: FocusHandle,
         build: impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static,
         holds: impl Fn(&GitTurtle) -> bool + 'static,
+        commit: Option<MenuCommit>,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         app: &GitTurtle,
         window: &mut Window,
@@ -341,7 +345,7 @@ impl KeyboardMenu {
         );
         // The window is being updated as the menu opens, so it reads `app`
         // now and the window itself once the menu is open.
-        let mut inputs = MenuInputs::of(app);
+        let mut inputs = MenuInputs::of(app, commit.as_ref());
         let mut gone = false;
         let (focus, cap) = (this.focus.clone(), this.cap);
         this.watch(window, cx, move |app, menu, window, cx| {
@@ -355,7 +359,7 @@ impl KeyboardMenu {
                 menu.update(cx, |_, cx| cx.emit(DismissEvent));
                 return;
             }
-            let now = MenuInputs::of(app);
+            let now = MenuInputs::of(app, commit.as_ref());
             if now != inputs {
                 inputs = now;
                 let app = &*app;
@@ -385,9 +389,9 @@ impl KeyboardMenu {
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
-        let mut inputs = MenuInputs::of(app);
+        let mut inputs = MenuInputs::of(app, None);
         self.watch(window, cx, move |app, _, window, cx| {
-            let now = MenuInputs::of(app);
+            let now = MenuInputs::of(app, None);
             if now != inputs {
                 inputs = now;
                 follow(app, window, cx);
@@ -957,6 +961,8 @@ pub(crate) struct AppDropdown {
     on_open_change: Option<std::rc::Rc<OpenChange>>,
     /// The app whose writes the menu's items follow ([`Self::follows_writes`]).
     writes: Option<WeakEntity<crate::GitTurtle>>,
+    /// The commit a commit's menu acts on ([`Self::follows_head_of`]).
+    commit: Option<MenuCommit>,
 }
 
 /// What a menu that follows writes reads as it is built
@@ -968,32 +974,49 @@ pub(crate) struct AppDropdown {
 /// (`GitTurtle::write_unsettled`), whether a merge, rebase, cherry-pick
 /// or revert is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
 /// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save
-/// changes to stash…, Amend and Undo, and the commit HEAD is, whose menu
-/// alone adds Amend and Undo. The menu is built again when any of them
-/// changes; built again only for the write, a menu open as a cherry-pick
-/// stopped on conflicts offered those items once the write had ended, until
-/// it was opened again, one built again only as the reload landed kept a
-/// project row's Open project refused after the write, and a commit's menu
-/// kept Amend and Undo once a `git reset` outside the app had moved HEAD off
-/// its commit.
+/// changes to stash…, Amend and Undo, and, for a commit's menu alone
+/// ([`AppDropdown::follows_head_of`], [`PointerMenu::follows_head_of`],
+/// [`KeyboardMenu::following`]'s `commit`), whether its commit is HEAD,
+/// which adds Amend and Undo.
+/// The menu is built again when any of them changes; built again only for
+/// the write, a menu open as a cherry-pick stopped on conflicts offered
+/// those items once the write had ended, until it was opened again, one
+/// built again only as the reload landed kept a project row's Open project
+/// refused after the write, and a commit's menu kept Amend and Undo once a
+/// `git reset` outside the app had moved HEAD off its commit. HEAD counts
+/// for no other menu, which reads nothing it changes: counted for every
+/// menu, a branch's, a worktree's, a project's or a working row's open menu
+/// was built again whenever HEAD moved, as a commit made or a reset outside
+/// the app moves it, its keyboard's cursor back on its first item.
 #[derive(Clone, PartialEq, Eq)]
 struct MenuInputs {
     running: bool,
     writing: bool,
     paused: bool,
-    head: Option<String>,
+    /// Whether a commit's menu's commit is HEAD; `None` for every other
+    /// menu.
+    head: Option<bool>,
 }
 
+/// The commit a commit's menu acts on, read as its object ID
+/// ([`MenuInputs`]): the commit's own shared target, so a History row that
+/// names it in every frame it draws allocates nothing for it.
+pub(crate) type MenuCommit = std::sync::Arc<dyn AsRef<str>>;
+
 impl MenuInputs {
-    fn of(app: &crate::GitTurtle) -> Self {
+    /// What a menu reads from `app`, a commit's menu also whether its
+    /// `commit` is HEAD.
+    fn of(app: &crate::GitTurtle, commit: Option<&MenuCommit>) -> Self {
         Self {
             running: app.operation_busy.is_some(),
             writing: app.write_unsettled(),
             paused: app.integration_state.is_some(),
-            head: app
-                .work_status
-                .as_ref()
-                .and_then(|status| status.head.clone()),
+            head: commit.map(|commit| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.as_deref())
+                    == Some((**commit).as_ref())
+            }),
         }
     }
 
@@ -1012,6 +1035,15 @@ impl AppDropdown {
     /// them disabled after a quick write had ended.
     pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
         self.writes = Some(app);
+        self
+    }
+
+    /// The menu is `commit`'s, which adds Amend and Undo while the commit
+    /// is HEAD: following writes ([`Self::follows_writes`]), it is built
+    /// again as well once the commit becomes or stops being HEAD
+    /// ([`MenuInputs`]).
+    pub(crate) fn follows_head_of(mut self, commit: MenuCommit) -> Self {
+        self.commit = Some(commit);
         self
     }
 
@@ -1055,6 +1087,7 @@ impl AppMenu for Button {
             build: std::rc::Rc::new(build),
             on_open_change: None,
             writes: None,
+            commit: None,
         }
     }
 
@@ -1088,7 +1121,7 @@ impl RenderOnce for AppDropdown {
             .clone();
         let painted = anchor.clone();
         let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
-        let writes = self.writes;
+        let (writes, commit) = (self.writes, self.commit);
         // The kit's popup host only moves a dropdown into the window, so one
         // taller than the room below its Button moved up over it; the side
         // is chosen here instead, from the same painted bounds as the room.
@@ -1132,10 +1165,11 @@ impl RenderOnce for AppDropdown {
                 let keyboard = window.last_input_was_keyboard();
                 let menu = open(menu, keyboard, window, cx);
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
-                    let mut inputs = MenuInputs::of(app.read(cx));
+                    let commit = commit.clone();
+                    let mut inputs = MenuInputs::of(app.read(cx), commit.as_ref());
                     let open = open.clone();
                     cx.observe_in(&app, window, move |menu, app, window, cx| {
-                        let now = MenuInputs::of(app.read(cx));
+                        let now = MenuInputs::of(app.read(cx), commit.as_ref());
                         if now != inputs {
                             inputs = now;
                             menu.rebuild(window, cx, |menu, window, cx| {
@@ -1185,6 +1219,7 @@ pub(crate) trait AppContextMenu:
             element: Some(self),
             build: std::rc::Rc::new(build),
             writes: None,
+            commit: None,
             inputs: None,
             preparing: None,
         }
@@ -1213,6 +1248,8 @@ pub(crate) struct PointerMenu<E> {
     build: std::rc::Rc<BuildMenu>,
     /// The app whose writes the menu's items follow ([`Self::follows_writes`]).
     writes: Option<WeakEntity<crate::GitTurtle>>,
+    /// The commit a commit's menu acts on ([`Self::follows_head_of`]).
+    commit: Option<MenuCommit>,
     /// What the row builds its menu from in this frame ([`Self::built_from`]).
     inputs: Option<BuiltFrom>,
     /// Whether that app is preparing the rows that replace the row's
@@ -1266,6 +1303,13 @@ impl<E> PointerMenu<E> {
     /// it opened and kept its items so.
     pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
         self.writes = Some(app);
+        self
+    }
+
+    /// The menu is `commit`'s, which adds Amend and Undo while the commit
+    /// is HEAD, as [`AppDropdown::follows_head_of`] says of a button's.
+    pub(crate) fn follows_head_of(mut self, commit: MenuCommit) -> Self {
+        self.commit = Some(commit);
         self
     }
 
@@ -1599,7 +1643,8 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         element.paint(window, cx);
         let shared = Self::shared(id.expect("the menu's id"), window);
         let (build, writes, hitbox) = (self.build.clone(), self.writes.clone(), hitbox.clone());
-        let (inputs, preparing) = (self.inputs.clone(), self.preparing);
+        let (inputs, preparing, commit) =
+            (self.inputs.clone(), self.preparing, self.commit.clone());
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
                 return;
@@ -1626,6 +1671,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
             // rebuild uses too.
             let build = std::rc::Rc::new(std::cell::RefCell::new(build.clone()));
             let (shared, writes, inputs) = (shared.clone(), writes.clone(), inputs.clone());
+            let commit = commit.clone();
             window.defer(cx, move |window, cx| {
                 let cap = row.cap(menu_bounds(window));
                 let latest = build.clone();
@@ -1658,10 +1704,10 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     })
                     .detach();
                     if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
-                        let mut inputs = MenuInputs::of(app.read(cx));
+                        let mut inputs = MenuInputs::of(app.read(cx), commit.as_ref());
                         let open = open.clone();
                         cx.observe_in(&app, window, move |menu, app, window, cx| {
-                            let now = MenuInputs::of(app.read(cx));
+                            let now = MenuInputs::of(app.read(cx), commit.as_ref());
                             if now != inputs {
                                 let started = now.starts_a_write(&inputs);
                                 inputs = now;
