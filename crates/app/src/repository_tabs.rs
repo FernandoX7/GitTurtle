@@ -821,7 +821,7 @@ impl GitTurtle {
         // A working read the tab asked for while a write or preparation ran
         // is dropped with its rows' reads: restored, it reads quietly.
         self.working_read_deferred = None;
-        self.integration_task = None;
+        self.cancel_integration_comparison();
         self.cancel_discard_action();
         self.file_history.pause_for_tab();
         self.revision_inspection.pause_for_tab();

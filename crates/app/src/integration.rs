@@ -3,6 +3,9 @@ use crate::*;
 use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCommand};
 use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
 
+/// The busy state of the comparison Merge… and Rebase… ask for.
+const COMPARING: &str = "Comparing branch tips…";
+
 impl GitTurtle {
     pub(super) fn show_operation_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(error) = self.operation_error.as_ref() else {
@@ -69,6 +72,18 @@ impl GitTurtle {
         });
     }
 
+    /// Drops the branch comparison Merge… or Rebase… asked for, as a tab
+    /// switch does, and ends its busy state with it: the dropped comparison
+    /// never reaches its end, which ended it, so "Comparing branch tips…"
+    /// once stayed for good and every later write and working read, in
+    /// every tab, waited for it. Its read still ends on the operation
+    /// executor, where a read asked for meanwhile waits behind it.
+    pub(super) fn cancel_integration_comparison(&mut self) {
+        if self.integration_task.take().is_some() && self.operation_busy == Some(COMPARING) {
+            self.operation_busy = None;
+        }
+    }
+
     pub(super) fn prepare_integration(
         &mut self,
         target: String,
@@ -83,7 +98,7 @@ impl GitTurtle {
             return;
         };
         let path = repo.path().to_owned();
-        self.operation_busy = Some("Comparing branch tips…");
+        self.operation_busy = Some(COMPARING);
         self.operation_error = None;
         let response = self
             .operations

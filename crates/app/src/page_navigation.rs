@@ -1217,6 +1217,58 @@ mod tests {
         );
     }
 
+    /// A tab switch drops the branch comparison Merge… or Rebase… asked for
+    /// and ends its busy state with it: the dropped comparison never reached
+    /// its end, which ended it, so "Comparing branch tips…" once stayed for
+    /// good, and Changes, in that tab or another, said "Reading the working
+    /// tree…" with no end.
+    #[gpui::test]
+    async fn a_tab_switch_ends_the_branch_comparison_it_drops(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        // Merge…'s comparison, held as a slow disk holds it.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.prepare_integration("main".into(), false, window, cx)
+            })
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some("Comparing branch tips…")
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            None,
+            "the switch ends the comparison"
+        );
+        std::fs::write(other.join("later.txt"), "later\n").unwrap();
+        cx.simulate_keystrokes(&primary("2"));
+        draw(cx);
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert!(app.mode == WorkspaceMode::Working);
+            assert_eq!(app.operation_busy, None);
+            assert_eq!(app.operation_error, None);
+        });
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "later.txt".to_owned()]),
+            "Changes reads"
+        );
+        assert!(cx.debug_bounds("working-reading").is_none());
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "no plan opens over the other tab"
+        );
+    }
+
     #[test]
     fn project_hub_return_requires_a_resolved_repository() {
         assert_eq!(
