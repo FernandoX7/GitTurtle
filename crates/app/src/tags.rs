@@ -2286,6 +2286,23 @@ pub(crate) mod tests {
         (list, cx)
     }
 
+    /// The fades the first frame drawn after `input` paints over the list
+    /// drawn at `list` ([`painted_fades`]). `input` runs and the frame is
+    /// drawn in one update, and the frame's fades are read before the test
+    /// harness, flushing the effects the input left, draws the window again,
+    /// which would hide a fade that lagged a frame behind.
+    fn first_frame_fades(
+        cx: &mut VisualTestContext,
+        list: Bounds<Pixels>,
+        input: impl FnOnce(&mut Window, &mut App),
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        cx.update(|window, cx| {
+            input(window, cx);
+            window.draw(cx).clear(cx);
+            fades_in(window, cx, list)
+        })
+    }
+
     /// The edge fades painted over the list drawn at `list`: the height of
     /// the one along its top and of the one along its bottom, each as wide
     /// as the list and in the palette's canvas, the theme's background,
@@ -2456,6 +2473,78 @@ pub(crate) mod tests {
         assert!(
             fades[1] > fades[0],
             "the fade grows with the text: {fades:?}"
+        );
+    }
+
+    /// A short list's fades follow what it shows in the frame that shows it,
+    /// and catch no pointer. Rows that arrive in a list that fit fade its
+    /// bottom edge in the first frame that draws them: decided as the cue
+    /// rendered, from the reach the list kept from the frame before, they
+    /// drew none, and nothing drew the list again. A wheel over the bottom
+    /// fade scrolls the rows beneath it, and the frame it draws fades both
+    /// edges; one to the end leaves the top's alone, and one back to the top
+    /// the bottom's alone, each in that one frame.
+    #[gpui::test]
+    fn a_short_list_s_fades_follow_its_rows_and_a_wheel_in_the_frame_drawn(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (list, cx) = cued_window(cx, 40., Pixels::ZERO, 1);
+        let region = cx.debug_bounds("cued-list").expect("the list");
+        assert_eq!(
+            painted_fades(cx, region),
+            (None, None),
+            "a list whose rows fit fades no edge"
+        );
+        let grown = list.clone();
+        let (top, bottom) = first_frame_fades(cx, region, move |_, cx| {
+            grown.update(cx, |list, cx| {
+                list.rows = 10;
+                cx.notify();
+            })
+        });
+        assert!(
+            top.is_none() && bottom.is_some(),
+            "the frame that draws the rows that arrived fades the bottom edge alone, not {top:?} and {bottom:?}"
+        );
+        let wheel = |by: f32, cx: &mut VisualTestContext| {
+            first_frame_fades(cx, region, move |window, cx| {
+                window.dispatch_event(
+                    PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        // Over the bottom fade.
+                        position: point(region.center().x, region.bottom() - px(2.)),
+                        delta: ScrollDelta::Pixels(point(px(0.), px(by))),
+                        modifiers: Modifiers::default(),
+                        touch_phase: TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            })
+        };
+        let first = cx.debug_bounds("cued-row-0").expect("the first row");
+        let (top, bottom) = wheel(-15., cx);
+        let moved = cx.debug_bounds("cued-row-0").expect("the first row");
+        assert!(
+            (first.top() - moved.top() - px(15.)).abs() < px(0.5),
+            "a wheel over the bottom fade scrolls the rows beneath it: {first:?} to {moved:?}"
+        );
+        assert!(
+            top.is_some() && bottom.is_some(),
+            "the frame the wheel draws fades both edges, not {top:?} and {bottom:?}"
+        );
+        let (top, bottom) = wheel(-10_000., cx);
+        let last = cx.debug_bounds("cued-row-9").expect("the last row");
+        assert!(
+            (last.bottom() - region.bottom()).abs() < px(0.5),
+            "the wheel scrolls to the rows' end {last:?} in {region:?}"
+        );
+        assert!(
+            top.is_some() && bottom.is_none(),
+            "the frame the wheel to the end draws fades the top edge alone, not {top:?} and {bottom:?}"
+        );
+        let (top, bottom) = wheel(10_000., cx);
+        assert!(
+            top.is_none() && bottom.is_some(),
+            "the frame the wheel back draws fades the bottom edge alone, not {top:?} and {bottom:?}"
         );
     }
 
