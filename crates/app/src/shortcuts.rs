@@ -1373,6 +1373,11 @@ mod list_tests {
     use crate::tags::tests::{draw, scroll_down, tagged_repository, window};
     use core::prelude::v1::test;
 
+    /// How far apart two drawn edges may read and still meet: GPUI rounds
+    /// each edge to the device pixel, half a pixel in the test window, and
+    /// lays each of the list's rows out on its own.
+    const PIXEL: Pixels = px(1.);
+
     /// The selector of the row at `index` among `rows`.
     fn row_selector(rows: &[HelpRow], index: usize) -> &'static str {
         match rows[index] {
@@ -1383,11 +1388,11 @@ mod list_tests {
     }
 
     /// The list keeps each row's height beside its rows, so a text size
-    /// chosen with the dialog open measures them again: at 18 pt each row
-    /// starts where the one above it ends, the General heading's 22 px row
-    /// grown to about 30 px. Measured only with the rows, the list would place
-    /// them at their 13 pt tops while drawing them at 18 pt, each over the
-    /// one above.
+    /// chosen with the dialog open measures them again: at 18 pt each row is
+    /// drawn where the one above it ends, the first at the list's top, and
+    /// grown with the text, the General heading's 22 px row to about 30 px.
+    /// Measured only with the rows, the list would place them at their 13 pt
+    /// tops while drawing them at 18 pt, each over the one above.
     #[gpui::test]
     async fn a_text_size_chosen_with_the_list_open_lays_its_rows_out_again(
         cx: &mut TestAppContext,
@@ -1400,6 +1405,7 @@ mod list_tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
         draw(cx);
         let rows = help_matches("");
+        let mut heights = Vec::new();
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
@@ -1407,17 +1413,27 @@ mod list_tests {
             // Inside the list's 1 px border.
             let mut top = list.top() + px(1.);
             // The first group's heading and the entries below it.
-            for (index, row) in rows.iter().enumerate().take(6) {
-                let height = row_height(row);
+            for index in 0..6 {
                 let bounds = cx
                     .debug_bounds(row_selector(&rows, index))
                     .unwrap_or_else(|| panic!("{text} pt: row {index} is drawn"));
                 assert!(
-                    (bounds.top() - top).abs() < px(0.5)
-                        && (bounds.size.height - height).abs() < px(0.5),
-                    "{text} pt: row {index} {bounds:?} starts at {top:?}, {height:?} tall"
+                    (bounds.top() - top).abs() <= PIXEL,
+                    "{text} pt: row {index} {bounds:?} starts where the row above it ends, \
+                     {top:?}"
                 );
-                top += height;
+                if text == 13 {
+                    heights.push(bounds.size.height);
+                } else {
+                    let grown = heights[index] * (18. / 13.);
+                    assert!(
+                        (bounds.size.height - grown).abs() <= PIXEL,
+                        "18 pt: row {index}, {:?} tall at 13 pt, grows to {grown:?}: {:?}",
+                        heights[index],
+                        bounds.size.height
+                    );
+                }
+                top = bounds.bottom();
             }
         }
         cx.simulate_keystrokes("escape");
@@ -1451,34 +1467,51 @@ mod list_tests {
         draw(cx);
     }
 
-    /// The open list's rows for a search, and where the list is drawn.
+    /// The open list's rows for a search, and where the list and its rows
+    /// are drawn. Every expectation is read from the drawn rows and the
+    /// list's own bounds, never from the list's layout (`RowLayout`), which a
+    /// wrong layout would agree with.
     struct Shown {
         rows: Vec<HelpRow>,
-        /// Each row's top in the list at the interface size, then the list's
-        /// whole height.
-        tops: Vec<Pixels>,
-        /// The list's top and height inside its 1 px border, and its centre.
+        /// The list's top and foot inside its 1 px border, and its centre.
         top: Pixels,
-        view: Pixels,
+        foot: Pixels,
         centre: Point<Pixels>,
+        /// A heading's and an entry's height as drawn.
+        heading: Pixels,
+        entry: Pixels,
     }
 
     impl Shown {
+        /// Reads the list as it opens, at its top, where its first rows, a
+        /// heading and an entry, give the rows' heights.
         fn read(cx: &mut VisualTestContext, query: &str) -> Self {
-            let rows = help_matches(query);
-            let tops = RowLayout::new(&rows).tops;
-            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
-            Self {
-                rows,
-                tops,
-                top: list.top() + px(1.),
-                view: list.size.height - px(2.),
-                centre: list.center(),
-            }
+            let mut shown = Self {
+                rows: help_matches(query),
+                top: px(0.),
+                foot: px(0.),
+                centre: point(px(0.), px(0.)),
+                heading: px(0.),
+                entry: px(0.),
+            };
+            shown.relist(cx);
+            shown.heading = shown.at(cx, 0).size.height;
+            shown.entry = shown.at(cx, 1).size.height;
+            shown
         }
 
-        fn content(&self) -> Pixels {
-            self.tops[self.tops.len() - 1]
+        /// Reads where the list is drawn again, as after the window's size
+        /// changed.
+        fn relist(&mut self, cx: &mut VisualTestContext) {
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            self.top = list.top() + px(1.);
+            self.foot = list.bottom() - px(1.);
+            self.centre = list.center();
+        }
+
+        /// The list's height inside its border.
+        fn view(&self) -> Pixels {
+            self.foot - self.top
         }
 
         /// The entries, in the list's order.
@@ -1488,51 +1521,85 @@ mod list_tests {
                 .collect()
         }
 
-        /// What Up or Down brings into view with `entry`: its top and bottom,
-        /// from its group's heading where it is the group's first entry and
-        /// the list holds both.
-        fn span(&self, entry: usize) -> (Pixels, Pixels) {
-            let bottom = self.tops[entry + 1];
-            match self.rows[entry - 1] {
-                HelpRow::Group(_) if bottom - self.tops[entry - 1] <= self.view => {
-                    (self.tops[entry - 1], bottom)
-                }
-                _ => (self.tops[entry], bottom),
-            }
+        /// The rows that are group headings, in the list's order.
+        fn headings(&self) -> Vec<usize> {
+            (0..self.rows.len())
+                .filter(|&row| matches!(self.rows[row], HelpRow::Group(_)))
+                .collect()
         }
 
-        /// Whether `entry`'s span lies whole in the list scrolled by `scroll`.
-        fn whole(&self, entry: usize, scroll: Pixels) -> bool {
-            let (top, bottom) = self.span(entry);
-            top >= scroll && bottom <= scroll + self.view
+        /// Where row `index` is drawn, if it is.
+        fn drawn(&self, cx: &mut VisualTestContext, index: usize) -> Option<Bounds<Pixels>> {
+            cx.debug_bounds(row_selector(&self.rows, index))
         }
 
-        /// The scroll that centres `entry`'s span, within the list's range.
-        fn centred(&self, entry: usize) -> Pixels {
-            let (top, bottom) = self.span(entry);
-            ((top + bottom) / 2. - self.view / 2.).clamp(px(0.), self.content() - self.view)
+        /// Where row `index` is drawn, which it must be.
+        fn at(&self, cx: &mut VisualTestContext, index: usize) -> Bounds<Pixels> {
+            self.drawn(cx, index)
+                .unwrap_or_else(|| panic!("row {index} is drawn"))
         }
 
-        /// How far the list is scrolled, read from where row `index` is drawn.
-        fn scrolled(&self, cx: &mut VisualTestContext, index: usize) -> Pixels {
-            let drawn = cx
-                .debug_bounds(row_selector(&self.rows, index))
-                .unwrap_or_else(|| panic!("row {index} is drawn"));
-            self.top + self.tops[index] - drawn.top()
+        /// Whether row `index` is drawn whole in the list.
+        fn whole(&self, cx: &mut VisualTestContext, index: usize) -> bool {
+            self.drawn(cx, index).is_some_and(|row| {
+                row.top() >= self.top - PIXEL && row.bottom() <= self.foot + PIXEL
+            })
         }
 
-        /// Wheels the list from `from` to `to`, reading the scroll from row
-        /// `index`, drawn at both.
-        fn wheel(&self, cx: &mut VisualTestContext, from: Pixels, to: Pixels, index: usize) {
-            scroll_down(
-                cx,
-                self.centre,
-                ScrollDelta::Pixels(point(px(0.), from - to)),
-            );
-            let now = self.scrolled(cx, index);
+        /// The heading that comes into view with `entry`: its group's, where
+        /// it is the group's first entry and the list holds both.
+        fn heading(&self, entry: usize) -> Option<usize> {
+            (matches!(self.rows[entry - 1], HelpRow::Group(_))
+                && self.heading + self.entry <= self.view() + PIXEL)
+                .then_some(entry - 1)
+        }
+
+        /// Whether `entry` lies whole in the list with the heading that comes
+        /// into view with it.
+        fn shown(&self, cx: &mut VisualTestContext, entry: usize) -> bool {
+            self.whole(cx, entry)
+                && self
+                    .heading(entry)
+                    .is_none_or(|heading| self.whole(cx, heading))
+        }
+
+        /// Asserts that `entry` and the heading that comes into view with it
+        /// lie whole in the list, centred together, or as near the centre as
+        /// the list's ends let them: above it with the list at its top, its
+        /// first row drawn there, or below it with the list at its end, its
+        /// last row's foot at the list's.
+        fn centred(&self, cx: &mut VisualTestContext, entry: usize, what: &str) {
+            let row = self.at(cx, entry);
+            let top = self
+                .heading(entry)
+                .map_or(row.top(), |heading| self.at(cx, heading).top());
+            let (above, below) = (top - self.top, self.foot - row.bottom());
+            let start = self
+                .drawn(cx, 0)
+                .is_some_and(|first| (first.top() - self.top).abs() <= PIXEL);
+            let end = self
+                .drawn(cx, self.rows.len() - 1)
+                .is_some_and(|last| (last.bottom() - self.foot).abs() <= PIXEL);
             assert!(
-                (now - to).abs() < px(0.5),
-                "the wheel scrolls the list to {to:?}: {now:?}"
+                above >= -PIXEL
+                    && below >= -PIXEL
+                    && ((above - below).abs() <= PIXEL
+                        || (start && above < below)
+                        || (end && below < above)),
+                "{what}: entry {entry} and what comes with it lie {above:?} below the \
+                 list's top and {below:?} above its foot"
+            );
+        }
+
+        /// Wheels the list `by` down it (up where negative), checking that row
+        /// `index`, drawn before and after, moved that far.
+        fn wheel(&self, cx: &mut VisualTestContext, by: Pixels, index: usize) {
+            let before = self.at(cx, index).top();
+            scroll_down(cx, self.centre, ScrollDelta::Pixels(point(px(0.), -by)));
+            let moved = before - self.at(cx, index).top();
+            assert!(
+                (moved - by).abs() <= PIXEL,
+                "the wheel scrolls the list {by:?}: row {index} moved {moved:?}"
             );
         }
     }
@@ -1553,39 +1620,43 @@ mod list_tests {
         let (app, cx) = window(cx, &repo);
         open(&app, cx, 13, (1200., 800.));
         let shown = Shown::read(cx, "");
-        assert!(
-            shown.content() > shown.view * 3.,
-            "{:?} in {:?}: the list scrolls",
-            shown.content(),
-            shown.view
-        );
         let entries = shown.entries();
-        let (mut selected, mut scroll) = (entries[0], px(0.));
+        let held = entries
+            .iter()
+            .filter(|&&entry| shown.whole(cx, entry))
+            .count();
+        assert!(
+            held * 3 < entries.len(),
+            "the list scrolls: it holds {held} of {} entries",
+            entries.len()
+        );
+        let mut selected = entries[0];
         // Down three times past the list's foot, then Up once past its top.
         for (key, scrolls) in [("down", 3), ("up", 1)] {
             let (mut kept, mut moved) = (0, 0);
             while moved < scrolls {
                 let at = entries.iter().position(|&entry| entry == selected).unwrap();
                 let next = entries[if key == "down" { at + 1 } else { at - 1 }];
-                let inside = shown.whole(next, scroll);
+                let inside = shown.shown(cx, next);
+                let before = shown.drawn(cx, next).map(|row| row.top());
                 press(cx, key);
-                let now = shown.scrolled(cx, next);
+                let now = shown.at(cx, next).top();
                 if inside {
+                    let before = before.unwrap();
                     assert!(
-                        (now - scroll).abs() < px(0.5),
-                        "{key} to entry {next}, whole in the list scrolled {scroll:?}, \
-                         scrolled it to {now:?}"
+                        (now - before).abs() <= PIXEL,
+                        "{key} to entry {next}, whole in the list, moved it from \
+                         {before:?} to {now:?}"
                     );
                     kept += 1;
                 } else {
-                    let centre = shown.centred(next);
+                    let what = format!("{key} to entry {next}, outside the list");
+                    shown.centred(cx, next, &what);
                     assert!(
-                        (now - centre).abs() < px(0.5) && (now - scroll).abs() >= px(0.5),
-                        "{key} to entry {next}, outside the list scrolled {scroll:?}, \
-                         scrolls it to centre the entry at {centre:?}: {now:?}"
+                        before.is_none_or(|before| (now - before).abs() > PIXEL),
+                        "{what} scrolls it: the entry stayed at {now:?}"
                     );
                     moved += 1;
-                    scroll = now;
                 }
                 selected = next;
             }
@@ -1608,15 +1679,13 @@ mod list_tests {
         open(&app, cx, 13, (1200., 800.));
         let shown = Shown::read(cx, "");
         let entries = shown.entries();
-        let headings: Vec<usize> = (0..shown.rows.len())
-            .filter(|&row| {
-                matches!(shown.rows[row], HelpRow::Group(_))
-                    && matches!(shown.rows.get(row + 2), Some(HelpRow::Entry(_)))
-                    && shown.tops[row] + px(10.) <= shown.content() - shown.view
-            })
+        let headings: Vec<usize> = shown
+            .headings()
+            .into_iter()
+            .filter(|&row| matches!(shown.rows.get(row + 2), Some(HelpRow::Entry(_))))
             .take(3)
             .collect();
-        assert_eq!(headings.len(), 3, "three groups the list scrolls past");
+        assert_eq!(headings.len(), 3, "three groups of two entries or more");
         let mut selected = entries[0];
         for heading in headings {
             let (first, second) = (heading + 1, heading + 2);
@@ -1624,33 +1693,23 @@ mod list_tests {
                 press(cx, "down");
                 selected = entries[entries.iter().position(|&e| e == selected).unwrap() + 1];
             }
-            let cut = shown.tops[heading] + px(10.);
+            // The heading stands an entry and its own height above the second
+            // entry; the wheel leaves it 10 px above the list's top.
+            let top = shown.at(cx, second).top() - shown.entry - shown.heading;
+            shown.wheel(cx, top - (shown.top - px(10.)), second);
+            let cut = shown.at(cx, heading);
             assert!(
-                shown.tops[first] >= cut && shown.whole(second, cut),
-                "group {heading}: its first entry lies whole below the cut heading"
+                (cut.top() - (shown.top - px(10.))).abs() <= PIXEL
+                    && shown.whole(cx, first)
+                    && shown.whole(cx, second),
+                "group {heading}: the wheel cuts its heading 10 px, {cut:?} in the list \
+                 from {:?}, above its whole entries",
+                shown.top
             );
-            let scroll = shown.scrolled(cx, second);
-            shown.wheel(cx, scroll, cut, second);
             press(cx, "up");
             selected = first;
-            let now = shown.scrolled(cx, first);
-            let centre = shown.centred(first);
-            assert!(
-                (now - centre).abs() < px(0.5),
-                "group {heading}: Up onto its first entry, heading cut at {cut:?}, \
-                 centres heading and entry at {centre:?}: {now:?}"
-            );
-            let drawn = cx
-                .debug_bounds(row_selector(&shown.rows, heading))
-                .expect("the heading is drawn");
-            assert!(
-                drawn.top() >= shown.top - px(0.5)
-                    && drawn.bottom() <= shown.top + shown.view + px(0.5),
-                "group {heading}: its heading {drawn:?} lies whole in the list from \
-                 {:?}, {:?} tall",
-                shown.top,
-                shown.view
-            );
+            let what = format!("group {heading}: Up onto its first entry, heading cut 10 px");
+            shown.centred(cx, first, &what);
         }
         close(cx);
     }
@@ -1679,12 +1738,17 @@ mod list_tests {
             // Down to the last entry the list holds whole at its top.
             let last = entries
                 .iter()
-                .rposition(|&entry| shown.whole(entry, px(0.)))
+                .rposition(|&entry| shown.shown(cx, entry))
                 .unwrap();
+            let rest = shown.at(cx, entries[last]).top();
             for _ in 0..last {
                 press(cx, "down");
             }
-            assert!(shown.scrolled(cx, entries[last]).abs() < px(0.5));
+            assert!(
+                (shown.at(cx, entries[last]).top() - rest).abs() <= PIXEL,
+                "Down to entry {} keeps the list at its top",
+                entries[last]
+            );
             let (past, beyond) = (entries[last + 1], entries[last + 2]);
             if one_frame {
                 press(cx, "down down");
@@ -1692,35 +1756,37 @@ mod list_tests {
                 press(cx, "down");
                 press(cx, "down");
             }
-            let down = shown.scrolled(cx, beyond);
+            shown.centred(cx, past, &format!("Down twice {frames}"));
             assert!(
-                (down - shown.centred(past)).abs() < px(0.5) && shown.whole(beyond, down),
-                "Down twice {frames} centres entry {past} at {:?} and keeps entry \
-                 {beyond} whole: {down:?}",
-                shown.centred(past)
+                shown.shown(cx, beyond),
+                "Down twice {frames} keeps entry {beyond} whole"
             );
-            // The wheel leaves `beyond` at the list's top, `past` above it.
-            let (top, _) = shown.span(beyond);
-            shown.wheel(cx, down, top, beyond);
+            let down = shown.at(cx, beyond).top() - shown.top;
+            // The wheel leaves `beyond`, with the heading that comes into
+            // view with it, at the list's top, `past` above it.
+            let top = match shown.heading(beyond) {
+                Some(heading) => shown.at(cx, heading).top(),
+                None => shown.at(cx, beyond).top(),
+            };
+            shown.wheel(cx, top - shown.top, beyond);
             if one_frame {
                 press(cx, "up down");
             } else {
                 press(cx, "up");
                 press(cx, "down");
             }
-            let back = shown.scrolled(cx, beyond);
+            shown.centred(cx, past, &format!("Up then Down {frames}"));
             assert!(
-                (back - shown.centred(past)).abs() < px(0.5) && shown.whole(beyond, back),
-                "Up then Down {frames} centres entry {past} at {:?} and keeps entry \
-                 {beyond} whole: {back:?}",
-                shown.centred(past)
+                shown.shown(cx, beyond),
+                "Up then Down {frames} keeps entry {beyond} whole"
             );
+            let back = shown.at(cx, beyond).top() - shown.top;
             ends.push((down, back));
             close(cx);
         }
         assert!(
-            (ends[0].0 - ends[1].0).abs() < px(0.5) && (ends[0].1 - ends[1].1).abs() < px(0.5),
-            "a frame apiece ends at {:?}, back to back at {:?}",
+            (ends[0].0 - ends[1].0).abs() <= PIXEL && (ends[0].1 - ends[1].1).abs() <= PIXEL,
+            "a frame apiece ends with the entry past them at {:?}, back to back at {:?}",
             ends[0],
             ends[1]
         );
@@ -1740,39 +1806,43 @@ mod list_tests {
         open(&app, cx, 13, (1200., 800.));
         let shown = Shown::read(cx, "");
         let entries = shown.entries();
-        // An entry past the list's first screen, not its group's first, with
-        // two entries of its group below it.
+        // An entry below the list's first screen, not its group's first,
+        // with two entries of its group below it.
         let at = (1..entries.len() - 2)
             .find(|&at| {
                 let entry = entries[at];
-                shown.tops[entry] >= shown.view
+                shown
+                    .drawn(cx, entry)
+                    .is_none_or(|row| row.top() >= shown.foot - PIXEL)
                     && matches!(shown.rows[entry - 1], HelpRow::Entry(_))
                     && entries[at + 2] == entry + 2
-                    && shown.tops[entry] + px(3.) <= shown.content() - shown.view
             })
             .expect("an entry the wheel can cut");
         let (cut, below) = (entries[at], entries[at + 1]);
         for _ in 0..=at {
             press(cx, "down");
         }
-        let wheeled = shown.tops[cut] + px(3.);
-        let scroll = shown.scrolled(cx, below);
-        shown.wheel(cx, scroll, wheeled, below);
+        let by = shown.at(cx, cut).top() - shown.top + px(3.);
+        shown.wheel(cx, by, below);
+        let wheeled = shown.at(cx, below).top();
         for (key, entry) in [("down", entries[at + 2]), ("up", below)] {
             press(cx, key);
-            let now = shown.scrolled(cx, entry);
+            let now = shown.at(cx, below).top();
             assert!(
-                (now - wheeled).abs() < px(0.5),
-                "{key} to entry {entry}, whole in the list the wheel scrolled to \
-                 {wheeled:?}, scrolled it to {now:?}"
+                (now - wheeled).abs() <= PIXEL,
+                "{key} to entry {entry}, whole in the list the wheel scrolled, moved \
+                 entry {below} from {wheeled:?} to {now:?}"
             );
         }
         press(cx, "up");
-        let now = shown.scrolled(cx, cut);
-        let centre = shown.centred(cut);
+        shown.centred(
+            cx,
+            cut,
+            &format!("Up to entry {cut}, cut 3 px by the list's top"),
+        );
         assert!(
-            (now - centre).abs() < px(0.5) && (now - wheeled).abs() >= px(0.5),
-            "Up to entry {cut}, cut 3 px by the list's top, centres it at {centre:?}: {now:?}"
+            (shown.at(cx, below).top() - wheeled).abs() > PIXEL,
+            "Up to entry {cut}, cut 3 px by the list's top, scrolls the list"
         );
         close(cx);
     }
