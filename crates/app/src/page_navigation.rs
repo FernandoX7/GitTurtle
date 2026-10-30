@@ -1192,6 +1192,82 @@ mod tests {
         );
     }
 
+    /// The quiet read a Commit's end starts reads the working state, so
+    /// Changes with no status shown says it is reading while that read runs,
+    /// in its list and in the commit action, as for a status read. It said
+    /// "Changes unavailable", and "Refresh to read the working tree again",
+    /// until the read landed.
+    #[gpui::test]
+    async fn changes_says_it_reads_while_a_commits_quiet_refresh_runs(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let root = fixture.path().join("narrow");
+        std::fs::write(root.join("notes.txt"), "rewritten\n").unwrap();
+        fixture_git(&root, &["add", "notes.txt"]);
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        // No status shown, as a status read that failed leaves Changes.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.work_status = None;
+                app.working_paths.reset();
+                app.working_rows.clear();
+                app.working_selected = None;
+                app.follow_working_menu(window, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("working-unavailable").is_some());
+
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Commit {
+                        message: "Record notes".into(),
+                    },
+                    "Creating commit…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the commit");
+        write.await;
+        // One frame as the quiet read runs, before its reply can land.
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        app.read_with(cx, |app, _| {
+            assert!(app.work_status.is_none(), "nothing has read it yet");
+            assert!(app.status_task.is_none(), "no status read after the commit");
+        });
+        assert!(
+            cx.debug_bounds("working-reading").is_some(),
+            "Changes says it is reading"
+        );
+        assert!(cx.debug_bounds("working-unavailable").is_none());
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.commit_action_label(cx)),
+            "Reading working changes…"
+        );
+
+        quiet_reads_land(&app, cx);
+        draw(cx);
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+        assert!(cx.debug_bounds("working-reading").is_none());
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+    }
+
     /// `checked_out`'s repository in the first tab, shown, and a second
     /// repository, `other`, with `draft.txt` new, opened in a second tab and
     /// read there.

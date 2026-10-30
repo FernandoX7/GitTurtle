@@ -2219,9 +2219,13 @@ impl GitTurtle {
     }
 
     /// Whether the shown repository's working state is being read, or is to
-    /// be read once a running write or preparation ends.
+    /// be read once a running write or preparation ends: by a status read,
+    /// or by a quiet read, as Commit and Fetch refresh as they end
+    /// (`read_after_write`). Changes once said "Changes unavailable" while
+    /// such a read ran with no status shown, as if nothing would read it.
     pub(super) fn working_read_pending(&self) -> bool {
         self.status_task.is_some()
+            || self.automatic.reads_working()
             || (self.working_read_deferred.is_some() && self.working_read_deferred == self.path)
     }
 

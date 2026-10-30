@@ -77,6 +77,12 @@ impl State {
     pub(crate) fn quiet_read_requested(&self) -> bool {
         !self.pending.is_empty() || self.inflight.is_some()
     }
+    /// Whether a quiet read runs or waits to run: it reads the shown
+    /// repository's working state whatever it was asked for, and one that
+    /// waits starts as the write, read or page that holds it back ends.
+    pub(super) fn reads_working(&self) -> bool {
+        self.task.is_some() || !self.pending.is_empty()
+    }
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {
