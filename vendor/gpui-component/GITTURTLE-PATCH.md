@@ -996,6 +996,48 @@ then none after a move to the same place, and only the row under the pointer
 after a 1 px move. Remove this part of the patch when upstream lights at most
 the row under the pointer after a wheel and that test passes without it.
 
+The menu-rebuild patch modifies `src/menu/popup_menu.rs`. Upstream's
+`PopupMenu::rebuild`, which builds an open menu's items again in place,
+cleared its selection, and a caller could put a cursor back only on the first
+item that can act (`select_first_item`). GitTurtle builds an open menu again
+whenever what its items read changes: a write starts or ends, an integration
+pauses, a waiting Working row menu's reason changes, its row's file changes or
+its rows land. A keyboard's cursor the keys had moved down a menu therefore
+went back to the top, and a right-click's menu lost it, so Enter just after a
+write ended could choose another item than the one the keys had reached.
+`rebuild` now keeps the keyboard's cursor (`KeptCursor`) on the item it was
+on, found again by its name (`PopupMenuItem::name`: an item's or a submenu's
+label, an element item's accessible name) nearest its old place, wherever the
+builder now puts it. Where that item is gone or can no longer act, the cursor
+moves to the item that can act nearest it, the later of two as near. With
+none that can act, as while a write refuses every item, it rests on nothing
+and is kept for the next rebuild, which puts it back once its item can act.
+It takes the place of any selection the builder makes. A selection the
+pointer made is cleared, as upstream, and the menu keys are unchanged.
+
+The consumers are every open menu the app builds again, in
+`crates/app/src/native_accessibility.rs`: a keyboard's row menu
+(`KeyboardMenu::rebuild`), a right-click's menu (`PointerMenu`, as writes
+start or end, its row's inputs change or its rows land) and a Button's
+dropdown that follows writes (`AppDropdown::follows_writes`), among them the
+Working row menus (`workspace::working_row_menu`). The crate's own
+`menu::popup_menu::tests::a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item`,
+`a_rebuilt_menu_moves_the_cursor_to_the_nearest_item_that_can_act` and
+`a_rebuilt_menu_clears_the_pointers_selection`, run out of tree with the
+workspace's patch table since this crate is an excluded workspace member,
+build a menu again with the same items, an item added above the cursor's, its
+item refused, its item gone, and every item refused and then available again,
+and read the cursor's item each time; without the kept cursor the first two
+read no cursor once the menu is built again.
+`cargo test --locked -p gitturtle a_right_click_row_menu_keeps_its_cursor_across_a_write`
+and `a_keyboard_row_menu_keeps_its_cursor_across_a_write` move a Working row
+menu's cursor down to Delete untracked file…, start and end a Stage of another
+file, and read the cursor on no item while the write runs and back on Delete
+untracked file… once its rows land, then on Discard changes… once Ignore…,
+where the keys had moved it, can no longer act. Remove this part of the patch
+when upstream's rebuild keeps the keyboard's selection on its item and those
+tests pass without it.
+
 The tooltip-hide patch modifies `src/root.rs`. Upstream's managed tooltip asks
 the window's overlay to show when its trigger's hover begins and to hide when
 it ends, and a press hides it; nothing else does. A trigger that stops being

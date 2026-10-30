@@ -94,6 +94,16 @@ fn fold_rows(
     Fold::Fits
 }
 
+/// GitTurtle patch: where the keyboard's cursor stood as its menu was built
+/// again ([`PopupMenu::rebuild`]): the name of the item it was on
+/// ([`PopupMenuItem::name`]), where that item has one, and its place among
+/// the menu's entries.
+#[derive(Clone, Debug, PartialEq)]
+struct KeptCursor {
+    name: Option<SharedString>,
+    index: usize,
+}
+
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
@@ -442,6 +452,22 @@ impl PopupMenuItem {
             PopupMenuItem::Separator => None,
         }
     }
+
+    /// GitTurtle patch: the name a menu built again finds this item by, so
+    /// the keyboard's cursor stays on it ([`PopupMenu::rebuild`]): an item's
+    /// or a submenu's label, or an element item's accessible name, which is
+    /// all it has to tell it apart. A label or a separator has none: the
+    /// cursor never rests on one.
+    fn name(&self) -> Option<&SharedString> {
+        match self {
+            PopupMenuItem::Item { label, .. } | PopupMenuItem::Submenu { label, .. } => Some(label),
+            PopupMenuItem::ElementItem {
+                accessibility_label,
+                ..
+            } => accessibility_label.as_ref(),
+            PopupMenuItem::Label(_) | PopupMenuItem::Separator => None,
+        }
+    }
 }
 
 pub struct PopupMenu {
@@ -458,6 +484,11 @@ pub struct PopupMenu {
     /// into a submenu), so the item draws as the keyboard's cursor rather than
     /// the pointer's hover; the pointer entering an item clears it.
     keyboard_selection: bool,
+    /// GitTurtle patch: the keyboard's cursor that a rebuild found nowhere
+    /// to place, every item then unable to act, as while a write refuses
+    /// them: the next rebuild that offers its item places it there again
+    /// ([`PopupMenu::rebuild`]).
+    kept_cursor: Option<KeptCursor>,
     /// GitTurtle patch: where the pointer rested when a wheel scrolled the
     /// rows under it, until it moves from there. Meanwhile no row draws the
     /// pointer's hover or takes its selection: the person never moved to
@@ -510,6 +541,7 @@ impl PopupMenu {
             menu_items: Vec::new(),
             selected_index: None,
             keyboard_selection: false,
+            kept_cursor: None,
             still_pointer: None,
             hovered_index: None,
             min_width: None,
@@ -907,17 +939,94 @@ impl PopupMenu {
     /// })
     /// .detach();
     /// ```
+    ///
+    /// GitTurtle patch: the keyboard's cursor stays on the item it was on,
+    /// found again by its name ([`PopupMenuItem::name`]) wherever the
+    /// builder now places it, as an item added above it moves it. Where that
+    /// item is gone or can no longer act, the cursor moves to the nearest
+    /// item that can, the later of two as near; with none that can, it rests
+    /// on nothing, as the menu keys leave a menu with none, and the next
+    /// rebuild that offers its item places it there again, so a write that
+    /// refuses every item while it runs leaves the cursor where it was once
+    /// it ends. The kept cursor takes the place of any selection the builder
+    /// makes ([`Self::select_first_item`]). Upstream cleared the selection,
+    /// so an open menu built again, as its content arrived or the state its
+    /// items read changed, lost its cursor, and a caller that put one back
+    /// could only put it on the first item. A selection the pointer made is
+    /// cleared, as upstream: the pointer's own place decides what it lights.
     pub fn rebuild(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
         f: impl FnOnce(Self, &mut Window, &mut Context<Self>) -> Self,
     ) {
+        let cursor = self.keyboard_cursor();
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
         menu.selected_index = None;
+        menu.kept_cursor = None;
         *self = f(menu, window, cx);
+        if let Some(cursor) = cursor {
+            self.place_kept_cursor(cursor);
+        }
         cx.notify();
+    }
+
+    /// GitTurtle patch: where the keyboard's cursor stands, for a rebuild
+    /// to keep ([`Self::rebuild`]): on its item, or where an earlier rebuild
+    /// that found nothing able to act kept it; `None` where the pointer made
+    /// the selection or nothing holds it.
+    fn keyboard_cursor(&self) -> Option<KeptCursor> {
+        if !self.keyboard_selection {
+            return None;
+        }
+        match self.selected_index {
+            Some(index) => Some(KeptCursor {
+                name: self
+                    .menu_items
+                    .get(index)
+                    .and_then(PopupMenuItem::name)
+                    .cloned(),
+                index,
+            }),
+            None => self.kept_cursor.clone(),
+        }
+    }
+
+    /// GitTurtle patch: places the keyboard's `cursor`, kept across a
+    /// rebuild, in the rebuilt items: on the item of its name nearest its
+    /// old place, where it can act, or else on the item that can act nearest
+    /// that item, or nearest its old place where no item has its name, the
+    /// later of two as near. With no item able to act it holds nothing and
+    /// the cursor is kept for the next rebuild.
+    fn place_kept_cursor(&mut self, cursor: KeptCursor) {
+        let anchor = cursor
+            .name
+            .as_ref()
+            .and_then(|name| {
+                self.menu_items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.name() == Some(name))
+                    .min_by_key(|(ix, _)| ix.abs_diff(cursor.index))
+                    .map(|(ix, _)| ix)
+            })
+            .unwrap_or(cursor.index);
+        let nearest = self
+            .clickable_menu_items()
+            .min_by_key(|(ix, _)| (ix.abs_diff(anchor), *ix < anchor))
+            .map(|(ix, _)| ix);
+        match nearest {
+            Some(ix) => {
+                self.selected_index = Some(ix);
+                self.keyboard_selection = true;
+                self.scroll_handle.scroll_to_item(ix);
+            }
+            None => {
+                self.selected_index = None;
+                self.kept_cursor = Some(cursor);
+            }
+        }
     }
 
     fn add_menu_item(
@@ -1927,6 +2036,201 @@ impl Render for PopupMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
+    use gpui::{TestAppContext, VisualTestContext};
+
+    /// A menu under a heading, as a row's menu opens with its name, of
+    /// `items`, each a name and whether it can act.
+    fn entries(menu: PopupMenu, items: &[(&'static str, bool)]) -> PopupMenu {
+        items
+            .iter()
+            .fold(menu.label("Heading"), |menu, (name, enabled)| {
+                menu.item(PopupMenuItem::new(*name).disabled(!enabled))
+            })
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+    }
+
+    /// A window whose root view is a focused menu of `items`, with the menu
+    /// keys bound.
+    fn open<'a>(
+        cx: &'a mut TestAppContext,
+        items: &'static [(&'static str, bool)],
+    ) -> (Entity<PopupMenu>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let (menu, cx) = cx.add_window_view(|window, cx| {
+            let menu = entries(PopupMenu::new(cx), items);
+            menu.focus_handle.focus(window, cx);
+            menu
+        });
+        draw(cx);
+        (menu, cx)
+    }
+
+    /// The item the keyboard's cursor is on, by name.
+    fn cursor(menu: &Entity<PopupMenu>, cx: &mut VisualTestContext) -> Option<String> {
+        menu.read_with(cx, |menu, _| {
+            let ix = menu.selected_index.filter(|_| menu.keyboard_selection)?;
+            Some(menu.menu_items.get(ix)?.name()?.to_string())
+        })
+    }
+
+    /// Builds the open menu again with `items`, as a caller does when what
+    /// its items read changes.
+    fn rebuilt(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+    ) {
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| entries(menu, items))
+            })
+        });
+        draw(cx);
+    }
+
+    const FOUR: &[(&str, bool)] = &[
+        ("One", true),
+        ("Two", true),
+        ("Three", true),
+        ("Four", true),
+    ];
+
+    /// A menu built again keeps the keyboard's cursor on the item it was on,
+    /// found by its name wherever the item now stands, and the menu keys
+    /// move on from there; it takes the place of the first item a builder
+    /// that opens from the keyboard selects. Upstream's rebuild cleared the
+    /// selection, so the cursor was lost, or put back on the first item.
+    #[gpui::test]
+    fn a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, FOUR);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "built again as it was"
+        );
+
+        const ZERO_FIRST: &[(&str, bool)] = &[
+            ("Zero", true),
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+        ];
+        rebuilt(&menu, cx, ZERO_FIRST);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "built again with an item above it, by its name rather than its place"
+        );
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "Down moves on from it"
+        );
+
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, cx| {
+                    let mut menu = entries(menu, ZERO_FIRST);
+                    menu.select_first_item(cx);
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the kept cursor wins over the builder's first item"
+        );
+    }
+
+    /// Where the cursor's item can no longer act, a rebuild moves the
+    /// cursor to the nearest item that can, the later of two as near; where
+    /// the item is gone, to the item that can act nearest its place. With
+    /// none that can act, as while a write refuses every item, it rests on
+    /// nothing, however often the menu is built so, and comes back to its
+    /// item once that item can act again.
+    #[gpui::test]
+    fn a_rebuilt_menu_moves_the_cursor_to_the_nearest_item_that_can_act(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, FOUR);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+
+        rebuilt(
+            &menu,
+            cx,
+            &[
+                ("One", true),
+                ("Two", false),
+                ("Three", true),
+                ("Four", true),
+            ],
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "its item refused, the later of the two nearest"
+        );
+
+        rebuilt(&menu, cx, &[("One", true), ("Two", false), ("Four", true)]);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Four"),
+            "its item gone, the item that took its place"
+        );
+
+        const REFUSED: &[(&str, bool)] = &[("One", false), ("Two", false), ("Four", false)];
+        rebuilt(&menu, cx, REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "every item refused");
+        rebuilt(&menu, cx, REFUSED);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            None,
+            "built again, still refused"
+        );
+        rebuilt(&menu, cx, &[("One", true), ("Two", true), ("Four", true)]);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Four"),
+            "back on its item once the items can act"
+        );
+    }
+
+    /// A selection the pointer made is cleared by a rebuild, as upstream:
+    /// the pointer's place decides what it lights.
+    #[gpui::test]
+    fn a_rebuilt_menu_clears_the_pointers_selection(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, FOUR);
+        menu.update(cx, |menu, _| {
+            menu.selected_index = Some(2);
+            menu.keyboard_selection = false;
+        });
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.selected_index),
+            None,
+            "nothing selected"
+        );
+    }
 
     #[gpui::test]
     fn popup_menu_item_a11y_label_uses_visible_label(cx: &mut gpui::TestAppContext) {

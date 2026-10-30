@@ -4350,6 +4350,124 @@ mod tests {
         a_rebuilt_row_menu_follows_writes_with_its_new_items(cx, Opening::Keyboard).await;
     }
 
+    /// The items of gamma's menu, by the names each is drawn and announced
+    /// with: available, refused, or refused with the condition it waits for.
+    const GAMMA_ITEMS: [&str; 4] = [
+        "Ignore…",
+        "Ignore…, untracked files only",
+        "Delete untracked file…",
+        "Discard changes…",
+    ];
+
+    /// The items among `items` whose row draws the keyboard's cursor, the
+    /// toolkit's `list_active` fill, available or refused.
+    fn cursor_among<'a>(cx: &mut VisualTestContext, items: &[&'a str]) -> Vec<&'a str> {
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        items
+            .iter()
+            .copied()
+            .filter(|item| {
+                ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+                    cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
+                        .is_some_and(|bounds| {
+                            crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+                        })
+                })
+            })
+            .collect()
+    }
+
+    /// A working row's menu, opened as `opening` opens it, its keyboard's
+    /// cursor moved down to Delete untracked file…, keeps the cursor on that
+    /// item as a Stage of another file starts and ends: while the write
+    /// refuses every item the cursor rests on none, and once the write's
+    /// rows land it is back on Delete untracked file…. Moved up to Ignore…,
+    /// which gamma added and edited outside the app can no longer take, it
+    /// goes to the nearest item that can act, Discard changes…. Each build
+    /// once sent a right-click's cursor away and a keyboard's back to
+    /// Ignore…, so Enter just after the write chose another item than the
+    /// one the keys had reached.
+    async fn a_row_menu_keeps_its_cursor_across_a_write(cx: &mut TestAppContext, opening: Opening) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        // A right-click's menu opens with no cursor, a keyboard's with it
+        // on Ignore….
+        cx.simulate_keystrokes(match opening {
+            Opening::RightClick => "down down",
+            Opening::Keyboard => "down",
+        });
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            ["Delete untracked file…"],
+            "{opening:?}: the keys moved the cursor down"
+        );
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("delta.txt")],
+            },
+        );
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(false),
+            "{opening:?}: refused while the write runs"
+        );
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            Vec::<&str>::new(),
+            "{opening:?}: no item holds the cursor while every item is refused"
+        );
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(true),
+            "{opening:?}: available once the write ends"
+        );
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            ["Delete untracked file…"],
+            "{opening:?}: the cursor is back on its item once the write ends"
+        );
+
+        cx.simulate_keystrokes("up");
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            ["Ignore…"],
+            "{opening:?}: Up moved the cursor to Ignore…"
+        );
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
+        quietly_refreshed(&app, cx);
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "{opening:?}: rebuilt for gamma"
+        );
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            ["Discard changes…"],
+            "{opening:?}: Ignore… refused, the cursor on the nearest item that can act"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_row_menu_keeps_its_cursor_across_a_write(cx: &mut TestAppContext) {
+        a_row_menu_keeps_its_cursor_across_a_write(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_row_menu_keeps_its_cursor_across_a_write(cx: &mut TestAppContext) {
+        a_row_menu_keeps_its_cursor_across_a_write(cx, Opening::Keyboard).await;
+    }
+
     /// A working row's keyboard menu closes, focus on the list, as soon as a
     /// status read moves the selection off its row, as one that finds gamma
     /// staged outside the app moves it to gamma's Staged row; a read that

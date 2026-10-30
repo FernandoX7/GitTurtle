@@ -251,9 +251,8 @@ impl ListRow {
 /// a right-click menu does ([`Self::following`], [`MenuInputs`]): built
 /// again in place, still focused, when a write starts or ends, an
 /// integration pauses or ends or, for a commit's, its commit becomes or
-/// stops being HEAD, its keyboard's cursor back on
-/// its first item that can act, or on none while every item is refused,
-/// since the kit's rebuild forgets which item held it; and closed, focus
+/// stops being HEAD, its keyboard's cursor kept where the keys left it
+/// ([`Self::rebuild`]); and closed, focus
 /// back on its list or tree, once its row no longer holds what it was
 /// opened on. It read both
 /// once, as it opened, so one opened at rest offered Revert while a merge
@@ -291,8 +290,8 @@ impl KeyboardMenu {
     /// Builds the row's menu once with `build`, the builder its right-click
     /// menu uses, focuses it, and calls `dismissed` once it closes: a menu
     /// whose items read nothing a write or a pause changes, as a changed
-    /// file's File history…, which a rebuild would only send the keyboard's
-    /// cursor back to the first item in. Its items are no taller than the
+    /// file's File history…, which nothing builds again. Its items are no
+    /// taller than the
     /// room below `row` where that holds about four rows ([`MENU_FLOOR`]),
     /// and otherwise no taller than the larger of the room below and the room
     /// above, where it goes when the room below is too short for it. Opened
@@ -487,13 +486,17 @@ impl KeyboardMenu {
         )
     }
 
-    /// Builds the menu again in place with `build`, as it opened, its
-    /// keyboard cursor on its first item that can act, or on none while
-    /// every item is refused: the row's file changed under it, and its items
-    /// act on what the row now shows. A cursor the keys had moved further
-    /// returns to that first item; a right-click's menu built again
-    /// ([`PointerMenu::built_from`]) loses its highlight, as the kit's
-    /// rebuild clears it.
+    /// Builds the menu again in place with `build`, as it opened: the row's
+    /// file changed under it, and its items act on what the row now shows.
+    /// Its keyboard's cursor stays on the item it was on, by its label, or
+    /// moves to the nearest item that can act where that one is gone or
+    /// can no longer act; while every item is refused it rests on none, and
+    /// it returns to its item once the items can act again, as when a write
+    /// ends (the kit's `PopupMenu::rebuild`). A right-click's menu built
+    /// again ([`PointerMenu::built_from`]) keeps its cursor the same way.
+    /// The cursor once returned to the first item that can act, and a
+    /// right-click's lost it, so Enter just after a write ended could choose
+    /// another item than the one the keys had reached.
     pub(super) fn rebuild(
         &self,
         build: impl FnOnce(PopupMenu) -> PopupMenu,
@@ -504,12 +507,9 @@ impl KeyboardMenu {
     }
 
     /// [`Self::rebuild`] for the open `menu`, in `focus`'s context and no
-    /// taller than `cap`.
-    // TODO(F): keep the item the keyboard's cursor was on across a rebuild,
-    // through the vendored PopupMenu select-by-label. The kit's rebuild
-    // clears the selection and this puts the cursor back on the first item
-    // that can act, so Enter just after a write ends can choose another item
-    // than the one the person was on.
+    /// taller than `cap`. The builder opens the menu from the keyboard,
+    /// on its first item that can act, as it opened; the kit's rebuild
+    /// then puts the cursor back where the keys had left it.
     fn build_again(
         menu: &Entity<PopupMenu>,
         focus: FocusHandle,
@@ -1293,12 +1293,9 @@ impl<E> PointerMenu<E> {
     /// added and edited, which the delete then refused. What a write's start
     /// or end changes stays out of `inputs`, which `follows_writes` follows
     /// already: in both, it built the menu twice for each. Built again, the
-    /// menu highlights nothing, since the kit's `PopupMenu::rebuild` clears
-    /// its selection, where a keyboard's menu built again puts its cursor
-    /// back on its first item that can act, or on none while every item is
-    /// refused ([`KeyboardMenu::rebuild`]).
-    // TODO(F): keep the highlighted item, by its label, across a rebuild
-    // once the vendored menu can select an item by label.
+    /// menu keeps its keyboard's cursor where the keys had left it, as a
+    /// keyboard's menu does ([`KeyboardMenu::rebuild`]); it lost it, since
+    /// the kit's `PopupMenu::rebuild` cleared its selection.
     pub(crate) fn built_from<T: PartialEq + 'static>(mut self, inputs: T) -> Self {
         self.inputs = Some(BuiltFrom {
             value: std::rc::Rc::new(inputs),
