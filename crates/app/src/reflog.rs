@@ -289,8 +289,6 @@ impl ReflogBrowser {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
-            let closing = browser.downgrade();
-            let closed = browser.read(cx).closed.clone();
             // The dialog clips its body to the body's bounds, and the browser
             // keeps the focus ring's room inside them below its last control.
             // The footer's gap gives the room back, so the footer stays put.
@@ -304,6 +302,12 @@ impl ReflogBrowser {
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
+                // Done and Escape close the dialog here, stopping the read.
+                // The kit's alert dialog never calls an `on_close` (its
+                // surface takes the alert's own button props, which hold
+                // none), so one set here never ran; a close that neither
+                // makes, as the recovery review's, drops the browser, whose
+                // `Drop` cancels the read.
                 .on_ok(move |_, _, cx| {
                     done.update(cx, |this, _| this.cancel());
                     true
@@ -311,13 +315,6 @@ impl ReflogBrowser {
                 .on_cancel(move |_, _, cx| {
                     cancel.update(cx, |this, _| this.cancel());
                     true
-                })
-                .on_close(move |_, _, cx| {
-                    closed.store(true, std::sync::atomic::Ordering::Release);
-                    let closing = closing.clone();
-                    cx.defer(move |cx| {
-                        let _ = closing.update(cx, |this, _| this.cancel());
-                    });
                 })
         });
         // Opening the dialog focuses its shell, which draws no ring, so the
@@ -336,7 +333,6 @@ impl ReflogBrowser {
 type WaitingRead = Box<dyn FnOnce(&mut ReflogBrowser, &mut Window, &mut Context<ReflogBrowser>)>;
 
 pub(crate) struct ReflogBrowser {
-    closed: Arc<std::sync::atomic::AtomicBool>,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     reader: operations::SerialExecutor,
@@ -438,7 +434,6 @@ impl ReflogBrowser {
                 cx.notify();
             });
         Self {
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             owner,
             repo,
             reader: operations::SerialExecutor::new("reflog-browser"),
@@ -663,9 +658,6 @@ impl ReflogBrowser {
             });
             let _ = this.update_in(cx, |this, window, cx| {
                 this.reading = false;
-                if this.closed.load(std::sync::atomic::Ordering::Acquire) {
-                    return;
-                }
                 // A later read waits: this reply is superseded, and starts
                 // it, unless an arrow key still repeats, whose end does.
                 if this.waiting.is_some() {

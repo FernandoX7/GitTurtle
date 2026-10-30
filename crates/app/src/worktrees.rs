@@ -85,8 +85,6 @@ impl GitTurtle {
             .unwrap_or_else(|| cx.new(|cx| WorktreeManager::new(owner, repo, window, cx)));
         self.worktree_management.draft = Some(manager.clone());
         manager.update(cx, |this, cx| {
-            this.closed
-                .store(false, std::sync::atomic::Ordering::Release);
             this.reveal_field = true;
             if let Some((tree, removal)) = target {
                 this.creating = false;
@@ -100,8 +98,6 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = manager.clone();
             let cancel = manager.clone();
-            let closing = manager.downgrade();
-            let closed = manager.read(cx).closed.clone();
             // The dialog clips its body to the body's bounds, and the manager
             // keeps the focus ring's room inside them above Manage and below
             // its last control. The title's margin and the footer's gap give
@@ -118,6 +114,10 @@ impl GitTurtle {
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .child(manager.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
+                // Done and Escape close the dialog here, stopping the read.
+                // The kit's alert dialog never calls an `on_close` (its
+                // surface takes the alert's own button props, which hold
+                // none), so one set here never ran.
                 .on_ok(move |_, _, cx| {
                     done.update(cx, |this, _| this.cancel());
                     true
@@ -125,13 +125,6 @@ impl GitTurtle {
                 .on_cancel(move |_, _, cx| {
                     cancel.update(cx, |this, _| this.cancel());
                     true
-                })
-                .on_close(move |_, _, cx| {
-                    closed.store(true, std::sync::atomic::Ordering::Release);
-                    let closing = closing.clone();
-                    cx.defer(move |cx| {
-                        let _ = closing.update(cx, |this, _| this.cancel());
-                    });
                 })
         });
         // Opening the dialog focuses its shell, which draws no ring: focus
@@ -216,7 +209,6 @@ impl GitTurtle {
 }
 
 struct WorktreeManager {
-    closed: Arc<std::sync::atomic::AtomicBool>,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     reader: operations::SerialExecutor,
@@ -275,7 +267,6 @@ impl WorktreeManager {
             .into();
         let parent = repo.path().parent().unwrap_or(repo.path()).to_owned();
         Self {
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             owner,
             repo,
             reader: operations::SerialExecutor::new("worktree-manager"),
@@ -405,7 +396,7 @@ impl WorktreeManager {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Worktree read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
         }));
         cx.notify();
     }
