@@ -641,26 +641,62 @@ pub(crate) fn refusing(
         .accessibility_disabled(refused || dimmed)
 }
 
-/// [`refusing`], with `tooltip` as the control's tooltip at rest and, once
-/// it looks refused, `tooltip` followed by why ([`BUSY_REASON`]), as the
-/// header's Projects and History's Back to Projects say why they wait for a
-/// write; they looked refused and still read "Open Projects".
-pub(crate) fn refusing_with_reason(
-    control: Button,
-    key: impl Fn() -> String,
-    refused: bool,
-    dimmed: bool,
-    tooltip: impl Into<SharedString>,
-) -> Button {
-    let tooltip: SharedString = tooltip.into();
-    let tooltip: SharedString = if dimmed {
-        format!("{tooltip} · {BUSY_REASON}").into()
-    } else {
-        tooltip
-    };
-    #[cfg(test)]
-    refusals::record_tooltip(key(), tooltip.clone());
-    refusing(control, key, refused, dimmed).tooltip(tooltip)
+/// What a control that waits for a running write says in its tooltip
+/// ([`GitTurtle::refusing_with_reason`]).
+pub(crate) struct WaitingTooltip {
+    /// What it says at rest.
+    pub(crate) name: SharedString,
+    /// Whether it looks refused, which adds why ([`BUSY_REASON`]).
+    pub(crate) dimmed: bool,
+}
+
+impl WaitingTooltip {
+    fn text(&self) -> SharedString {
+        if self.dimmed {
+            format!("{} · {BUSY_REASON}", self.name).into()
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+impl GitTurtle {
+    /// [`refusing`], with a tooltip that says why once the control looks
+    /// refused, as the header's Projects and History's Back to Projects say
+    /// why they wait for a write. `tooltip` reads from the app what the
+    /// control says and whether it looks refused, as it is built and again
+    /// each time its tooltip renders, so a pointer resting on it reads the
+    /// reason as the busy look begins and loses it as the look ends. The kit
+    /// keeps a text tooltip as the pointer enters it (`Button::tooltip`):
+    /// resting on Projects through a write still read "Open Projects" beside
+    /// the dimmed button, and the reason after the write. `key` names the
+    /// control for tests (`refusals`), and its tooltip `‹key›/tooltip/‹text›`.
+    pub(crate) fn refusing_with_reason(
+        &self,
+        control: Button,
+        key: &'static str,
+        refused: bool,
+        tooltip: fn(&GitTurtle) -> WaitingTooltip,
+        cx: &Context<Self>,
+    ) -> Button {
+        let built = tooltip(self);
+        let text = built.text();
+        #[cfg(test)]
+        refusals::record_tooltip(key.into(), text.clone());
+        let owner = cx.entity().downgrade();
+        refusing(control, || key.into(), refused, built.dimmed).tooltip_view(move |window, cx| {
+            let text = owner
+                .upgrade()
+                .map_or_else(|| text.clone(), |app| tooltip(app.read(cx)).text());
+            Tooltip::element(move |_, _| {
+                let probe = text.clone();
+                div()
+                    .debug_selector(move || format!("{key}/tooltip/{probe}"))
+                    .child(text.clone())
+            })
+            .build(window, cx)
+        })
+    }
 }
 
 /// `input`, which a busy spell leaves `refused`: it takes no edit and is
@@ -712,7 +748,7 @@ pub(crate) mod refusals {
     }
 
     /// The tooltip the control `key` was last built with
-    /// (`super::refusing_with_reason`).
+    /// (`GitTurtle::refusing_with_reason`).
     pub(crate) fn tooltip(key: &str) -> Option<gpui_kit::SharedString> {
         TOOLTIPS.with(|last| last.borrow().get(key).cloned())
     }

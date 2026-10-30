@@ -692,6 +692,74 @@ mod tests {
         );
     }
 
+    /// A pointer resting on the header's Projects reads why it waits once a
+    /// write looks busy, and its plain tooltip again once the write ends,
+    /// without moving. The kit kept the tooltip built as the pointer entered,
+    /// so resting there through a write still read "Open Projects" beside
+    /// the dimmed button, and the reason after the write.
+    #[gpui::test]
+    async fn a_pointer_resting_on_projects_reads_why_it_waits_while_a_write_runs(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        // Wide enough that the busy look's progress label and Cancel take
+        // none of the header's room from the controls beside Projects.
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        // Projects stands in the header beside History's root, where Back to
+        // Projects takes its place.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        let shows = |cx: &mut VisualTestContext, text: &str| {
+            cx.debug_bounds(format!("projects/tooltip/{text}").leak())
+                .is_some()
+        };
+        let rest = "Open Projects";
+        let waiting = format!("{rest} · {BUSY_REASON}");
+        let projects = cx.debug_bounds("projects").expect("the header's Projects");
+        cx.simulate_mouse_move(projects.center(), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        draw(cx);
+        assert!(shows(cx, rest), "at rest");
+
+        // A write held open, as a Fetch from an unreachable remote stays.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        draw(cx);
+        assert!(shows(cx, rest), "through the busy look's delay");
+        cx.executor().advance_clock(BUSY_LOOK_DELAY);
+        draw(cx);
+        assert_eq!(
+            cx.debug_bounds("projects"),
+            Some(projects),
+            "Projects stays under the pointer"
+        );
+        assert!(shows(cx, &waiting), "once the write looks busy");
+        assert!(!shows(cx, rest));
+
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.operation_busy.is_none()));
+        draw(cx);
+        assert!(shows(cx, rest), "once the write ends");
+        assert!(!shows(cx, &waiting));
+    }
+
     /// A review's preparation runs on the operation executor as a write
     /// does, so Changes opened while it runs queues no read behind it either:
     /// the preparation's end reads the working state. Each opening once

@@ -192,13 +192,15 @@ impl GitTurtle {
         // History's Back opens Projects, which a running write refuses; once
         // it looks refused, its tooltip says why.
         .map(|back| {
-            let history = self.mode == WorkspaceMode::History;
-            crate::workspace::refusing_with_reason(
+            self.refusing_with_reason(
                 back,
-                || "page-back".into(),
-                self.operation_busy.is_some() && history,
-                self.operation_shown().is_some() && history,
-                format!("{back_label} · {}[", primary_label()),
+                "page-back",
+                self.operation_busy.is_some() && self.mode == WorkspaceMode::History,
+                |app| crate::workspace::WaitingTooltip {
+                    name: format!("{} · {}[", app.back_label(), primary_label()).into(),
+                    dimmed: app.operation_shown().is_some() && app.mode == WorkspaceMode::History,
+                },
+                cx,
             )
         })
         .when(labelled, |back| back.w_full())
@@ -306,12 +308,15 @@ impl GitTurtle {
             // Projects offers starts another operation; once the button looks
             // refused, its tooltip says why.
             .map(|projects| {
-                crate::workspace::refusing_with_reason(
+                self.refusing_with_reason(
                     projects,
-                    || "projects".into(),
+                    "projects",
                     self.operation_busy.is_some(),
-                    self.operation_shown().is_some(),
-                    "Open Projects",
+                    |app| crate::workspace::WaitingTooltip {
+                        name: "Open Projects".into(),
+                        dimmed: app.operation_shown().is_some(),
+                    },
+                    cx,
                 )
             })
             .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx)))
