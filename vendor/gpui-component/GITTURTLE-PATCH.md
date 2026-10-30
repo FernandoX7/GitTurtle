@@ -1239,6 +1239,22 @@ refused Open project, and after the write; Discard changes… once Ignore… was
 refused; Stage once a file became conflicted, where Enter marked the file
 resolved; Cherry-pick once HEAD left a commit and took Amend and Undo away.
 
+A click no longer straddles a rebuild. Rows are wired by their item's index
+(`MenuItemElement::new(ix, …)`, the element ID under which GPUI keeps a
+pending press across frames), and `on_click` ran whatever item stood at
+that index when the button came up: a press on Three, a rebuild without One
+that put Four at Three's index and place, and the release ran Four, which
+the person never pressed. A row's press now records its index (`pressed`,
+through the item element's `on_press` in `src/menu/menu_item.rs`, called
+from the mouse-down listener an item that acts already has), `rebuild`
+forgets it, and `on_click` acts only where its press went down on that
+index since the menu was last built. Enter and the menu keys are unchanged.
+`a_press_and_release_across_a_rebuild_run_nothing` presses Three, builds
+the menu again without One and releases: nothing runs, and a fresh click
+then runs Four, the row drawn under the pointer; without the check the
+release runs Four. Remove this part when upstream ties a click to the item
+it was pressed on.
+
 The consumers are every open menu the app builds again, in
 `crates/app/src/native_accessibility.rs`: a keyboard's row menu
 (`KeyboardMenu::rebuild`), a right-click's menu (`PointerMenu`, as writes

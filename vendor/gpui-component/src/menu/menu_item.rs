@@ -2,7 +2,7 @@ use crate::{ActiveTheme, Disableable, StyledExt, h_flex};
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId,
     GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
-    ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
+    MouseDownEvent, ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
     StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _,
 };
@@ -41,6 +41,9 @@ pub(crate) struct MenuItemElement {
     /// GitTurtle patch: an item unless the menu says otherwise.
     entry: Entry,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    /// GitTurtle patch: called as the primary button goes down on an item
+    /// that acts, before the click its release makes.
+    on_press: Option<Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
 }
@@ -61,6 +64,7 @@ impl MenuItemElement {
             checked: None,
             entry: Entry::Item,
             on_click: None,
+            on_press: None,
             on_hover: None,
             children: SmallVec::new(),
         }
@@ -117,6 +121,16 @@ impl MenuItemElement {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(handler));
+        self
+    }
+
+    /// GitTurtle patch: set a handler for the primary button going down on
+    /// the item, which only an item with a click handler hears.
+    pub(crate) fn on_press(
+        mut self,
+        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_press = Some(Box::new(handler));
         self
     }
 
@@ -231,8 +245,12 @@ impl RenderOnce for MenuItemElement {
                 })
                 .when(cursor, |this| this.bg(cx.theme().list_active))
                 .when_some(self.on_click, |this, on_click| {
-                    this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    let on_press = self.on_press;
+                    this.on_mouse_down(MouseButton::Left, move |event, window, cx| {
                         cx.stop_propagation();
+                        if let Some(on_press) = &on_press {
+                            on_press(event, window, cx);
+                        }
                     })
                     .on_click(on_click)
                 })

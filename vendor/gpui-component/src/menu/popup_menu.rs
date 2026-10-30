@@ -508,6 +508,10 @@ pub struct PopupMenu {
     /// takes the selection once a still pointer moves onto it
     /// ([`PopupMenu::pointer_moved`]).
     hovered_index: Option<usize>,
+    /// GitTurtle patch: the item a press of the primary button went down on,
+    /// by its index, since the menu was last built; only a release on that
+    /// item acts ([`PopupMenu::on_click`]).
+    pressed: Option<usize>,
     /// GitTurtle patch: where the last frame drew each drawn row, by its
     /// item's index, scrolled and clipped as drawn; none after a rebuild
     /// until the next layout ([`PopupMenu::rows_laid_out`]).
@@ -567,6 +571,7 @@ impl PopupMenu {
             pointer_selection: false,
             still_pointer: None,
             hovered_index: None,
+            pressed: None,
             rows: Vec::new(),
             surface: None,
             pointer_at_layout: None,
@@ -999,7 +1004,7 @@ impl PopupMenu {
     /// menu the wheel scrolled stays where it was.
     ///
     /// Built again under a pointer resting over the menu as last laid out,
-    /// the keyboard's cursor elsewhere or none, the pointer is still from
+    /// while the keyboard does not own the cursor, the pointer is still from
     /// there, as after a wheel ([`Self::rows_scrolled`]): no row takes the
     /// selection or draws the pointer's hover until the pointer moves, which
     /// selects the row under it ([`Self::pointer_moved`]). The rows can move
@@ -1028,6 +1033,9 @@ impl PopupMenu {
         menu.menu_items.clear();
         menu.selected_index = None;
         menu.kept_cursor = None;
+        // A press before the rebuild went down on the item that stood at its
+        // index then, which may be another now: its release acts on nothing.
+        menu.pressed = None;
         // The builder's selection, which a kept cursor or the pointer's
         // ownership replaces, scrolls a handle nothing draws.
         let scroll = (cursor.is_some() || pointer).then(|| std::mem::take(&mut menu.scroll_handle));
@@ -1229,9 +1237,17 @@ impl PopupMenu {
             .filter(|(_, item)| item.is_clickable())
     }
 
+    /// GitTurtle patch: a click acts only where its press went down on the
+    /// item at `ix` since the menu was last built ([`Self::rebuild`]). Rows
+    /// are wired, and GPUI keeps a pending press, by the item's index, so a
+    /// press and release that straddled a rebuild ran whatever item the
+    /// rebuild put at the pressed index, which the person never pressed.
     fn on_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.prevent_default();
+        if self.pressed.take() != Some(ix) {
+            return;
+        }
         self.selected_index = Some(ix);
         self.kept_cursor = None;
         self.confirm(&Confirm { secondary: false }, window, cx);
@@ -1976,9 +1992,10 @@ impl PopupMenu {
                 ..
             } => this
                 .when(!disabled, |this| {
-                    this.on_click(
-                        cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                    )
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed = Some(ix)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .child(
@@ -2015,9 +2032,10 @@ impl PopupMenu {
                 });
 
                 this.when(!disabled, |this| {
-                    this.on_click(
-                        cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
-                    )
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed = Some(ix)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .h(item_height)
@@ -3542,6 +3560,45 @@ mod tests {
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert_eq!(*ran.borrow(), ["Two"], "Enter runs Two");
+    }
+
+    /// A press and its release that straddle a rebuild run nothing: rows
+    /// are wired, and GPUI keeps a pending press, by the item's index, so
+    /// with the press on Three and a rebuild without One, which puts Four
+    /// at Three's index and place, the release ran Four, which the person
+    /// never pressed. A fresh click then runs the row drawn under the
+    /// pointer.
+    #[gpui::test]
+    fn a_press_and_release_across_a_rebuild_run_nothing(cx: &mut TestAppContext) {
+        const WITHOUT_ONE: &[(&str, bool)] = &[("Two", true), ("Three", true), ("Four", true)];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        let pointer = drawn_item(cx, "Three").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        rebuilt_acting(&menu, cx, WITHOUT_ONE, &ran);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[3].name().cloned()),
+            Some("Four".into()),
+            "Four at Three's index"
+        );
+        assert!(
+            drawn_item(cx, "Four").contains(&pointer),
+            "Four drawn under the pointer"
+        );
+        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "the release runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_click(pointer, Modifiers::default());
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Four"], "a fresh click runs Four");
     }
 
     #[gpui::test]
