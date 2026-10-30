@@ -847,11 +847,18 @@ pub const fn paused_recovery_refusal(operation: Option<OperationKind>) -> &'stat
     }
 }
 
-/// Whether `reason` is one of the [`paused_recovery_refusal`]s.
-pub fn is_paused_recovery_refusal(reason: &str) -> bool {
+/// The pause `reason` refuses for, where it is one of the
+/// [`paused_recovery_refusal`]s: the operation it names, or `None` for
+/// conflicts alone.
+pub fn paused_recovery_operation(reason: &str) -> Option<Option<OperationKind>> {
     std::iter::once(None)
         .chain(OperationKind::ALL.map(Some))
-        .any(|operation| paused_recovery_refusal(operation) == reason)
+        .find(|operation| paused_recovery_refusal(*operation) == reason)
+}
+
+/// Whether `reason` is one of the [`paused_recovery_refusal`]s.
+pub fn is_paused_recovery_refusal(reason: &str) -> bool {
+    paused_recovery_operation(reason).is_some()
 }
 
 fn recovery_parent(commit: &RecoveryCommit, mainline: Option<usize>) -> Result<usize> {

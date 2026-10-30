@@ -2,7 +2,8 @@
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
-    CommitRecoveryPlan, RecoveryCommand, RecoveryKind, StashPage, StashSnapshot, WriteCommand,
+    CommitRecoveryPlan, OperationKind, RecoveryCommand, RecoveryKind, StashPage, StashSnapshot,
+    WriteCommand,
 };
 use gpui_kit::component::{
     WindowExt,
@@ -18,11 +19,29 @@ const PREPARING: &str = "Preparing recovery action…";
 #[cfg(test)]
 pub(super) const PAUSED_REFUSAL: &str =
     gitturtle_core::paused_recovery_refusal(Some(gitturtle_core::OperationKind::Merge));
+/// What Stashes says once the merge the tests pause has ended
+/// ([`pause_ended_line`]).
+#[cfg(test)]
+const PAUSE_ENDED: &str = "The merge has ended. Choose Review restore… to continue.";
 /// What a recovery form says in place of a refusal for a paused
-/// integration (`gitturtle_core::paused_recovery_refusal`) once a status
-/// read finds the integration it refused for ended
-/// (`GitTurtle::integration_ended`).
-const PAUSE_ENDED: &str = "The paused operation has ended. Review again to continue.";
+/// `operation` (`gitturtle_core::paused_recovery_refusal`) once a status
+/// read finds it ended (`GitTurtle::integration_ended`): the operation, and
+/// the form's own button, `review`, that tries again ("The merge has ended.
+/// Choose Review stash to continue."). It once said "The paused operation
+/// has ended. Review again to continue." whatever had paused, naming no
+/// button.
+fn pause_ended_line(operation: OperationKind, review: &str) -> SharedString {
+    format!(
+        "The {} has ended. Choose {review} to continue.",
+        operation.label().to_lowercase()
+    )
+    .into()
+}
+/// The buttons that review again: the Amend and Save changes to stash…
+/// forms' own, and Stashes' Review restore….
+const REVIEW_AMEND: &str = "Review amend";
+const REVIEW_STASH: &str = "Review stash";
+const REVIEW_RESTORE: &str = "Review restore…";
 /// Review restore…'s label while its own preparation looks busy
 /// ([`StashBrowser::review_restore`]).
 const RESTORE_PREPARING: &str = "Preparing…";
@@ -250,9 +269,15 @@ impl GitTurtle {
             && path.as_deref() == Some(browser.read(cx).repository.path())
         {
             browser.update(cx, |browser, cx| {
-                if pause_ended(&mut browser.restore_line, &mut browser.pause_ended) {
+                if let Some(operation) =
+                    pause_ended(&mut browser.restore_line, &mut browser.pause_ended)
+                {
                     browser.reveal_note_for(NoteReveal::PauseEnded);
-                    crate::copy_feedback::announce(window, cx, PAUSE_ENDED);
+                    crate::copy_feedback::announce(
+                        window,
+                        cx,
+                        pause_ended_line(operation, REVIEW_RESTORE),
+                    );
                     cx.notify();
                 }
             });
@@ -261,7 +286,7 @@ impl GitTurtle {
             && form.read(cx).repository == path
         {
             form.update(cx, |form, cx| {
-                if pause_ended(&mut form.error, &mut form.pause_ended) {
+                if pause_ended(&mut form.error, &mut form.pause_ended).is_some() {
                     cx.notify();
                 }
             });
@@ -270,7 +295,7 @@ impl GitTurtle {
             && form.read(cx).repository == path
         {
             form.update(cx, |form, cx| {
-                if pause_ended(&mut form.error, &mut form.pause_ended) {
+                if pause_ended(&mut form.error, &mut form.pause_ended).is_some() {
                     cx.notify();
                 }
             });
@@ -1104,8 +1129,8 @@ struct AmendForm {
     initial: CommitDraft,
     error: Option<String>,
     /// Whether the line beneath the fields says that the integration its
-    /// last review was refused for has ended ([`PAUSE_ENDED`]).
-    pause_ended: bool,
+    /// last review was refused for has ended ([`pause_ended_line`]).
+    pause_ended: Option<OperationKind>,
     /// How often the form has been shown, which gives its refusal a fresh
     /// node each time it opens again (`native_accessibility::refusal_line`).
     opened: usize,
@@ -1130,7 +1155,7 @@ impl AmendForm {
             description,
             initial,
             error: None,
-            pause_ended: false,
+            pause_ended: None,
             opened: 0,
         }
     }
@@ -1144,7 +1169,7 @@ impl AmendForm {
         amended_message(&self.plan.target.message, &self.initial, &self.draft(cx))
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.pause_ended = false;
+        self.pause_ended = None;
         if self.title.read(cx).value().trim().is_empty() {
             self.error = Some("Enter a commit title.".into());
             cx.notify();
@@ -1221,6 +1246,7 @@ impl Render for AmendForm {
             .children(form_line(
                 self.error.as_deref(),
                 self.pause_ended,
+                REVIEW_AMEND,
                 self.opened,
                 cx,
             ))
@@ -1247,8 +1273,8 @@ struct StashForm {
     include_untracked: bool,
     error: Option<String>,
     /// Whether the line beneath the fields says that the integration its
-    /// last review was refused for has ended ([`PAUSE_ENDED`]).
-    pause_ended: bool,
+    /// last review was refused for has ended ([`pause_ended_line`]).
+    pause_ended: Option<OperationKind>,
     /// How often the form has been shown, which gives its refusal a fresh
     /// node each time it opens again (`native_accessibility::refusal_line`).
     opened: usize,
@@ -1268,12 +1294,12 @@ impl StashForm {
             name,
             include_untracked: false,
             error: None,
-            pause_ended: false,
+            pause_ended: None,
             opened: 0,
         }
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.pause_ended = false;
+        self.pause_ended = None;
         let name = self.name.read(cx).value().to_string();
         if name.trim().is_empty() {
             self.error = Some("Give this stash a name so you can find it later.".into());
@@ -1309,7 +1335,13 @@ impl Render for StashForm {
             .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
             .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
                 .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))
-            .children(form_line(self.error.as_deref(), self.pause_ended, self.opened, cx))
+            .children(form_line(
+                self.error.as_deref(),
+                self.pause_ended,
+                REVIEW_STASH,
+                self.opened,
+                cx,
+            ))
     }
 }
 fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
@@ -1326,30 +1358,34 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
     });
 }
 /// Replaces a recovery form's `error` that refuses because an integration
-/// was paused with the line that says it has ended, `ended`; returns whether
-/// it did. Any other reason stays.
-fn pause_ended(error: &mut Option<String>, ended: &mut bool) -> bool {
-    if !error
+/// was paused with the line that says it has ended, `ended`, which keeps
+/// the operation the refusal named; returns that operation where it did.
+/// Any other reason stays, as does a refusal for conflicts with no
+/// operation paused, which the end of an integration does not resolve.
+fn pause_ended(
+    error: &mut Option<String>,
+    ended: &mut Option<OperationKind>,
+) -> Option<OperationKind> {
+    let operation = error
         .as_deref()
-        .is_some_and(gitturtle_core::is_paused_recovery_refusal)
-    {
-        return false;
-    }
+        .and_then(gitturtle_core::paused_recovery_operation)
+        .flatten()?;
     *error = None;
-    *ended = true;
-    true
+    *ended = Some(operation);
+    Some(operation)
 }
 
 /// The line beneath a recovery form's fields: why its last review was
 /// refused, an alert announced at once, again by a fresh node each time the
 /// form opens again with it (`opened`, `native_accessibility::refusal_line`),
-/// or, `pause_ended`, that the integration it was refused for has ended, a
-/// status heard once assistive technology finishes speaking. The refusal was
-/// no live region, so it went unannounced as it first appeared and as the
-/// form opened again with it.
+/// or, `pause_ended`, that the integration it was refused for has ended,
+/// naming the form's `review` button, a status heard once assistive
+/// technology finishes speaking. The refusal was no live region, so it went
+/// unannounced as it first appeared and as the form opened again with it.
 fn form_line(
     error: Option<&str>,
-    pause_ended: bool,
+    pause_ended: Option<OperationKind>,
+    review: &str,
     opened: usize,
     cx: &App,
 ) -> Option<AnyElement> {
@@ -1365,18 +1401,19 @@ fn form_line(
                     .text_color(rgb(palette(cx).warning))
             },
         )),
-        None => pause_ended.then(|| {
+        None => pause_ended.map(|operation| {
+            let line = pause_ended_line(operation, review);
             native_accessibility::static_text(
                 div()
                     .id("recovery-form-note")
                     .debug_selector(|| "recovery-form-note".into())
                     .role(Role::Status)
-                    .aria_label(PAUSE_ENDED)
+                    .aria_label(line.clone())
                     .polite()
                     .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(palette(cx).muted))
-                    .child(PAUSE_ENDED),
-                PAUSE_ENDED,
+                    .child(line.clone()),
+                line,
             )
             .into_any_element()
         }),
@@ -1484,8 +1521,8 @@ pub(crate) struct StashBrowser {
     /// said.
     read_alert: Option<crate::copy_feedback::Alerted>,
     /// Whether that note says the integration Review restore… was last
-    /// refused for has ended ([`PAUSE_ENDED`]).
-    pause_ended: bool,
+    /// refused for has ended ([`pause_ended_line`]).
+    pause_ended: Option<OperationKind>,
     /// The next frame scrolls the stacked detail to the footer note, for
     /// why it changed: an answer to Review restore…'s press, a refusal or
     /// failure, has just replaced it, which shows while focus stays where
@@ -1651,7 +1688,7 @@ impl StashBrowser {
             restore_line: None,
             restore_alert: None,
             read_alert: None,
-            pause_ended: false,
+            pause_ended: None,
             reveal_note: Default::default(),
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
             restore_at: Default::default(),
@@ -2172,7 +2209,7 @@ impl StashBrowser {
         let said = restore_said(&message);
         self.restore_alert = Some(crate::copy_feedback::alert(window, cx, said));
         self.restore_line = Some(message);
-        self.pause_ended = false;
+        self.pause_ended = None;
         self.reveal_note_for(NoteReveal::Pressed(held));
         cx.notify();
     }
@@ -2202,7 +2239,7 @@ impl StashBrowser {
             crate::copy_feedback::withdraw(alerted, cx);
         }
         self.restore_line = None;
-        self.pause_ended = false;
+        self.pause_ended = None;
         self.reveal_note.set(None);
     }
 
@@ -2293,23 +2330,26 @@ impl StashBrowser {
                 )
                 .into_any_element();
         }
-        if self.pause_ended {
+        if let Some(operation) = self.pause_ended {
+            let line = pause_ended_line(operation, REVIEW_RESTORE);
+            let tooltip = line.clone();
             return native_accessibility::static_text(
                 div()
                     .id("stash-restore-ended")
                     .debug_selector(|| "stash-restore-ended".into())
                     .role(Role::Status)
-                    .aria_label(PAUSE_ENDED)
+                    .aria_label(line.clone())
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     // As the refusal it replaces keeps its lines.
                     .line_clamp(lines)
                     .text_ellipsis()
-                    .tooltip(|window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(PAUSE_ENDED).build(window, cx)
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                            .build(window, cx)
                     })
-                    .child(PAUSE_ENDED),
-                PAUSE_ENDED,
+                    .child(line.clone()),
+                line,
             )
             .into_any_element();
         }
@@ -6566,7 +6606,7 @@ mod tests {
         };
         let ended = |stashes: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext| {
             stashes.read_with(cx, |stashes, _| {
-                stashes.restore_line.is_none() && stashes.pause_ended
+                stashes.restore_line.is_none() && stashes.pause_ended.is_some()
             }) && cx.debug_bounds("stash-restore-ended").is_some()
         };
 
@@ -7098,7 +7138,7 @@ mod tests {
         quiet_reads_land(&app, cx);
         crate::views::tests::draw(cx);
         assert!(
-            stashes.read_with(cx, |stashes, _| stashes.pause_ended)
+            stashes.read_with(cx, |stashes, _| stashes.pause_ended.is_some())
                 && cx.debug_bounds("stash-restore-ended").is_some(),
             "the note says the merge ended"
         );
@@ -7380,7 +7420,7 @@ mod tests {
         crate::views::tests::draw(cx);
         assert!(
             stashes.read_with(cx, |stashes, _| stashes.restore_line.is_none()
-                && stashes.pause_ended)
+                && stashes.pause_ended.is_some())
                 && cx.debug_bounds("stash-restore-ended").is_some(),
             "the note says the merge ended"
         );
@@ -7486,7 +7526,7 @@ mod tests {
         assert!(!paused(cx), "the read finds the merge ended");
         assert_eq!(
             form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
-            (None, true),
+            (None, Some(OperationKind::Merge)),
             "the refusal gives way"
         );
         assert!(
@@ -7534,10 +7574,13 @@ mod tests {
 
     /// A recovery action refused from the pause the window read names the
     /// paused operation and how to end it, in the core's words: a commit's
-    /// Revert says so for a cherry-pick and for a revert stopped on a
-    /// conflict outside the app. Every pause once read "Finish the current
-    /// operation and resolve conflicts before starting another recovery
-    /// action", whatever had paused.
+    /// Revert and Save changes to stash…'s Review stash say so for a
+    /// cherry-pick and for a revert stopped on a conflict outside the app.
+    /// Every pause once read "Finish the current operation and resolve
+    /// conflicts before starting another recovery action", whatever had
+    /// paused. Once it ends, the form's line names the operation that ended
+    /// and the form's own button; it once read "The paused operation has
+    /// ended. Review again to continue.", naming neither.
     #[gpui::test]
     async fn a_paused_refusal_names_the_paused_operation(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
@@ -7566,18 +7609,20 @@ mod tests {
         git(&["checkout", "-q", "main"]);
         commit("one\n");
         commit("two\n");
-        for (stop, end, kind, said) in [
+        for (stop, end, kind, said, ended) in [
             (
                 ["cherry-pick", "side"],
                 "cherry-pick",
                 gitturtle_core::OperationKind::CherryPick,
                 "A cherry-pick is paused. Continue or abort it before another recovery action.",
+                "The cherry-pick has ended. Choose Review stash to continue.",
             ),
             (
                 ["revert", "HEAD~1"],
                 "revert",
                 gitturtle_core::OperationKind::Revert,
                 "A revert is paused. Continue or abort it before another recovery action.",
+                "The revert has ended. Choose Review stash to continue.",
             ),
         ] {
             let stopped = crate::views::tests::fixture_git_output(&repository, &arguments(&stop));
@@ -7603,15 +7648,51 @@ mod tests {
                 Some(said),
                 "{kind:?}: the window's error names it"
             );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_stash_form(window, cx)));
+            crate::views::tests::draw(cx);
+            let form = app.read_with(cx, |app, _| app.recovery.stash.clone().expect("the form"));
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    form.name
+                        .update(cx, |name, cx| name.set_value("paused work", window, cx))
+                })
+            });
+            cx.update(|window, cx| {
+                window.dispatch_action(
+                    Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                    cx,
+                )
+            });
+            frame(cx);
+            assert_eq!(
+                form.read_with(cx, |form, _| form.error.clone()).as_deref(),
+                Some(said),
+                "{kind:?}: Review stash is refused in the same words"
+            );
             git(&[end, "--abort"]);
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
             crate::views::tests::settle(&app, cx).await;
             quiet_reads_land(&app, cx);
+            crate::views::tests::draw(cx);
             assert_eq!(
                 app.read_with(cx, |app, _| app.operation_error.clone()),
                 None,
                 "{kind:?}: the refusal ends with the pause"
             );
+            assert_eq!(
+                form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
+                (None, Some(kind)),
+                "{kind:?}: the form's refusal gives way"
+            );
+            let note = crate::native_accessibility::written::get("recovery-form-note")
+                .unwrap_or_else(|| panic!("{kind:?}: the form's note"));
+            assert_eq!(
+                note.node.label(),
+                Some(ended),
+                "{kind:?}: the note names the operation and Review stash"
+            );
+            cx.update(|window, cx| window.close_dialog(cx));
+            crate::views::tests::draw(cx);
         }
         drop(fixture);
     }
