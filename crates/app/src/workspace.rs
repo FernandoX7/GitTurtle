@@ -2338,7 +2338,13 @@ impl GitTurtle {
                 .is_some_and(|menu| menu.has_focus(window, cx)))
         {
             self.dismiss_file_menu(window, cx);
-            window.focus(&self.file_focus, cx);
+            // A status read landing while Settings or Projects shows selects
+            // the row again for its preview, and leaves focus on that page:
+            // it once moved to the hidden list, away from the control the
+            // page opened on.
+            if self.page == AppPage::Repository {
+                window.focus(&self.file_focus, cx);
+            }
         }
         self.request(
             Job::WorkingPreview {

@@ -1145,6 +1145,223 @@ mod tests {
         }
     }
 
+    /// Selects `path`'s Unstaged row in Changes and lets its preview land.
+    async fn select_unstaged(app: &Entity<GitTurtle>, path: &str, cx: &mut VisualTestContext) {
+        let index = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|entry| entry.path == std::path::Path::new(path))
+                .unwrap()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_working(index, gitturtle_core::ChangeArea::Unstaged, window, cx)
+            })
+        });
+        crate::views::tests::settle(app, cx).await;
+    }
+
+    /// A status read that lands while Settings or Projects shows leaves
+    /// focus on that page. Refresh pressed during Discard…'s review with a
+    /// row selected, then Settings or Projects opened, which runs the read
+    /// the review held back: as it landed it selected the row again for its
+    /// preview, and focus moved from the control the page opened on to the
+    /// hidden Changes list. Back still returns focus to the list.
+    #[gpui::test]
+    async fn a_status_read_landing_behind_settings_or_projects_leaves_focus_there(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let on_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        type Leave = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let leave: [(&str, AppPage, Leave); 2] = [
+            ("Settings", AppPage::Settings, |app, window, cx| {
+                app.show_settings(window, cx)
+            }),
+            ("Projects", AppPage::Projects, |app, window, cx| {
+                app.show_projects(window, cx)
+            }),
+        ];
+        for (index, (name, page, leave)) in leave.into_iter().enumerate() {
+            select_unstaged(&app, "draft.txt", cx).await;
+            assert!(on_list(cx), "{name}: the selected row's list holds focus");
+            // Discard…'s review, held as a slow disk holds it, and Refresh.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+            let later = format!("later-{index}.txt");
+            std::fs::write(fixture.path().join("narrow").join(&later), "later\n").unwrap();
+            cx.simulate_keystrokes(&primary("r"));
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.working_read_pending()));
+            cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
+            draw(cx);
+            let opened = focused(cx);
+            assert!(
+                opened.is_some() && !on_list(cx),
+                "{name} opens with its own focus"
+            );
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == page, "{name} still shows");
+                assert!(!app.working_read_pending(), "{name}: the read landed");
+                assert!(
+                    app.working_selected.is_some(),
+                    "{name}: the row stays selected"
+                );
+            });
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{name}: Refresh ran"
+            );
+            assert_eq!(
+                focused(cx),
+                opened,
+                "{name}: focus stays where the page opened it"
+            );
+            // Back to Changes, focus returns to the list.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Repository
+                    && app.mode == WorkspaceMode::Working),
+                "{name}: Back shows Changes"
+            );
+            assert!(on_list(cx), "{name}: Back returns focus to the list");
+        }
+    }
+
+    /// A write that ends while Settings shows reads the working state, which
+    /// leaves focus on Settings, as a read Settings runs does
+    /// (`a_status_read_landing_behind_settings_or_projects_leaves_focus_there`):
+    /// Stage all pressed with a row selected, and Settings opened while it
+    /// ran, once lost Settings' focus to the hidden list as the write's read
+    /// landed.
+    #[gpui::test]
+    async fn a_write_ending_behind_settings_leaves_focus_there(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let on_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        select_unstaged(&app, "draft.txt", cx).await;
+        assert!(on_list(cx), "the selected row's list holds focus");
+        // Stage all held open, as a slow disk holds it, and Settings.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw(cx);
+        let opened = focused(cx);
+        assert!(opened.is_some() && !on_list(cx), "Settings has focus");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings still shows");
+            assert_eq!(app.operation_busy, None, "the write ended");
+            assert!(app.working_selected.is_some(), "the row stays selected");
+        });
+        assert!(
+            entry(&app, "draft.txt", cx).staged.is_some(),
+            "the write's read landed"
+        );
+        assert_eq!(focused(cx), opened, "focus stays on Settings");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        assert!(on_list(cx), "Back returns focus to the list");
+    }
+
+    /// Changes' Refresh pressed with attribution open on the selected row,
+    /// and Settings opened before its read lands: the read closes the
+    /// attribution, which leaves focus on Settings, and Back returns focus
+    /// to the list the attribution was opened from. Closing it once
+    /// returned focus to that list at once, behind Settings; kept for Back,
+    /// the attribution's own focus, which Settings opened from, is no
+    /// longer drawn there.
+    #[gpui::test]
+    async fn an_attribution_a_read_closes_behind_settings_returns_focus_on_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let on_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        select_unstaged(&app, "draft.txt", cx).await;
+        assert!(on_list(cx), "the selected row's list holds focus");
+        let row = app.read_with(cx, |app, _| app.working_selected.unwrap().0);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(row, window, cx)));
+        crate::blame::lands(&app, cx);
+        assert!(app.read_with(cx, |app, _| app.blame.is_visible()));
+        assert!(!on_list(cx), "the attribution holds focus");
+        // Changes' Refresh, its read held as a slow disk holds it, then
+        // Settings.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        std::fs::write(fixture.path().join("narrow").join("later.txt"), "later\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        assert!(app.read_with(cx, |app, _| app.status_task.is_some()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw(cx);
+        let opened = focused(cx);
+        assert!(opened.is_some() && !on_list(cx), "Settings has focus");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings still shows");
+            assert!(app.working_selected.is_some(), "the row stays selected");
+            assert!(!app.blame.is_visible(), "the read closes the attribution");
+        });
+        assert!(
+            entries(&app, cx).is_some_and(|entries| entries.contains(&"later.txt".to_owned())),
+            "Refresh's read landed"
+        );
+        assert_eq!(focused(cx), opened, "focus stays on Settings");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Repository
+                && app.mode == WorkspaceMode::Working),
+            "Back shows Changes"
+        );
+        assert!(on_list(cx), "Back returns focus to the list");
+    }
+
     /// A tab switch or close cancels Discard…'s review and drops the
     /// working read Changes asked for meanwhile with the tab's other reads:
     /// shown again, a tab reads quietly. The read once stayed noted, and the
