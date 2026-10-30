@@ -683,7 +683,20 @@ impl DialogKeys {
             Self::Palette | Self::QuickOpen => {
                 vec![("↑↓".into(), "Select"), (ENTER.into(), "Open"), escape]
             }
-            Self::Shortcuts => vec![("↑↓".into(), "Browse"), escape],
+            // Every key the list takes, Escape last as in every dialog's
+            // hints: they named Up and Down alone.
+            Self::Shortcuts => vec![
+                ("↑↓".into(), "Browse"),
+                (
+                    format!("{} / {}", key_label("pageup"), key_label("pagedown")),
+                    "Page",
+                ),
+                (
+                    format!("{} / {}", key_label("home"), key_label("end")),
+                    "First / Last",
+                ),
+                escape,
+            ],
             Self::RebaseSequence => vec![
                 ("↑↓".into(), "Select"),
                 (
@@ -1445,7 +1458,9 @@ impl Render for ShortcutHelpView {
                     _ => String::new(),
                 }).h(px(1.)).overflow_hidden())
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓ browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.", DialogKeys::Shortcuts.escape_help()))))
+                // Every key the list takes: it named Up and Down alone.
+                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓, {} / {}, {} / {} browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.",
+                    key_label("pageup"), key_label("pagedown"), key_label("home"), key_label("end"), DialogKeys::Shortcuts.escape_help()))))
     }
 }
 
@@ -2665,5 +2680,35 @@ mod list_tests {
             }
             close(cx);
         }
+    }
+
+    /// Keyboard Shortcuts names the keys its list takes wherever it names
+    /// its own: its inline help, and the status bar's hints while its search
+    /// holds focus, name Page Up / Page Down and Home / End beside Up and
+    /// Down, in the platform's key labels, at 13 pt in a 1200 × 800 window.
+    /// Both named Up and Down alone.
+    #[gpui::test]
+    async fn the_help_and_the_status_bar_name_every_key_the_list_takes(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        written::forget();
+        draw(cx);
+        // Static text is read by its value, the words it draws.
+        let help = written::get("shortcut-help-keys")
+            .and_then(|line| line.node.value().map(str::to_owned))
+            .expect("the inline help is written");
+        let hints = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+            .expect("the status bar names the search's keys");
+        for key in ["pageup", "pagedown", "home", "end"].map(key_label) {
+            assert!(
+                help.contains(&key) && hints.contains(&key),
+                "{key} is named in the inline help, {help:?}, and the status bar, {hints:?}"
+            );
+        }
+        close(cx);
     }
 }

@@ -170,6 +170,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Command-Option-Up / Command-Option-Down in the conflict viewer (Ctrl+Alt on Linux) | Previous / next unresolved block |
 | Command-B | Show or hide expanded repository navigation in History |
 | Command-? | Open Keyboard Shortcuts |
+| Up / Down / Page Up / Page Down / Home / End in Keyboard Shortcuts | Select the previous / next entry, the entry a page above / below, or the first / last entry; the search field keeps focus |
 | Command-M / Command-Shift-W | Minimize / Close the window |
 | Command-H / Command-Option-H | Hide GitTurtle / Hide other applications |
 | Command-Q | Quit |
