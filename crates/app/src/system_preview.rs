@@ -873,10 +873,7 @@ pub(crate) fn header_ends(
 /// text, Retry page, page number and Linked pages were cut at the side's
 /// edge, and the model's clip menu was cut on a narrow side after them.
 pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
-    let ring = appearance::BUTTON_FOCUS_RING;
-    side - px(1.)
-        - inset * 2.
-        - (gpui_kit::component::scroll::Scrollbar::width() + ring.gap + ring.width)
+    side - px(1.) - inset * 2. - crate::tags::ScrollCue::gutter()
 }
 
 /// A control of a side's own header in the form a line of the header to

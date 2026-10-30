@@ -54,8 +54,10 @@ pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 /// frame, and the scrollbar the length of the track it kept. A frame whose
 /// layout differs draws once more after it is painted; a frame draws the
 /// scrollbar only with the gutter, so a thumb never paints over a row. The
-/// fades read the list as it is painted, so they follow its offset and its
-/// reach in the frame that changes them.
+/// fades read the list as it is painted, so they follow its offset, its
+/// reach and its length in the frame that changes them: a list that grows
+/// past the shortest track draws no fade before its scrollbar comes, and
+/// one that shrinks below it fades in the frame that shrinks it.
 pub(crate) struct ScrollCue {
     rows: RowColumn,
     /// Whether this frame keeps the gutter, and whether it draws the
@@ -93,6 +95,14 @@ impl ScrollCue {
         }
     }
 
+    /// The gutter a list's rows keep while they overflow: the scrollbar's
+    /// width and the room of the ring every palette installs, so a row's
+    /// ring ends where the track begins.
+    pub(crate) fn gutter() -> Pixels {
+        let ring = appearance::BUTTON_FOCUS_RING;
+        Scrollbar::width() + ring.gap + ring.width
+    }
+
     /// For the list's `on_children_prepainted`: runs `prepainted`, then draws
     /// once more when this frame's layout cues otherwise than the cue
     /// assumed.
@@ -116,8 +126,7 @@ impl ScrollCue {
     /// view is out of reach as well as out of sight. Tests find the
     /// scrollbar, while it is drawn, by `id`.
     pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
-        let ring = appearance::BUTTON_FOCUS_RING;
-        let gutter = Scrollbar::width() + ring.gap + ring.width;
+        let gutter = Self::gutter();
         let room = self.rows.room;
         let (kept, scrollbar) = self.cued;
         let cue = div()
@@ -125,7 +134,10 @@ impl ScrollCue {
             .flex_col()
             .child(crate::native_accessibility::clips_children(
                 list.when(kept, |list| list.pr(room + gutter)),
-            ));
+            ))
+            // In every frame, so a list that shrinks below the shortest
+            // track fades in the frame that shrinks it.
+            .child(edge_fades(self.rows.clone()));
         if scrollbar {
             cue.child(
                 div()
@@ -139,9 +151,20 @@ impl ScrollCue {
                     ),
             )
         } else {
-            cue.child(edge_fades(self.rows.scroll.clone()))
+            cue
         }
     }
+}
+
+/// How tall the fades over the list `rows` reads are where its track is
+/// too short for a thumb that moves, measured as it was last laid out: the
+/// scaled [`EDGE_FADE`], at most a quarter of the list; zero along a track
+/// a thumb moves on.
+fn edge_fade(rows: &RowColumn) -> Pixels {
+    if rows.viewport_bounds().size.height >= SHORTEST_SCROLL_TRACK {
+        return Pixels::ZERO;
+    }
+    appearance::ui_size(EDGE_FADE).min(rows.scroll.bounds().size.height / 4.)
 }
 
 /// The fades over a list too short for its scrollbar's thumb to move
@@ -153,21 +176,25 @@ impl ScrollCue {
 /// window's edge. It draws none at an end the list is scrolled to, and
 /// none on a list whose rows fit.
 ///
-/// It reads the list's bounds, offset and reach as it paints, after the
-/// list has laid out and clamped its offset in the same frame, so a wheel,
-/// a reveal, a resize or rows that arrive show their fades in the first
-/// frame that draws them; read as the cue renders, rows that arrived drew
-/// no fade until something else drew the list again. It inserts no hitbox,
+/// It reads the list's bounds, track, offset and reach as it paints, after
+/// the list has laid out and clamped its offset in the same frame, so a
+/// wheel, a reveal, a resize or rows that arrive show their fades in the
+/// first frame that draws them, and a list whose track has grown long
+/// enough for a thumb draws none while its scrollbar is still to come; read
+/// as the cue renders, rows that arrived drew no fade until something else
+/// drew the list again, and a tall list drew a fade for one frame before
+/// its scrollbar. It inserts no hitbox,
 /// so the pointer reaches what lies beneath it: a wheel over a fade scrolls
 /// the list, and a row under one takes its hover and click. It does not
 /// move: a fade comes and goes with the scroll that reveals an edge, in
 /// that frame.
-fn edge_fades(scroll: ScrollHandle) -> impl IntoElement {
+fn edge_fades(rows: RowColumn) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
+            let scroll = &rows.scroll;
             let list = scroll.bounds();
-            let fade = appearance::ui_size(EDGE_FADE).min(list.size.height / 4.);
+            let fade = edge_fade(&rows);
             if fade <= Pixels::ZERO {
                 return;
             }
@@ -2439,8 +2466,7 @@ pub(crate) mod tests {
                 "{at}: the list {region:?} draws no scrollbar"
             );
             let row = cx.debug_bounds("cued-row-0").expect("its first row");
-            let ring = appearance::BUTTON_FOCUS_RING;
-            let gutter = Scrollbar::width() + ring.gap + ring.width;
+            let gutter = ScrollCue::gutter();
             assert!(
                 (row.right() - (region.right() - gutter)).abs() < px(0.5),
                 "{at}: the row {row:?} keeps the {gutter:?} gutter it keeps beside a scrollbar in {region:?}"
@@ -2514,6 +2540,50 @@ pub(crate) mod tests {
                 "{height} px: the list {region:?} reports itself as a scroll view that clips its rows, not {node:?} at {layout:?}"
             );
         }
+    }
+
+    /// A list's fades follow its length in the frame that changes it: rows
+    /// arriving in a 200 px list, whose track holds a thumb that moves, draw
+    /// no fade in the first frame that draws them, while its scrollbar is
+    /// still to come, and none once it has come; shrunk to 40 px, the list
+    /// fades its bottom edge in the frame that shrinks it. Decided by the
+    /// overflow alone as it painted, the tall list drew a bottom fade for a
+    /// frame before its scrollbar, on Tags, the branch chooser, the GitHub
+    /// panel's body and the Reflog's entries as they opened.
+    #[gpui::test]
+    fn a_list_s_fades_follow_its_length_in_the_frame_drawn(cx: &mut gpui_kit::TestAppContext) {
+        let (list, cx) = cued_window(cx, 200., Pixels::ZERO, 1);
+        let region = cx.debug_bounds("cued-list").expect("the list");
+        let grown = list.clone();
+        let first = first_frame_fades(cx, region, move |_, cx| {
+            grown.update(cx, |list, cx| {
+                list.rows = 30;
+                cx.notify();
+            })
+        });
+        assert_eq!(
+            first,
+            (None, None),
+            "the first frame of a tall list's arriving rows fades no edge"
+        );
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cued-list/scrollbar").is_some()
+                && painted_fades(cx, region) == (None, None),
+            "the tall list cues its rows with a scrollbar and no fade"
+        );
+        let short = Bounds::new(region.origin, size(region.size.width, px(40.)));
+        let shrunk = list.clone();
+        let (top, bottom) = first_frame_fades(cx, short, move |_, cx| {
+            shrunk.update(cx, |list, cx| {
+                list.height = px(40.);
+                cx.notify();
+            })
+        });
+        assert!(
+            top.is_none() && bottom.is_some(),
+            "the frame that shrinks the list to 40 px fades its bottom edge, not {top:?} and {bottom:?}"
+        );
     }
 
     /// A short list's fades follow what it shows in the frame that shows it,
