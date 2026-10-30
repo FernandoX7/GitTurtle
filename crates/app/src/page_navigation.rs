@@ -1283,6 +1283,65 @@ mod tests {
         );
     }
 
+    /// A create that opens its repository leaves a working read noted for
+    /// the repository it leaves to that `open`, which drops it, as its
+    /// snapshot reads the new repository afresh: the create's end reads
+    /// nothing there itself. Run at the end, the read cleared Changes'
+    /// preview just before the tab was kept, and the tab came back without
+    /// it. Nothing notes such a read while Projects shows today, so the test
+    /// notes it, as a route that did would leave it.
+    #[gpui::test]
+    async fn a_create_that_opens_its_repository_leaves_the_noted_read_to_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::settle;
+        let (fixture, app, cx, root) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        quiet_reads_land(&app, cx);
+        select_unstaged(&app, "draft.txt", cx).await;
+        assert_eq!(previewed(&app, cx).as_deref(), Some("draft.txt"));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        // Create, held as a slow disk holds it, and a read noted meanwhile.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.project_event(
+                    &crate::projects::ProjectEvent::Create {
+                        destination: fixture.path().join("created"),
+                        branch: "main".into(),
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        app.update(cx, |app, _| {
+            assert!(app.operation_busy.is_some(), "the create runs");
+            app.working_read_deferred = app.path.clone();
+        });
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None, "the create ended");
+            assert!(
+                app.path.as_ref().is_some_and(|path| path != &root),
+                "it opened the created repository"
+            );
+            assert_eq!(app.working_read_deferred, None, "the open dropped the read");
+        });
+        // The first tab, shown again, keeps the preview it had.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        assert_eq!(app.read_with(cx, |app, _| app.path.clone()), Some(root));
+        assert_eq!(
+            previewed(&app, cx).as_deref(),
+            Some("draft.txt"),
+            "the tab keeps its preview"
+        );
+    }
+
     /// A quiet read that attribution holds back waits for attribution to
     /// close, so Changes with no status shown says it is unavailable, not
     /// reading, until then, and closing attribution starts the read. With
