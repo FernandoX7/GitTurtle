@@ -911,9 +911,26 @@ fn row_height(row: &HelpRow) -> Pixels {
     })
 }
 
+/// Each row's height in the list's order, at the interface size, as the
+/// toolkit's virtual list takes them.
+fn row_sizes(rows: &[HelpRow]) -> std::rc::Rc<Vec<Size<Pixels>>> {
+    std::rc::Rc::new(
+        rows.iter()
+            .map(|row| Size {
+                width: px(0.),
+                height: row_height(row),
+            })
+            .collect(),
+    )
+}
+
 struct ShortcutHelpView {
     query: Entity<InputState>,
     rows: Vec<HelpRow>,
+    /// Each row's height, built with the rows and again when the interface
+    /// size (`heights_scale`) changes, rather than on every frame.
+    heights: std::rc::Rc<Vec<Size<Pixels>>>,
+    heights_scale: f32,
     selected: usize,
     /// A group's heading row is shorter than an entry's, so the list is the
     /// toolkit's virtual list, which takes each row's height, rather than a
@@ -933,7 +950,7 @@ impl ShortcutHelpView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts or groups…"));
         let subscription = cx.subscribe(&query, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
-                this.rows = help_matches(&this.query.read(cx).value());
+                this.set_rows(help_matches(&this.query.read(cx).value()));
                 this.selected = 1.min(this.rows.len().saturating_sub(1));
                 // The list starts at its top, unless the selected entry
                 // would not then lie whole in it: it ends at the list's foot
@@ -949,9 +966,12 @@ impl ShortcutHelpView {
                 cx.notify();
             }
         });
+        let rows = help_matches("");
         Self {
             query,
-            rows: help_matches(""),
+            heights: row_sizes(&rows),
+            heights_scale: appearance::ui_scale(),
+            rows,
             selected: 1,
             scroll: gpui_kit::base::VirtualListScrollHandle::new(),
             list_height: Default::default(),
@@ -959,6 +979,25 @@ impl ShortcutHelpView {
             closed: false,
             _subscription: subscription,
         }
+    }
+
+    /// Lists `rows`, with their heights at the interface size.
+    fn set_rows(&mut self, rows: Vec<HelpRow>) {
+        self.heights = row_sizes(&rows);
+        self.heights_scale = appearance::ui_scale();
+        self.rows = rows;
+    }
+
+    /// Each row's height in the list's order at the interface size, measured
+    /// again when that size has changed since the rows were, as when a text
+    /// size is chosen with the dialog open.
+    fn heights(&mut self) -> std::rc::Rc<Vec<Size<Pixels>>> {
+        let scale = appearance::ui_scale();
+        if scale.to_bits() != self.heights_scale.to_bits() {
+            self.heights = row_sizes(&self.rows);
+            self.heights_scale = scale;
+        }
+        self.heights.clone()
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -989,21 +1028,10 @@ impl Render for ShortcutHelpView {
         // floor, by layout: the chrome around it, such as the hint that wraps
         // in a narrow window, is never estimated.
         let height = list_height();
-        // Each row's height, in the list's order: computed for the ~70 rows
-        // on each build, as the interface size can change between builds.
-        let heights = std::rc::Rc::new(
-            self.rows
-                .iter()
-                .map(|row| Size {
-                    width: px(0.),
-                    height: row_height(row),
-                })
-                .collect::<Vec<_>>(),
-        );
         let list = gpui_kit::base::v_virtual_list(
             cx.entity(),
             "shortcut-help-list",
-            heights,
+            self.heights(),
             |this, range: std::ops::Range<usize>, _, cx| {
                 let p = palette(cx);
                 // Fitted once for the rows drawn, not for each row.
@@ -1274,5 +1302,64 @@ mod tests {
                 "Ctrl+Y"
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use crate::tags::tests::{draw, tagged_repository, window};
+    use core::prelude::v1::test;
+
+    /// The selector of the row at `index` among `rows`.
+    fn row_selector(rows: &[HelpRow], index: usize) -> &'static str {
+        match rows[index] {
+            HelpRow::Group(_) => format!("shortcut-help-heading-{index}"),
+            HelpRow::Entry(_) => format!("shortcut-help-row-{index}"),
+        }
+        .leak()
+    }
+
+    /// The list keeps each row's height beside its rows, so a text size
+    /// chosen with the dialog open measures them again: at 18 pt each row
+    /// starts where the one above it ends, the General heading's 22 px row
+    /// grown to about 30 px. Measured only with the rows, the list would place
+    /// them at their 13 pt tops while drawing them at 18 pt, each over the
+    /// one above.
+    #[gpui::test]
+    async fn a_text_size_chosen_with_the_list_open_lays_its_rows_out_again(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        let rows = help_matches("");
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            // Inside the list's 1 px border.
+            let mut top = list.top() + px(1.);
+            // The first group's heading and the entries below it.
+            for (index, row) in rows.iter().enumerate().take(6) {
+                let height = row_height(row);
+                let bounds = cx
+                    .debug_bounds(row_selector(&rows, index))
+                    .unwrap_or_else(|| panic!("{text} pt: row {index} is drawn"));
+                assert!(
+                    (bounds.top() - top).abs() < px(0.5)
+                        && (bounds.size.height - height).abs() < px(0.5),
+                    "{text} pt: row {index} {bounds:?} starts at {top:?}, {height:?} tall"
+                );
+                top += height;
+            }
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }
