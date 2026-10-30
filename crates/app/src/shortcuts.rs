@@ -1651,9 +1651,17 @@ mod list_tests {
 
         /// Whether row `index` is drawn whole in the list, as the list counts
         /// a row whole, no further past its edge than its own allowance
-        /// (`Span::ROUNDING`). Rounding keeps edges in order, so a row the
-        /// list holds whole is drawn no further out than its edge, and a row
-        /// the list cuts by half a pixel or more is drawn cut.
+        /// (`Span::ROUNDING`). The window draws a row at its top rounded to
+        /// the half pixel with its height rounded on its own, so its drawn
+        /// top is its top rounded but its drawn bottom is not its bottom
+        /// rounded. A row the list cuts by half a pixel or more is drawn cut
+        /// at either edge, and one it holds whole is never drawn above the
+        /// list's top; but where a row's height rounds up by more than a
+        /// quarter pixel less the allowance, a row the list holds whole can be
+        /// drawn half a pixel past the list's foot. The allowance holds here
+        /// because the list tests' text sizes round no row's height up by
+        /// more than 0.04 px: at 13 pt the rows are 22 and 42 px, and at 18 pt
+        /// about 30.46 px, drawn 30.5, and 58.15 px, drawn 58.
         fn whole(&self, cx: &mut VisualTestContext, index: usize) -> bool {
             self.drawn(cx, index).is_some_and(|row| {
                 row.top() >= self.top - Span::ROUNDING && row.bottom() <= self.foot + Span::ROUNDING
