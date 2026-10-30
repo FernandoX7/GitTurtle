@@ -11470,7 +11470,7 @@ pub(crate) mod tests {
                 .map(|(name, index)| crate::focus_reveal::tests::control(name, index))
                 .filter(|(_, selector)| cx.debug_bounds(selector).is_some())
                 .collect();
-                assert_tab_shows_each_control_whole(cx, &app, region, &controls, &at);
+                assert_tab_shows_each_control_whole(cx, &app, region, header, &controls, &at);
                 if lines < wrapped {
                     shown_fewer = true;
                     assert!(
@@ -11507,12 +11507,16 @@ pub(crate) mod tests {
     /// A side's own header's region `<name>/header`, which never holds less
     /// than its floor (`system_preview::header_ends`), shows each of
     /// `controls` whole with its focus ring as Tab reaches it, from the
-    /// first, which takes focus as a page that opens on it does.
+    /// first, which takes focus as a page that opens on it does, and each
+    /// lies across the side's header `header`, cut by neither the side's
+    /// edge nor its scrollbar's gutter: Retry page and the page number,
+    /// wider than an 88 px side, were cut at its edge.
     #[cfg(target_os = "linux")]
     fn assert_tab_shows_each_control_whole(
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
         name: &'static str,
+        header: &'static str,
         controls: &[crate::focus_reveal::tests::Control],
         at: &str,
     ) {
@@ -11540,6 +11544,12 @@ pub(crate) mod tests {
                 shown.top() >= held.top() - px(0.01) && shown.bottom() <= held.bottom() + px(0.01),
                 "{at}: {selector} and its ring {shown:?} lie whole in the header's region {held:?}"
             );
+            let across = cx.debug_bounds(header).expect("the side's header");
+            assert!(
+                shown.left() >= across.left() - px(0.01)
+                    && shown.right() <= across.right() + px(0.01),
+                "{at}: {selector} and its ring {shown:?} lie across the side's header {across:?}"
+            );
         }
     }
 
@@ -11550,10 +11560,14 @@ pub(crate) mod tests {
     /// scaled 96 px minimum and the header scrolls above it with a scrollbar
     /// painted while it overflows; the model's details, a label, gave their
     /// room before the controls were cut, where at 18 pt they kept 48 px and
-    /// left After's open control 10 px. Tab moves through every control of
-    /// the model's and the page view's header and Shift+Tab back, each
-    /// revealed whole with its ring in the region (they were focused undrawn),
-    /// the model's in every frame painted after the key.
+    /// left After's open control 10 px. At 13 and 18 pt Tab moves through
+    /// every control of the model's and the page view's header and Shift+Tab
+    /// back, each revealed whole with its ring in the region in every frame
+    /// painted after the key (they were focused undrawn), and each lies
+    /// across the side whole with its ring: labelled, Copy source, the
+    /// views menu, Linked, Read page text, Retry page, the page number and
+    /// Linked pages were wider than the 88 px side at 13 pt and cut at its
+    /// edge. At 18 pt the side is 121 px.
     /// The page view's position, a polite live region, lies outside the
     /// region that can scroll it out of reach. A header scrolled down starts
     /// at its top again in the next showing, as a new file's does.
@@ -11562,15 +11576,20 @@ pub(crate) mod tests {
     async fn a_narrow_side_header_keeps_its_content_and_reveals_its_controls(
         cx: &mut TestAppContext,
     ) {
-        use crate::focus_reveal::tests::{assert_every_frame_reveals, control};
+        use crate::focus_reveal::tests::{Control, assert_every_frame_reveals, control};
         use crate::native_accessibility::written;
+        // Before has a model too, so each side offers to link the cameras.
+        let before = b"v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n";
         let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
         let pdf = |text: &str| {
             format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
         };
         let (first, second) = (pdf("first"), pdf("second"));
         let input = file_commits(&[
-            ("first", &[("document.pdf", first.as_bytes())]),
+            (
+                "first",
+                &[("document.pdf", first.as_bytes()), ("shape.obj", before)],
+            ),
             (
                 "second",
                 &[("document.pdf", second.as_bytes()), ("shape.obj", obj)],
@@ -11606,6 +11625,34 @@ pub(crate) mod tests {
             cx.update(|_, cx| crate::system_preview::side_header(app.entity_id(), name, cx))
                 .expect("the side's header")
         };
+        // From focus on `first`, revealed as a page that opens on it does,
+        // Tab moves through `controls` of side `name`'s header and Shift+Tab
+        // back, each revealed whole with its ring in every frame painted
+        // after the key, the first that draws the new focus included. Each
+        // lies across the side's header `header` whole with its ring, cut
+        // by neither the side's edge nor its scrollbar's gutter.
+        let walk = |cx: &mut VisualTestContext,
+                    at: &str,
+                    (name, header): (&'static str, &'static str),
+                    first: &Control,
+                    controls: &[Control]| {
+            let list = reveal(name, &app, cx);
+            list.reveal_next_focus();
+            cx.update(|window, cx| list.focus(first.0.clone(), cx).focus(window, cx));
+            draw(cx);
+            let region = format!("{name}/header").leak();
+            assert_every_frame_reveals(cx, &list, region, controls);
+            let held = bounds(header, cx);
+            let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+            for (_, selector) in std::iter::once(first).chain(controls) {
+                let shown = bounds(selector, cx).dilate(ring);
+                assert!(
+                    shown.left() >= held.left() - px(0.01)
+                        && shown.right() <= held.right() + px(0.01),
+                    "{at}: {selector} and its ring {shown:?} lie across the side's header {held:?}"
+                );
+            }
+        };
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
 
@@ -11636,15 +11683,14 @@ pub(crate) mod tests {
         // page that opens on it does, revealed: focused without a reveal it
         // lay partly outside the region, and the frame GPUI draws before it
         // dispatches a key to a window that has changed still showed it
-        // there, which read as Tab's reveal landing a frame late.
-        let list = reveal("model-side-1", &app, cx);
-        list.reveal_next_focus();
-        cx.update(|window, cx| list.focus(("model-source", 1usize), cx).focus(window, cx));
-        draw(cx);
-        // The views' menu, wider than the 88 px side, ends the walk short.
+        // there, which read as Tab's reveal landing a frame late. The views
+        // menu and Linked, wider than the 88 px side, once ended it short.
+        let model = ("model-side-1", "model-side-header-1");
+        let source = control("model-source", 1);
         let mut controls = vec![control("model-external", 1)];
         controls.extend((5..10).map(|index| control("model-camera", index)));
-        assert_every_frame_reveals(cx, &list, "model-side-1/header", &controls);
+        controls.extend([control("model-views", 1), control("model-link", 1)]);
+        walk(cx, "the model at 13 pt", model, &source, &controls);
         // The next showing starts at the header's top.
         let top = bounds("model-side-1/header", cx).top();
         assert!(
@@ -11668,6 +11714,7 @@ pub(crate) mod tests {
             details.size.height < slack,
             "at 18 pt the details {details:?} give way before the header's controls are cut"
         );
+        walk(cx, "the model at 18 pt", model, &source, &controls);
         // In a full window the details stay, beneath a header that fits.
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);
@@ -11680,28 +11727,47 @@ pub(crate) mod tests {
         cx.simulate_resize(size(px(461.), px(490.)));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 
-        // The PDF page view, After given a page as a build with PDFKit has.
+        // The PDF page view, each side given three pages as a build with
+        // PDFKit has: Before's first page prepared, so it offers Read page
+        // text, and After's failed, as Linux renders none, so it offers
+        // Retry page. Each offers to link their pages.
         select("document.pdf", &app, cx);
         settle(&app, cx).await;
         app.update(cx, |app, cx| {
             let Some(Content::Rich(preview)) = app.content.as_deref() else {
                 panic!("a changed PDF is a document comparison");
             };
-            let bytes = preview.new.captured.clone().expect("After's bytes");
-            let mut paged =
-                crate::rich_preview::Side::prepare(bytes.to_vec(), &preview.new.name, || Ok(()))
-                    .expect("After prepares");
-            paged.pdf = Some(Arc::new(
-                crate::pdf_view::Document::new(bytes, 1, None, || Ok(())).expect("a document"),
-            ));
-            let old = preview.old.clone();
+            let paged = |side: &crate::rich_preview::Side, first| {
+                let bytes = side.captured.clone().expect("the side's bytes");
+                let mut paged =
+                    crate::rich_preview::Side::prepare(bytes.to_vec(), &side.name, || Ok(()))
+                        .expect("the side prepares");
+                paged.pdf = Some(Arc::new(
+                    crate::pdf_view::Document::new(bytes, 3, first, || Ok(())).expect("a document"),
+                ));
+                Arc::new(paged)
+            };
+            let page = crate::rich_preview::Page {
+                render: None,
+                width: 1,
+                height: 1,
+                caption: None,
+                error: None,
+            };
             app.content = Some(Arc::new(Content::Rich(crate::rich_preview::Comparison {
-                old,
-                new: Arc::new(paged),
+                old: paged(&preview.old, Some(page)),
+                new: paged(&preview.new, None),
             })));
             cx.notify();
         });
         draw(cx);
+        crate::pdf_view::tests::drain_pages();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("pdf-retry-1").is_some()
+                && cx.debug_bounds("pdf-read-text-0").is_some(),
+            "After's failed page offers Retry page, Before's prepared one Read page text"
+        );
         let body = bounds("pdf-side-1/body", cx);
         assert!(
             body.size.height >= minimum - slack,
@@ -11728,7 +11794,9 @@ pub(crate) mod tests {
             for selector in [
                 "pdf-system-1",
                 "pdf-retry-1",
+                "pdf-forward-1",
                 "pdf-page-number-1",
+                "pdf-link-1",
                 "pdf-zoom-3",
                 "pdf-zoom-4",
                 "pdf-zoom-5",
@@ -11748,51 +11816,38 @@ pub(crate) mod tests {
             }
         };
         uncovered(cx, "at the header's top");
-        // Its labelled controls are wider than the 88 px side, as the
-        // views' menu is, so the walk checks the scroll's reveal alone.
-        let list = reveal("pdf-side-1", &app, cx);
-        let start = if cx.debug_bounds("pdf-retry-1").is_some() {
-            "pdf-retry"
-        } else {
-            "pdf-system"
-        };
-        cx.update(|window, cx| list.focus((start, 1usize), cx).focus(window, cx));
-        draw(cx);
-        let mut controls = vec![control("pdf-page-number", 1)];
-        controls.extend([4, 3, 5].map(|index| control("pdf-zoom", index)));
-        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
-        let walk: Vec<_> = controls
-            .iter()
-            .map(|control| ("tab", control))
-            .chain(
-                controls
-                    .iter()
-                    .rev()
-                    .skip(1)
-                    .map(|control| ("shift-tab", control)),
-            )
-            .collect();
-        for (key, (id, selector)) in walk {
-            cx.simulate_keystrokes(key);
+        // Tab moves through each side's controls from its open control, its
+        // page's own (Read page text or Retry page), Next, the page number,
+        // the link and the zooms, at 13 and 18 pt.
+        let sides = [
+            (("pdf-side-0", "pdf-side-header-0"), "pdf-read-text", 0),
+            (("pdf-side-1", "pdf-side-header-1"), "pdf-retry", 1),
+        ];
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
-            assert_eq!(
-                cx.update(|window, _| list.focused(window)).as_ref(),
-                Some(id),
-                "{key} focuses {selector}"
-            );
-            let (shown, held) = (
-                bounds(selector, cx).dilate(ring),
-                bounds("pdf-side-1/header", cx),
-            );
-            assert!(
-                shown.top() >= held.top() - px(0.01) && shown.bottom() <= held.bottom() + px(0.01),
-                "after {key}, {selector} and its ring {shown:?} lie in the header's region {held:?}"
-            );
-            if key == "tab" && *selector == controls.last().expect("controls").1 {
-                assert!(list.scroll().offset().y < px(0.), "Tab scrolled the header");
-                uncovered(cx, "with the header scrolled");
+            for (side, page, index) in sides {
+                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+                    .map(|name| control(name, index))
+                    .to_vec();
+                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", index * 3 + zoom)));
+                let at = format!("{} at {text} pt", side.0);
+                walk(cx, &at, side, &control("pdf-system", index), &controls);
             }
+            // Scrolled to its end, After's header leaves its controls
+            // uncovered too.
+            let list = reveal("pdf-side-1", &app, cx);
+            cx.update(|window, _| {
+                let end = list.scroll().max_offset().y;
+                list.scroll().set_offset(point(px(0.), -end));
+                window.refresh();
+            });
+            uncovered(
+                cx,
+                &format!("at {text} pt with the header scrolled to its end"),
+            );
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A 3D model's details, a label beneath the model, give way within

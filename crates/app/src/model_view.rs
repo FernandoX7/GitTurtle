@@ -624,13 +624,39 @@ thread_local! {
     static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The Copy source control's label, laid out.
     static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The views menu's readings, the camera's Reset and Edges at their
+    /// wider reading and the link's, laid out.
+    static VIEW_NAMES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static RESET: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static EDGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static LINK: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The views menu labelled at its widest reading, a standard view's name or
+/// "Custom view", whatever the view: the label's control, then the shared
+/// `button` helper's 6 px gap and the kit's 0.875 rem caret.
+fn views_menu_width(window: &Window) -> Pixels {
+    let names: Vec<&str> = ModelStandardView::ALL
+        .iter()
+        .map(|view| view.label())
+        .chain(["Custom view"])
+        .collect();
+    text_button_width(&names, &VIEW_NAMES, window)
+        + appearance::ui_size(6.)
+        + window.rem_size() * 0.875
 }
 
 /// The room side `index`'s source row leaves its open control in a side
 /// `side` wide: the side less its right edge, the header's `px_2` either
 /// side, and the row's semibold `label` and, where the side has source to
-/// copy, Copy source, each followed by `gap_2`.
-fn source_room(index: usize, side: Pixels, label: &str, copy: bool, window: &Window) -> Pixels {
+/// copy, its copy control `copy` wide as drawn, each followed by `gap_2`.
+fn source_room(
+    index: usize,
+    side: Pixels,
+    label: &str,
+    copy: Option<Pixels>,
+    window: &Window,
+) -> Pixels {
     let cache = if index == 0 {
         &BEFORE_LABEL
     } else {
@@ -641,11 +667,7 @@ fn source_room(index: usize, side: Pixels, label: &str, copy: bool, window: &Win
         let size = window.text_style().font_size.to_pixels(rem);
         crate::views::shaped_width(label, size, FontWeight::SEMIBOLD, window).ceil()
     });
-    let copy = if copy {
-        labelled_button_width("Copy source", &COPY_SOURCE, window) + rem * 0.5
-    } else {
-        px(0.)
-    };
+    let copy = copy.map_or(px(0.), |copy| copy + rem * 0.5);
     side - px(1.) - rem * (0.5 * 2. + 0.5) - text - copy
 }
 
@@ -692,11 +714,26 @@ fn render_side<T: 'static>(
     } else {
         label.into()
     };
+    // A line of the header to itself: a labelled control wider than this
+    // draws its icon rather than be cut at the side's edge, its whole label
+    // in its tooltip and its accessible name the one it has labelled.
+    let line_room = crate::system_preview::header_line_room(side_width, window.rem_size() * 0.5);
+    let copy_label = if lfs_pointer {
+        "Copy pointer"
+    } else {
+        "Copy source"
+    };
+    let copy_width = labelled_button_width(copy_label, &COPY_SOURCE, window);
+    let copy_labelled = copy_width <= line_room;
     let room = source_room(
         index,
         side_width,
         &source_label,
-        side.metadata.source.is_some(),
+        side.metadata.source.is_some().then_some(if copy_labelled {
+            copy_width
+        } else {
+            appearance::ui_size(28.)
+        }),
         window,
     );
     let name = if index == 0 {
@@ -737,12 +774,8 @@ fn render_side<T: 'static>(
         let copy_mark = mark.clone();
         let copy = copy_feedback::copy_button(
             mark,
-            if lfs_pointer {
-                "Copy pointer"
-            } else {
-                "Copy source"
-            },
-            "",
+            if copy_labelled { copy_label } else { "" },
+            if copy_labelled { "" } else { copy_label },
             cx,
         )
         .accessibility_label(format!("Copy exact {label} {content}"))
@@ -875,7 +908,26 @@ fn render_side<T: 'static>(
         let target = document.clone();
         let partner = partner.clone();
         let camera = index * 5 + id;
-        let control = button(("model-camera", camera), text, "", id == 4 && wireframe)
+        // Reset and Edges, whose labels a line of the header may not hold,
+        // draw their icons there, each label in its tooltip; Edges takes one
+        // form whether it reads Edges or Solid.
+        let icon = match id {
+            1 => Some(("reset", text_button_width(&["Reset"], &RESET, window))),
+            4 => Some((
+                "edges",
+                text_button_width(&["Edges", "Solid"], &EDGES, window),
+            )),
+            _ => None,
+        }
+        .filter(|(_, labelled)| *labelled > line_room)
+        .map(|(icon, _)| icon);
+        let control = match icon {
+            Some(icon) => {
+                button(("model-camera", camera), "", icon, id == 4 && wireframe).tooltip(text)
+            }
+            None => button(("model-camera", camera), text, "", id == 4 && wireframe),
+        };
+        let control = control
             .debug_selector(move || format!("model-camera-{camera}"))
             .when(id == 4, |button| button.toggled(wireframe))
             .accessibility_label(format!(
@@ -898,22 +950,27 @@ fn render_side<T: 'static>(
     let target = document.clone();
     let view_partner = partner.clone();
     let view_owner = cx.entity().downgrade();
+    // Labelled with a caret where its widest reading fits a line of the
+    // header, whatever the view; narrower, the "more" icon, its reading
+    // leading its tooltip, and named for its reading either way.
+    let reading = selected_view.map_or("Custom view", |view| view.label());
+    let choices = "Choose Isometric, Front, Back, Left, Right, Top or Bottom";
+    let views_menu = if views_menu_width(window) <= line_room {
+        button(("model-views", index), reading, "", false)
+            .dropdown_caret(true)
+            .tooltip(choices)
+    } else {
+        button(("model-views", index), "", "more", false).tooltip(format!("{reading} · {choices}"))
+    };
     let choose = held
         .track(
             ("model-views", index),
-            button(
-                ("model-views", index),
-                selected_view.map_or("Custom view", |view| view.label()),
-                "",
-                false,
-            )
-            .debug_selector(move || format!("model-views-{index}"))
-            .dropdown_caret(true)
-            .accessibility_label(format!(
-                "{label}: Standard views, {}",
-                selected_view.map_or("Custom", |view| view.label())
-            ))
-            .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom"),
+            views_menu
+                .debug_selector(move || format!("model-views-{index}"))
+                .accessibility_label(format!(
+                    "{label}: Standard views, {}",
+                    selected_view.map_or("Custom", |view| view.label())
+                )),
             cx,
         )
         .app_menu(move |mut menu, _, _| {
@@ -942,27 +999,31 @@ fn render_side<T: 'static>(
         .child(choose);
     if let Some(partner) = partner.clone() {
         let target = document.clone();
-        let link = button(
-            ("model-link", index),
-            if linked { "Linked" } else { "Independent" },
-            "",
-            linked,
-        )
-        .debug_selector(move || format!("model-link-{index}"))
-        .toggled(linked)
-        .accessibility_label(format!(
-            "{label}: {}",
-            if linked {
-                "Cameras linked. Switch to independent cameras"
-            } else {
-                "Cameras independent. Link cameras to this view"
-            }
-        ))
-        .on_click(cx.listener(move |_, _, window, cx| {
-            target.set_linked(&partner, !linked);
-            window.refresh();
-            cx.notify();
-        }));
+        // One form whether it reads Linked or Independent: labelled where
+        // the wider fits a line of the header, otherwise the link icon, its
+        // reading its tooltip.
+        let reading = if linked { "Linked" } else { "Independent" };
+        let link = if text_button_width(&["Linked", "Independent"], &LINK, window) <= line_room {
+            button(("model-link", index), reading, "", linked)
+        } else {
+            button(("model-link", index), "", "link", linked).tooltip(reading)
+        };
+        let link = link
+            .debug_selector(move || format!("model-link-{index}"))
+            .toggled(linked)
+            .accessibility_label(format!(
+                "{label}: {}",
+                if linked {
+                    "Cameras linked. Switch to independent cameras"
+                } else {
+                    "Cameras independent. Link cameras to this view"
+                }
+            ))
+            .on_click(cx.listener(move |_, _, window, cx| {
+                target.set_linked(&partner, !linked);
+                window.refresh();
+                cx.notify();
+            }));
         views = views.child(held.track(("model-link", index), link, cx));
     }
     let summary = format!(

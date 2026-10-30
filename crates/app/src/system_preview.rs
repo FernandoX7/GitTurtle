@@ -836,6 +836,24 @@ pub(crate) fn header_ends(
     })
 }
 
+/// The width a control in a side's own header has on a line to itself, in a
+/// side `side` wide whose header keeps `inset` either side: the side less its
+/// right rule, those insets and the gutter the header's region keeps for its
+/// scrollbar while it scrolls ([`crate::tags::ScrollCue`]), counted whether
+/// or not it scrolls, so a control's form never changes with the scroll it
+/// causes. Its focus ring lies in the insets. A labelled control wider than
+/// this draws a shorter form, its icon or a shorter reading, its whole label
+/// in its tooltip and its accessible name the one it has labelled: in an
+/// 88 px side at 13 pt in a 461 × 490 window the model's Copy source, views
+/// menu and Linked, and the page view's Read page text, Retry page, page
+/// number and Linked pages were cut at the side's edge.
+pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
+    let ring = appearance::BUTTON_FOCUS_RING;
+    side - px(1.)
+        - inset * 2.
+        - (gpui_kit::component::scroll::Scrollbar::width() + ring.gap + ring.width)
+}
+
 /// A side's own header for [`header_ends`]: the header, what lies beneath
 /// the side's content (the model's details), the header's own padding above
 /// and below its controls together, which its floor counts, and the header's

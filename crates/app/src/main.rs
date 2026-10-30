@@ -2092,6 +2092,25 @@ fn labelled_button_width(
         })
 }
 
+/// The width [`button`] gives a control that reads one of `labels` without
+/// an icon, at the widest of them: its 10 px insets at the interface size
+/// and the label at 12 pt, at least its 28 px square, laid out once per font
+/// and size in `cache`. A control whose label changes with its state, as a
+/// toggle's or a page number's does, so takes one form whatever it reads.
+fn text_button_width(
+    labels: &[&str],
+    cache: &'static std::thread::LocalKey<views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    let widest = views::cached_text_width(cache, &labels.join("\n"), window, || {
+        labels
+            .iter()
+            .map(|label| views::line_widths(&[(label, appearance::ui_text(12.))], window))
+            .fold(px(0.), Pixels::max)
+    });
+    (appearance::ui_size(LABEL_INSET * 2.) + widest).max(appearance::ui_size(28.))
+}
+
 /// A control's 16 px icon, `icons/<symbol>.svg`, tinted with its text.
 fn control_icon(symbol: &str) -> Icon {
     Icon::default()

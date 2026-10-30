@@ -446,6 +446,13 @@ thread_local! {
     /// Each side header's heading, laid out.
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// Read page text's, Retry page's, the link's at its wider reading and
+    /// each side's page number at its widest for the side's count, laid out.
+    static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static BEFORE_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static LINK_PAGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// The room the first line of side `index`'s header leaves its open control
@@ -481,6 +488,11 @@ pub(super) fn render_comparison<T: 'static>(
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
         let heading = format!("{label} · PDF");
         let room = header_room(index, side_width, &heading, window);
+        // A line of the header to itself: a labelled control wider than this
+        // draws its icon or a shorter reading rather than be cut at the
+        // side's edge, its whole label in its tooltip and its accessible
+        // name the one it has labelled.
+        let line_room = crate::system_preview::header_line_room(side_width, window.rem_size() * 0.5);
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's.
         // The header's padding beneath and its rule end it beneath the line
@@ -512,11 +524,13 @@ pub(super) fn render_comparison<T: 'static>(
         };
         if let Some(cached)=&cached {
             let prepared=cached.clone();
-            header=header.child(held.track(("pdf-read-text",index), button(("pdf-read-text",index),"Read page text","file-text",false).accessibility_label(format!("{label}: read extracted text from page {}",page+1)).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
+            let read = if labelled_button_width("Read page text", &READ_TEXT, window) <= line_room { button(("pdf-read-text",index),"Read page text","file-text",false) } else { button(("pdf-read-text",index),"","file-text",false).tooltip("Read page text") };
+            header=header.child(held.track(("pdf-read-text",index), read.debug_selector(move || format!("pdf-read-text-{index}")).accessibility_label(format!("{label}: read extracted text from page {}",page+1)).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
         }
         if error.is_some() {
             let target=document.clone();
-            let retry = button(("pdf-retry",index),"Retry page","refresh",false).debug_selector(move || format!("pdf-retry-{index}")).on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
+            let retry = if labelled_button_width("Retry page", &RETRY_PAGE, window) <= line_room { button(("pdf-retry",index),"Retry page","refresh",false) } else { button(("pdf-retry",index),"","refresh",false).accessibility_label("Retry page").tooltip("Retry page") };
+            let retry = retry.debug_selector(move || format!("pdf-retry-{index}")).on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
             header=header.child(held.track(("pdf-retry",index), retry, cx));
         }
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
@@ -529,13 +543,20 @@ pub(super) fn render_comparison<T: 'static>(
             header = header.child(held.track((id,index), step, cx));
         }
         let target = document.clone(); let linked_partner = partner.clone();
-        let number = button(("pdf-page-number",index), format!("Page {} / {}",page+1,document.count), "", false).debug_selector(move || format!("pdf-page-number-{index}")).accessibility_label(format!("{label}: page {} of {}. Enter page number",page+1,document.count))
+        // "1/3" where "Page 3 / 3", the number at its widest for the count,
+        // does not fit a line of the header, its whole reading its tooltip.
+        let whole = format!("Page {} / {}",page+1,document.count);
+        let number_labelled = text_button_width(&[format!("Page {0} / {0}",document.count).as_str()], if index == 0 { &BEFORE_PAGE_NUMBER } else { &AFTER_PAGE_NUMBER }, window) <= line_room;
+        let number = if number_labelled { button(("pdf-page-number",index), whole, "", false) } else { button(("pdf-page-number",index), format!("{}/{}",page+1,document.count), "", false).tooltip(whole) };
+        let number = number.debug_selector(move || format!("pdf-page-number-{index}")).accessibility_label(format!("{label}: page {} of {}. Enter page number",page+1,document.count))
             .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx));
         header = header.child(held.track(("pdf-page-number",index), number, cx));
         if let Some(partner) = partner {
             let linked = document.linked.load(Ordering::Relaxed);
             let target = document.clone();
-            header = header.child(held.track(("pdf-link",index), button(("pdf-link",index), if linked {"Linked pages"} else {"Independent pages"}, "", linked).toggled(linked).accessibility_label(format!("{label}: linked PDF page navigation")).on_click(cx.listener(move |_,_,window,cx| {
+            let reading = if linked {"Linked pages"} else {"Independent pages"};
+            let link = if text_button_width(&["Linked pages", "Independent pages"], &LINK_PAGES, window) <= line_room { button(("pdf-link",index), reading, "", linked) } else { button(("pdf-link",index), "", "link", linked).tooltip(reading) };
+            header = header.child(held.track(("pdf-link",index), link.debug_selector(move || format!("pdf-link-{index}")).toggled(linked).accessibility_label(format!("{label}: linked PDF page navigation")).on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }
                 window.refresh(); cx.notify();
@@ -581,9 +602,15 @@ pub(super) fn render_comparison<T: 'static>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// Waits until every page requested so far has answered; drawing then
+    /// handles the answers.
+    pub(crate) fn drain_pages() {
+        renderer().drain();
+    }
     fn page() -> rich_preview::Page {
         rich_preview::Page {
             render: None,
