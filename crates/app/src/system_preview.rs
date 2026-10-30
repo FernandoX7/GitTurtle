@@ -1828,6 +1828,221 @@ pub(crate) mod tests {
         }
     }
 
+    /// Each control of a side's own header in each of its forms, at 13 and
+    /// 18 pt, down to the narrowest side whose line holds an icon: what it
+    /// shows, its icon, its tooltip and its accessible name, which is the
+    /// same in every form, and a drawn width that agrees with the form, the
+    /// icon alone in the scaled 28 px square. Reset and Edges, the views
+    /// menu, the links, the clip menu, Read page text, Retry page and the
+    /// page number, whose short reading comes between, once had no test of
+    /// their icon forms, tooltips or names: Compare's narrowest side, 88 px
+    /// at 13 pt, never reached Reset's or Edges' icon.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_controls_keep_their_names_in_every_form(cx: &mut gpui_kit::TestAppContext) {
+        const CHOICES: &str = "Choose Isometric, Front, Back, Left, Right, Top or Bottom";
+        const CLIPS: &str = "Choose an animation clip or the default pose";
+        // Each control: its form, what it shows, its icon and its tooltip
+        // there, and its name in every form.
+        type Forms = &'static [(
+            &'static str,
+            &'static str,
+            Option<&'static str>,
+            Option<&'static str>,
+        )];
+        let model: &[(&str, Forms, &str)] = &[
+            (
+                "model-camera-1",
+                &[
+                    ("labelled", "Reset", None, None),
+                    ("icon", "", Some("reset"), Some("Reset")),
+                ],
+                "Before: Reset",
+            ),
+            (
+                "model-camera-4",
+                &[
+                    ("labelled", "Edges", None, None),
+                    ("icon", "", Some("edges"), Some("Edges")),
+                ],
+                "Before: Solid shading. Show all triangle edges",
+            ),
+            (
+                "model-camera-6",
+                &[
+                    ("labelled", "Reset", None, None),
+                    ("icon", "", Some("reset"), Some("Reset")),
+                ],
+                "After: Reset",
+            ),
+            (
+                "model-camera-9",
+                &[
+                    ("labelled", "Edges", None, None),
+                    ("icon", "", Some("edges"), Some("Edges")),
+                ],
+                "After: Solid shading. Show all triangle edges",
+            ),
+            (
+                "model-views-0",
+                &[
+                    ("labelled", "Isometric", None, Some(CHOICES)),
+                    (
+                        "icon",
+                        "",
+                        Some("more"),
+                        Some(
+                            "Isometric · Choose Isometric, Front, Back, Left, Right, Top or Bottom",
+                        ),
+                    ),
+                ],
+                "Before: Standard views, Isometric",
+            ),
+            (
+                "model-views-1",
+                &[
+                    ("labelled", "Isometric", None, Some(CHOICES)),
+                    (
+                        "icon",
+                        "",
+                        Some("more"),
+                        Some(
+                            "Isometric · Choose Isometric, Front, Back, Left, Right, Top or Bottom",
+                        ),
+                    ),
+                ],
+                "After: Standard views, Isometric",
+            ),
+            (
+                "model-link-0",
+                &[
+                    ("labelled", "Linked", None, None),
+                    ("icon", "", Some("link"), Some("Linked")),
+                ],
+                "Before: Cameras linked. Switch to independent cameras",
+            ),
+            (
+                "model-link-1",
+                &[
+                    ("labelled", "Linked", None, None),
+                    ("icon", "", Some("link"), Some("Linked")),
+                ],
+                "After: Cameras linked. Switch to independent cameras",
+            ),
+            (
+                "model-clip-0",
+                &[
+                    ("labelled", "Default pose", None, Some(CLIPS)),
+                    (
+                        "icon",
+                        "",
+                        Some("clip"),
+                        Some("Default pose · Choose an animation clip or the default pose"),
+                    ),
+                ],
+                "Before: Animation clip, Default pose",
+            ),
+        ];
+        let document: &[(&str, Forms, &str)] = &[
+            (
+                "pdf-read-text-0",
+                &[
+                    ("labelled", "Read page text", Some("file-text"), None),
+                    ("icon", "", Some("file-text"), Some("Read page text")),
+                ],
+                "Before: read extracted text from page 1",
+            ),
+            (
+                "pdf-retry-1",
+                &[
+                    ("labelled", "Retry page", Some("refresh"), None),
+                    ("icon", "", Some("refresh"), Some("Retry page")),
+                ],
+                "After: retry page 1",
+            ),
+            (
+                "pdf-page-number-0",
+                &[
+                    ("labelled", "Page 1 / 3", None, None),
+                    ("short", "1/3", None, Some("Page 1 / 3")),
+                    ("icon", "", Some("page"), Some("Page 1 / 3")),
+                ],
+                "Before: page 1 of 3. Enter page number",
+            ),
+            (
+                "pdf-page-number-1",
+                &[
+                    ("labelled", "Page 1 / 3", None, None),
+                    ("short", "1/3", None, Some("Page 1 / 3")),
+                    ("icon", "", Some("page"), Some("Page 1 / 3")),
+                ],
+                "After: page 1 of 3. Enter page number",
+            ),
+            (
+                "pdf-link-0",
+                &[
+                    ("labelled", "Independent pages", None, None),
+                    ("icon", "", Some("link"), Some("Independent pages")),
+                ],
+                "Before: linked PDF page navigation",
+            ),
+            (
+                "pdf-link-1",
+                &[
+                    ("labelled", "Independent pages", None, None),
+                    ("icon", "", Some("link"), Some("Independent pages")),
+                ],
+                "After: linked PDF page navigation",
+            ),
+        ];
+        let [model_sides, document_sides] = document_sides(3, 0);
+        for (content, controls) in [(model_sides, model), (document_sides, document)] {
+            let mut seen = std::collections::BTreeMap::new();
+            walk_side_widths(cx, content, 8, |cx, _, (text, width), drawn| {
+                let square = appearance::ui_size(28.);
+                for (selector, control) in drawn {
+                    let bounds = cx
+                        .debug_bounds(selector.clone().leak())
+                        .expect("the control is drawn");
+                    let at = format!("{text} pt, {width} px: {selector} {control:?} {bounds:?}");
+                    if control.form == "icon" {
+                        assert!(
+                            control.shows.is_empty()
+                                && (bounds.size.width - square).abs() < px(0.5),
+                            "{at} is its icon in the scaled 28 px square"
+                        );
+                    } else {
+                        assert!(
+                            !control.shows.is_empty() && bounds.size.width > square + px(0.5),
+                            "{at} is wider than its icon"
+                        );
+                    }
+                    seen.insert((text, selector.clone(), control.form), control.clone());
+                }
+            });
+            for text in [13u8, 18] {
+                for (selector, forms, name) in controls {
+                    for (form, shows, icon, tooltip) in *forms {
+                        let drawn = seen
+                            .get(&(text, selector.to_string(), *form))
+                            .unwrap_or_else(|| panic!("at {text} pt {selector} is drawn {form}"));
+                        assert_eq!(
+                            drawn,
+                            &DrawnControl {
+                                form,
+                                shows: shows.to_string(),
+                                icon: *icon,
+                                tooltip: tooltip.map(str::to_owned),
+                                name: name.to_string(),
+                            },
+                            "at {text} pt {selector} drawn {form}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Side `name`'s own header, which `view` draws in a box its content
     /// gives way in, keeps its `floor` exactly: the scaled 28 px control and
     /// the larger of its ring's room and the header's padding above and
