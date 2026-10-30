@@ -990,6 +990,11 @@ enum Reveal {
 }
 
 impl Span {
+    /// How far past the list's edge a row may lie and still count as whole:
+    /// the toolkit scrolls a row to an edge in window coordinates, so a row
+    /// it placed there can read a rounding error past it here.
+    const ROUNDING: Pixels = px(0.01);
+
     /// The scroll, from the list's top, that brings the span whole into a
     /// list `view` tall that holds `content` and is scrolled by `scrolled`,
     /// or `None` where it lies whole there already.
@@ -1000,9 +1005,6 @@ impl Span {
         content: Pixels,
         how: Reveal,
     ) -> Option<Pixels> {
-        // The toolkit scrolls a row to an edge in window coordinates, so a
-        // row it placed there can read a rounding error past it here.
-        const ROUNDING: Pixels = px(0.01);
         if view <= px(0.) {
             return None;
         }
@@ -1010,8 +1012,8 @@ impl Span {
             .heading
             .filter(|&heading| self.bottom - heading <= view)
             .unwrap_or(self.top);
-        let above = top < scrolled - ROUNDING;
-        let below = self.bottom > scrolled + view + ROUNDING;
+        let above = top < scrolled - Self::ROUNDING;
+        let below = self.bottom > scrolled + view + Self::ROUNDING;
         let to = match how {
             _ if !above && !below => return None,
             Reveal::Centre => (top + self.bottom) / 2. - view / 2.,
@@ -1452,8 +1454,12 @@ mod list_tests {
 
     /// How far apart two drawn edges may read and still meet: GPUI rounds
     /// each edge to the device pixel, half a pixel in the test window, and
-    /// lays each of the list's rows out on its own.
-    const PIXEL: Pixels = px(1.);
+    /// lays each of the list's rows out on its own, so at 18 pt a row's top
+    /// can read half a pixel below the foot of the row above it. A whole
+    /// pixel let a list that cut its entry 1 px at its foot pass for one
+    /// that ended the entry there. An edge that must not be cut is checked
+    /// on its own side, with the list's own allowance (`Shown::whole`).
+    const EDGE: Pixels = px(0.5);
 
     /// The selector of the row at `index` among `rows`.
     fn row_selector(rows: &[HelpRow], index: usize) -> &'static str {
@@ -1495,7 +1501,7 @@ mod list_tests {
                     .debug_bounds(row_selector(&rows, index))
                     .unwrap_or_else(|| panic!("{text} pt: row {index} is drawn"));
                 assert!(
-                    (bounds.top() - top).abs() <= PIXEL,
+                    (bounds.top() - top).abs() <= EDGE,
                     "{text} pt: row {index} {bounds:?} starts where the row above it ends, \
                      {top:?}"
                 );
@@ -1504,7 +1510,7 @@ mod list_tests {
                 } else {
                     let grown = heights[index] * (18. / 13.);
                     assert!(
-                        (bounds.size.height - grown).abs() <= PIXEL,
+                        (bounds.size.height - grown).abs() <= EDGE,
                         "18 pt: row {index}, {:?} tall at 13 pt, grows to {grown:?}: {:?}",
                         heights[index],
                         bounds.size.height
@@ -1616,10 +1622,14 @@ mod list_tests {
                 .unwrap_or_else(|| panic!("row {index} is drawn"))
         }
 
-        /// Whether row `index` is drawn whole in the list.
+        /// Whether row `index` is drawn whole in the list, as the list counts
+        /// a row whole, no further past its edge than its own allowance
+        /// (`Span::ROUNDING`). Rounding keeps edges in order, so a row the
+        /// list holds whole is drawn no further out than its edge, and a row
+        /// the list cuts by half a pixel or more is drawn cut.
         fn whole(&self, cx: &mut VisualTestContext, index: usize) -> bool {
             self.drawn(cx, index).is_some_and(|row| {
-                row.top() >= self.top - PIXEL && row.bottom() <= self.foot + PIXEL
+                row.top() >= self.top - Span::ROUNDING && row.bottom() <= self.foot + Span::ROUNDING
             })
         }
 
@@ -1627,7 +1637,7 @@ mod list_tests {
         /// it is the group's first entry and the list holds both.
         fn heading(&self, entry: usize) -> Option<usize> {
             (matches!(self.rows[entry - 1], HelpRow::Group(_))
-                && self.heading + self.entry <= self.view() + PIXEL)
+                && self.heading + self.entry <= self.view() + EDGE)
                 .then_some(entry - 1)
         }
 
@@ -1653,14 +1663,14 @@ mod list_tests {
             let (above, below) = (top - self.top, self.foot - row.bottom());
             let start = self
                 .drawn(cx, 0)
-                .is_some_and(|first| (first.top() - self.top).abs() <= PIXEL);
+                .is_some_and(|first| (first.top() - self.top).abs() <= EDGE);
             let end = self
                 .drawn(cx, self.rows.len() - 1)
-                .is_some_and(|last| (last.bottom() - self.foot).abs() <= PIXEL);
+                .is_some_and(|last| (last.bottom() - self.foot).abs() <= EDGE);
             assert!(
-                above >= -PIXEL
-                    && below >= -PIXEL
-                    && ((above - below).abs() <= PIXEL
+                above >= -Span::ROUNDING
+                    && below >= -Span::ROUNDING
+                    && ((above - below).abs() <= EDGE
                         || (start && above < below)
                         || (end && below < above)),
                 "{what}: entry {entry} and what comes with it lie {above:?} below the \
@@ -1675,7 +1685,7 @@ mod list_tests {
             scroll_down(cx, self.centre, ScrollDelta::Pixels(point(px(0.), -by)));
             let moved = before - self.at(cx, index).top();
             assert!(
-                (moved - by).abs() <= PIXEL,
+                (moved - by).abs() <= EDGE,
                 "the wheel scrolls the list {by:?}: row {index} moved {moved:?}"
             );
         }
@@ -1721,7 +1731,7 @@ mod list_tests {
                 if inside {
                     let before = before.unwrap();
                     assert!(
-                        (now - before).abs() <= PIXEL,
+                        (now - before).abs() <= EDGE,
                         "{key} to entry {next}, whole in the list, moved it from \
                          {before:?} to {now:?}"
                     );
@@ -1730,7 +1740,7 @@ mod list_tests {
                     let what = format!("{key} to entry {next}, outside the list");
                     shown.centred(cx, next, &what);
                     assert!(
-                        before.is_none_or(|before| (now - before).abs() > PIXEL),
+                        before.is_none_or(|before| (now - before).abs() > EDGE),
                         "{what} scrolls it: the entry stayed at {now:?}"
                     );
                     moved += 1;
@@ -1776,7 +1786,7 @@ mod list_tests {
             shown.wheel(cx, top - (shown.top - px(10.)), second);
             let cut = shown.at(cx, heading);
             assert!(
-                (cut.top() - (shown.top - px(10.))).abs() <= PIXEL
+                (cut.top() - (shown.top - px(10.))).abs() <= EDGE
                     && shown.whole(cx, first)
                     && shown.whole(cx, second),
                 "group {heading}: the wheel cuts its heading 10 px, {cut:?} in the list \
@@ -1822,7 +1832,7 @@ mod list_tests {
                 press(cx, "down");
             }
             assert!(
-                (shown.at(cx, entries[last]).top() - rest).abs() <= PIXEL,
+                (shown.at(cx, entries[last]).top() - rest).abs() <= EDGE,
                 "Down to entry {} keeps the list at its top",
                 entries[last]
             );
@@ -1862,7 +1872,7 @@ mod list_tests {
             close(cx);
         }
         assert!(
-            (ends[0].0 - ends[1].0).abs() <= PIXEL && (ends[0].1 - ends[1].1).abs() <= PIXEL,
+            (ends[0].0 - ends[1].0).abs() <= EDGE && (ends[0].1 - ends[1].1).abs() <= EDGE,
             "a frame apiece ends with the entry past them at {:?}, back to back at {:?}",
             ends[0],
             ends[1]
@@ -1890,7 +1900,7 @@ mod list_tests {
                 let entry = entries[at];
                 shown
                     .drawn(cx, entry)
-                    .is_none_or(|row| row.top() >= shown.foot - PIXEL)
+                    .is_none_or(|row| row.top() >= shown.foot - EDGE)
                     && matches!(shown.rows[entry - 1], HelpRow::Entry(_))
                     && entries[at + 2] == entry + 2
             })
@@ -1906,7 +1916,7 @@ mod list_tests {
             press(cx, key);
             let now = shown.at(cx, below).top();
             assert!(
-                (now - wheeled).abs() <= PIXEL,
+                (now - wheeled).abs() <= EDGE,
                 "{key} to entry {entry}, whole in the list the wheel scrolled, moved \
                  entry {below} from {wheeled:?} to {now:?}"
             );
@@ -1918,7 +1928,7 @@ mod list_tests {
             &format!("Up to entry {cut}, cut 3 px by the list's top"),
         );
         assert!(
-            (shown.at(cx, below).top() - wheeled).abs() > PIXEL,
+            (shown.at(cx, below).top() - wheeled).abs() > EDGE,
             "Up to entry {cut}, cut 3 px by the list's top, scrolls the list"
         );
         close(cx);
@@ -1963,7 +1973,7 @@ mod list_tests {
                 draw(cx);
                 shown.relist(cx);
                 assert!(
-                    (shown.view() - view).abs() > PIXEL
+                    (shown.view() - view).abs() > EDGE
                         && shown.heading + shown.entry <= shown.view(),
                     "{text} pt: a {height} px tall window gives the list {:?}, not \
                      {view:?}, holding a heading and an entry",
@@ -1971,7 +1981,7 @@ mod list_tests {
                 );
                 let drawn = shown.drawn(cx, heading).map(|row| row.top());
                 assert!(
-                    drawn.is_some_and(|top| (top - shown.top).abs() <= PIXEL)
+                    drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE)
                         && shown.whole(cx, first),
                     "{text} pt: a {list} list brings group {heading}'s heading back to \
                      its top with entry {first}: the heading is drawn at {drawn:?}, the \
@@ -2025,7 +2035,7 @@ mod list_tests {
             draw(cx);
             let drawn = shown.drawn(cx, heading).map(|row| row.top());
             assert!(
-                drawn.is_some_and(|top| (top - shown.top).abs() <= PIXEL) && shown.whole(cx, first),
+                drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE) && shown.whole(cx, first),
                 "{text} pt: a click on entry {first} brings group {heading}'s heading \
                  back to the list's top: the heading is drawn at {drawn:?}, the list from \
                  {:?}",
@@ -2045,7 +2055,7 @@ mod list_tests {
             draw(cx);
             let drawn = shown.at(cx, cut);
             assert!(
-                (drawn.bottom() - shown.foot).abs() <= PIXEL && shown.shown(cx, cut),
+                (drawn.bottom() - shown.foot).abs() <= EDGE && shown.shown(cx, cut),
                 "{text} pt: a click on entry {cut}, cut 10 px by the list's foot, brings \
                  its foot to the list's, {:?}: {drawn:?}",
                 shown.foot
@@ -2074,7 +2084,7 @@ mod list_tests {
                 }
                 let drawn = shown.at(cx, last);
                 assert!(
-                    (drawn.bottom() - shown.foot).abs() <= PIXEL && drawn.top() >= shown.top,
+                    (drawn.bottom() - shown.foot).abs() <= EDGE && shown.whole(cx, last),
                     "{text} pt: {presses} Down presses leave the last entry, {last}, whole \
                      at the list's foot, {:?}: {drawn:?}",
                     shown.foot
@@ -2110,7 +2120,7 @@ mod list_tests {
                 .find(|&heading| {
                     shown
                         .drawn(cx, heading)
-                        .is_none_or(|row| row.top() >= shown.foot - PIXEL)
+                        .is_none_or(|row| row.top() >= shown.foot - EDGE)
                 })
                 .expect("a heading below the list's first screen");
             let (above, first) = (heading - 1, heading + 1);
