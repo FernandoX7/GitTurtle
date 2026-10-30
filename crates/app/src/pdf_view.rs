@@ -1,6 +1,7 @@
 //! On-demand captured-byte PDF navigation. Native references remain on one
 //! serialized render lane; each side retains at most four pages / 16 MiB.
 use crate::native_accessibility::LiveRegion as _;
+use crate::system_preview::HeaderControl;
 use crate::*;
 use gpui_kit::base::ElementExt;
 use gpui_kit::component::dialog::DialogFooter;
@@ -447,11 +448,14 @@ thread_local! {
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Read page text's, Retry page's, the link's at its wider reading and
-    /// each side's page number at its widest for the side's count, laid out.
+    /// each side's page number, whole and short, at its widest for the
+    /// side's count, laid out.
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static BEFORE_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static BEFORE_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_SHORT_PAGE_NUMBER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static LINK_PAGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
@@ -470,6 +474,45 @@ fn header_room(index: usize, side: Pixels, heading: &str, window: &Window) -> Pi
         crate::views::shaped_width(heading, size, FontWeight::SEMIBOLD, window).ceil()
     });
     side - px(1.) - rem * (0.5 * 2. + 0.5) - text
+}
+
+/// The readings a page number of `count` pages is measured at, whole
+/// ("Page 1 / 3") and short ("1/3"): the count's digits all one digit, for
+/// each of the ten, so the widest of them is as wide as any page's reading
+/// even where a proportional font's digits differ in width. Measured at the
+/// count alone ("Page 111 / 111"), the labelled form was narrower than
+/// another page's ("Page 108 / 111") and that page's was cut.
+fn page_number_readings(count: usize) -> [Vec<String>; 2] {
+    let digits = count.to_string().len();
+    let numbers: Vec<String> = ('0'..='9')
+        .map(|digit| digit.to_string().repeat(digits))
+        .collect();
+    [
+        numbers
+            .iter()
+            .map(|number| format!("Page {number} / {number}"))
+            .collect(),
+        numbers
+            .iter()
+            .map(|number| format!("{number}/{number}"))
+            .collect(),
+    ]
+}
+
+/// The widths of side `index`'s page number labelled and short at their
+/// widest for `count` pages ([`page_number_readings`]).
+fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, Pixels) {
+    let (whole, short) = if index == 0 {
+        (&BEFORE_PAGE_NUMBER, &BEFORE_SHORT_PAGE_NUMBER)
+    } else {
+        (&AFTER_PAGE_NUMBER, &AFTER_SHORT_PAGE_NUMBER)
+    };
+    let width = |readings: Vec<String>, cache| {
+        let readings: Vec<&str> = readings.iter().map(String::as_str).collect();
+        text_button_width(&readings, cache, window)
+    };
+    let [whole_readings, short_readings] = page_number_readings(count);
+    (width(whole_readings, whole), width(short_readings, short))
 }
 
 /// The comparison's sides, each with its header of page controls; `width`
@@ -526,13 +569,13 @@ pub(super) fn render_comparison<T: 'static>(
         };
         if let Some(cached)=&cached {
             let prepared=cached.clone();
-            let read = if labelled_button_width("Read page text", &READ_TEXT, window) <= line_room { button(("pdf-read-text",index),"Read page text","file-text",false) } else { button(("pdf-read-text",index),"","file-text",false).tooltip("Read page text") };
-            header=header.child(held.track(("pdf-read-text",index), read.debug_selector(move || format!("pdf-read-text-{index}")).accessibility_label(format!("{label}: read extracted text from page {}",page+1)).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
+            let read = HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", format!("{label}: read extracted text from page {}",page+1), "file-text", labelled_button_width("Read page text", &READ_TEXT, window)).labelled_with_icon().button(line_room);
+            header=header.child(held.track(("pdf-read-text",index), read.on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
         }
         if error.is_some() {
             let target=document.clone();
-            let retry = if labelled_button_width("Retry page", &RETRY_PAGE, window) <= line_room { button(("pdf-retry",index),"Retry page","refresh",false) } else { button(("pdf-retry",index),"","refresh",false).accessibility_label("Retry page").tooltip("Retry page") };
-            let retry = retry.debug_selector(move || format!("pdf-retry-{index}")).on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
+            let retry = HeaderControl::new(("pdf-retry",index), format!("pdf-retry-{index}"), "Retry page", format!("{label}: retry page {}",page+1), "refresh", labelled_button_width("Retry page", &RETRY_PAGE, window)).labelled_with_icon().button(line_room);
+            let retry = retry.on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
             header=header.child(held.track(("pdf-retry",index), retry, cx));
         }
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
@@ -545,20 +588,20 @@ pub(super) fn render_comparison<T: 'static>(
             header = header.child(held.track((id,index), step, cx));
         }
         let target = document.clone(); let linked_partner = partner.clone();
-        // "1/3" where "Page 3 / 3", the number at its widest for the count,
-        // does not fit a line of the header, its whole reading its tooltip.
-        let whole = format!("Page {} / {}",page+1,document.count);
-        let number_labelled = text_button_width(&[format!("Page {0} / {0}",document.count).as_str()], if index == 0 { &BEFORE_PAGE_NUMBER } else { &AFTER_PAGE_NUMBER }, window) <= line_room;
-        let number = if number_labelled { button(("pdf-page-number",index), whole, "", false) } else { button(("pdf-page-number",index), format!("{}/{}",page+1,document.count), "", false).tooltip(whole) };
-        let number = number.debug_selector(move || format!("pdf-page-number-{index}")).accessibility_label(format!("{label}: page {} of {}. Enter page number",page+1,document.count))
+        // "1/3" where "Page 1 / 3" does not fit a line of the header, and
+        // its page icon where "1/3" does not either, its whole reading its
+        // tooltip; each form measured at its widest for the count.
+        let (labelled, short) = page_number_widths(index, document.count, window);
+        let number = HeaderControl::new(("pdf-page-number",index), format!("pdf-page-number-{index}"), format!("Page {} / {}",page+1,document.count), format!("{label}: page {} of {}. Enter page number",page+1,document.count), "page", labelled)
+            .short(format!("{}/{}",page+1,document.count), short).button(line_room)
             .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx));
         header = header.child(held.track(("pdf-page-number",index), number, cx));
         if let Some(partner) = partner {
             let linked = document.linked.load(Ordering::Relaxed);
             let target = document.clone();
             let reading = if linked {"Linked pages"} else {"Independent pages"};
-            let link = if text_button_width(&["Linked pages", "Independent pages"], &LINK_PAGES, window) <= line_room { button(("pdf-link",index), reading, "", linked) } else { button(("pdf-link",index), "", "link", linked).tooltip(reading) };
-            header = header.child(held.track(("pdf-link",index), link.debug_selector(move || format!("pdf-link-{index}")).toggled(linked).accessibility_label(format!("{label}: linked PDF page navigation")).on_click(cx.listener(move |_,_,window,cx| {
+            let link = HeaderControl::new(("pdf-link",index), format!("pdf-link-{index}"), reading, format!("{label}: linked PDF page navigation"), "link", text_button_width(&["Linked pages", "Independent pages"], &LINK_PAGES, window)).active(linked).button(line_room);
+            header = header.child(held.track(("pdf-link",index), link.toggled(linked).on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }
                 window.refresh(); cx.notify();
@@ -621,13 +664,25 @@ pub(crate) mod tests {
     /// side offers to link their pages.
     #[cfg(target_os = "linux")]
     pub(crate) fn paged(preview: &rich_preview::Comparison) -> crate::worker::Content {
+        paged_at(preview, 3, 0)
+    }
+
+    /// [`paged`] with `count` pages a side, each side showing page `shown`
+    /// (counted from 0), which Before has prepared only where it is the
+    /// first.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn paged_at(
+        preview: &rich_preview::Comparison,
+        count: usize,
+        shown: usize,
+    ) -> crate::worker::Content {
         let side = |side: &rich_preview::Side, first| {
             let bytes = side.captured.clone().expect("the side's bytes");
             let mut paged = rich_preview::Side::prepare(bytes.to_vec(), &side.name, || Ok(()))
                 .expect("the side prepares");
-            paged.pdf = Some(Arc::new(
-                Document::new(bytes, 3, first, || Ok(())).expect("a document"),
-            ));
+            let document = Document::new(bytes, count, first, || Ok(())).expect("a document");
+            document.state.lock().unwrap().page = shown;
+            paged.pdf = Some(Arc::new(document));
             Arc::new(paged)
         };
         crate::worker::Content::Rich(rich_preview::Comparison {
@@ -645,6 +700,39 @@ pub(crate) mod tests {
             error: None,
         }
     }
+    /// A page number's form is measured at its widest reading for the count,
+    /// whatever page it shows, in a font whose digits differ in width, here
+    /// one where "1" is narrower than the others, as in most proportional
+    /// fonts (the tests' own font gives every character one width). Measured
+    /// at the count alone, "Page 111 / 111", it was narrower than "Page 108
+    /// / 111".
+    #[test]
+    fn a_page_number_is_measured_at_its_widest_page() {
+        let width = |text: &str| -> u32 {
+            text.chars()
+                .map(|char| match char {
+                    '1' => 4,
+                    '0'..='9' => 7,
+                    _ => 5,
+                })
+                .sum()
+        };
+        for count in [1, 3, 9, 10, 111, 1_000] {
+            let [whole, short] = page_number_readings(count);
+            let widest = |readings: &[String]| readings.iter().map(|r| width(r)).max().unwrap();
+            for page in 1..=count {
+                assert!(
+                    width(&format!("Page {page} / {count}")) <= widest(&whole),
+                    "Page {page} / {count} is no wider than its measure"
+                );
+                assert!(
+                    width(&format!("{page}/{count}")) <= widest(&short),
+                    "{page}/{count} is no wider than its measure"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cache_promotes_revisited_pages_and_evicts_oldest() {
         let mut cache = Cache::default();

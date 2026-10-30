@@ -409,15 +409,25 @@ thread_local! {
     static LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
+impl Form {
+    /// The form of a control whose labelled form is `labelled` wide on a
+    /// line that leaves it `room`: labelled where that fits, and otherwise
+    /// its icon. Every control of a side's own header and every open control
+    /// takes its form by this rule ([`HeaderControl`]).
+    pub(crate) fn fitting(labelled: Pixels, room: Pixels) -> Self {
+        if labelled <= room {
+            Self::Labelled
+        } else {
+            Self::Icon
+        }
+    }
+}
+
 impl Offer {
     /// The form of a control on a line that leaves it `room`: labelled where
     /// its frame, icon and label fit, and otherwise its icon.
     pub(crate) fn form(self, room: Pixels, window: &Window) -> Form {
-        if room >= labelled_button_width(self.label(), &LABEL, window) {
-            Form::Labelled
-        } else {
-            Form::Icon
-        }
+        Form::fitting(labelled_button_width(self.label(), &LABEL, window), room)
     }
 }
 
@@ -851,15 +861,159 @@ pub(crate) fn header_ends(
 /// or not it scrolls, so a control's form never changes with the scroll it
 /// causes. Its focus ring lies in the insets. A labelled control wider than
 /// this draws a shorter form, its icon or a shorter reading, its whole label
-/// in its tooltip and its accessible name the one it has labelled: in an
-/// 88 px side at 13 pt in a 461 × 490 window the model's Copy source, views
-/// menu and Linked, and the page view's Read page text, Retry page, page
-/// number and Linked pages were cut at the side's edge.
+/// in its tooltip and its accessible name the one it has labelled
+/// ([`HeaderControl`]): in an 88 px side at 13 pt in a 461 × 490 window the
+/// model's Copy source, views menu and Linked, and the page view's Read page
+/// text, Retry page, page number and Linked pages were cut at the side's
+/// edge, and the model's clip menu was cut on a narrow side after them.
 pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
     let ring = appearance::BUTTON_FOCUS_RING;
     side - px(1.)
         - inset * 2.
         - (gpui_kit::component::scroll::Scrollbar::width() + ring.gap + ring.width)
+}
+
+/// A control of a side's own header in the form a line of the header to
+/// itself holds ([`header_line_room`]): labelled where its widest reading
+/// fits ([`Form::fitting`]), then its short reading where it has one that
+/// fits (the page number's "1/3"), and otherwise its icon alone in the
+/// scaled 28 px square, so it is never cut at the side's edge. A form that
+/// shows less than its reading leads its tooltip with the reading, and every
+/// form has the one accessible name, the one it has labelled. The form is
+/// chosen from the widest reading, so a toggle, a view, a clip or a page
+/// turn never changes it.
+pub(crate) struct HeaderControl {
+    id: ElementId,
+    selector: String,
+    reading: SharedString,
+    name: SharedString,
+    icon: &'static str,
+    widest: Pixels,
+    short: Option<(SharedString, Pixels)>,
+    labelled_icon: bool,
+    menu: Option<SharedString>,
+    active: bool,
+}
+
+/// How a [`HeaderControl`] was last drawn, for a test to read back by its
+/// debug selector.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrawnControl {
+    /// "labelled", "short" or "icon".
+    pub(crate) form: &'static str,
+    /// What it reads, empty where it draws its icon alone.
+    pub(crate) shows: String,
+    /// The icon it draws, if any.
+    pub(crate) icon: Option<&'static str>,
+    pub(crate) tooltip: Option<String>,
+    pub(crate) name: String,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Each [`HeaderControl`] as it was last drawn, by debug selector.
+    pub(crate) static DRAWN_CONTROLS: std::cell::RefCell<std::collections::BTreeMap<String, DrawnControl>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+impl HeaderControl {
+    /// The control `id`, found by tests as `selector`, reading `reading`
+    /// labelled and named `name` in every form, whose labelled form is
+    /// `widest` wide at its widest reading and whose icon is `icon`.
+    pub(crate) fn new(
+        id: impl Into<ElementId>,
+        selector: String,
+        reading: impl Into<SharedString>,
+        name: impl Into<SharedString>,
+        icon: &'static str,
+        widest: Pixels,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            selector,
+            reading: reading.into(),
+            name: name.into(),
+            icon,
+            widest,
+            short: None,
+            labelled_icon: false,
+            menu: None,
+            active: false,
+        }
+    }
+
+    /// Labelled, it draws its icon before its label, as Read page text does.
+    pub(crate) fn labelled_with_icon(mut self) -> Self {
+        self.labelled_icon = true;
+        self
+    }
+
+    /// Where its labelled form does not fit, it reads `reading`, `widest`
+    /// wide at its widest, if that fits, before it becomes its icon.
+    pub(crate) fn short(mut self, reading: impl Into<SharedString>, widest: Pixels) -> Self {
+        self.short = Some((reading.into(), widest));
+        self
+    }
+
+    /// A menu's trigger: labelled with a caret and `choices` in its tooltip,
+    /// which follow its reading there in its other forms.
+    pub(crate) fn menu(mut self, choices: impl Into<SharedString>) -> Self {
+        self.menu = Some(choices.into());
+        self
+    }
+
+    /// Drawn selected, as a toggle that is on is.
+    pub(crate) fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    /// The control in the form a line `room` wide holds.
+    pub(crate) fn button(self, room: Pixels) -> Button {
+        let labelled = Form::fitting(self.widest, room) == Form::Labelled;
+        let short = self
+            .short
+            .filter(|(_, widest)| !labelled && *widest <= room);
+        let (shows, icon) = match short {
+            _ if labelled => (
+                self.reading.clone(),
+                self.labelled_icon.then_some(self.icon),
+            ),
+            Some((short, _)) => (short, None),
+            None => (SharedString::default(), Some(self.icon)),
+        };
+        let tooltip = match &self.menu {
+            choices if labelled => choices.clone(),
+            Some(choices) => Some(format!("{} · {choices}", self.reading).into()),
+            None => Some(self.reading.clone()),
+        };
+        #[cfg(test)]
+        DRAWN_CONTROLS.with(|drawn| {
+            drawn.borrow_mut().insert(
+                self.selector.clone(),
+                DrawnControl {
+                    form: match (labelled, icon) {
+                        (true, _) => "labelled",
+                        (false, None) => "short",
+                        (false, Some(_)) => "icon",
+                    },
+                    shows: shows.to_string(),
+                    icon,
+                    tooltip: tooltip.as_ref().map(ToString::to_string),
+                    name: self.name.to_string(),
+                },
+            )
+        });
+        let selector = self.selector;
+        crate::button(self.id, shows, icon.unwrap_or_default(), self.active)
+            .when(labelled && self.menu.is_some(), |button| {
+                button.dropdown_caret(true)
+            })
+            .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
+            .debug_selector(move || selector)
+            .accessibility_label(self.name)
+    }
 }
 
 /// A side's own header for [`header_ends`]: the header, what lies beneath
@@ -1453,6 +1607,224 @@ pub(crate) mod tests {
                 overflows,
                 "{lines} lines in the foot {area:?}: a scrollbar ({thumb:?}) only while they overflow"
             );
+        }
+    }
+
+    /// A comparison of captured documents as Compare draws it, `width` wide
+    /// and 600 px tall: a model's or a PDF page view's two sides.
+    #[cfg(target_os = "linux")]
+    pub(crate) struct Sides {
+        pub(crate) content: crate::worker::Content,
+        pub(crate) width: f32,
+        pub(crate) showing: Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for Sides {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let crate::worker::Content::Rich(comparison) = &self.content else {
+                panic!("a document comparison");
+            };
+            let opener = Opener::new(WeakEntity::new_invalid(), self.showing);
+            div().w(px(self.width)).h(px(600.)).flex().flex_col().child(
+                crate::rich_preview::render_comparison(
+                    comparison,
+                    false,
+                    opener,
+                    px(self.width),
+                    window,
+                    cx,
+                ),
+            )
+        }
+    }
+
+    /// A model comparison whose Before, a GLB, has animation clips and whose
+    /// After, an OBJ, has source to copy; and a PDF's whose sides have
+    /// `pages` pages each, showing page `shown` (counted from 0).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn document_sides(pages: usize, shown: usize) -> [crate::worker::Content; 2] {
+        use crate::rich_preview::{Comparison, Side};
+        let side = |bytes: &[u8], name: &str| {
+            Arc::new(Side::prepare(bytes.to_vec(), std::path::Path::new(name), || Ok(())).unwrap())
+        };
+        let glb =
+            include_bytes!("../../preview/tests/fixtures/models/glb/workflow/morph-animation.glb");
+        let model = Comparison {
+            old: side(glb, "shape.glb"),
+            new: side(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "shape.obj"),
+        };
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = Comparison {
+            old: side(pdf("first").as_bytes(), "document.pdf"),
+            new: side(pdf("second").as_bytes(), "document.pdf"),
+        };
+        [
+            crate::worker::Content::Rich(model),
+            crate::pdf_view::tests::paged_at(&document, pages, shown),
+        ]
+    }
+
+    /// `content` drawn `width` wide at each comparison width from 1,480 px
+    /// down to the narrowest whose sides' header lines still hold the
+    /// scaled 28 px icon, `step` px at a time, at 13 and 18 pt: `check` is
+    /// passed each frame's text size, width and the side header controls it
+    /// drew ([`DRAWN_CONTROLS`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn walk_side_widths(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+        step: usize,
+        mut check: impl FnMut(
+            &mut gpui_kit::VisualTestContext,
+            &Entity<Sides>,
+            (u8, f32),
+            &std::collections::BTreeMap<String, DrawnControl>,
+        ),
+    ) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (sides, cx) = cx.add_window_view(|_, _| Sides {
+            content,
+            width: 1480.,
+            showing: Showing::next(),
+        });
+        cx.simulate_resize(size(px(1500.), px(700.)));
+        for text in [13u8, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // The side whose line holds the icon exactly, and its partner.
+            let narrowest = cx.update(|window, _| {
+                let line = header_line_room(px(100.), window.rem_size() * 0.5);
+                (px(100.) - line + appearance::ui_size(28.)).ceil() * 2.
+            });
+            let mut width = 1480usize;
+            while width as f32 >= f32::from(narrowest) {
+                sides.update(cx, |sides, cx| {
+                    sides.width = width as f32;
+                    cx.notify();
+                });
+                DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
+                crate::tags::tests::draw(cx);
+                crate::pdf_view::tests::drain_pages();
+                crate::tags::tests::draw(cx);
+                let drawn = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+                check(cx, &sides, (text, width as f32), &drawn);
+                width -= step;
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Whether the control `selector` lies across its side's header whole
+    /// with its focus ring, cut by neither the side's edge nor, where the
+    /// header scrolls, its scrollbar's gutter.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lies_on_its_line(cx: &mut gpui_kit::VisualTestContext, selector: &str) -> bool {
+        let (_, index) = selector.rsplit_once('-').expect("an indexed control");
+        let index: usize = index.parse().expect("an indexed control");
+        // A model side's camera controls are numbered five to a side.
+        let side = if selector.starts_with("model-camera-") {
+            index / 5
+        } else {
+            index
+        };
+        let header = if selector.starts_with("pdf-") {
+            ["pdf-side-header-0", "pdf-side-header-1"][side.min(1)]
+        } else {
+            ["model-side-header-0", "model-side-header-1"][side.min(1)]
+        };
+        let header = cx.debug_bounds(header).expect("the side's header");
+        let ring = appearance::BUTTON_FOCUS_RING;
+        let control = cx
+            .debug_bounds(selector.to_owned().leak())
+            .expect("the control")
+            .dilate(ring.gap + ring.width);
+        control.left() >= header.left() - px(0.01) && control.right() <= header.right() + px(0.01)
+    }
+
+    /// Every control of a side's own header lies across the side whole with
+    /// its ring at every width down to the narrowest side whose line holds
+    /// an icon, at 13 and 18 pt, labelled where its widest reading fits and
+    /// otherwise its icon: the model's clip menu, once always labelled with
+    /// the clip's name, was cut at a narrow side's edge. The page number
+    /// gives way through three forms, "Page 108 / 111", "108/111" and its
+    /// page icon, the whole reading its tooltip where it shows less, each
+    /// named the same (that each is measured at its widest page is
+    /// `pdf_view::tests::a_page_number_is_measured_at_its_widest_page`).
+    /// Retry page names its side and page, and Edges the state it shows,
+    /// where it once read "Toggle all triangle edges" while it showed Solid.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_header_s_controls_lie_whole_on_their_line(cx: &mut gpui_kit::TestAppContext) {
+        let [model, document] = document_sides(111, 107);
+        let mut forms = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        for content in [model, document] {
+            walk_side_widths(cx, content, 2, |cx, _, (text, width), drawn| {
+                if width == 1480. && drawn.contains_key("model-camera-4") {
+                    // Edges shows Solid once the triangle edges are shown.
+                    let name = |cx: &mut gpui_kit::VisualTestContext| {
+                        let edges = cx.debug_bounds("model-camera-4").expect("Edges");
+                        cx.simulate_click(edges.center(), Modifiers::none());
+                        crate::tags::tests::draw(cx);
+                        DRAWN_CONTROLS.with(|drawn| drawn.borrow()["model-camera-4"].clone())
+                    };
+                    let shown = name(cx);
+                    assert_eq!(
+                        (shown.shows.as_str(), shown.name.as_str()),
+                        (
+                            "Solid",
+                            "Before: Triangle edges shown. Switch to solid shading"
+                        )
+                    );
+                    let solid = name(cx);
+                    assert_eq!(
+                        (solid.shows.as_str(), solid.name.as_str()),
+                        ("Edges", "Before: Solid shading. Show all triangle edges")
+                    );
+                }
+                for (selector, control) in drawn {
+                    let at = format!("{text} pt, {width} px: {selector} {control:?}");
+                    assert!(lies_on_its_line(cx, selector), "{at} lies on its line");
+                    reached.insert((text, selector.clone(), control.form));
+                }
+                if let Some(number) = drawn.get("pdf-page-number-1") {
+                    if forms.last() != Some(&(text, number.form)) {
+                        forms.push((text, number.form));
+                    }
+                    assert_eq!(number.name, "After: page 108 of 111. Enter page number");
+                    assert_eq!(
+                        number.tooltip.as_deref(),
+                        (number.form != "labelled").then_some("Page 108 / 111")
+                    );
+                }
+                if let Some(retry) = drawn.get("pdf-retry-0") {
+                    assert_eq!(retry.name, "Before: retry page 108");
+                }
+                if let Some(edges) = drawn.get("model-camera-4") {
+                    assert_eq!(edges.name, "Before: Solid shading. Show all triangle edges");
+                }
+            });
+        }
+        assert_eq!(
+            forms,
+            [13, 18]
+                .into_iter()
+                .flat_map(|text| ["labelled", "short", "icon"].map(|form| (text, form)))
+                .collect::<Vec<_>>(),
+            "the page number gives way through its three forms"
+        );
+        for text in [13, 18] {
+            for selector in ["model-clip-0", "pdf-page-number-0", "pdf-retry-1"] {
+                for form in ["labelled", "icon"] {
+                    assert!(
+                        reached.contains(&(text, selector.to_owned(), form)),
+                        "at {text} pt {selector} is drawn {form}"
+                    );
+                }
+            }
         }
     }
 

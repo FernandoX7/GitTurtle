@@ -171,12 +171,25 @@ fn choose_clip(document: &Arc<Document>, partner: Option<&Arc<Document>>, clip: 
     seek(&documents, 0.);
 }
 
+thread_local! {
+    /// Each side's clip names, laid out.
+    static BEFORE_CLIPS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_CLIPS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// Side `index`'s clip menu and the displayed pose's time, in the header
+/// `held` whose line leaves a control `line_room`: labelled with the chosen
+/// clip's name and a caret where its widest reading, "Default pose" or a
+/// clip's name, fits, and otherwise its clip icon, the name leading its
+/// tooltip ([`crate::system_preview::HeaderControl`]). It was once always
+/// labelled, so a long clip name was cut at a narrow side's edge.
 pub(super) fn clip_control<T: 'static>(
     index: usize,
     label: &'static str,
     document: &Arc<Document>,
     partner: Option<Arc<Document>>,
-    held: &crate::system_preview::SideHeader,
+    (held, line_room): (&crate::system_preview::SideHeader, Pixels),
+    window: &Window,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
     let clips = document.scene.animation_clips();
@@ -193,7 +206,28 @@ pub(super) fn clip_control<T: 'static>(
     let text = selected
         .and_then(|index| clips.get(index))
         .map_or_else(|| "Default pose".to_owned(), |clip| clip.name.clone());
-    let label_text = format!("{label}: Animation clip, {text}");
+    let readings: Vec<&str> = std::iter::once("Default pose")
+        .chain(clips.iter().map(|clip| clip.name.as_str()))
+        .collect();
+    let widest = super::menu_width(
+        &readings,
+        if index == 0 {
+            &BEFORE_CLIPS
+        } else {
+            &AFTER_CLIPS
+        },
+        window,
+    );
+    let menu = crate::system_preview::HeaderControl::new(
+        ("model-clip", index),
+        format!("model-clip-{index}"),
+        text.clone(),
+        format!("{label}: Animation clip, {text}"),
+        "clip",
+        widest,
+    )
+    .menu("Choose an animation clip or the default pose")
+    .button(line_room);
     let target = document.clone();
     let owner = cx.entity().downgrade();
     let selected_duration = selected
@@ -206,41 +240,34 @@ pub(super) fn clip_control<T: 'static>(
             .items_center()
             .gap_2()
             .child(
-                held.track(
-                    ("model-clip", index),
-                    button(("model-clip", index), text, "", false)
-                        .dropdown_caret(true)
-                        .accessibility_label(label_text),
-                    cx,
-                )
-                .app_menu(move |mut menu, _, _| {
-                    menu = menu.label(format!("{label} animation"));
-                    for (clip, name) in
-                        std::iter::once((None, "Default pose".to_owned())).chain(
-                            target.scene.animation_clips().iter().enumerate().map(
+                held.track(("model-clip", index), menu, cx)
+                    .app_menu(move |mut menu, _, _| {
+                        menu = menu.label(format!("{label} animation"));
+                        for (clip, name) in std::iter::once((None, "Default pose".to_owned()))
+                            .chain(target.scene.animation_clips().iter().enumerate().map(
                                 |(index, clip)| {
                                     (
                                         Some(index),
                                         format!("{} · {:.2} s", clip.name, clip.duration_seconds),
                                     )
                                 },
-                            ),
-                        )
-                    {
-                        let target = target.clone();
-                        let partner = partner.clone();
-                        let owner = owner.clone();
-                        menu =
-                            menu.item(PopupMenuItem::new(name).checked(selected == clip).on_click(
-                                move |_, window, cx| {
-                                    choose_clip(&target, partner.as_ref(), clip);
-                                    window.refresh();
-                                    let _ = owner.update(cx, |_, cx| cx.notify());
-                                },
-                            ));
-                    }
-                    menu
-                }),
+                            ))
+                        {
+                            let target = target.clone();
+                            let partner = partner.clone();
+                            let owner = owner.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(name).checked(selected == clip).on_click(
+                                    move |_, window, cx| {
+                                        choose_clip(&target, partner.as_ref(), clip);
+                                        window.refresh();
+                                        let _ = owner.update(cx, |_, cx| cx.notify());
+                                    },
+                                ),
+                            );
+                        }
+                        menu
+                    }),
             )
             .children(selected_duration.map(|duration| {
                 div()

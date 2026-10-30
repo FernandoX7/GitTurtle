@@ -633,17 +633,25 @@ thread_local! {
 }
 
 /// The views menu labelled at its widest reading, a standard view's name or
-/// "Custom view", whatever the view: the label's control, then the shared
-/// `button` helper's 6 px gap and the kit's 0.875 rem caret.
+/// "Custom view", whatever the view ([`menu_width`]).
 fn views_menu_width(window: &Window) -> Pixels {
     let names: Vec<&str> = ModelStandardView::ALL
         .iter()
         .map(|view| view.label())
         .chain(["Custom view"])
         .collect();
-    text_button_width(&names, &VIEW_NAMES, window)
-        + appearance::ui_size(6.)
-        + window.rem_size() * 0.875
+    menu_width(&names, &VIEW_NAMES, window)
+}
+
+/// A menu's trigger labelled at the widest of `readings`: the label's
+/// control, then the shared `button` helper's 6 px gap and the kit's
+/// 0.875 rem caret, laid out once per font and size in `cache`.
+pub(super) fn menu_width(
+    readings: &[&str],
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    text_button_width(readings, cache, window) + appearance::ui_size(6.) + window.rem_size() * 0.875
 }
 
 /// The room side `index`'s source row leaves its open control in a side
@@ -727,7 +735,8 @@ fn render_side<T: 'static>(
         "Copy source"
     };
     let copy_width = labelled_button_width(copy_label, &COPY_SOURCE, window);
-    let copy_labelled = copy_width <= line_room;
+    let copy_labelled = crate::system_preview::Form::fitting(copy_width, line_room)
+        == crate::system_preview::Form::Labelled;
     let room = source_room(
         index,
         side_width,
@@ -909,37 +918,44 @@ fn render_side<T: 'static>(
         let target = document.clone();
         let partner = partner.clone();
         let camera = index * 5 + id;
+        let name = format!(
+            "{label}: {}",
+            match id {
+                2 => "Zoom out",
+                3 => "Zoom in",
+                // Named for the state it shows, as the link is.
+                4 if wireframe => "Triangle edges shown. Switch to solid shading",
+                4 => "Solid shading. Show all triangle edges",
+                _ => text,
+            }
+        );
         // Reset and Edges, whose labels a line of the header may not hold,
         // draw their icons there, each label in its tooltip; Edges takes one
         // form whether it reads Edges or Solid.
-        let icon = match id {
-            1 => Some(("reset", text_button_width(&["Reset"], &RESET, window))),
-            4 => Some((
-                "edges",
-                text_button_width(&["Edges", "Solid"], &EDGES, window),
-            )),
-            _ => None,
-        }
-        .filter(|(_, labelled)| *labelled > line_room)
-        .map(|(icon, _)| icon);
-        let control = match icon {
-            Some(icon) => {
-                button(("model-camera", camera), "", icon, id == 4 && wireframe).tooltip(text)
+        let control = match id {
+            1 | 4 => {
+                let (icon, readings, cache) = if id == 1 {
+                    ("reset", &["Reset"][..], &RESET)
+                } else {
+                    ("edges", &["Edges", "Solid"][..], &EDGES)
+                };
+                crate::system_preview::HeaderControl::new(
+                    ("model-camera", camera),
+                    format!("model-camera-{camera}"),
+                    text,
+                    name,
+                    icon,
+                    text_button_width(readings, cache, window),
+                )
+                .active(id == 4 && wireframe)
+                .button(line_room)
             }
-            None => button(("model-camera", camera), text, "", id == 4 && wireframe),
+            _ => button(("model-camera", camera), text, "", false)
+                .debug_selector(move || format!("model-camera-{camera}"))
+                .accessibility_label(name),
         };
         let control = control
-            .debug_selector(move || format!("model-camera-{camera}"))
             .when(id == 4, |button| button.toggled(wireframe))
-            .accessibility_label(format!(
-                "{label}: {}",
-                match id {
-                    2 => "Zoom out",
-                    3 => "Zoom in",
-                    4 => "Toggle all triangle edges",
-                    _ => text,
-                }
-            ))
             .on_click(cx.listener(move |_, _, window, cx| {
                 target.change(partner.as_deref(), action);
                 window.refresh();
@@ -955,43 +971,39 @@ fn render_side<T: 'static>(
     // header, whatever the view; narrower, the "more" icon, its reading
     // leading its tooltip, and named for its reading either way.
     let reading = selected_view.map_or("Custom view", |view| view.label());
-    let choices = "Choose Isometric, Front, Back, Left, Right, Top or Bottom";
-    let views_menu = if views_menu_width(window) <= line_room {
-        button(("model-views", index), reading, "", false)
-            .dropdown_caret(true)
-            .tooltip(choices)
-    } else {
-        button(("model-views", index), "", "more", false).tooltip(format!("{reading} · {choices}"))
-    };
-    let choose = held
-        .track(
-            ("model-views", index),
-            views_menu
-                .debug_selector(move || format!("model-views-{index}"))
-                .accessibility_label(format!(
-                    "{label}: Standard views, {}",
-                    selected_view.map_or("Custom", |view| view.label())
-                )),
-            cx,
-        )
-        .app_menu(move |mut menu, _, _| {
-            menu = menu.label(format!("{label} standard view"));
-            for view in ModelStandardView::ALL {
-                let target = target.clone();
-                let partner = view_partner.clone();
-                let owner = view_owner.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(view.label())
-                        .checked(selected_view == Some(view))
-                        .on_click(move |_, window, cx| {
-                            target.change(partner.as_deref(), Action::View(view));
-                            window.refresh();
-                            let _ = owner.update(cx, |_, cx| cx.notify());
-                        }),
-                );
-            }
-            menu
-        });
+    let views_menu = crate::system_preview::HeaderControl::new(
+        ("model-views", index),
+        format!("model-views-{index}"),
+        reading,
+        format!(
+            "{label}: Standard views, {}",
+            selected_view.map_or("Custom", |view| view.label())
+        ),
+        "more",
+        views_menu_width(window),
+    )
+    .menu("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
+    .button(line_room);
+    let choose =
+        held.track(("model-views", index), views_menu, cx)
+            .app_menu(move |mut menu, _, _| {
+                menu = menu.label(format!("{label} standard view"));
+                for view in ModelStandardView::ALL {
+                    let target = target.clone();
+                    let partner = view_partner.clone();
+                    let owner = view_owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(view.label())
+                            .checked(selected_view == Some(view))
+                            .on_click(move |_, window, cx| {
+                                target.change(partner.as_deref(), Action::View(view));
+                                window.refresh();
+                                let _ = owner.update(cx, |_, cx| cx.notify());
+                            }),
+                    );
+                }
+                menu
+            });
     let mut views = div()
         .flex()
         .flex_wrap()
@@ -1004,27 +1016,29 @@ fn render_side<T: 'static>(
         // the wider fits a line of the header, otherwise the link icon, its
         // reading its tooltip.
         let reading = if linked { "Linked" } else { "Independent" };
-        let link = if text_button_width(&["Linked", "Independent"], &LINK, window) <= line_room {
-            button(("model-link", index), reading, "", linked)
-        } else {
-            button(("model-link", index), "", "link", linked).tooltip(reading)
-        };
-        let link = link
-            .debug_selector(move || format!("model-link-{index}"))
-            .toggled(linked)
-            .accessibility_label(format!(
+        let link = crate::system_preview::HeaderControl::new(
+            ("model-link", index),
+            format!("model-link-{index}"),
+            reading,
+            format!(
                 "{label}: {}",
                 if linked {
                     "Cameras linked. Switch to independent cameras"
                 } else {
                     "Cameras independent. Link cameras to this view"
                 }
-            ))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.set_linked(&partner, !linked);
-                window.refresh();
-                cx.notify();
-            }));
+            ),
+            "link",
+            text_button_width(&["Linked", "Independent"], &LINK, window),
+        )
+        .active(linked)
+        .button(line_room)
+        .toggled(linked)
+        .on_click(cx.listener(move |_, _, window, cx| {
+            target.set_linked(&partner, !linked);
+            window.refresh();
+            cx.notify();
+        }));
         views = views.child(held.track(("model-link", index), link, cx));
     }
     let summary = format!(
@@ -1049,7 +1063,8 @@ fn render_side<T: 'static>(
         label,
         &document,
         partner.clone(),
-        &held,
+        (&held, line_room),
+        window,
         cx,
     ));
     let first_frame = frame.is_none();
