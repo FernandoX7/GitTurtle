@@ -1414,4 +1414,74 @@ mod tests {
         assert!(!state.accept(request, wrong));
         assert!(state.page.is_none());
     }
+
+    /// File history opened as the window leaves for Settings lands its first
+    /// page while the repository page is hidden, which loads no revision;
+    /// returning through the repository's own tab loads the selected one, as
+    /// Back does (`return_from_page`). Through the tab, the list showed its
+    /// selected revision beside no preview of it until one was chosen again.
+    #[gpui::test]
+    async fn returning_through_the_active_tab_resumes_file_history(cx: &mut TestAppContext) {
+        use crate::views::tests::{history_script, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_file),
+            Some(0),
+            "the commit's file is highlighted"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_file_history(0, window, cx);
+                app.show_settings(window, cx);
+            })
+        });
+        // The page is read on the window's reader, a thread
+        // `run_until_parked` cannot wait for.
+        let landed = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.file_history
+                    .lineage
+                    .as_ref()
+                    .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
+            })
+        };
+        for _ in 0..8 {
+            if landed(cx) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        let revision = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.file_history
+                    .lineage
+                    .as_ref()
+                    .and_then(Lineage::entry)
+                    .map(|entry| entry.change.clone())
+            })
+        };
+        let selected = revision(cx).expect("the page landed with a revision selected");
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Settings
+                && app.content.is_none()),
+            "the page landed on Settings and loaded no revision"
+        );
+        let tab = app.read_with(cx, |app, _| {
+            app.repository_tabs.active.expect("the repository's tab")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.switch_repository_tab(tab, window, cx))
+        });
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Repository
+                && app.file_history.is_active()
+                && app.files.first() == Some(&selected)
+                && app.content.is_some()),
+            "back through its tab, File history loads its selected revision"
+        );
+    }
 }

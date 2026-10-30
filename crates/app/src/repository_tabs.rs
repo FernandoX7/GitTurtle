@@ -1159,12 +1159,16 @@ impl GitTurtle {
                 .as_ref()
                 .is_some_and(|repo| repo.path() == self.repository_tabs.tabs[index].path)
         {
-            self.page = AppPage::Repository;
-            // Quiet reads held while another page was shown start now, as
-            // Back starts them (`return_from_page`): a write's reload that
-            // waited for the window's return otherwise waited for the next
-            // local change, every menu that follows writes refused.
-            self.try_automatic_refresh(window, cx);
+            // Back from another page, it takes up the repository page as Back
+            // does (`return_from_page`): File history opened as the window
+            // left came back without its selected revision, and quiet reads
+            // held meanwhile, a write's reload among them, waited for the
+            // next local change, every menu that follows writes refused.
+            if std::mem::replace(&mut self.page, AppPage::Repository) != AppPage::Repository {
+                self.resume_repository_page(window, cx);
+            } else {
+                self.try_automatic_refresh(window, cx);
+            }
             self.repaint_page(window, cx);
             return;
         }
