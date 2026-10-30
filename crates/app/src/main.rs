@@ -425,12 +425,12 @@ struct GitTurtle {
     working_paths: working_selection::FilterState,
     integration_state: Option<gitturtle_core::OperationState>,
     integration_task: Option<Task<()>>,
-    /// The busy state of a review's preparation that a switch between
-    /// History and Changes cancelled while its read may still run on the
-    /// operation executor, and the wait for a marker queued behind that
-    /// read (`GitTurtle::end_preparations`): reads asked for meanwhile are
-    /// noted rather than queued behind it, and the marker's end reads them.
-    dropped_preparation: page_navigation::DroppedPreparation,
+    /// The busy state of a review's preparation that a page or tab switch
+    /// dropped while its read may still run on the operation executor, and
+    /// the wait for a marker queued behind that read
+    /// (`GitTurtle::end_preparations`): reads asked for meanwhile are noted
+    /// rather than queued behind it, and the marker's end reads them.
+    dropped_preparation: Option<page_navigation::DroppedPreparation>,
     profile: Option<gitturtle_core::GitProfile>,
     profiles: profiles::State,
     theme_editor: theme_editor::State,
@@ -806,7 +806,7 @@ impl GitTurtle {
             working_paths: working_selection::FilterState::default(),
             integration_state: None,
             integration_task: None,
-            dropped_preparation: Default::default(),
+            dropped_preparation: None,
             profile: None,
             profiles: profiles::State::default(),
             theme_editor: theme_editor::State::default(),

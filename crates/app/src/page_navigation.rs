@@ -12,18 +12,10 @@ pub(super) fn return_page(page: AppPage, origin: AppPage, repository: bool) -> A
 
 /// The window's wait for a review's preparation a switch dropped while its
 /// read may still run on the operation executor
-/// ([`GitTurtle::wait_for_dropped_preparation`]).
-#[derive(Default)]
+/// ([`GitTurtle::wait_for_dropped_preparation`]). The window holds at most
+/// one, and ending it drops its task, so its end runs only while the window
+/// still holds it.
 pub(super) struct DroppedPreparation {
-    /// Counts the waits begun and ended, so the end of one acts only while
-    /// the window still holds that wait.
-    generation: u64,
-    /// The running wait.
-    running: Option<RunningWait>,
-}
-
-/// A running [`DroppedPreparation`].
-struct RunningWait {
     /// The dropped preparation's label, which the busy state shows until
     /// the wait ends in the tab that asked for it; any other tab shows
     /// where the work runs instead ([`FINISHING_ELSEWHERE`]).
@@ -36,7 +28,7 @@ struct RunningWait {
     _wait: Task<()>,
 }
 
-impl RunningWait {
+impl DroppedPreparation {
     /// Whether the busy state `busy` is this wait's, under its own label or
     /// one it shows in another tab.
     fn holds(&self, busy: &str) -> bool {
@@ -208,19 +200,19 @@ impl GitTurtle {
     /// meanwhile ([`Self::read_deferred_working`]), as a dismissed
     /// preparation's end does.
     ///
-    /// The wait is keyed on its generation, not on the label: nothing
-    /// starts while it holds the busy state, and whatever ends that state
-    /// meanwhile ends the wait with it (Settings, Projects and `open` in
-    /// place of the repository that asked, [`Self::end_dropped_preparation`])
-    /// or takes it back for the wait ([`Self::hold_dropped_preparation`]).
-    /// So a wait already running holds
-    /// the very preparation dropped again, as each switch back and forth
-    /// drops it, and goes on rather than queue another marker, and its end
-    /// ends only its own busy state. Keyed on the label, a wait that a tab
-    /// switch had stripped of its busy state went on, so Discard…'s review
-    /// started again in the next tab, under the same label, queued behind
-    /// its marker, and the marker's end ended that review's busy state
-    /// while it still ran: a Commit was accepted meanwhile, and the
+    /// The window holds the wait itself, not its label: nothing starts
+    /// while it holds the busy state, and whatever ends that state
+    /// meanwhile ends the wait with it, dropping its task so its end never
+    /// runs (Settings, Projects and `open` in place of the repository that
+    /// asked, [`Self::end_dropped_preparation`]), or takes it back for the
+    /// wait ([`Self::hold_dropped_preparation`]). So a wait already running
+    /// holds the very preparation dropped again, as each switch back and
+    /// forth drops it, and goes on rather than queue another marker, and its
+    /// end ends only its own busy state. Keyed on the label, a wait that a
+    /// tab switch had stripped of its busy state went on, so Discard…'s
+    /// review started again in the next tab, under the same label, queued
+    /// behind its marker, and the marker's end ended that review's busy
+    /// state while it still ran: a Commit was accepted meanwhile, and the
     /// review's confirmation opened as it ran.
     fn wait_for_dropped_preparation(
         &mut self,
@@ -232,21 +224,16 @@ impl GitTurtle {
             return;
         }
         self.operation_busy = Some(label);
-        let generation = self.dropped_preparation.generation.wrapping_add(1);
-        self.dropped_preparation.generation = generation;
         let reached = self.operations.submit_read(|| Ok(()));
         let wait = cx.spawn_in(window, async move |this, cx| {
             let _ = reached.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.dropped_preparation.generation != generation {
-                    return;
-                }
                 this.end_dropped_preparation();
                 this.read_deferred_working(window, cx);
                 cx.notify();
             });
         });
-        self.dropped_preparation.running = Some(RunningWait {
+        self.dropped_preparation = Some(DroppedPreparation {
             label,
             repository: self.path.clone(),
             _wait: wait,
@@ -283,7 +270,7 @@ impl GitTurtle {
     /// ([`FINISHING_ELSEWHERE`]): another tab, or a closed one once that
     /// tab has closed.
     fn dropped_preparation_label(&self) -> Option<&'static str> {
-        let running = self.dropped_preparation.running.as_ref()?;
+        let running = self.dropped_preparation.as_ref()?;
         if running.repository == self.path {
             return Some(running.label);
         }
@@ -301,13 +288,12 @@ impl GitTurtle {
     /// whichever label it shows, as a cancel ends a preparation's:
     /// Settings, Projects, the last tab's close and opening again in place
     /// the repository whose tab asked for it
-    /// ([`Self::end_own_dropped_preparation`]) cancel what it waits for. A
-    /// later generation leaves the end of the wait it replaces nothing to
-    /// do.
+    /// ([`Self::end_own_dropped_preparation`]) cancel what it waits for. Its
+    /// task goes with it, so the wait's end never runs afterwards: a wait
+    /// starts only while none runs, and nothing else replaces it, so a
+    /// generation the end once compared with the window's never differed.
     fn end_dropped_preparation(&mut self) {
-        let waits = &mut self.dropped_preparation;
-        waits.generation = waits.generation.wrapping_add(1);
-        if let Some(running) = waits.running.take()
+        if let Some(running) = self.dropped_preparation.take()
             && self.operation_busy.is_some_and(|busy| running.holds(busy))
         {
             self.operation_busy = None;
@@ -331,7 +317,6 @@ impl GitTurtle {
     pub(super) fn end_own_dropped_preparation(&mut self) {
         let asked_here = self
             .dropped_preparation
-            .running
             .as_ref()
             .is_some_and(|running| running.repository == self.path);
         if asked_here {
