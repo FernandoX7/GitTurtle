@@ -184,16 +184,20 @@ change draws, and fails without the corner part. The crate's own
 `a_popup_asks_for_a_frame_only_for_content_it_holds_back` and
 `an_open_popup_follows_its_trigger_in_the_frame_that_moves_it`. The crate is
 an excluded workspace member whose dev-dependencies the workspace's lockfile
-does not resolve, so the crate's tests run in a copy of it as its own root:
-copied to `crates/gpui-base` in a directory outside any Cargo workspace,
-beside a `README.md` (an upstream text-view test includes the upstream
-repository's README from there), with the workspace's `Cargo.lock` copied in
-to seed its resolution, which adds the dev-dependencies (`indoc` is fetched
-once), `cargo test --lib popup::tests` runs there in a target directory of
-its own. Remove these parts when upstream asks for that frame only for
-content waiting on the trigger's bounds and places an open popup at its
-trigger's corner in the frame that lays the trigger out, and the tests pass
-without them.
+does not resolve, so
+`scripts/vendor-crate-test.sh vendor/gpui-base popup::tests positioner::`
+runs them, and the `positioner` tests, in a copy of the crate outside any
+Cargo workspace, made its own workspace root. The copy takes every other
+entry of the root manifest's `[patch.crates-io]`, so the AT-SPI adapter, the
+`#[gpui::test]` macro and the macOS backend come from `vendor/` as they do in
+the application; it builds with the checkout's pinned toolchain, and every
+run starts from the workspace's `Cargo.lock`. The script resolves beyond that
+lock only the dev-dependency `indoc`, which cargo fetches from the registry
+once, lists what it added, and runs `cargo test --locked --lib` in
+`.local/target-vendor`. Remove these parts when upstream asks for that frame
+only for content waiting on the trigger's bounds and places an open popup at
+its trigger's corner in the frame that lays the trigger out, and the tests
+pass without them.
 
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
