@@ -375,10 +375,16 @@ impl ReflogBrowser {
         let to = entry.unwrap_or_else(|| self.query.read(cx).focus_handle(cx));
         self.cancel_read.release_to(&to, window, cx);
     }
+    /// Whether the selected entry's commit is yet to land: its read's loading
+    /// row, and any error that read ends with, stand in the details below the
+    /// list, where the commit lands.
+    fn awaiting_entry(&self) -> bool {
+        self.selected.is_some() && self.commit.is_none()
+    }
     /// Whether the read in progress is the selected entry's, whose commit
     /// lands in the details below the list.
     fn reading_entry(&self) -> bool {
-        self.pending && self.selected.is_some() && self.commit.is_none()
+        self.pending && self.awaiting_entry()
     }
     /// Up, Down, Home and End on the entry list select the entry they reach
     /// and move focus, the list's one Tab stop, onto it, as History's list
@@ -642,6 +648,19 @@ impl Render for ReflogBrowser {
         } else {
             (loading, None)
         };
+        // So does the error such a read ends with, as for a commit pruned
+        // since Git logged it: it stood above the list, which moved down by
+        // its height with each entry whose read failed.
+        let error = self.error.as_ref().map(|error| {
+            label("reflog-error", error.clone())
+                .text_size(crate::appearance::ui_text(12.))
+                .text_color(rgb(p.warning))
+        });
+        let (error_above, error_below) = if self.awaiting_entry() {
+            (None, error)
+        } else {
+            (error, None)
+        };
         let show_entry = self.entries.items(entries.clone(), room);
         let show_list = self.content.group(entries.clone(), room);
         // Past its height the entry list cues the rest with its scrollbar.
@@ -656,7 +675,7 @@ impl Render for ReflogBrowser {
             // margin, so revealing it shows its ring whole.
             .child(shown(filter).py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
             .children(loading_above)
-            .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(error_above)
             .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
                 entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
@@ -667,6 +686,7 @@ impl Render for ReflogBrowser {
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
                     .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
                     .children(loading_below)
+                    .children(error_below)
             })
             .when_some(self.commit.as_ref(), |element, commit| element
                 .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))
@@ -988,6 +1008,48 @@ mod tests {
         assert_eq!(in_content(cx), copy, "Tab from the last entry");
     }
 
+    /// An entry whose commit has been pruned since Git logged it shows its
+    /// read's error in the details below the list, where the read's loading
+    /// row stood, and the list stays where it was, focus on the entry; the
+    /// error stood above the list, which moved down by its height with each
+    /// entry whose read failed. The next entry's read takes it away.
+    #[gpui::test]
+    async fn a_pruned_commits_error_stands_below_the_entry_list(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = pruned_repository(fixture.path());
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let list = rendered(cx, "reflog-list");
+
+        cx.simulate_keystrokes("down");
+        settle_reads(cx, &browser);
+        let error = browser
+            .read_with(cx, |this, _| this.error.clone())
+            .expect("the pruned commit's read fails");
+        assert!(error.contains("unavailable locally"), "{error}");
+        assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
+        let shown = rendered(cx, "reflog-error");
+        let details = rendered(cx, "reflog-selected-object");
+        assert!(
+            shown.top() >= details.bottom() && details.top() >= list.bottom(),
+            "the error {shown:?} stands below the entry's details {details:?}, \
+             below the list {list:?}"
+        );
+        assert_eq!(
+            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
+            entry(1),
+            "focus stays on the entry"
+        );
+
+        cx.simulate_keystrokes("down");
+        settle_reads(cx, &browser);
+        assert!(cx.debug_bounds("reflog-error").is_none(), "the next read");
+        assert!(browser.read_with(cx, |this, _| this.commit.is_some()));
+        assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
+    }
+
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
     /// Reflog draws its ring whole and in view while the pointer moves, with
     /// the log alone and with an entry selected, whose form lies below the
@@ -1098,8 +1160,9 @@ mod tests {
         assert_eq!(hovered_tooltips(cx, "reflog-entry-0"), 1, "a cut entry");
     }
 
-    /// Runs Git in `path` with no configuration beyond the fixture identity.
-    fn git(path: &std::path::Path, args: &[&str]) {
+    /// Runs Git in `path` with no configuration beyond the fixture identity,
+    /// returning its output without the trailing newline.
+    fn git(path: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args([
                 "-c",
@@ -1122,6 +1185,38 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8(output.stdout).unwrap().trim_end().into()
+    }
+
+    /// [`changed_repository`] with HEAD moved on to one more commit and back,
+    /// that commit's object then removed as pruning removes it: HEAD@{1}
+    /// names a commit no longer available locally.
+    fn pruned_repository(directory: &std::path::Path) -> GitRepository {
+        let repo = changed_repository(directory, 1);
+        git(
+            repo.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "Pruned"],
+        );
+        let oid = git(repo.path(), &["rev-parse", "HEAD"]);
+        git(repo.path(), &["reset", "--quiet", "--hard", "HEAD~1"]);
+        let objects = repo.path().join(".git/objects");
+        std::fs::remove_file(objects.join(&oid[..2]).join(&oid[2..])).unwrap();
+        repo
+    }
+
+    /// Lets every read the browser started land, and any read a landing
+    /// reply starts: its reader answers on its own thread, which
+    /// `run_until_parked` cannot wait for.
+    fn settle_reads(cx: &mut VisualTestContext, browser: &Entity<ReflogBrowser>) {
+        for _ in 0..4 {
+            browser.read_with(cx, |this, _| this.reader.drain());
+            cx.executor().run_until_parked();
+            if !browser.read_with(cx, |this, _| this.pending) {
+                draw(cx);
+                return;
+            }
+        }
+        panic!("the Reflog's reads land");
     }
 
     /// Twelve HEAD reflog entries, as on the native fixture, so the entry list
