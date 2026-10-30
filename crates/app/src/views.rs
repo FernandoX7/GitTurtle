@@ -20478,13 +20478,10 @@ pub(crate) mod tests {
                 .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
             draw(cx);
         };
-        // Each action's bounds on the toolbar, from the toolbar's origin.
+        // Each action's bounds in the window: the busy look moves nothing
+        // above the toolbar either.
         let placed = |cx: &mut VisualTestContext| {
-            let bar = cx.debug_bounds("git-actions").expect("the toolbar").origin;
-            ACTIONS.map(|action| {
-                let bounds = cx.debug_bounds(action).expect(action);
-                Bounds::new(bounds.origin - bar, bounds.size)
-            })
+            ACTIONS.map(|action| cx.debug_bounds(action).expect(action))
         };
         let mut failures = Vec::new();
         let (mut edged, mut plain) = (0, 0);
