@@ -1764,3 +1764,176 @@ async fn dialogs_keep_inside_a_narrow_window_at_13_pt(cx: &mut TestAppContext) {
 async fn dialogs_keep_inside_a_narrow_window_at_18_pt(cx: &mut TestAppContext) {
     narrow_dialogs(18, cx).await;
 }
+
+/// The rows of `list`, a scrolling list the check below reads by its
+/// clipping container's element ID, by debug selector.
+fn list_rows(list: &str) -> Vec<String> {
+    let indexed = |prefix: &str, count: usize| -> Vec<String> {
+        (0..count).map(|index| format!("{prefix}{index}")).collect()
+    };
+    match list {
+        "history-pane" => indexed("history-row-", 64),
+        "files-pane" => {
+            let mut rows = indexed("changed-file-", 64);
+            rows.push("selected-changed-file".into());
+            rows
+        }
+        "project-pane-tree" => indexed("project-pane-row-", 64),
+        "repository-navigation" => indexed("nav-row-", 64),
+        "working-pane" => indexed("working-row-", 64),
+        // By pull request number.
+        "github-pr-list" => indexed("github-pr-", 1000),
+        "reflog-browser-content" => indexed("reflog-entry-", 64),
+        "quick-open-results" => indexed("quick-file-", 64),
+        "shortcut-help-results" => indexed("shortcut-help-row-", 200),
+        "stash-list-focus" => indexed("saved-stash-row-", 16),
+        _ => unreachable!("{list} is no list the check reads"),
+    }
+}
+
+/// Rows the check below finds past their list unwrapped, by text size and
+/// the start of the finding, each an open item rather than a pass; none at
+/// present. Where such a list lay within a pixel past the right of what is
+/// drawn, scrolled, a row crossing its top or bottom would meet the pixel
+/// beyond its right corner ([`native_accessibility::rows_past_their_list`]).
+/// An entry no finding matches fails the check, so it goes when the layout
+/// is fixed: Working Changes at 18 pt in a 461 × 490 half tile with the
+/// project pane open was one, its content pushed past the window's right
+/// edge, until the page beside the pane took one width.
+const KNOWN_PAST: &[(u8, &str)] = &[];
+
+/// Draws the window again from no recorded nodes and reads `lists` in that
+/// frame into `report`, counting each one's rows laid out in `rows`.
+fn rows_within(
+    cx: &mut VisualTestContext,
+    at: &str,
+    lists: &[&'static str],
+    rows: &mut std::collections::BTreeMap<&'static str, usize>,
+    report: &mut String,
+) {
+    native_accessibility::forget_clipping_nodes();
+    frame(cx);
+    for list in lists {
+        let (laid_out, past) =
+            native_accessibility::rows_past_their_list(cx, list, list_rows(list));
+        *rows.entry(*list).or_default() += laid_out;
+        for finding in past {
+            report.push_str(&format!("\n  {at}: {finding}"));
+        }
+    }
+}
+
+/// Every row of the app's scrolling lists lies within its list's width, or
+/// is wrapped itself and reports its own bounds
+/// (`native_accessibility::rows_past_their_list`): History's commits
+/// and changed files, the project pane, the navigator, Working Changes, the
+/// GitHub panel's pull requests, and the Reflog's, Quick Open's, Keyboard
+/// Shortcuts' and Stashes' lists, in a 461 × 490 half tile at `text` pt,
+/// and the pages at 1480 × 490 too, where the navigator replaces the rail.
+/// A list the window draws none of reports a pixel beyond a corner, which a
+/// row running on past its side unwrapped could meet, so that AccessKit's
+/// filter kept that row and its neighbours though nothing of them is drawn.
+async fn rows_keep_within_their_lists(text: u8, cx: &mut TestAppContext) {
+    let mut rows = std::collections::BTreeMap::new();
+    let mut report = String::new();
+    let mut known = vec![false; KNOWN_PAST.len()];
+    for page in [Page::History, Page::Working, Page::GitHub] {
+        let (_fixture, app, cx, _) = open(page, cx).await;
+        cx.update(|_, cx| {
+            theme_editor::init(cx);
+            native_accessibility::bind_keys(cx);
+            shortcuts::bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        let mut lists = vec!["project-pane-tree", "repository-navigation"];
+        lists.push(match page {
+            Page::Working => "working-pane",
+            Page::GitHub => "github-pr-list",
+            _ => "history-pane",
+        });
+        if page == Page::History {
+            lists.push("files-pane");
+        }
+        for (width, height) in [(461., 490.), (1480., 490.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            frame(cx);
+            let at = format!("{page:?} in {width} × {height}");
+            rows_within(cx, &at, &lists, &mut rows, &mut report);
+        }
+        if page == Page::History {
+            // A stash, for the Stashes list to hold.
+            let root = app.read_with(cx, |app, _| {
+                app.repository.as_ref().unwrap().path().to_owned()
+            });
+            std::fs::write(root.join("README.md"), "stashed\n").unwrap();
+            fixture_git(&root, &["stash", "push", "--quiet"]);
+            cx.simulate_resize(size(px(461.), px(490.)));
+            for (dialog, list) in [
+                (Dialog::Reflog, "reflog-browser-content"),
+                (Dialog::QuickOpen, "quick-open-results"),
+                (Dialog::KeyboardShortcuts, "shortcut-help-results"),
+                (Dialog::Stashes, "stash-list-focus"),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                frame(cx);
+                dialog.open(&app, cx).await;
+                if matches!(dialog, Dialog::QuickOpen) {
+                    crate::revision_inspection::settle_quick_open(cx).await;
+                }
+                frame(cx);
+                let at = format!("{dialog:?} in 461 × 490");
+                rows_within(cx, &at, &[list], &mut rows, &mut report);
+                cx.update(|window, cx| window.close_all_dialogs(cx));
+                frame(cx);
+                settle(&app, cx).await;
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+    for (list, laid_out) in &rows {
+        if *laid_out == 0 {
+            report.push_str(&format!("\n  {list} laid out no rows at any size"));
+        }
+    }
+    let mut unknown = String::new();
+    for line in report.lines().filter(|line| !line.is_empty()) {
+        let entry = KNOWN_PAST
+            .iter()
+            .position(|(size, prefix)| *size == text && line.trim_start().starts_with(prefix));
+        match entry {
+            Some(entry) => known[entry] = true,
+            None => unknown.push_str(&format!("\n{line}")),
+        }
+    }
+    for (entry, (size, prefix)) in KNOWN_PAST.iter().enumerate() {
+        if *size == text && !known[entry] {
+            unknown.push_str(&format!(
+                "\n  the known {prefix}… no longer runs past its list"
+            ));
+        }
+    }
+    let report = unknown;
+    assert!(
+        report.is_empty(),
+        "at {text} pt:{report}\nrows read: {rows:?}"
+    );
+}
+
+#[gpui::test]
+async fn every_list_keeps_its_rows_within_its_width_or_wraps_them_at_13_pt(
+    cx: &mut TestAppContext,
+) {
+    rows_keep_within_their_lists(13, cx).await;
+}
+
+#[gpui::test]
+async fn every_list_keeps_its_rows_within_its_width_or_wraps_them_at_18_pt(
+    cx: &mut TestAppContext,
+) {
+    rows_keep_within_their_lists(18, cx).await;
+}

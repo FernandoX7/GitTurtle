@@ -1527,9 +1527,24 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 /// be reached and activated undrawn. A container without a role
 /// of its own becomes a scroll view; one with a role, such as a list box,
 /// keeps it. Children keep their own bounds, as AccessKit and the platforms
-/// report a partly visible control whole; a row wider than its list, such as
-/// History's commit rows, is wrapped itself, so it reports the part the list
-/// draws. The wrapper styles, holds and handles input as the element it
+/// report a partly visible control whole, so each node the container holds
+/// directly, which the filter measures against it, must keep within its
+/// extent across the axis it scrolls along, within its width for a list, or
+/// be wrapped itself: a row wider than its list is wrapped, and reports the
+/// part the list draws or, drawn nowhere, a pixel beyond its own corner.
+/// History's commit rows are wrapped too, though they keep within their
+/// list, as wide as the commit table: that table runs on sideways past its
+/// viewport, so each row reports the part the window draws, as the list
+/// does. A list the window draws none of reports a pixel beyond a corner
+/// that lies outside every row within its width ([`aside`]); an unwrapped
+/// row running on past the list's right, scrolled across its top or bottom,
+/// would meet the pixel beyond that right corner, which a list just past
+/// the right of what is drawn reports, and the filter would keep that row
+/// and its neighbours, showing on AT-SPI, though nothing of them is drawn.
+/// The width walk's
+/// `every_list_keeps_its_rows_within_its_width_or_wraps_them` tests check
+/// the rows of the app's scrolling lists for it. The wrapper styles, holds
+/// and handles input as the element it
 /// wraps. Focus and the Tab order do not change: the wrapper adds no
 /// dispatch node, focus handle or listener.
 pub(crate) fn clips_children<E: IntoElement>(element: E) -> ClipsChildren<E::Element> {
@@ -1613,7 +1628,7 @@ impl<E: Element> Element for ClipsChildren<E> {
         let visible = drawn_part(bounds, window, Undrawn::Edge(Clipping::innermost()));
         self.visible = Some(visible);
         #[cfg(test)]
-        let written = written::open(self, Some(visible));
+        let written = written::open(self, Some(visible), physical(bounds, window.scale_factor()));
         // GPUI writes a node only for an element with an ID.
         let _clipping = self.inner.id().map(|_| Clipping::open(visible));
         let state = self
@@ -1728,7 +1743,7 @@ impl<E: Element> Element for BeneathModal<E> {
         cx: &mut App,
     ) -> Self::PrepaintState {
         #[cfg(test)]
-        let written = written::open(self, None);
+        let written = written::open(self, None, physical(bounds, window.scale_factor()));
         let state = self
             .inner
             .prepaint(id, inspector, bounds, layout, window, cx);
@@ -1842,7 +1857,11 @@ impl<E: Element> Element for Recorded<E> {
     ) -> Self::PrepaintState {
         // With its layout bounds, as GPUI writes it.
         #[cfg(test)]
-        let written = written::open(self, Some(physical(bounds, window.scale_factor())));
+        let written = written::open(
+            self,
+            Some(physical(bounds, window.scale_factor())),
+            physical(bounds, window.scale_factor()),
+        );
         let state = self
             .inner
             .prepaint(id, inspector, bounds, layout, window, cx);
@@ -1970,7 +1989,7 @@ impl<E: Element> Element for StaticText<E> {
         let visible = drawn_part(bounds, window, Undrawn::Layout);
         self.visible = Some(visible);
         #[cfg(test)]
-        let written = written::open(self, Some(visible));
+        let written = written::open(self, Some(visible), physical(bounds, window.scale_factor()));
         let state = self
             .inner
             .prepaint(id, inspector, bounds, layout, window, cx);
@@ -2212,12 +2231,22 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
 /// its extent along both axes, the first of its top left, bottom left, top
 /// right and bottom right corners whose pixel lies clear of `mask` and of
 /// `clip`, the bounds its nearest clipping ancestor reported, or the top left
-/// where none does. A container scrolls what it holds past its edges along
-/// one axis and keeps it within its extent along the other, so that pixel
-/// lies outside every child whichever axis it scrolls along, and AccessKit's
-/// filter keeps none of them. The left corners come first: content runs on
-/// past a container's right, as History's commit rows run on past their
-/// list, and lies past its left only where it scrolls sideways, within its
+/// where none does.
+///
+/// Being outside the container along both axes, the pixel lies outside each
+/// child that keeps within the container's extent along one of them, and
+/// AccessKit's filter, measuring each child the container holds against it,
+/// keeps none of those. That is all it guarantees. A container scrolls what
+/// it holds past its edges along one axis and keeps it within its extent
+/// along the other only where every child fits across it: a child that runs
+/// on past the container's right and is scrolled across its top or bottom
+/// meets the pixel beyond that right corner, which a container within a
+/// pixel past the mask's right takes, and the filter keeps that child and
+/// its neighbours. So a row wider than its list is wrapped itself
+/// ([`clips_children`]) and reports its own bounds. The left corners come
+/// first because content runs on past a container's right, as History's
+/// commit list runs on past the viewport that scrolls it sideways, and lies
+/// past its left only where the container scrolls sideways, within its
 /// height.
 ///
 /// The top left corner meets `mask` where the container lies within a pixel
@@ -2351,6 +2380,10 @@ pub(crate) mod written {
         /// When it was written, counting every node a wrapper writes:
         /// GPUI writes a frame's nodes in the order the tree holds them.
         pub order: u64,
+        /// The element's layout bounds as it prepainted, in the physical
+        /// window pixels of AccessKit's bounds, whatever bounds the node
+        /// reports; `None` for a node recorded as it is built ([`built`]).
+        pub layout: Option<gpui::accesskit::Rect>,
     }
 
     /// What a [`LiveRegion`] asked its node to announce: how, whether as a
@@ -2403,12 +2436,13 @@ pub(crate) mod written {
         NODE_PATHS.with(|paths| paths.borrow().get(key).cloned())
     }
 
-    /// Records the node `element` writes, at `bounds` if given, as the
-    /// element starts to prepaint what it holds. GPUI writes a node only
-    /// for an element with an ID; so does this.
+    /// Records the node `element` writes, at `bounds` if given, laid out at
+    /// `layout`, as the element starts to prepaint what it holds. GPUI
+    /// writes a node only for an element with an ID; so does this.
     pub(super) fn open<E: Element>(
         element: &E,
         bounds: Option<gpui::accesskit::Rect>,
+        layout: gpui::accesskit::Rect,
     ) -> Option<String> {
         let id = element.id()?.to_string();
         let role = element.a11y_role()?;
@@ -2429,6 +2463,7 @@ pub(crate) mod written {
                     node,
                     parent,
                     order,
+                    layout: Some(layout),
                 },
             )
         });
@@ -2456,6 +2491,7 @@ pub(crate) mod written {
                     node,
                     parent: None,
                     order,
+                    layout: None,
                 },
             )
         });
@@ -2710,6 +2746,55 @@ pub(crate) fn beyond_a_corner(
         && at(bounds.y1 - bounds.y0, pixel)
         && (at(bounds.x1, layout.x0) || at(bounds.x0, layout.x1))
         && (at(bounds.y1, layout.y0) || at(bounds.y0, layout.y1))
+}
+
+/// The rows among `rows`, by debug selector, that the last frame laid out
+/// past a side of `list`, a [`clips_children`] container by element ID,
+/// without a wrapper of their own, and how many of `rows` it laid out at
+/// all. A list the window draws none of reports a pixel beyond a corner,
+/// which lies outside each row within the list's width ([`aside`]); one
+/// running on past a side, scrolled across the top or bottom, meets the
+/// pixel beyond that corner, so AccessKit's filter would keep it and its
+/// neighbours, though nothing of them is drawn. A row is wrapped where a
+/// clipping wrapper inside `list` was laid out at its bounds.
+#[cfg(test)]
+pub(crate) fn rows_past_their_list(
+    cx: &mut gpui::VisualTestContext,
+    list: &str,
+    rows: impl IntoIterator<Item = String>,
+) -> (usize, Vec<String>) {
+    let Some(layout) = written::get(list).and_then(|written| written.layout) else {
+        return (0, Vec::new());
+    };
+    let wrapped: Vec<gpui::accesskit::Rect> = written::inside(list)
+        .iter()
+        .filter_map(|id| written::get(id))
+        .filter(|written| written.node.clips_children())
+        .filter_map(|written| written.layout)
+        .collect();
+    let scale = cx.update(|window, _| window.scale_factor());
+    let at = |a: f64, b: f64| (a - b).abs() < 0.01;
+    let (mut laid_out, mut past) = (0, Vec::new());
+    for selector in rows {
+        let Some(bounds) = cx.debug_bounds(selector.clone().leak()) else {
+            continue;
+        };
+        laid_out += 1;
+        let row = physical(bounds, scale);
+        let within = row.x0 >= layout.x0 - 0.01 && row.x1 <= layout.x1 + 0.01;
+        let is_wrapped = wrapped.iter().any(|wrapper| {
+            at(wrapper.x0, row.x0)
+                && at(wrapper.y0, row.y0)
+                && at(wrapper.x1, row.x1)
+                && at(wrapper.y1, row.y1)
+        });
+        if !within && !is_wrapped {
+            past.push(format!(
+                "{selector} at {row:?} runs past a side of {list} at {layout:?}, unwrapped"
+            ));
+        }
+    }
+    (laid_out, past)
 }
 
 /// A node an assistive technology reaches, as every AccessKit adapter

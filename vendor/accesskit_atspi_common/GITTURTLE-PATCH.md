@@ -56,7 +56,8 @@ ancestor keep `Showing`. GitTurtle's clipping nodes report the part of
 themselves the window draws (`native_accessibility::clips_children`), and
 one the window draws none of reports a pixel beyond one of its corners,
 outside its extent along both axes and, wherever a corner allows, outside
-what is drawn, so its children lie outside it. Where no
+what is drawn, so each child it keeps within its extent along one axis
+lies outside it; a row wider than its list is wrapped itself. Where no
 corner allows, it reports its top left one anyway, which then lies in what
 is drawn or in its clipping ancestor's bounds, as for a container
 collapsed to no height inside what is drawn; this adapter can then read it
