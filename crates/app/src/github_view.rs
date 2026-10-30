@@ -346,6 +346,25 @@ pub(crate) enum RequestKind {
     /// repository.
     Templates,
 }
+/// `$lead`, then what a Connect stopped part-way may have left, from whether the platform's
+/// store holds GitTurtle's authorization ([`SecureStore::HOLDS`]): on a Mac it may already be
+/// stored, which Disconnect removes; elsewhere nothing is stored. Linux once said it may
+/// already be stored, where nothing can be.
+macro_rules! after_stopped_connect {
+    ($lead:literal) => {
+        if SecureStore::HOLDS {
+            concat!(
+                $lead,
+                " Authorization may already be stored; Disconnect removes it."
+            )
+        } else {
+            concat!(
+                $lead,
+                " GitTurtle stores no authorization on this platform."
+            )
+        }
+    };
+}
 impl RequestKind {
     pub(crate) const ALL: [Self; 6] = [
         Self::Load,
@@ -396,7 +415,7 @@ impl RequestKind {
             ),
             Self::Connect => (
                 "Cancel connecting your GitHub account",
-                "Stop connecting. Authorization may already be stored; Disconnect removes it.",
+                after_stopped_connect!("Stop connecting."),
             ),
             Self::Disconnect => (
                 "Cancel disconnecting GitTurtle from GitHub",
@@ -425,9 +444,7 @@ impl RequestKind {
             Self::Send => {
                 "Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."
             }
-            Self::Connect => {
-                "Cancellation requested. Authorization may already be stored; Disconnect removes it."
-            }
+            Self::Connect => after_stopped_connect!("Cancellation requested."),
             Self::Disconnect => {
                 "Cancellation requested. GitTurtle keeps its stored authorization unless its removal has already begun."
             }
@@ -2877,6 +2894,26 @@ mod tests {
             click(cx, "github-cancel");
             let notice = panel.read_with(cx, |panel, _| panel.notice.clone());
             assert_eq!(notice.as_deref(), Some(kind.requested()), "{kind:?}");
+            if kind == RequestKind::Connect {
+                // What a stopped Connect may have left, in this notice and the operation
+                // bar's tooltip: only a Mac's store can hold the authorization.
+                for line in [notice.as_deref().unwrap_or_default(), kind.cancel().1] {
+                    if cfg!(target_os = "macos") {
+                        assert!(
+                            line.ends_with(
+                                "Authorization may already be stored; Disconnect removes it."
+                            ),
+                            "{line}"
+                        );
+                    } else {
+                        assert!(
+                            line.ends_with("GitTurtle stores no authorization on this platform.")
+                                && !line.contains("may already be stored"),
+                            "nothing can be stored here: {line}"
+                        );
+                    }
+                }
+            }
             if matches!(
                 kind,
                 RequestKind::Connect | RequestKind::Disconnect | RequestKind::Compare

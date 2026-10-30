@@ -116,6 +116,11 @@ impl SecureStore {
     pub(crate) const NAME: &str = "macOS Keychain";
     #[cfg(not(target_os = "macos"))]
     pub(crate) const NAME: &str = "secure storage";
+    /// Whether the store holds GitTurtle's authorization on this platform: Connect saves it
+    /// there on a Mac, and elsewhere refuses to save, so nothing is ever stored. The panel
+    /// words what a stopped Connect may have left from this one place
+    /// (`github_view::after_stopped_connect`).
+    pub(crate) const HOLDS: bool = cfg!(target_os = "macos");
 }
 #[cfg(all(target_os = "macos", not(test)))]
 impl CredentialStore for SecureStore {
