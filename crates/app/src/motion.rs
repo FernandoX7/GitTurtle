@@ -2504,6 +2504,23 @@ mod tests {
         next_frame(cx);
     }
 
+    /// Whether the open menu offers `item` by its command alone, with
+    /// nothing to say why where it is disabled: drawn available, drawn
+    /// disabled, or not drawn so.
+    fn offered_plainly(cx: &mut VisualTestContext, item: &str) -> Option<bool> {
+        let drawn = |cx: &mut VisualTestContext, role: &str| {
+            cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
+                .is_some()
+        };
+        if drawn(cx, "MenuItem") {
+            Some(true)
+        } else if drawn(cx, "MenuItem disabled") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// Whether the open menu offers `item`: drawn available, drawn
     /// disabled, by its command alone or stating the write it waits for
     /// (`native_accessibility::waiting_item`), or not drawn.
@@ -3545,16 +3562,17 @@ mod tests {
 
         /// Every menu that refuses items while a write runs says why by its
         /// cause, through one helper (`native_accessibility::waiting_item`):
-        /// during a Fetch, a History commit's menu, opened before it
-        /// started and built again as it did, and a navigator branch's and
-        /// worktree's and the Changes Actions menu, opened while it runs,
-        /// read each item the Fetch refuses as "<item>, available when
-        /// fetching remote finishes", with "Fetching remote…" at the row's
-        /// end. An item refused for a reason of its own, as Save changes to
-        /// stash… with nothing to stash, says nothing of the Fetch. Only a
-        /// Working row's menu said why; the others refused their items with
-        /// nothing to say why. (A project row's menu is covered in
-        /// `project_pane::tests`.)
+        /// during a Fetch, a History commit's menu and a Working row's,
+        /// opened before it started and built again as it did, its rows
+        /// standing, and a navigator branch's and worktree's and the
+        /// Changes Actions menu, opened while it runs, read each item the
+        /// Fetch refuses as "<item>, available when fetching remote
+        /// finishes", with "Fetching remote…" at the row's end. An item
+        /// refused for a reason of its own, as Save changes to stash… with
+        /// nothing to stash, says nothing of the Fetch. Only a Working row's
+        /// menu said why, and only while its rows were prepared; the others
+        /// refused their items with nothing to say why. (A project row's
+        /// menu is covered in `project_pane::tests`.)
         #[gpui::test]
         async fn menus_name_the_fetch_their_items_wait_for(cx: &mut TestAppContext) {
             let (fixture, app, cx) = clean_history_for_menus(cx).await;
@@ -3614,6 +3632,37 @@ mod tests {
                 cx.debug_bounds("menu-item: Save changes to stash… · MenuItem disabled")
                     .is_some(),
                 "Save changes to stash…, with nothing to stash, says nothing of the Fetch"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            release(&app, held, cx).await;
+            app.update(cx, |app, _| app.operation_error = None);
+            quiet_reads_land(&app, cx);
+            crate::views::tests::settle(&app, cx).await;
+
+            // A Working row's menu, its rows standing.
+            let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+            std::fs::write(repository.join("extra.txt"), "extra\n").unwrap();
+            refreshed(&app, cx).await;
+            rows_arrived(&app, cx).await;
+            draw(cx);
+            let row: &'static str = format!(
+                "working-row-{}",
+                position_of(&app, cx, "extra.txt", ChangeArea::Unstaged)
+            )
+            .leak();
+            right_click(cx, row);
+            assert_eq!(offered(cx, "Delete untracked file…"), Some(true), "at rest");
+            let held = held_fetch(&app, cx);
+            next_frame(cx);
+            assert!(
+                !app.read_with(cx, |app, _| app.working_paths.pending),
+                "the rows stand"
+            );
+            wait_for_the_fetch(
+                cx,
+                &["Ignore…", "Delete untracked file…"],
+                "a Working row's menu",
             );
             cx.simulate_keystrokes("escape");
             next_frame(cx);
@@ -6495,7 +6544,13 @@ mod tests {
         );
         // The filter's rows wait behind this; gamma matches its query.
         let waiting = |cx: &mut VisualTestContext, reason: &str| {
-            offered(cx, &format!("Discard changes…, {reason}"))
+            offered(
+                cx,
+                &format!(
+                    "Discard changes…, available when {} finishes",
+                    reason.trim_end_matches('…')
+                ),
+            )
         };
         let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
         cx.update(|window, cx| {
@@ -6616,8 +6671,8 @@ mod tests {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
-        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
-        let discard = |cx: &mut VisualTestContext| offered(cx, "Discard changes…");
+        let delete = |cx: &mut VisualTestContext| offered_plainly(cx, "Delete untracked file…");
+        let discard = |cx: &mut VisualTestContext| offered_plainly(cx, "Discard changes…");
         let write = held(
             &app,
             cx,
@@ -6625,7 +6680,12 @@ mod tests {
                 paths: vec![PathBuf::from("zeta.txt")],
             },
         );
-        assert_eq!(delete(cx), Some(false), "while the Stage runs");
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(false),
+            "while the Stage runs"
+        );
+        assert_eq!(delete(cx), None, "naming the Stage");
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
@@ -6645,7 +6705,7 @@ mod tests {
             "the Stage and its read landed, and its rows are held"
         );
         assert_eq!(
-            delete(cx),
+            offered(cx, "Delete untracked file…"),
             Some(false),
             "refused while the rows are prepared, not offered for gamma as the previous rows show it"
         );
@@ -6672,7 +6732,7 @@ mod tests {
         quietly_read_while_rows_held(&app, cx);
         right_click(cx, gamma);
         assert_eq!(
-            offered(cx, "Discard changes…, refreshing…"),
+            offered(cx, "Discard changes…, available when refreshing finishes"),
             Some(false),
             "a menu opened on rows being replaced refuses its items, each saying why"
         );
@@ -6700,10 +6760,14 @@ mod tests {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", opening);
-        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        let delete = |cx: &mut VisualTestContext| offered_plainly(cx, "Delete untracked file…");
         // Until the held write looks busy, the rows are why.
-        let waiting =
-            |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, refreshing…");
+        let waiting = |cx: &mut VisualTestContext| {
+            offered(
+                cx,
+                "Delete untracked file…, available when refreshing finishes",
+            )
+        };
         assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
         let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
         std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
@@ -6736,10 +6800,11 @@ mod tests {
         crate::path_filter::filters_land(&app, cx);
         next_frame(cx);
         assert_eq!(
-            delete(cx),
+            offered(cx, "Delete untracked file…"),
             Some(false),
             "{opening:?}: built from the new rows, refused while the write runs"
         );
+        assert_eq!(delete(cx), None, "{opening:?}: naming the write");
         assert_eq!(waiting(cx), None, "{opening:?}: the rows have landed");
         release(&app, write, cx).await;
         quiet_reads_land(&app, cx);
@@ -6808,9 +6873,15 @@ mod tests {
         )
         .leak();
         let waiting = |cx: &mut VisualTestContext, reason: &str| {
-            offered(cx, &format!("Delete untracked file…, {reason}"))
+            offered(
+                cx,
+                &format!(
+                    "Delete untracked file…, available when {} finishes",
+                    reason.trim_end_matches('…')
+                ),
+            )
         };
-        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        let delete = |cx: &mut VisualTestContext| offered_plainly(cx, "Delete untracked file…");
         if let Opening::Keyboard = opening {
             open_row_menu(&app, cx, "gamma.txt", opening);
             assert_eq!(delete(cx), Some(true), "{at}: at rest");
@@ -7001,7 +7072,13 @@ mod tests {
         )
         .leak();
         let waiting = |cx: &mut VisualTestContext, reason: &str| {
-            offered(cx, &format!("Delete untracked file…, {reason}"))
+            offered(
+                cx,
+                &format!(
+                    "Delete untracked file…, available when {} finishes",
+                    reason.trim_end_matches('…')
+                ),
+            )
         };
         let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
         if let Opening::Keyboard = opening {

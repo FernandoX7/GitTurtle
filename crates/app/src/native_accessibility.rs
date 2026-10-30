@@ -1029,6 +1029,12 @@ fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App
 pub(crate) struct MenuWait(&'static str);
 
 impl MenuWait {
+    /// The wait for what runs, or is prepared, under `label`, as a Working
+    /// row's menu waits for its rows ("Filtering…", "Refreshing…").
+    pub(crate) fn named(label: &'static str) -> Self {
+        Self(label)
+    }
+
     /// What an item's accessible name adds after its command, "available
     /// when fetching remote finishes": the label the write runs under, read
     /// as what finishes. A review another tab left to finish ("Finishing

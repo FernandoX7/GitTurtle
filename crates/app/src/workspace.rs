@@ -1,6 +1,6 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, StatusEntry, WriteCommand};
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
 use std::cell::RefCell;
@@ -4580,11 +4580,13 @@ impl GitTurtle {
                         // replacing, it refuses its items until the new rows
                         // land and build it again (`waits_while`), as a
                         // click on those rows refuses, each item saying why.
-                        let (busy, waiting) =
-                            ignore_owner.upgrade().map_or((true, None), |owner| {
-                                let owner = owner.read(cx);
-                                (owner.write_unsettled(), owner.working_rows_wait())
-                            });
+                        let (wait, waiting) =
+                            ignore_owner
+                                .upgrade()
+                                .map_or((None, Some(REFRESHING_ROWS)), |owner| {
+                                    let owner = owner.read(cx);
+                                    (owner.menu_wait(), owner.working_rows_wait())
+                                });
                         working_row_menu(
                             menu,
                             ignore_owner.clone(),
@@ -4594,7 +4596,7 @@ impl GitTurtle {
                                 staged,
                             },
                             forms.file_action,
-                            busy,
+                            wait,
                             waiting,
                         )
                     })
@@ -4705,6 +4707,7 @@ impl GitTurtle {
         let followed = self.file_menu_row.as_mut()?;
         (followed.busy, followed.waiting) = (busy, waiting);
         let (target, stage_control) = (followed.target.clone(), followed.stage_control);
+        let wait = self.menu_wait();
         Some(move |menu| {
             working_row_menu(
                 menu,
@@ -4712,7 +4715,7 @@ impl GitTurtle {
                 repository,
                 target,
                 stage_control,
-                busy,
+                wait,
                 waiting,
             )
         })
@@ -5283,31 +5286,35 @@ pub(super) const FILTERING_ROWS: &str = "Filtering…";
 /// action. Each item acts only on the repository the menu was built for, and
 /// on its file by path: a Stage or Unstage departs from where the file's row
 /// stands when it acts, which rows coming or going before it may have moved
-/// since the menu opened. `busy`, a write or what it reads after it, refuses
-/// every item; so does `waiting`, while the rows are prepared, each item then
-/// stating why apart from it (`GitTurtle::working_rows_wait`), as an item a
-/// row cannot take states its condition.
+/// since the menu opened. `wait`, a write or what it reads after it
+/// (`GitTurtle::menu_wait`), refuses every item; so does `waiting`, while the
+/// rows are prepared (`GitTurtle::working_rows_wait`), whatever else an item
+/// waits for. Each item they refuse states why, as every menu's items do
+/// (`native_accessibility::waiting_item`): the write's or the rows' label at
+/// its row's end and, in its accessible name, "Stage, available when staging
+/// file finishes" or "…, available when filtering finishes"; an item the row
+/// cannot take states its own condition instead, as an item a row cannot take
+/// does.
 pub(super) fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     target: MenuRow,
     stage_control: bool,
-    busy: bool,
+    wait: Option<native_accessibility::MenuWait>,
     waiting: Option<&'static str>,
 ) -> PopupMenu {
     let MenuRow { entry, staged } = target;
     // Refused with nothing to say why, a menu opened as the rows were
-    // prepared showed every item dim and was announced so.
-    let item = |label: &'static str| {
-        if let Some(reason) = waiting {
-            native_accessibility::detailed_item(label, reason)
-        } else {
-            PopupMenuItem::new(label)
-        }
-    };
+    // prepared showed every item dim and was announced so, and one built as
+    // a write ran, its rows standing, did so as well.
     let preparing = waiting.is_some();
-    let busy = busy || preparing;
+    let wait = waiting.map(native_accessibility::MenuWait::named).or(wait);
+    // While the rows are prepared, their landing is what every item waits
+    // for, whatever else it waits for.
+    let item = |label: &'static str, refused: bool| {
+        native_accessibility::waiting_item(label, refused && !preparing, wait)
+    };
     let discard_owner = owner.clone();
     let discard_repository = repository.clone();
     let discard_entry = entry.clone();
@@ -5318,64 +5325,55 @@ pub(super) fn working_row_menu(
         let paths = entry.paths();
         let path = entry.path.clone();
         menu.item(
-            item(if staged { "Unstage" } else { "Stage" })
-                .disabled(busy)
-                .on_click(move |_, window, cx| {
-                    let _ = owner.update(cx, |this, cx| {
-                        if this.path == repository {
-                            let area = if staged {
-                                ChangeArea::Staged
-                            } else {
-                                ChangeArea::Unstaged
-                            };
-                            if let Some(row) = this.working_row_position(&path, area) {
-                                this.depart_working_row(row, window, cx);
-                            }
-                            this.stage_working_paths(paths.clone(), &path, staged, window, cx);
+            item(if staged { "Unstage" } else { "Stage" }, false).on_click(move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == repository {
+                        let area = if staged {
+                            ChangeArea::Staged
+                        } else {
+                            ChangeArea::Unstaged
+                        };
+                        if let Some(row) = this.working_row_position(&path, area) {
+                            this.depart_working_row(row, window, cx);
                         }
-                    });
-                }),
+                        this.stage_working_paths(paths.clone(), &path, staged, window, cx);
+                    }
+                });
+            }),
         )
     };
     // An action the row cannot take reads as its command with the condition
     // it waits for apart from it, not as one phrase; while the rows are
     // prepared, that is their landing, whatever else it waits for.
     let ignore = if entry.untracked || preparing {
-        item("Ignore…")
+        item("Ignore…", staged)
     } else {
-        native_accessibility::detailed_item("Ignore…", "Untracked files only")
+        native_accessibility::detailed_item("Ignore…", "Untracked files only").disabled(true)
     };
     let discard = if discard_entry.conflicted && !preparing {
         native_accessibility::detailed_item("Discard changes…", "After conflict resolution")
+            .disabled(true)
     } else if discard_entry.untracked {
-        item("Delete untracked file…")
+        item("Delete untracked file…", false)
     } else {
-        item("Discard changes…")
+        item("Discard changes…", false)
     };
-    menu.item(
-        ignore
-            .disabled(busy || staged || !entry.untracked)
-            .on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.path == repository {
-                        this.open_ignore(entry.clone(), window, cx);
-                    }
-                });
-            }),
-    )
+    menu.item(ignore.on_click(move |_, window, cx| {
+        let _ = owner.update(cx, |this, cx| {
+            if this.path == repository {
+                this.open_ignore(entry.clone(), window, cx);
+            }
+        });
+    }))
     // Discard reverts the whole file to HEAD, so both the staged and
     // unstaged rows offer the same action.
-    .item(
-        discard
-            .disabled(busy || discard_entry.conflicted)
-            .on_click(move |_, window, cx| {
-                let _ = discard_owner.update(cx, |this, cx| {
-                    if this.path == discard_repository {
-                        this.open_discard(discard_entry.clone(), window, cx);
-                    }
-                });
-            }),
-    )
+    .item(discard.on_click(move |_, window, cx| {
+        let _ = discard_owner.update(cx, |this, cx| {
+            if this.path == discard_repository {
+                this.open_discard(discard_entry.clone(), window, cx);
+            }
+        });
+    }))
 }
 
 fn action_inset() -> Pixels {
