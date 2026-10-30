@@ -263,6 +263,11 @@ struct GitTurtle {
     #[cfg(target_os = "linux")]
     primary_menu: Entity<PrimaryMenu>,
     dialog_layer_subscription: Option<Subscription>,
+    /// The window this view draws in, for work that needs it asked for
+    /// with none at hand: Stashes cancels Review restore…'s preparation from
+    /// its own listeners and as it is released
+    /// (`GitTurtle::cancel_recovery_preparation`).
+    window_handle: AnyWindowHandle,
     modal_was_open: bool,
     modal_return_focus: Option<FocusHandle>,
     modal_focus_generation: u64,
@@ -723,6 +728,7 @@ impl GitTurtle {
                 cx.new(|_| PrimaryMenu::new(owner))
             },
             dialog_layer_subscription: None,
+            window_handle: window.window_handle(),
             modal_was_open: false,
             modal_return_focus: None,
             modal_focus_generation: 0,

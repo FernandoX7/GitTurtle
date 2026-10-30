@@ -124,9 +124,24 @@ impl GitTurtle {
     /// Review restore… once what it asked for is no longer shown. Its job is
     /// skipped if it has not started, its answer dropped, and the window is
     /// free for another action at once.
+    ///
+    /// Its end, which reads the working state asked for meanwhile, never
+    /// runs, so the cancel reads it, as a form's Cancel does
+    /// ([`Self::read_deferred_working`]): Refresh pressed while the
+    /// restoration was prepared once stayed noted until something else
+    /// ended, and Changes kept the rows read before it. Stashes cancels from
+    /// its listeners and as it is released, with no window at hand, so the
+    /// read starts in the window this view draws in once the update ends.
     fn cancel_recovery_preparation(&mut self, read: u64, cx: &mut Context<Self>) {
         if self.recovery.generation == read && self.recovery.task.is_some() {
             self.cancel_recovery_read();
+            let owner = cx.entity().downgrade();
+            let window = self.window_handle;
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| this.read_deferred_working(window, cx));
+                });
+            });
             cx.notify();
         }
     }
@@ -4510,6 +4525,94 @@ mod tests {
         drop(stashes);
         close(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// Review restore…'s preparation cancelled, as another stash is chosen
+    /// or Stashes closes, runs the working read Refresh asked for while the
+    /// restoration was prepared, as a form's Cancel does
+    /// (`GitTurtle::cancel_recovery_preparation`): the preparation's end,
+    /// which would have read it, never runs. The read stayed noted, and the
+    /// working state stayed as read before it until something else ended.
+    #[gpui::test]
+    async fn a_refresh_asked_for_while_review_restore_prepares_runs_once_it_is_cancelled(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let _git = two_stashes(&repository);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let browser = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .expect("Stashes is open")
+        };
+        let listed = |cx: &mut gpui::VisualTestContext, path: &str| {
+            app.read_with(cx, |app, _| {
+                app.work_status.as_ref().is_some_and(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .any(|entry| entry.path == std::path::Path::new(path))
+                })
+            })
+        };
+        for (index, cancel) in ["Index only chosen", "Stashes closed"]
+            .into_iter()
+            .enumerate()
+        {
+            open_selected_stash(&app, cx).await;
+            let stashes = browser(cx);
+            // Review restore…, held as a slow disk holds it, and Refresh.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            press_review_restore(&stashes, cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(PREPARING),
+                "{cancel}: the restoration is prepared"
+            );
+            let later = format!("later-{index}.txt");
+            std::fs::write(repository.join(&later), "later\n").unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            assert!(
+                app.read_with(cx, |app, _| app.working_read_deferred.is_some()),
+                "{cancel}: Refresh waits for the preparation"
+            );
+            if index == 0 {
+                let row = cx
+                    .debug_bounds("saved-stash-row-1")
+                    .expect("Index only's row");
+                cx.simulate_click(row.center(), Modifiers::none());
+                StashBrowser::lands(&stashes, cx);
+                drop(stashes);
+            } else {
+                // The dialog holds the browser's only handle, whose release
+                // cancels.
+                drop(stashes);
+                cx.simulate_keystrokes("escape");
+                crate::views::tests::draw(cx);
+            }
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.operation_busy, None, "{cancel}: cancelled");
+                assert_eq!(
+                    app.working_read_deferred, None,
+                    "{cancel}: the read Refresh asked for is taken up"
+                );
+                assert!(app.status_task.is_some(), "{cancel}: and runs");
+            });
+            drop(held);
+            recovery_lands(&app, cx);
+            crate::views::tests::settle(&app, cx).await;
+            assert!(
+                listed(cx, &later),
+                "{cancel}: Refresh read the working state"
+            );
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            crate::views::tests::draw(cx);
+        }
         drop(fixture);
     }
 
