@@ -367,7 +367,7 @@ mod tests {
     };
 
     use gpui::{
-        ClickEvent, Context, Element as _, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
+        ClickEvent, Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
         TestAppContext, VisualTestContext, accesskit, canvas, point, px,
     };
 
