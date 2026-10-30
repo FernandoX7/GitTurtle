@@ -752,9 +752,9 @@ impl Render for SeriesBrowser {
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
-                .child(div().debug_selector(|| "series-file-preview".into()).flex_1().min_h(px(100.)).flex().flex_col().border_1().border_color(rgb(p.border)).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| this.render_content(bounds.size.width, window, cx)).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
+                .child(div().debug_selector(|| "series-file-preview".into()).flex_1().min_h(appearance::ui_size(100.)).flex().flex_col().border_1().border_color(rgb(p.border)).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| this.render_content(bounds.size.width, window, cx)).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
-            .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
+            .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(appearance::ui_size(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
     }
 }
 
@@ -1013,15 +1013,16 @@ mod tests {
     }
 
     /// A rewritten commit's 3D model and PDF, in the series review's file
-    /// box, which keeps 100 px, keep each side's own header at its floor,
-    /// one control whole with the larger of its ring's room and the
-    /// header's padding above and below, beneath which the model or page
-    /// gives way, and Tab reveals each of the header's controls whole with
-    /// its ring there, in a 461 × 490 window: the model's at 13 pt, the
-    /// page view's at 13 and 18 pt. The floor once counted the ring's room
-    /// and the padding together, about 6 px more than either needed. At
-    /// 18 pt the box, an unscaled 100 px, leaves the model's side 44 px,
-    /// less than its floor and rule, so its header takes the side.
+    /// box, which keeps 100 px at the interface size, keep each side's own
+    /// header at its floor, one control whole with the larger of its ring's
+    /// room and the header's padding above and below, beneath which the
+    /// model or page gives way, and Tab reveals each of the header's
+    /// controls whole with its ring there, in a 461 × 490 window, at 13 and
+    /// 18 pt. The floor once counted the ring's room and the padding
+    /// together, about 6 px more than either needed. The box once kept an
+    /// unscaled 100 px, as the error box beneath it did, which at 18 pt left
+    /// the model's side 44 px, less than its header's floor and rule, so the
+    /// header took the side and the box's clip cut its controls' rings.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn an_inspected_side_header_keeps_its_floor_in_the_file_box(
@@ -1108,14 +1109,20 @@ mod tests {
         cameras.extend((5..10).map(|index| control("model-camera", index)));
         cameras.extend([control("model-views", 1), control("model-link", 1)]);
         open(cx, model, "model-side-1/header");
-        assert_a_header_keeps_its_floor(
-            cx,
-            "the model's After at 13 pt",
-            (view, "model-side-1"),
-            px(34.),
-            &control("model-source", 1),
-            &cameras,
-        );
+        for (text, floor) in [(13, 34.), (18, 48.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            assert_a_header_keeps_its_floor(
+                cx,
+                &format!("the model's After at {text} pt"),
+                (view, "model-side-1"),
+                px(floor),
+                &control("model-source", 1),
+                &cameras,
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
         open(cx, document, "system-preview-1");
         browser.update(cx, |browser, cx| {
             let Some(Content::Rich(preview)) = browser.content.as_deref() else {
