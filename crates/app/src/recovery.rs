@@ -38,12 +38,18 @@ fn first_line(answer: &str) -> Option<&str> {
 }
 
 /// What Stashes' footer note shows and the window's alert says for the
-/// Review restore… answer `answer`: its [`first_line`], or
-/// [`RESTORE_UNEXPLAINED`] where no line says anything. [`StashBrowser::refuse`]
-/// and [`StashBrowser::restore_note`] both take it from here, so what is
-/// said and what is drawn stay in step.
+/// Review restore… answer `answer`: its [`first_line`], bounded as every
+/// long accessible text is (`native_accessibility::bounded_accessible_text`),
+/// or [`RESTORE_UNEXPLAINED`] where no line says anything. Core keeps up to
+/// 4 MiB of each Git stream, so one line of stderr reached the alert, and
+/// the note's name, layout and tooltip, at that length.
+/// [`StashBrowser::refuse`] and [`StashBrowser::restore_note`] both take it
+/// from here, so what is said and what is drawn stay in step.
 fn restore_said(answer: &str) -> SharedString {
-    SharedString::from(first_line(answer).unwrap_or(RESTORE_UNEXPLAINED).to_owned())
+    first_line(answer).map_or(
+        SharedString::new_static(RESTORE_UNEXPLAINED),
+        native_accessibility::bounded_accessible_text,
+    )
 }
 
 const STASH_PAGE_SIZE: usize = 40;
@@ -4457,8 +4463,10 @@ mod tests {
     /// Git's whole report, its stderr line after line, unclamped beside the
     /// list and with no Details… to read or copy it; a report of one line
     /// had no Details…, so stacked at 18 pt its rest lay only in a tooltip
-    /// the keyboard never opens; and a report that opened with an empty
-    /// line, or said nothing, showed an empty note.
+    /// the keyboard never opens; a report that opened with an empty line, or
+    /// said nothing, showed an empty note; and a first line longer than an
+    /// accessible text carries reached the window's alert and the note's
+    /// name whole.
     #[gpui::test]
     async fn a_failed_restore_preparation_says_its_first_line_with_details(
         cx: &mut gpui::TestAppContext,
@@ -4655,6 +4663,25 @@ mod tests {
             "the window's alert says it"
         );
         assert!(cx.debug_bounds("stash-restore-details").is_none());
+        // A first line past what an accessible text carries, as one line of
+        // Git's stderr can be, is said and named by at most 16 KiB of it,
+        // ending in an ellipsis, alike: whole, the alert and the note carried
+        // what core keeps of the stream, up to 4 MiB.
+        let long = "Unable to read working-copy status: ".to_owned() + &"x".repeat(64 * 1024);
+        let said = refuse(&format!("{long}\nmore\n"), cx).expect("the window's alert says it");
+        assert!(
+            said.len() <= 16 * 1024
+                && said.ends_with('…')
+                && long.starts_with(said.trim_end_matches('…')),
+            "the window's alert says {} bytes of the {}-byte line",
+            said.len(),
+            long.len()
+        );
+        assert!(
+            note_label().is_some_and(|named| named == said),
+            "the note is named by the line the alert says"
+        );
+        assert!(cx.debug_bounds("stash-restore-details").is_some());
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
         crate::views::tests::draw(cx);
