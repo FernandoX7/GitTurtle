@@ -201,6 +201,31 @@ only for content waiting on the trigger's bounds and places an open popup at
 its trigger's corner in the frame that lays the trigger out, and the tests
 pass without them.
 
+The point-placement patch also modifies `src/positioner.rs`. Upstream places
+a popup at a pointer only by a corner (`Positioner::corner`), which keeps
+that corner at the point and only clamps the popup into the window, so a
+menu opened near the window's foot, or above an application's bottom inset,
+slid up over the point it was opened at. `Positioner::point` places it as a
+side placement on the whole pixels the point lies within (`Strategy::Point`,
+resolved as `Strategy::Side` with a bottom preference and leading
+alignment): its top-left corner at the point where its height fits below,
+otherwise its bottom-left corner there where it fits above, otherwise on the
+side with more room, moving in from the window's sides as a corner does. One
+below the point starts at a whole pixel; one above it moves up to a whole
+pixel rather than to the nearest, since a height that ends in half a pixel,
+as on a display of scale 2, would otherwise carry its bottom half a pixel
+below the point's pixel row. The
+consumer is the component's `NativeMenu` fallback, the drawn menu a
+right-click in an input, text area or editor shows on Linux
+([component patch](../gpui-component/GITTURTLE-PATCH.md)).
+`positioner::tests::point_positioning_opens_below_or_wholly_above_the_point`
+covers the side it takes, through
+`scripts/vendor-crate-test.sh vendor/gpui-base positioner::`;
+`cargo test --locked -p gitturtle an_inputs_menu_opens` covers it in the
+app, below the commit title's pointer and wholly above it. Remove this part
+of the patch when upstream places a popup at a point on the side that holds
+it, never over the point, and those tests pass without it.
+
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
 panels were laid out at their sizes for the old size, and only then rescales

@@ -44,6 +44,30 @@ enum Strategy {
         align: Align,
         offset: Pixels,
     },
+    /// GitTurtle patch: place the popup wholly below `position`, a pointer's
+    /// place, or wholly above it ([`Positioner::point`]).
+    Point { position: Point<Pixels> },
+}
+
+impl Strategy {
+    /// GitTurtle patch: a [`Strategy::Point`] as the side placement it is:
+    /// below the whole pixels the point lies within, its leading edge at
+    /// the point, or above them where the popup fits only there, or where
+    /// it fits on neither side and there is more room above.
+    fn as_side(self) -> Self {
+        match self {
+            Self::Point { position } => Self::Side {
+                trigger_bounds: Bounds::from_corners(
+                    point(position.x, position.y.floor()),
+                    point(position.x, position.y.ceil()),
+                ),
+                placement: Some(Placement::Bottom),
+                align: Align::Start,
+                offset: px(0.),
+            },
+            strategy => strategy,
+        }
+    }
 }
 
 /// The bounds a popup resolved to, and the side it ended up on.
@@ -124,6 +148,35 @@ impl Positioner {
         positioner
     }
 
+    /// GitTurtle patch: places the popup at `position`, a pointer's place,
+    /// so that it never covers the point: its top-left corner there where
+    /// its height fits below it, otherwise its bottom-left corner there
+    /// where it fits above it, and where it fits on neither side, on the
+    /// side with more room. It moves in from the window's sides as a corner
+    /// does, and by whole pixels away from the point, never onto it.
+    /// A popup that fits on neither side is still clamped into the window,
+    /// over the point. [`Positioner::corner`] keeps the corner at the point
+    /// and only clamps, so a popup near the window's foot slid up over the
+    /// point it was opened at.
+    pub fn point(position: Point<Pixels>) -> Self {
+        Self {
+            strategy: Strategy::Point { position },
+            ..Self::corner(Anchor::TopLeft, position)
+        }
+    }
+
+    /// The viewport a popup is resolved in and the margin it keeps there:
+    /// the window's, the margin outside the client inset, and the viewport
+    /// shortened by the part of the bottom inset past that margin, so the
+    /// margin then ends at the inset.
+    fn viewport(&self, window: &Window) -> (Size<Pixels>, Pixels) {
+        let client_inset = window.client_inset().unwrap_or(px(0.));
+        let margin = self.margin + client_inset;
+        let mut viewport = window.viewport_size();
+        viewport.height -= (self.bottom_inset - margin).max(px(0.));
+        (viewport, margin)
+    }
+
     /// Sets the preferred side. Only meaningful for [`Positioner::side`].
     pub fn placement(mut self, placement: Placement) -> Self {
         if let Strategy::Side {
@@ -193,6 +246,7 @@ fn resolve(
     margin: Pixels,
 ) -> ResolvedPosition {
     match strategy {
+        Strategy::Point { .. } => resolve(strategy.as_side(), popup_size, viewport_size, margin),
         Strategy::Corner { anchor, position } => ResolvedPosition {
             bounds: clamp(
                 Bounds::from_anchor_and_size(anchor, position, popup_size),
@@ -367,13 +421,10 @@ impl Element for Positioner {
         }
 
         let popup_size = (child_max - child_min).into();
-        let client_inset = window.client_inset().unwrap_or(px(0.));
-        let margin = self.margin + client_inset;
         // GitTurtle patch: a bottom inset larger than the margin shortens
         // the viewport the popup is resolved in by the difference, so the
         // margin then ends at the inset.
-        let mut viewport = window.viewport_size();
-        viewport.height -= (self.bottom_inset - margin).max(px(0.));
+        let (viewport, margin) = self.viewport(window);
         // GitTurtle patch: a followed corner as it stands now.
         let mut strategy = self.strategy;
         if let (Strategy::Corner { position, .. }, Some(following)) =
@@ -394,13 +445,21 @@ impl Element for Positioner {
         // rounding to the nearest pixel put a popup ending 8 px above a
         // status bar another half pixel lower.
         let bottom = viewport.height - margin;
-        let y = match offset.y.round() {
-            y if position.bounds.bottom() <= bottom
-                && position.bounds.bottom() + (y - offset.y) > bottom =>
-            {
-                offset.y.floor()
-            }
-            y => y,
+        // GitTurtle patch: a popup above a point moves up to a whole pixel,
+        // never down onto the point: its height can end in half a pixel,
+        // as on a display of scale 2, and rounding to the nearest pixel then
+        // carried its bottom half a pixel below the point's pixel row. One
+        // below the point starts at a whole pixel already.
+        let y = match (self.strategy, position.placement) {
+            (Strategy::Point { .. }, Some(Placement::Top)) => offset.y.floor(),
+            _ => match offset.y.round() {
+                y if position.bounds.bottom() <= bottom
+                    && position.bounds.bottom() + (y - offset.y) > bottom =>
+                {
+                    offset.y.floor()
+                }
+                y => y,
+            },
         };
         let offset = point(offset.x.round(), y);
 
@@ -574,6 +633,35 @@ mod tests {
         assert_eq!(position.placement, None);
         assert_eq!(position.bounds.right(), viewport().width - MARGIN);
         assert_eq!(position.bounds.bottom(), viewport().height - MARGIN);
+    }
+
+    /// GitTurtle patch: a popup at a point lies below the whole pixels the
+    /// point lies within where it fits there, otherwise above them where it
+    /// fits there, otherwise on the side with more room.
+    #[test]
+    fn point_positioning_opens_below_or_wholly_above_the_point() {
+        let at = |y: f32, height: f32| {
+            resolve(
+                Strategy::Point {
+                    position: point(px(100.), px(y)),
+                },
+                Size::new(px(40.), px(height)),
+                viewport(),
+                MARGIN,
+            )
+        };
+
+        let below = at(150.4, 100.);
+        assert_eq!(below.placement, Some(Placement::Bottom));
+        assert_eq!(below.bounds.origin, point(px(100.), px(151.)));
+
+        let above = at(350.6, 100.);
+        assert_eq!(above.placement, Some(Placement::Top));
+        assert_eq!(above.bounds.bottom(), px(350.));
+
+        // 176 px below, 216 px above: neither holds it.
+        assert_eq!(at(220., 300.).placement, Some(Placement::Top));
+        assert_eq!(at(180., 300.).placement, Some(Placement::Bottom));
     }
 
     // Migrated from the tooltip module when its private positioning logic was

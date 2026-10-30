@@ -4,15 +4,17 @@
 //! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
 //! the [`super::NativeMenu`] API working on every platform.
 //!
-//! GitTurtle patch: placed as a context menu is, by the base `Positioner`,
-//! inside the window less 8 px and above the room an application keeps at its
-//! foot (`gpui_base::popup_bottom_inset`). GPUI's `anchored` snap kept it only
-//! inside the window, so an input's right-click menu near the window's foot
-//! ended over a status bar.
+//! GitTurtle patch: placed at the pointer by the base `Positioner`, inside
+//! the window less 8 px and above the room an application keeps at its foot
+//! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
+//! at: below the pointer where it fits, otherwise above it, its bottom edge
+//! at the pointer. GPUI's `anchored` snap kept it only inside the window, so
+//! an input's right-click menu near the window's foot ended over a status
+//! bar, and kept above the bar by sliding up, it covered the line clicked.
 
 use gpui::{
-    Anchor, App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
-    Pixels, Point, Render, Subscription, Window, deferred, div, px,
+    App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
+    Point, Render, Subscription, Window, deferred, div, px,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
@@ -29,6 +31,16 @@ struct ActiveMenu {
     menu: Entity<PopupMenu>,
     position: Point<Pixels>,
     _subscription: Subscription,
+}
+
+/// GitTurtle patch: how the menu opened at `position` is placed: wholly
+/// below the point or wholly above it ([`gpui_base::Positioner::point`]),
+/// 8 px inside the window and above the room the application keeps at its
+/// foot, as the kit's context menu and dropdowns keep theirs.
+fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::Positioner {
+    gpui_base::Positioner::point(position)
+        .margin(px(8.))
+        .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
 }
 
 impl FallbackMenuOverlay {
@@ -122,15 +134,13 @@ impl Render for FallbackMenuOverlay {
         if let Some(active) = self.active.as_ref() {
             root = root.child(
                 deferred(
-                    // GitTurtle patch: placed as a context menu is, inside the
-                    // window less its margin and above the room the
-                    // application keeps at its foot, moving up where it would
-                    // run lower. GPUI's `anchored` snap kept it only inside
-                    // the window, so it could end over a status bar.
-                    gpui_base::Positioner::corner(Anchor::TopLeft, active.position)
-                        .margin(px(8.))
-                        .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
-                        .child(active.menu.clone()),
+                    // GitTurtle patch: placed wholly below or above the
+                    // pointer, inside the window less its margin and above
+                    // the room the application keeps at its foot. GPUI's
+                    // `anchored` snap kept it only inside the window, so it
+                    // could end over a status bar, and a clamp that moved it
+                    // up covered the point it was opened at.
+                    placement(active.position, window, cx).child(active.menu.clone()),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),
             );

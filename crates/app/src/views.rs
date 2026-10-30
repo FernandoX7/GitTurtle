@@ -18769,17 +18769,88 @@ pub(crate) mod tests {
         draw(cx);
     }
 
-    /// At 13 and 18 pt in a 461 × 490 window, a right-click in the commit
-    /// title, near the window's foot, opens the field's menu, which Linux
-    /// draws in the window as a kit menu (the kit's `NativeMenu` fallback,
-    /// as for every kit input and text area), with its drawn edge 8 px or
-    /// more above the status bar, as the app's other menus keep theirs:
-    /// taller than the room below the pointer, it moves up. Kept only inside
-    /// the window, it ended over the bar.
+    /// Right-clicks a text field at `pointer` and returns the field's open
+    /// menu, which Linux draws in the window as a kit menu (the kit's
+    /// `NativeMenu` fallback, as for every kit input, text area and
+    /// editor), by its surface, read around the row labelled `item`.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    fn right_click_field(
+        cx: &mut VisualTestContext,
+        pointer: Point<Pixels>,
+        item: &str,
+        at: &str,
+    ) -> Bounds<Pixels> {
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+        // The field shows its menu in a deferred callback.
+        cx.run_until_parked();
+        draw(cx);
+        let row = menu_rows(cx, &[item])
+            .first()
+            .map(|(_, row)| *row)
+            .unwrap_or_else(|| panic!("{at}: the field's menu at {pointer:?}"));
+        menu_surface(cx, row)
+    }
+
+    /// At 13 and 18 pt in a 461 × 490 window, a right-click in the Working
+    /// Changes filter, whose menu has room below the pointer, opens it with
+    /// its top at the pointer: below the whole pixels the pointer lies
+    /// within, never above the point, and its leading edge there. A point
+    /// 0.4 px into a pixel row once put the menu's top 0.4 px above it.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[gpui::test]
-    async fn an_editors_menu_keeps_its_edge_8_px_above_the_status_bar(cx: &mut TestAppContext) {
-        const SELECT_ALL: &str = "Select All";
+    async fn an_inputs_menu_opens_at_the_pointer_where_it_fits_below(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(&app, cx).await;
+            let at = format!("{text} pt in 461 × 490");
+            let field = cx
+                .debug_bounds("working-filter")
+                .unwrap_or_else(|| panic!("{at}: the Working Changes filter"));
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            let pointer = point(field.left() + px(16.), field.center().y.floor() + px(0.4));
+            let surface = right_click_field(cx, pointer, "Select All", &at);
+            assert!(
+                surface.size.height <= status - px(8.) - pointer.y.ceil(),
+                "{at}: the menu {surface:?} fits below {pointer:?} above the bar at {status:?}"
+            );
+            assert!(
+                surface.top() >= pointer.y && surface.top() < pointer.y + px(1.),
+                "{at}: the menu {surface:?} opens with its top at the pointer {pointer:?}"
+            );
+            // Its leading edge at the pointer, or, at 18 pt, moved in to
+            // 8 px inside the window's side.
+            assert!(
+                (surface.left() - pointer.x).abs() <= px(1.)
+                    || (surface.right() - (px(461.) - px(8.))).abs() <= px(1.),
+                "{at}: the menu {surface:?} opens with its leading edge at the pointer {pointer:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                menu_rows(cx, &["Select All"]).is_empty(),
+                "{at}: Escape closed it"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 13 and 18 pt in a 461 × 490 window, a right-click in the commit
+    /// title, near the window's foot, opens the field's menu, taller than
+    /// the room below the pointer, wholly above the pointer: its bottom edge
+    /// at the pointer, the point clicked outside it, and its drawn edge 8 px
+    /// or more above the status bar, as the app's other menus keep theirs.
+    /// Kept only inside the window, it ended over the bar; then moved up
+    /// only far enough to clear the bar, it covered the line clicked.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_menu_opens_wholly_above_the_pointer_where_it_does_not_fit_below(
+        cx: &mut TestAppContext,
+    ) {
         let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
@@ -18792,21 +18863,19 @@ pub(crate) mod tests {
                 .debug_bounds("commit-title")
                 .unwrap_or_else(|| panic!("{at}: the commit title"));
             let status = crate::theme_editor::tests::status_bar_top(cx);
-            let pointer = point(editor.left() + px(16.), editor.center().y);
-            cx.simulate_mouse_move(pointer, None, Modifiers::default());
-            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
-            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
-            // The field shows its menu in a deferred callback.
-            cx.run_until_parked();
-            draw(cx);
-            let item = menu_rows(cx, &[SELECT_ALL])
-                .first()
-                .map(|(_, item)| *item)
-                .unwrap_or_else(|| panic!("{at}: the field's menu at {pointer:?}"));
-            let surface = menu_surface(cx, item);
+            let pointer = point(editor.left() + px(16.), editor.center().y.floor() + px(0.6));
+            let surface = right_click_field(cx, pointer, "Select All", &at);
             assert!(
-                surface.size.height > status - pointer.y - px(8.),
+                surface.size.height > status - px(8.) - pointer.y,
                 "{at}: the menu {surface:?} is taller than the room below {pointer:?} above the bar at {status:?}"
+            );
+            assert!(
+                surface.bottom() <= pointer.y && surface.bottom() > pointer.y - px(1.),
+                "{at}: the menu {surface:?} ends at the pointer {pointer:?}"
+            );
+            assert!(
+                !surface.contains(&pointer),
+                "{at}: the menu {surface:?} covers the point clicked {pointer:?}"
             );
             assert!(
                 surface.bottom() + edge <= status - px(8.) + px(0.01),
@@ -18815,7 +18884,7 @@ pub(crate) mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(
-                menu_rows(cx, &[SELECT_ALL]).is_empty(),
+                menu_rows(cx, &["Select All"]).is_empty(),
                 "{at}: Escape closed it"
             );
         }

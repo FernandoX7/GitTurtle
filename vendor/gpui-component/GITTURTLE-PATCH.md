@@ -553,11 +553,16 @@ over the bar. A context menu is now placed by the base `Positioner`, as the
 popup host places a dropdown: inside the window less the same 8 px and above
 the room the application keeps at the window's foot
 (`gpui_base::popup_bottom_inset`), moving up where it would run lower, as it
-moves in from the window's sides. So is the drawn menu an input's
-right-click shows where the platform has no OS-native popup, Linux among them
-(`NativeMenu`'s fallback, which `Root`'s `FallbackMenuOverlay` draws): GPUI's
-anchor kept it only inside the window, less 8 px, so a right-click near the
-foot of an editor low in the window ended over the status bar. A popover's
+moves in from the window's sides. The drawn menu an input's right-click
+shows where the platform has no OS-native popup, Linux among them
+(`NativeMenu`'s fallback, which `Root`'s `FallbackMenuOverlay` draws), keeps
+the same margin and inset and never covers the point it was opened at: the
+base `Positioner::point` places it with its top at the pointer where its
+items fit below it, and otherwise wholly above the pointer, its bottom edge
+there. GPUI's anchor kept it only inside the window, less 8 px, so a
+right-click near the foot of an editor low in the window ended over the
+status bar, and placed as a context menu is, it then slid up just far enough
+to clear the bar, over the line clicked. A popover's
 quarter-rem gap from its
 trigger is now a margin (`mt_1`, `mb_1`) rather than a relative offset
 (`top_1`, `bottom_1`): the host measures and places the box, and a relative
@@ -594,10 +599,15 @@ the dropdown ended 3.5 px past the inset.
 menu, a dropdown, at 13 and 18 pt in 461 × 490 and reads its drawn edge 8 px
 or more above the status bar; the right-click menu it opens on History's
 lowest whole row there is the app's own `PointerMenu`, placed by `RowMenu`.
-On Linux, `an_editors_menu_keeps_its_edge_8_px_above_the_status_bar`
+On Linux, `an_inputs_menu_opens_wholly_above_the_pointer_where_it_does_not_fit_below`
 right-clicks in the commit title there, near the window's foot, and reads
-the field's drawn menu, taller than the room below the pointer, with its edge
-8 px or more above the bar; placed by GPUI's anchor, it ran over the bar.
+the field's drawn menu, taller than the room below the pointer, wholly above
+the pointer, its bottom edge there and its edge 8 px or more above the bar:
+placed by GPUI's anchor, it ran over the bar, and moved up only far enough to
+clear the bar, it covered the point clicked.
+`an_inputs_menu_opens_at_the_pointer_where_it_fits_below` right-clicks in the
+Working Changes filter, with room below, and reads the menu's top at the
+pointer, never above it.
 Remove the dropdown half of this patch (`src/popover.rs`, `src/styled.rs`)
 and the fallback menu's (`src/native_menu/fallback.rs`) when upstream lets an
 application keep popups clear of a region at the window's foot, and those
