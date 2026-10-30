@@ -837,6 +837,40 @@ impl Drop for HistoryStream {
     }
 }
 
+/// How many messages [`stream_history`]'s pipe readers queue ahead of it.
+const READ_QUEUE: usize = 8;
+
+/// What [`stream_history`] ends with once its cancellation stopped it: [`ReadCancelled`],
+/// unless Git had already failed. A failure already queued, Git's exit with its error output
+/// or a failed pipe read, ends the read as that failure, as it would have a moment before the
+/// cancel: the cancel once masked it, so a caller said "Cancelled" for a read Git had already
+/// refused. It reads only what is queued, no more than the queue holds and the readers' last
+/// two messages, so a cancel never waits on Git.
+fn cancelled_end(
+    receive: &mpsc::Receiver<ReadMessage>,
+    mut stderr: Option<Vec<u8>>,
+    status: impl FnOnce() -> std::io::Result<Option<std::process::ExitStatus>>,
+) -> anyhow::Error {
+    for _ in 0..READ_QUEUE + 2 {
+        match receive.try_recv() {
+            Ok(ReadMessage::Stderr(bytes)) => stderr = Some(bytes),
+            Ok(ReadMessage::Error(error)) => return error.into(),
+            Ok(ReadMessage::Stdout(_) | ReadMessage::StdoutEnd) => {}
+            Err(_) => break,
+        }
+    }
+    match (status(), stderr) {
+        (Ok(Some(status)), Some(stderr)) if !status.success() => {
+            if stderr.len() > 128 * 1024 {
+                anyhow::anyhow!("Git history error output exceeded its limit")
+            } else {
+                anyhow::anyhow!("Git history read failed: {}", text(&stderr).trim())
+            }
+        }
+        _ => ReadCancelled.into(),
+    }
+}
+
 /// Drains both pipes through a bounded queue. Cancellation and the deadline
 /// cover the process and descendants which retain its pipes after it exits.
 pub(super) fn stream_history(
@@ -863,7 +897,7 @@ pub(super) fn stream_history(
     });
     let mut stdout = pipes.output;
     let stderr = pipes.error.expect("Requested Git error pipe");
-    let (send, receive) = mpsc::sync_channel(8);
+    let (send, receive) = mpsc::sync_channel(READ_QUEUE);
     let errors = send.clone();
     let output_reader = thread::spawn(move || {
         let mut chunk = [0u8; 8192];
@@ -898,7 +932,12 @@ pub(super) fn stream_history(
         let mut stderr = None;
         let mut status = None;
         loop {
-            cancellation.check()?;
+            if cancellation.is_cancelled() {
+                return Err(cancelled_end(&receive, stderr.take(), || match status {
+                    Some(status) => Ok(Some(status)),
+                    None => child.try_wait(),
+                }));
+            }
             if start.elapsed() >= timeout {
                 return Ok(ReadEnd::TimedOut);
             }
@@ -1105,6 +1144,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(end, ReadEnd::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// A read Git has already failed ends with Git's failure though the cancel comes before
+    /// the read handles it: the cancel once masked the failure as [`ReadCancelled`]. Git has
+    /// exited with its error while a descendant still holds its output, whose first bytes,
+    /// a second later, bring the cancel.
+    #[cfg(unix)]
+    #[test]
+    fn a_failure_git_already_reported_outlasts_a_later_cancel() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "( exec 2>&-; sleep 1; printf x ) & echo 'fatal: bad revision' >&2; exit 128",
+        ]);
+        let cancellation = HistoryCancellation::default();
+        let error = stream_history(
+            command,
+            None,
+            &cancellation,
+            Duration::from_secs(20),
+            |_| {
+                cancellation.cancel();
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<ReadCancelled>().is_none(), "{error:#}");
+        assert_eq!(
+            error.to_string(),
+            "Git history read failed: fatal: bad revision"
+        );
+    }
+
+    /// A read its cancellation stopped while Git still runs ends with [`ReadCancelled`],
+    /// which a caller finds through the context added on the way out, as the app does to
+    /// say "Cancelled" rather than show a failure.
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_read_is_found_through_added_context() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf x; sleep 20"]);
+        let cancellation = HistoryCancellation::default();
+        let started = Instant::now();
+        let error = stream_history(
+            command,
+            None,
+            &cancellation,
+            Duration::from_secs(20),
+            |_| {
+                cancellation.cancel();
+                Ok(true)
+            },
+        )
+        .context("Compare the captured revisions")
+        .context("PR changes")
+        .unwrap_err();
+        assert!(error.downcast_ref::<ReadCancelled>().is_some(), "{error:#}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
