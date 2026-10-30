@@ -883,6 +883,19 @@ const SHORTCUT_LIST_HEIGHT: f32 = 430.;
 /// one 42 px row inside its 1 px border, as at 18 pt in a 461 × 490 window,
 /// where the hint below it wraps to three lines.
 const SHORTCUT_LIST_FLOOR: f32 = 44.;
+/// An entry's row, at the default interface size.
+const SHORTCUT_ROW: f32 = 42.;
+/// A group's heading row, at the default interface size: the group gap
+/// above its 11 px name, the name's 14 px line, and 3 px below it to the rule
+/// under it, about 30 px at 18 pt. As tall as an entry, the heading's row
+/// (58 px at 18 pt) had its top cut by the list's edge after a one-match
+/// search in a 461 × 490 window, whose 99 px list held its entry whole below
+/// it; heading and entry now take about 88 px there.
+const SHORTCUT_HEADING: f32 = 22.;
+/// The name's line in a heading row and the room below it, at the default
+/// interface size; the rest of the row is the group gap above it.
+const SHORTCUT_HEADING_LINE: f32 = 14.;
+const SHORTCUT_HEADING_BELOW: f32 = 3.;
 
 /// The shortcut list's height where the dialog has the room, at the
 /// interface size.
@@ -890,11 +903,22 @@ pub(crate) fn list_height() -> Pixels {
     appearance::ui_size(SHORTCUT_LIST_HEIGHT)
 }
 
+/// The height of `row` in the shortcut list, at the interface size.
+fn row_height(row: &HelpRow) -> Pixels {
+    appearance::ui_size(match row {
+        HelpRow::Group(_) => SHORTCUT_HEADING,
+        HelpRow::Entry(_) => SHORTCUT_ROW,
+    })
+}
+
 struct ShortcutHelpView {
     query: Entity<InputState>,
     rows: Vec<HelpRow>,
     selected: usize,
-    scroll: UniformListScrollHandle,
+    /// A group's heading row is shorter than an entry's, so the list is the
+    /// toolkit's virtual list, which takes each row's height, rather than a
+    /// `uniform_list`, which gives every row the first one's.
+    scroll: gpui_kit::base::VirtualListScrollHandle,
     /// The list's height as last laid out: when the dialog's height cap
     /// changes it, the list keeps the selected entry in view.
     list_height: std::rc::Rc<std::cell::Cell<Pixels>>,
@@ -915,11 +939,13 @@ impl ShortcutHelpView {
                 // would not then lie whole in it: it ends at the list's foot
                 // instead, with as much of its group's heading as fits above
                 // it. Started at the heading, a list the dialog's height cap
-                // had given less than both, as at 18 pt in a 461 × 490
-                // window, cut the one entry "command palette" leaves, its
-                // key chip at the list's foot.
+                // had given less than both cut the one entry a search left,
+                // its key chip at the list's foot; a heading row as short as
+                // its line and the group gap lets both fit, as at 18 pt in a
+                // 461 × 490 window after a search for "command palette".
+                this.scroll.set_offset(point(px(0.), px(0.)));
                 this.scroll
-                    .scroll_to_item_strict(this.selected, ScrollStrategy::Bottom);
+                    .scroll_to_item(this.selected, ScrollStrategy::Bottom);
                 cx.notify();
             }
         });
@@ -927,7 +953,7 @@ impl ShortcutHelpView {
             query,
             rows: help_matches(""),
             selected: 1,
-            scroll: UniformListScrollHandle::new(),
+            scroll: gpui_kit::base::VirtualListScrollHandle::new(),
             list_height: Default::default(),
             return_focus,
             closed: false,
@@ -963,10 +989,22 @@ impl Render for ShortcutHelpView {
         // floor, by layout: the chrome around it, such as the hint that wraps
         // in a narrow window, is never estimated.
         let height = list_height();
-        let list = uniform_list(
+        // Each row's height, in the list's order: computed for the ~70 rows
+        // on each build, as the interface size can change between builds.
+        let heights = std::rc::Rc::new(
+            self.rows
+                .iter()
+                .map(|row| Size {
+                    width: px(0.),
+                    height: row_height(row),
+                })
+                .collect::<Vec<_>>(),
+        );
+        let list = gpui_kit::base::v_virtual_list(
+            cx.entity(),
             "shortcut-help-list",
-            self.rows.len(),
-            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            heights,
+            |this, range: std::ops::Range<usize>, _, cx| {
                 let p = palette(cx);
                 // Fitted once for the rows drawn, not for each row.
                 let (edge, selected_edge) = (p.raised_edge(), p.selected_edge());
@@ -974,17 +1012,22 @@ impl Render for ShortcutHelpView {
                     .map(|index| {
                         let row = div()
                             .id(("shortcut-help-row", index))
-                            .h(appearance::ui_size(42.))
+                            .h(row_height(&this.rows[index]))
                             .w_full()
                             .px_3()
                             .flex()
-                            .items_center()
                             .gap_4();
                         match &this.rows[index] {
+                            // The group gap above the name, which sits on its
+                            // rule.
                             HelpRow::Group(group) => row
+                                .debug_selector(move || format!("shortcut-help-heading-{index}"))
+                                .items_end()
+                                .pb(appearance::ui_size(SHORTCUT_HEADING_BELOW))
                                 .role(Role::Heading)
                                 .aria_label(*group)
                                 .text_size(appearance::ui_text(11.))
+                                .line_height(appearance::ui_size(SHORTCUT_HEADING_LINE))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(p.muted))
                                 // Ruled with the edge, as a menu's
@@ -993,6 +1036,7 @@ impl Render for ShortcutHelpView {
                                 .border_color(rgb(edge))
                                 .child(*group),
                             HelpRow::Entry(entry) => row
+                                .items_center()
                                 .debug_selector(move || format!("shortcut-help-row-{index}"))
                                 .role(Role::ListBoxOption)
                                 .aria_label(format!("{}: {}", entry.label, entry.key))
@@ -1032,8 +1076,8 @@ impl Render for ShortcutHelpView {
                         }
                         .into_any_element()
                     })
-                    .collect()
-            }),
+                    .collect::<Vec<_>>()
+            },
         )
         .track_scroll(&self.scroll)
         .size_full();

@@ -1501,6 +1501,87 @@ mod render_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A group's heading row is its name's line and the group gap rather
+    /// than an entry's height, so after a search that leaves one shortcut
+    /// ("command palette") in a 461 × 490 window the General heading and its
+    /// entry, key chip too, both lie whole in the list, at 13 and at 18 pt.
+    /// At 18 pt the list holds 99 px there, and the heading's 58 px row, as
+    /// tall as an entry, had its top cut by the list's edge.
+    ///
+    /// The test text system sets the hint below the list wider than the
+    /// desktop's fonts do, wrapping it to a fourth line at 18 pt, so the list
+    /// takes those 99 px in a slightly taller test window: the shortest from
+    /// 490 px up whose list holds them.
+    #[gpui::test]
+    async fn a_one_match_search_shows_its_heading_and_entry_whole(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        const NATIVE_LIST: Pixels = px(99.);
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+            draw(cx);
+            draw(cx);
+            let mut height = 490.;
+            while cx
+                .debug_bounds("shortcut-help-results")
+                .expect("the list")
+                .size
+                .height
+                < NATIVE_LIST
+            {
+                height += 1.;
+                assert!(height <= 560., "{text} pt: a list of {NATIVE_LIST:?}");
+                cx.simulate_resize(size(px(461.), px(height)));
+                draw(cx);
+                draw(cx);
+            }
+            let at = format!("{text} pt in 461 × {height}");
+            cx.simulate_input("command palette");
+            // The list's height lands in its first frame; the scroll that
+            // keeps the entry in view, in the next.
+            draw(cx);
+            draw(cx);
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            // Inside the list's 1 px border.
+            let (top, bottom) = (list.top() + px(1.), list.bottom() - px(1.));
+            let heading = cx
+                .debug_bounds("shortcut-help-heading-0")
+                .unwrap_or_else(|| panic!("{at}: the heading is drawn"));
+            let entry = cx
+                .debug_bounds("shortcut-help-row-1")
+                .unwrap_or_else(|| panic!("{at}: the entry is drawn"));
+            assert!(
+                heading.size.height < entry.size.height,
+                "{at}: the heading {heading:?} is shorter than its entry {entry:?}"
+            );
+            for (part, bounds) in [
+                ("the heading", heading),
+                ("the entry", entry),
+                (
+                    "the key chip",
+                    cx.debug_bounds("shortcut-help-key-1")
+                        .expect("the key chip"),
+                ),
+            ] {
+                assert!(
+                    bounds.top() >= top - px(0.5) && bounds.bottom() <= bottom + px(0.5),
+                    "{at}: {part} {bounds:?} whole in the list's {top:?}..{bottom:?}"
+                );
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The palette is a menu of commands, so in every palette it floats on
     /// the surface the menus do, `Palette::raised`, with their fitted edge,
     /// `Palette::raised_edge`, rather than on the page background (the
