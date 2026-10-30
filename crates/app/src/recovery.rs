@@ -1346,6 +1346,13 @@ pub(crate) struct StashBrowser {
     /// The next frame scrolls the stacked detail to the footer note: a
     /// refusal or its end has just replaced it.
     reveal_note: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The lines a refusal keeps in the stacked footer note: two, or one
+    /// where the detail cannot hold two beneath Review restore… whole with
+    /// its ring, as at 18 pt in a 461 × 490 window ([`reveal_note`]).
+    note_lines: std::rc::Rc<std::cell::Cell<usize>>,
+    /// Where Review restore… lies in the stacked detail in the frame being
+    /// prepainted, for [`reveal_note`].
+    restore_at: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl Drop for StashBrowser {
@@ -1448,6 +1455,8 @@ impl StashBrowser {
             pause_ended: false,
             refusals: 0,
             reveal_note: Default::default(),
+            note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
+            restore_at: Default::default(),
         };
         // Released however its dialog closed, Stashes stops preparing a
         // Review restore… nobody is waiting for.
@@ -1815,13 +1824,14 @@ impl StashBrowser {
     /// The footer note beside Review restore…: why it was refused, a line
     /// announced at once as it appears; or, once the integration it was
     /// refused for has ended, that it has, a status heard once speech
-    /// pauses; or else what restoring does. `stacked`, beneath the list in a
+    /// pauses; or else what restoring does. `lines`, beneath the list in a
     /// narrow window, where the detail can be about 60 px tall (18 pt in a
-    /// 461 × 490 window), the reason keeps two lines, the second ending in an
-    /// ellipsis where it needs more, with its whole text in its tooltip as in
-    /// its name: unclamped it took three lines there, more than the detail
-    /// shows.
-    fn restore_note(&self, stacked: bool, cx: &App) -> AnyElement {
+    /// 461 × 490 window), the reason keeps that many lines, two or one
+    /// ([`reveal_note`]), the last ending in an ellipsis where it needs
+    /// more, with its whole text in its tooltip as in its name: unclamped it
+    /// took three lines there, more than the detail shows, and at two it
+    /// left Review restore… cut.
+    fn restore_note(&self, lines: Option<usize>, cx: &App) -> AnyElement {
         let p = palette(cx);
         if let Some(line) = &self.restore_line {
             let whole = SharedString::from(line.clone());
@@ -1833,9 +1843,9 @@ impl StashBrowser {
                 .assertive()
                 .text_size(crate::appearance::ui_text(10.))
                 .text_color(rgb(p.warning))
-                .when(stacked, |note| {
+                .when_some(lines, |note, lines| {
                     let tooltip = whole.clone();
-                    note.line_clamp(2)
+                    note.line_clamp(lines)
                         .text_ellipsis()
                         .tooltip(move |window, cx| {
                             gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
@@ -1855,6 +1865,15 @@ impl StashBrowser {
                     .polite()
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
+                    // As the refusal it replaces keeps its lines.
+                    .when_some(lines, |note, lines| {
+                        note.line_clamp(lines)
+                            .text_ellipsis()
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(PAUSE_ENDED)
+                                    .build(window, cx)
+                            })
+                    })
                     .child(PAUSE_ENDED),
                 PAUSE_ENDED,
             )
@@ -2102,38 +2121,55 @@ impl StashBrowser {
 }
 
 /// For the stacked Stashes detail's actions, the row with Review restore…
-/// and the footer note beneath it: once `due`, when a refusal or its end has
-/// just replaced the note, scrolls the detail, `scroll`, by the least that
-/// shows the row and the note `margin` clear of its edges, or, where both do
-/// not fit, the whole note, the answer to the press, with what of the row the
-/// rest leaves above it: at 18 pt in a 461 × 490 window the detail is about
-/// 60 px tall. It scrolls after the frame the note is laid out in, as a focus
-/// reveal does for a control it has not drawn ([`crate::focus_reveal`]). A
-/// note the detail had scrolled below its fold, beneath the Review restore…
-/// just pressed, showed nothing.
+/// and the footer note beneath it, as each frame prepaints them. It keeps
+/// `lines`, the lines a refusal keeps in the note, at two, or one where the
+/// detail, `scroll`, cannot hold two beneath Review restore…, at `restore`,
+/// whole with its ring, `margin`, each `line` tall: at 18 pt in a 461 × 490
+/// window the detail is about 60 px tall. A change lays the detail out
+/// again. Once `due`, when a refusal or its end has just replaced the note,
+/// it scrolls the detail by the least that shows Review restore… and the
+/// note `margin` clear of its edges, or, where both still do not fit,
+/// Review restore… whole at the top with what of the note the rest shows:
+/// the focused control the press left stays whole. It scrolls after the
+/// frame the note is laid out in, as a focus reveal does for a control it
+/// has not drawn ([`crate::focus_reveal`]). A note the detail had scrolled
+/// below its fold, beneath the Review restore… just pressed, showed
+/// nothing, and one revealed whole at two lines cut Review restore…'s ring.
 fn reveal_note(
     due: std::rc::Rc<std::cell::Cell<bool>>,
+    lines: std::rc::Rc<std::cell::Cell<usize>>,
+    restore: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     scroll: ScrollHandle,
     margin: Pixels,
+    line: Pixels,
 ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
     move |bounds, window, cx| {
-        let [row, note] = bounds[..] else {
+        let [_, note] = bounds[..] else {
             return;
         };
+        let Some(control) = restore.get() else {
+            return;
+        };
+        let viewport = scroll.bounds();
+        let top = control.top() - margin;
+        // The note's lines that fit beneath Review restore… and its ring.
+        let room = viewport.size.height - (note.top() - top) - margin;
+        let fit = (f32::from(room) / f32::from(line.max(px(1.))))
+            .floor()
+            .clamp(1., 2.) as usize;
+        if lines.replace(fit) != fit {
+            // Laid out again with the lines that fit; revealed then.
+            window.defer(cx, |window, _| window.refresh());
+            return;
+        }
         if !due.replace(false) {
             return;
         }
-        let viewport = scroll.bounds();
         let bottom = note.bottom() + margin;
-        let top = if bottom - (row.top() - margin) <= viewport.size.height {
-            row.top() - margin
-        } else {
-            note.top() - margin
-        };
-        let delta = if bottom > viewport.bottom() {
-            viewport.bottom() - bottom
-        } else if top < viewport.top() {
+        let delta = if bottom - top > viewport.size.height || top < viewport.top() {
             viewport.top() - top
+        } else if bottom > viewport.bottom() {
+            viewport.bottom() - bottom
         } else {
             return;
         };
@@ -2310,6 +2346,9 @@ impl Render for StashBrowser {
         let (refused, dimmed) =
             crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
         let (refused, dimmed) = (busy || refused, busy || dimmed);
+        // One line of the footer note, which a refusal keeps two or one of
+        // in the stacked detail.
+        let note_line = crate::image_compare::text_line(crate::appearance::ui_text(10.), window);
         let actions = self.snapshot.is_some().then(|| {
             let row = div()
                 .debug_selector(|| "stash-actions".into())
@@ -2319,7 +2358,7 @@ impl Render for StashBrowser {
                 .gap_2()
                 .pt_1()
                 .when(!pinned, |row| {
-                    row.on_children_prepainted(self.detail.controls(
+                    let report = self.detail.controls(
                         vec![
                             Some(restore_index.clone()),
                             None,
@@ -2327,7 +2366,12 @@ impl Render for StashBrowser {
                             Some(restore.clone()),
                         ],
                         room,
-                    ))
+                    );
+                    let restore_at = self.restore_at.clone();
+                    row.on_children_prepainted(move |bounds, window, cx| {
+                        restore_at.set(bounds.get(3).copied());
+                        report(bounds, window, cx);
+                    })
                 })
                 .child(
                     Checkbox::new("stash-restore-index")
@@ -2382,12 +2426,15 @@ impl Render for StashBrowser {
                 .when(!pinned, |actions| {
                     actions.on_children_prepainted(reveal_note(
                         self.reveal_note.clone(),
+                        self.note_lines.clone(),
+                        self.restore_at.clone(),
                         self.detail.scroll().clone(),
                         room,
+                        note_line,
                     ))
                 })
                 .child(row)
-                .child(self.restore_note(!pinned, cx))
+                .child(self.restore_note((!pinned).then(|| self.note_lines.get()), cx))
         });
         if pinned {
             // The footer is always in view.
@@ -3378,6 +3425,35 @@ mod tests {
         drop(fixture);
     }
 
+    /// The keyboard ring the last frame painted around `control`: the
+    /// tightest outline in the accent, at any opacity, that encloses it.
+    fn ring_around(
+        cx: &mut gpui::VisualTestContext,
+        control: Bounds<Pixels>,
+    ) -> Option<crate::focus_ring::PaintedOutline> {
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        crate::focus_ring::painted_outlines_where(cx, move |color| {
+            color.a > 0.
+                && Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .into_iter()
+        .filter(|ring| {
+            ring.bounds.left() <= control.left()
+                && ring.bounds.top() <= control.top()
+                && ring.bounds.right() >= control.right()
+                && ring.bounds.bottom() >= control.bottom()
+        })
+        .min_by(|a, b| {
+            let area = |ring: &crate::focus_ring::PaintedOutline| {
+                f32::from(ring.bounds.size.width) * f32::from(ring.bounds.size.height)
+            };
+            area(a).total_cmp(&area(b))
+        })
+    }
+
     /// Review restore… in Stashes reads the pause in the core rather than
     /// refuse from the one the window read last. A merge aborted in a
     /// terminal, unseen, no longer refuses it: Stashes gives way to the
@@ -3391,13 +3467,19 @@ mod tests {
     /// note says so, a status heard once speech pauses. Refused from the
     /// window's cache, Stashes closed and the window's error that said why
     /// went with the quiet read that found the merge ended, within 0.3 s
-    /// natively, so nothing showed and the selection was lost.
+    /// natively, so nothing showed and the selection was lost. Pressed from
+    /// the keyboard, Review restore… keeps focus and its ring whole as the
+    /// refusal lands, so Space presses it again; at 18 pt in the 461 × 490
+    /// window, where the detail is about 60 px tall, the refusal keeps one
+    /// line beneath it. The detail scrolled to show the whole two-line
+    /// refusal there and cut Review restore…'s ring.
     #[gpui::test]
     async fn review_restore_reads_the_pause_and_answers_in_stashes(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
             crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
                 .await;
-        cx.update(|_, cx| cx.set_reduce_motion(true));
+        // The app's palette, whose accent draws the keyboard ring.
+        crate::focus_ring::sweep::prepare(&app, cx);
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let git = two_stashes(&repository);
         let browser = |cx: &mut gpui::VisualTestContext| {
@@ -3485,6 +3567,22 @@ mod tests {
                     line.top() >= restore.bottom() && line.top() - restore.bottom() < px(24.),
                     "{at}: the refusal {line:?} lies beneath Review restore… {restore:?}"
                 );
+                // Review restore… keeps focus, whole with its ring.
+                assert_eq!(
+                    cx.update(|window, cx| stashes.read(cx).detail.focused(window)),
+                    Some("restore-saved-stash".into()),
+                    "{at}: Review restore… keeps focus"
+                );
+                let ring = ring_around(cx, restore)
+                    .unwrap_or_else(|| panic!("{at}: Review restore… {restore:?} draws no ring"));
+                assert!(ring.whole, "{at}: Review restore…'s ring {ring:?} is whole");
+                let one = cx.update(|window, _| {
+                    crate::image_compare::text_line(appearance::ui_text(10.), window)
+                });
+                let lines = (f32::from(line.size.height) / f32::from(one)).round() as usize;
+                if width < 800. && interface == 18 {
+                    assert_eq!(lines, 1, "{at}: the refusal {line:?} keeps one line");
+                }
                 assert_eq!(
                     crate::native_accessibility::written::announced(&format!(
                         "stash-restore-refusal-{refusals}"
@@ -3502,8 +3600,9 @@ mod tests {
                     app.read_with(cx, |app, _| app.integration_state.is_some()),
                     "{at}: the refusal has the window read the pause"
                 );
-                // Pressed again, a fresh line is announced once more.
-                press_review_restore(&stashes, cx);
+                // Pressed again where it is, a fresh line is announced once
+                // more.
+                space(cx);
                 recovery_lands(&app, cx);
                 assert_eq!(
                     stashes.read_with(cx, |stashes, _| stashes.refusals),
@@ -3533,6 +3632,11 @@ mod tests {
                     .unwrap_or_else(|| panic!("{at}: the note says the merge ended"));
                 let detail = cx.debug_bounds("stash-detail-column").unwrap();
                 assert!(inside(ended, detail), "{at}: {ended:?} in {detail:?}");
+                let restore = cx.debug_bounds("restore-saved-stash").unwrap();
+                assert!(
+                    ring_around(cx, restore).is_some_and(|ring| ring.whole),
+                    "{at}: Review restore… {restore:?} keeps its ring whole"
+                );
                 assert_eq!(
                     crate::native_accessibility::written::announced(&format!(
                         "stash-restore-ended-{}",
