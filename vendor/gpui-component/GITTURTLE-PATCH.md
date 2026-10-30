@@ -1021,9 +1021,11 @@ went back to the top, and a right-click's menu lost it, so Enter just after a
 write ended could choose another item than the one the keys had reached.
 `rebuild` now keeps the keyboard's cursor (`KeptCursor`) on the item it was
 on, found again by its name (`PopupMenuItem::name`: an item's or a submenu's
-label, an element item's accessible name) nearest its old place, wherever the
-builder now puts it; an item without a name is found only at its own place,
-where the entry there has none either. It never moves the cursor to another
+label, an element item's accessible name) and its order among the items of
+that name, wherever the builder now puts it; an item without a name is found
+only at its own place, where the entry there has none either. Taken nearest
+its old place, a repeated name let items added above move the cursor to the
+other item of that name. It never moves the cursor to another
 item. Where that item is gone or can no longer act, as while a write refuses
 it or once its name states a condition it waits for, the cursor rests on
 nothing and the menu remembers the item (`kept_cursor`), at the place it now
@@ -1033,6 +1035,10 @@ the pointer moves the selection, which forgets it. From rest, Up moves to the
 last item that can act before the remembered place and Down to the first at
 or after it. A remembered item takes the place of any selection the builder
 makes (`select_first_item`); with none, the builder's selection stands. A
+capped menu scrolls to the cursor only where the rebuild moves it to another
+row, as its item moved or it returns from rest; the selection of a builder
+whose choice a kept cursor replaces scrolls a handle nothing draws. A menu
+the wheel had scrolled once scrolled back to the cursor at every rebuild. A
 selection the pointer made is cleared, as upstream, and the menu keys are
 otherwise unchanged. An earlier form of this patch moved the cursor to the
 nearest item that could act and remembered that one, which left it on an
@@ -1051,15 +1057,19 @@ Working row menus (`workspace::working_row_menu`), the project rows' menus
 crate's own `menu::popup_menu::tests::a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item`,
 `a_rebuilt_menu_rests_the_cursor_until_its_item_can_act`,
 `the_menu_keys_start_from_a_resting_cursors_item`,
-`a_key_or_the_pointer_ends_a_resting_cursors_remembering` and
+`a_key_or_the_pointer_ends_a_resting_cursors_remembering`,
+`a_rebuilt_menu_finds_a_repeated_name_by_its_order`,
+`a_rebuild_scrolls_a_capped_menu_only_as_the_cursor_changes_row`,
+`a_rebuild_after_the_pointer_leaves_the_cursors_row_keeps_no_cursor` and
 `a_rebuilt_menu_clears_the_pointers_selection`, run out of tree with the
 workspace's patch table since this crate is an excluded workspace member,
 build a menu again with the same items, an item added above the cursor's, its
 item refused or gone while another can act and the builder selects its first
-item, then offered again, and read the cursor's item each time, and Up and
-Down from rest; without the kept cursor the first reads no cursor once the
-menu is built again, and with the nearest item that can act the second reads
-the cursor on Rename.
+item, then offered again, and read the cursor's item each time, Up and Down
+from rest, a repeated name, a capped menu's scroll offset, and the pointer
+leaving the cursor's row; without the kept cursor the first reads no cursor
+once the menu is built again, and with the nearest item that can act the
+second reads the cursor on Rename.
 `cargo test --locked -p gitturtle a_right_click_row_menu_keeps_its_cursor_across_a_write`
 and `a_keyboard_row_menu_keeps_its_cursor_across_a_write` move a Working row
 menu's cursor down to Delete untracked file…, start and end a Stage of another
