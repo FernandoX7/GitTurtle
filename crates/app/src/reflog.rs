@@ -1569,23 +1569,51 @@ mod tests {
         };
 
         // The height at which the list starts exactly on the content's fold
-        // follows the text's metrics, so it is found near 640 × 400: the
-        // fold moves with the window's foot and the list with the dialog's
-        // centre, about a pixel nearer for each pixel taller.
-        let gap = |cx: &mut VisualTestContext| {
-            rendered(cx, "reflog-list").top() - rendered(cx, "reflog-browser-content").bottom()
+        // follows the text's metrics, and how fast the gap closes with it
+        // follows the layout: the fold moves with the window's foot and the
+        // list with the dialog's centre, about half as far. So it is found by
+        // bisection, from 640 × 400, where the list lies below the fold, to
+        // the tallest height at which it still does, where it starts on the
+        // fold to within a fraction of a device pixel.
+        let gap = |cx: &mut VisualTestContext, height: f32| {
+            cx.simulate_resize(size(px(640.), px(height)));
+            draw(cx);
+            f32::from(
+                rendered(cx, "reflog-list").top() - rendered(cx, "reflog-browser-content").bottom(),
+            )
         };
-        cx.simulate_resize(size(px(640.), px(400.)));
-        draw(cx);
-        let near = 400. + f32::from(gap(cx));
-        let on_fold = (0..=16)
-            .map(|step| near - 2. + step as f32 * 0.25)
-            .find(|&height| {
-                cx.simulate_resize(size(px(640.), px(height)));
-                draw(cx);
-                gap(cx) == px(0.)
-            })
-            .unwrap_or_else(|| panic!("no height near 640 × {near} starts the list on the fold"));
+        let mut below = 400.;
+        let start = gap(cx, below);
+        assert!(
+            start > 0.,
+            "at 640 × 400 the list lies {start} px below the content's fold"
+        );
+        // A height at which the list reaches over the fold.
+        let mut over = below + 2. * start + 8.;
+        for tries in 0.. {
+            if gap(cx, over) < 0. {
+                break;
+            }
+            assert!(
+                tries < 8,
+                "at 640 × {over} the list still lies below the content's fold"
+            );
+            (below, over) = (over, over + 2. * (over - below));
+        }
+        while over - below > 1. / 64. {
+            let middle = (below + over) / 2.;
+            if gap(cx, middle) >= 0. {
+                below = middle;
+            } else {
+                over = middle;
+            }
+        }
+        let on_fold = below;
+        let rest = gap(cx, on_fold);
+        assert!(
+            rest < 0.25 / scale as f32,
+            "at 640 × {on_fold} the list starts {rest} px below the content's fold, not on it"
+        );
 
         for height in [680., 490., 400., on_fold] {
             crate::native_accessibility::forget_clipping_nodes();
