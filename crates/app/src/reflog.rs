@@ -2213,11 +2213,8 @@ mod tests {
         });
         settle_reads(cx, &browser);
 
-        assert_eq!(
-            browser.read_with(cx, |this, _| this.superseded.clone()),
-            [None],
-            "the review's read answered with its plan, which Read log superseded"
-        );
+        // What a person sees first, so that a plan that opens fails here
+        // whatever the bookkeeping says.
         assert!(
             cx.debug_bounds("operation-consequences").is_none(),
             "no recovery plan opens"
@@ -2225,6 +2222,11 @@ mod tests {
         assert!(
             cx.debug_bounds("reflog-browser-content").is_some(),
             "the Reflog stays open"
+        );
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.superseded.clone()),
+            [None],
+            "the review's read answered with its plan, which Read log superseded"
         );
         let (page, selected) =
             browser.read_with(cx, |this, _| (this.page.is_some(), this.selected.is_some()));
