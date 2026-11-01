@@ -2436,6 +2436,7 @@ impl GitTurtle {
     pub(super) fn render_inspector(
         &self,
         files_header: FilesHeader,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.file_history.is_active() {
@@ -2460,6 +2461,7 @@ impl GitTurtle {
                 ))
                 .into_any_element();
         };
+        let extent = self.message_extent(commit, window, cx);
         div()
             .debug_selector(|| "commit-inspector".into())
             .size_full()
@@ -2469,7 +2471,7 @@ impl GitTurtle {
             .bg(rgb(colors.panel))
             .border_l_1()
             .border_color(rgb(colors.border))
-            .child(self.render_commit_message(commit, false, cx))
+            .child(self.render_commit_message(commit, false, extent, cx))
             .child(
                 div()
                     .id("commit-inspector-files")
@@ -7097,7 +7099,7 @@ impl GitTurtle {
                                 window,
                                 cx,
                             ),
-                        _ => self.render_inspector(files_header, cx),
+                        _ => self.render_inspector(files_header, window, cx),
                     }),
             );
         workspace.into_any_element()
@@ -19135,6 +19137,70 @@ pub(crate) mod tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The commit inspector's message panel is as tall as the message and
+    /// metadata where they fit, with one inset after the last parent, as
+    /// wide as the metadata's inset above its first line, so Changed files
+    /// follows P1 at the inspector's rhythm: at 13 pt the panel kept a fixed
+    /// 45% of the inspector and left about 60 px blank under P1. A message
+    /// too long for that 45% still stops there and scrolls.
+    #[gpui::test]
+    async fn changed_files_follow_the_last_parent(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        for (text, width, height) in [
+            (13, 1000., 680.),
+            (13, 1280., 800.),
+            (13, 461., 980.),
+            (18, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let parent = cx.debug_bounds("commit-parent-0").unwrap();
+            let header = cx.debug_bounds("changed-files-header").unwrap();
+            // The inset, then the panel's 1 px bottom border.
+            let rhythm = cx.update(|window, _| window.rem_size() * 0.75) + px(1.);
+            let gap = header.top() - parent.bottom();
+            assert!(
+                (gap - rhythm).abs() <= px(0.5),
+                "{at}: {gap:?} from P1 {parent:?} to Changed files {header:?}, not {rhythm:?}"
+            );
+            assert_eq!(
+                cx.read(|cx| app.read(cx).inspector_message.overflow()),
+                Some(px(0.)),
+                "{at}: nothing to scroll"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A message too long for 45% of the inspector keeps that 45% and
+    /// scrolls, its panel no longer as tall as what it holds
+    /// (`changed_files_follow_the_last_parent`).
+    #[gpui::test]
+    async fn a_long_message_keeps_its_share_and_scrolls(cx: &mut TestAppContext) {
+        let body: String = (1..=80).map(|line| format!("Body line {line}\n")).collect();
+        let message = format!("fixture notes\n\n{body}");
+        let script = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata 5\nnote\n\ndone\n",
+            message.len(),
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let inspector = cx.debug_bounds("commit-inspector").unwrap();
+        let panel = cx.debug_bounds("commit-message-panel").unwrap();
+        assert!(
+            (panel.size.height - inspector.size.height * 0.45).abs() <= px(1.),
+            "{panel:?} keeps 45% of {inspector:?}"
+        );
+        assert!(
+            cx.read(|cx| app.read(cx).inspector_message.overflow())
+                .is_some_and(|overflow| overflow > px(0.)),
+            "a long message scrolls"
+        );
     }
 
     /// A parent's control fits the 156 px inspector of an 18 pt half tile,

@@ -839,7 +839,7 @@ impl GitTurtle {
                     )),
             )
             .child(div().flex_1().min_h_0().flex().flex_col()
-                .children(entry.map(|entry| self.render_commit_message(&entry.commit, true, cx)))
+                .children(entry.map(|entry| self.render_commit_message(&entry.commit, true, None, cx)))
             .children(lineage.error.as_ref().map(|error| {
                 crate::native_accessibility::clips_children(div()
                     .id("file-history-failure")

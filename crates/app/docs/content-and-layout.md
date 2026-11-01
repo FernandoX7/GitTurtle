@@ -81,8 +81,12 @@ A missed rebuild leaves a row showing a previous frame: a hex field whose text o
 
 `commit_message::State` retains a selected immutable OID, shared display pieces,
 variable-height `ListState`, and keyboard focus. History/Compare allocate at most
-45% of the inspector to this message region; its copy toolbar remains outside
-the scroll viewport. File History shares the presentation inside the remaining
+45% of the inspector to this message region and shrink it to the message and
+metadata where they fit: `GitTurtle::message_extent` lays the pieces and the
+metadata out at the inspector's drawn width, as the list does, while the frame
+builds the inspector, stops at the window's height, and keeps the result with
+the presentation per width, bound and font, so a commit is measured once. Its
+copy toolbar remains outside the scroll viewport. File History shares the presentation inside the remaining
 height between its bounded header and footer, leaving revision rows usable.
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.

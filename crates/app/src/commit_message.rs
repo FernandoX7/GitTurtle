@@ -34,6 +34,18 @@ struct Presentation {
     focus: FocusHandle,
     selection: Selection,
     scale: f32,
+    /// The message and metadata's height as last measured
+    /// (`GitTurtle::message_extent`), with the width, the bound and the
+    /// font it was measured for.
+    extent: Option<Extent>,
+}
+
+/// A measured height of a presented message and its metadata.
+struct Extent {
+    width: Pixels,
+    bound: Pixels,
+    key: LineKey,
+    height: Pixels,
 }
 
 #[derive(Default)]
@@ -61,6 +73,9 @@ pub(super) struct Toolbar {
     /// toolbar and the metadata below it share: the room a line or a
     /// control of the metadata has, such as a parent's control.
     room: Pixels,
+    /// The width inside the inspector's left border: the message's viewport
+    /// and the width its pieces and metadata are laid out at.
+    viewport: Pixels,
 }
 
 /// One layout of the toolbar's controls (DESIGN.md, "One responsive order":
@@ -180,6 +195,7 @@ impl Toolbar {
             actions,
             reserve: pinned,
             room,
+            viewport: width - px(1.),
         }
     }
 
@@ -209,6 +225,26 @@ impl State {
     /// inspector out.
     pub(super) fn details_room(&self) -> Option<Pixels> {
         self.1.get().map(|toolbar| toolbar.room)
+    }
+
+    /// The height the presented message and metadata were last measured at
+    /// for `width`, `bound` and `key` (`GitTurtle::message_extent`).
+    fn extent(&self, width: Pixels, bound: Pixels, key: &LineKey) -> Option<Pixels> {
+        let state = self.0.borrow();
+        let extent = state.as_ref()?.extent.as_ref()?;
+        (extent.width == width && extent.bound == bound && extent.key == *key)
+            .then_some(extent.height)
+    }
+
+    fn remember_extent(&self, width: Pixels, bound: Pixels, key: LineKey, height: Pixels) {
+        if let Some(state) = self.0.borrow_mut().as_mut() {
+            state.extent = Some(Extent {
+                width,
+                bound,
+                key,
+                height,
+            });
+        }
     }
 
     /// Drops a presentation of another OID, ending its text selection at once.
@@ -313,6 +349,7 @@ impl State {
                 pieces,
                 focus,
                 scale,
+                extent: None,
             });
         }
         let state = retained.as_mut().unwrap();
@@ -463,10 +500,55 @@ impl GitTurtle {
         }
     }
 
+    /// The height the selected commit's message and metadata take in the
+    /// inspector the window draws next, laid out at its width as the list
+    /// lays them out, and one inset after the last row, as wide as the
+    /// metadata's inset above its first: the height the message's viewport
+    /// takes where they fit, so Changed files follows the last parent at the
+    /// inspector's rhythm rather than below the rest of a fixed 45%, which
+    /// left about 60 px blank under P1 at 13 pt. Measured once for each
+    /// commit, width and font, and only as far as the window's height, past
+    /// which the panel's cap holds them anyway. `None` where no window lays
+    /// the inspector out.
+    pub(super) fn message_extent(
+        &self,
+        commit: &Commit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Pixels> {
+        let width = self.inspector_message.1.get()?.viewport;
+        let bound = window.viewport_size().height;
+        let key = LineKey::current(window);
+        let (pieces, _, _, selection) = self.inspector_message.presentation(commit, cx);
+        if let Some(height) = self.inspector_message.extent(width, bound, &key) {
+            return Some(height);
+        }
+        let mut height = px(0.);
+        for (index, piece) in pieces.iter().enumerate() {
+            if height > bound {
+                break;
+            }
+            let row = render_piece(piece, index, &selection, cx).into_any_element();
+            height += crate::in_frame::measured_height(row, width, window, cx);
+        }
+        if height <= bound {
+            let metadata = self.render_commit_metadata(commit, &selection, window, cx);
+            height += crate::in_frame::measured_height(metadata, width, window, cx);
+        }
+        let height = height + window.rem_size() * 0.75;
+        self.inspector_message
+            .remember_extent(width, bound, key, height);
+        Some(height)
+    }
+
+    /// The selected commit's message panel; `extent`, where the window lays
+    /// the inspector out, is the height its message and metadata take
+    /// (`message_extent`), to which the panel shrinks below its cap.
     pub(super) fn render_commit_message(
         &self,
         commit: &Commit,
         file_history: bool,
+        extent: Option<Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -530,10 +612,13 @@ impl GitTurtle {
         let click_focus = focus.clone();
         div()
             .id("commit-message-panel")
+            .debug_selector(|| "commit-message-panel".into())
             .role(Role::Group)
             .aria_label("Selected commit message and details")
             .min_w_0()
-            .h(relative(0.45))
+            // As tall as the message and metadata where they fit, at most
+            // 45% of the inspector; their viewport gives way below.
+            .when(extent.is_none(), |panel| panel.h(relative(0.45)))
             .max_h(relative(0.45))
             .flex_shrink_0()
             .flex()
@@ -604,7 +689,13 @@ impl GitTurtle {
                     let _ = key_owner.update(cx, |_, cx| cx.notify());
                     cx.stop_propagation();
                 })
-                .relative().flex_1().min_h_0().min_w_0().overflow_hidden()
+                .relative().min_h_0().min_w_0().overflow_hidden()
+                .map(|viewport| match extent {
+                    // Its inset gives way first, so details that fit still
+                    // draw no scrollbar.
+                    Some(height) => viewport.h(height).flex_shrink(1.),
+                    None => viewport.flex_1(),
+                })
                 .child(list)
                 .child(selection.registrar(scroll.clone()))
                 .child(Scrollbar::vertical(&scroll).id("commit-message-scrollbar").mode(ScrollbarMode::Always))
@@ -717,7 +808,7 @@ pub(crate) mod tests {
                 .w(px(self.width))
                 .h(px(self.height))
                 .child(self.app.update(cx, |app, cx| {
-                    app.render_inspector(crate::views::FilesHeader::WHOLE, cx)
+                    app.render_inspector(crate::views::FilesHeader::WHOLE, window, cx)
                 }));
             if !self.history {
                 return inspector.into_any_element();
