@@ -4914,13 +4914,16 @@ impl GitTurtle {
     }
 
     /// Copy file path, File history and Blame folded into one 28 px control
-    /// showing the more-actions dots, where the whole path does not fit
+    /// showing the overflow chevrons ("»"), where the whole path does not fit
     /// beside them as icons (`path_actions`): named "File actions", its
     /// tooltip leading with that name and listing them, its menu acting only
-    /// on the file it was built for while Compare still shows it. A copy
-    /// chosen there confirms on this control, as the branch picker confirms
-    /// a switch: the check takes the dots' place and its tooltip reads
-    /// Copied, with its name unchanged.
+    /// on the file it was built for while Compare still shows it. The
+    /// chevrons are macOS's toolbar overflow, which this fold is: the
+    /// more-actions dots belong to the inspector's Actions in the same row,
+    /// and two controls with the dots side by side read as one control drawn
+    /// twice. A copy chosen there confirms on this control, as the branch
+    /// picker confirms a switch: the check takes the chevrons' place and its
+    /// tooltip reads Copied, with its name unchanged.
     fn file_actions_menu(
         &self,
         file: &FileChange,
@@ -4931,7 +4934,7 @@ impl GitTurtle {
         const NAME: &str = "File actions";
         let mark = copy_feedback::Mark::new("file-actions-menu", file.path());
         let copied = copy_feedback::confirmed(&mark, cx);
-        let symbol = if copied { "check" } else { "more" };
+        let symbol = if copied { "check" } else { "overflow" };
         #[cfg(test)]
         note_control_icon(&"file-actions-menu".into(), &format!("icons/{symbol}.svg"));
         let names = ["Copy file path"]
@@ -18319,10 +18322,12 @@ pub(crate) mod tests {
     /// 177 px column of a 461 × 490 window "notes.txt" does not fit beside
     /// Copy path, File history and Blame as icons, where it read "notes.t…",
     /// so the three fold into one 28 px File actions control showing the
-    /// more-actions dots and the path is whole. Its menu lists them; Copy
+    /// overflow chevrons and the path is whole. Its menu lists them; Copy
     /// file path copies the path and confirms on that control, the check
-    /// taking the dots' place, and Blame opens the file's attribution. In a
-    /// 1,000 px window the actions stand beside the path, Blame labelled.
+    /// taking the chevrons' place, and Blame opens the file's attribution. In
+    /// a 1,000 px window the actions stand beside the path, Blame labelled.
+    /// The inspector's Actions beside it in the same row keeps the
+    /// more-actions dots, so the row shows one control with the dots.
     #[gpui::test]
     async fn compare_folds_its_actions_so_the_path_stays_whole(cx: &mut TestAppContext) {
         const COPY: &str = "menu-item: Copy file path · MenuItem";
@@ -18358,7 +18363,19 @@ pub(crate) mod tests {
             trigger.left() >= path.right(),
             "after the path: {trigger:?}"
         );
-        assert_eq!(icon("file-actions-menu").as_deref(), Some("icons/more.svg"));
+        assert_eq!(
+            icon("file-actions-menu").as_deref(),
+            Some("icons/overflow.svg")
+        );
+        // The commit's compact Actions shows the dots in the same row.
+        let menu = cx.debug_bounds("file-actions-menu").unwrap();
+        let dots = cx
+            .debug_bounds("commit-recovery-more")
+            .expect("the commit's Actions keeps only its dots at 461 px");
+        assert!(
+            dots.top() < menu.bottom() && menu.top() < dots.bottom(),
+            "one row: File actions {menu:?}, Actions {dots:?}"
+        );
         assert_eq!(
             COMPACT_NAMES.with(|names| names.borrow().get("file-actions-menu").copied()),
             Some("File actions")
