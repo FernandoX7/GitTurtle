@@ -2182,14 +2182,13 @@ impl GitTurtle {
 /// The rule under the repository tab strip, inside its height.
 const TAB_STRIP_BORDER: Pixels = px(1.);
 
-/// Tab labels' whole widths and floors by label, with the font, sizes and
-/// scale factor they were laid out with.
-type LabelWidths = std::cell::RefCell<
-    Option<(
-        (crate::views::LineKey, u32),
-        Vec<(String, (Pixels, Pixels))>,
-    )>,
->;
+/// Tab labels' whole widths, rounded up to a whole pixel, and floors by
+/// label, with the font and sizes they were laid out with. The window's
+/// scale factor is applied as each is read (`tab_label_widths`), so windows
+/// at two scale factors share them: keyed by the scale factor too, the one
+/// entry was laid out again on each window's frames in turn.
+type LabelWidths =
+    std::cell::RefCell<Option<(crate::views::LineKey, Vec<(String, (Pixels, Pixels))>)>>;
 
 thread_local! {
     /// Each tab label's whole width and floor (`tab_label_widths`), so a
@@ -2199,19 +2198,16 @@ thread_local! {
 
 /// A repository tab label's whole width, rounded up as layout rounds it, to
 /// a whole pixel and then a whole device pixel
-/// (`views::laid_out_text_width`), and its floor: the narrowest it is drawn in without a lone ellipsis, in the
-/// interface font at the tab's text size: the whole label, or, where that is
-/// narrower, its pin (the first `pin` bytes) and the name's first character
-/// before the ellipsis. The toolkit's truncation keeps the characters that
-/// fit strictly before its ellipsis and drops trailing whitespace and ASCII
-/// punctuation, so the cut runs to the first character it keeps, and takes
-/// the next whole pixel past its width.
+/// (`views::laid_out_text_width`), and its floor: the narrowest it is drawn
+/// in without a lone ellipsis, in the interface font at the tab's text size:
+/// the whole label, or, where that is narrower, its pin (the first `pin`
+/// bytes) and the name's first character before the ellipsis. The toolkit's
+/// truncation keeps the characters that fit strictly before its ellipsis and
+/// drops trailing whitespace and ASCII punctuation, so the cut runs to the
+/// first character it keeps, and takes the next whole pixel past its width.
 fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels) {
-    let key = (
-        crate::views::LineKey::current(window),
-        window.scale_factor().to_bits(),
-    );
-    TAB_LABEL_WIDTHS.with(|cache| {
+    let key = crate::views::LineKey::current(window);
+    let (whole, floor) = TAB_LABEL_WIDTHS.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
             *cache = Some((key, Vec::new()));
@@ -2223,7 +2219,7 @@ fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels
         let size = appearance::ui_text(12.);
         let weight = window.text_style().font_weight;
         let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
-        let whole = crate::views::laid_out_text_width(width(label), window);
+        let whole = width(label).ceil();
         let floor = label[pin..]
             .char_indices()
             .find(|(_, c)| !(c.is_whitespace() || c.is_ascii_punctuation()))
@@ -2238,7 +2234,10 @@ fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels
         }
         floors.push((label.to_owned(), (whole, floor)));
         (whole, floor)
-    })
+    });
+    // Layout rounds the whole pixel up to a whole device pixel; the floor,
+    // no wider than the whole pixel, keeps below it.
+    (crate::views::laid_out_text_width(whole, window), floor)
 }
 
 /// The repository tab strip's minimum height: the larger of its 36 px at the
@@ -4197,6 +4196,45 @@ mod tests {
             "{forms:?}"
         );
         reset_strip_text(cx, &app);
+    }
+
+    /// A tab label is laid out once for windows at two scale factors drawn
+    /// in turn, as a monitor of each shows them: the cache keeps its whole
+    /// pixel and each read rounds it to that window's device pixels, so at
+    /// 1.5 it lands on a third of a pixel and at 2 on a half. Keyed by the
+    /// scale factor, the cache's one entry was laid out again at each change.
+    #[gpui::test]
+    async fn tab_labels_are_laid_out_once_across_scale_factors(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx, _paths) = strip_window(cx).await;
+        let label = "a much longer repository name";
+        // The label's width at `scale`, and the lines its read laid out.
+        let read = |cx: &mut VisualTestContext, scale: f32| {
+            let layouts = || crate::views::LINE_LAYOUTS.with(|count| count.get());
+            cx.update(|window, _| {
+                window.set_scale_factor(scale);
+                let before = layouts();
+                let width = tab_label_widths(label, 0, window).0;
+                (width, layouts() - before)
+            })
+        };
+        let first = [read(cx, 1.5).0, read(cx, 2.).0];
+        for turn in 0..3 {
+            for (scale, width) in [1.5, 2.].into_iter().zip(first) {
+                assert_eq!(
+                    read(cx, scale),
+                    (width, 0),
+                    "turn {turn} at {scale}: its own width, with no label laid out again"
+                );
+            }
+        }
+        for (width, scale) in first.into_iter().zip([1.5, 2.]) {
+            let device = f32::from(width) * scale;
+            assert!(
+                (device - device.round()).abs() < 0.001,
+                "{width:?} on a device pixel at {scale}"
+            );
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
     }
 
     /// Every clip that keeps room for the ring a focused Button draws outside
