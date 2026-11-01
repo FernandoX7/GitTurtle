@@ -1403,7 +1403,7 @@ fn orientation(camera: ModelCamera) -> Div {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
     fn document() -> Document {
@@ -1617,16 +1617,28 @@ mod tests {
     async fn a_focused_models_canvas_keeps_its_ring_while_the_pointer_moves(
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        use gpui_kit::{Modifiers, VisualTestContext};
         let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline shape.obj\ndata 32\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n\ndone\n";
         let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, input).await;
         crate::focus_ring::sweep::prepare(&app, cx);
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         crate::views::tests::settle(&app, cx).await;
         crate::width_walk::frame(cx);
+        assert_the_canvas_keeps_its_ring(cx, "model-canvas-1", "Compare");
+    }
+
+    /// The model canvas `selector` names, which `at` draws, focused by a
+    /// click draws its plain edge, marked by a key the accent ring, and
+    /// keeps the ring while the pointer moves over it and away
+    /// ([`crate::focus_ring`]).
+    pub(crate) fn assert_the_canvas_keeps_its_ring(
+        cx: &mut gpui_kit::VisualTestContext,
+        selector: &'static str,
+        at: &str,
+    ) {
+        use gpui_kit::{Modifiers, VisualTestContext};
         let canvas = cx
-            .debug_bounds("model-canvas-1")
-            .expect("Compare draws After's model");
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{at} draws the model {selector}"));
         let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
         // The colour of the edge the frame paints around the canvas.
         let edge = |cx: &mut VisualTestContext| -> Option<Hsla> {
@@ -1658,14 +1670,23 @@ mod tests {
                 .all(|(a, b)| (a - b).abs() < 0.01)
             })
         };
-        assert!(!ringed(cx), "an unfocused canvas draws its plain edge");
+        assert!(
+            !ringed(cx),
+            "{at}: an unfocused canvas draws its plain edge"
+        );
         // A click focuses the canvas without marking it; a key marks it.
         cx.simulate_click(canvas.center(), Modifiers::none());
         crate::width_walk::frame(cx);
-        assert!(!ringed(cx), "a click focuses the canvas without its ring");
+        assert!(
+            !ringed(cx),
+            "{at}: a click focuses the canvas without its ring"
+        );
         cx.simulate_keystrokes("f");
         crate::width_walk::frame(cx);
-        assert!(ringed(cx), "a key on the focused canvas draws its ring");
+        assert!(
+            ringed(cx),
+            "{at}: a key on the focused canvas draws its ring"
+        );
         cx.simulate_mouse_move(
             canvas.center() + point(px(9.), px(7.)),
             None,
@@ -1676,7 +1697,7 @@ mod tests {
         crate::width_walk::frame(cx);
         assert!(
             ringed(cx),
-            "moving the pointer over the canvas and away keeps its ring: {:?}",
+            "{at}: moving the pointer over the canvas and away keeps its ring: {:?}",
             edge(cx)
         );
     }

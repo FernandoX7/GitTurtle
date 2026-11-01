@@ -6835,7 +6835,8 @@ mod tests {
             "github-account-options",
         ];
         assert_scroll_cue(cx, &app, &scroll, "github-panel", room, &controls);
-        // The content gives the gutter up: the track and the ring's room beside it.
+        // Overflowing, the content keeps the same gutter, the track now drawn in it, and the
+        // ring's room on its left.
         assert!(
             keeps_gutter(cx),
             "the overflowing body's content keeps the ring's room and the gutter {gutter:?}"
@@ -7351,7 +7352,7 @@ mod tests {
     /// Switching a PR's section moves nothing already drawn: the body keeps its scrollbar's
     /// gutter whether or not the section overflows, so the content's right edge, where the
     /// Buttons and the draft status at the panel's right end, and the tabs stay put. At 13 pt
-    /// in a 1,480 × 980 window Overview fits and Files overflows, and the right edge moved
+    /// in a 1,480 × 980 window Overview overflows and Files fits, and the right edge moved
     /// 19 px between them, the gutter's track and the ring's room.
     #[gpui::test]
     async fn switching_a_prs_section_moves_nothing(cx: &mut TestAppContext) {

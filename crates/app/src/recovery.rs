@@ -4105,6 +4105,37 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A stashed 3D model's canvas, focused from the keyboard, keeps its
+    /// accent ring while the pointer moves over it and away, at 13 pt in a
+    /// 1,480 × 980 window, as Compare's does: the detail's opener carries the
+    /// window's focus ring (`Opener::ringed_by`), which the canvas asks.
+    /// Without it, the canvas drew no ring at all in Stashes.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_models_canvas_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let model = |scale: &str| format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n");
+        let shape = (
+            "shape.obj",
+            model("2").into_bytes(),
+            model("1").into_bytes(),
+        );
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[shape],
+            (1480., 980., 13),
+            (0, "model-canvas-1"),
+        );
+        let app = browser
+            .read_with(cx, |browser, _| browser.owner.upgrade())
+            .expect("the window's app");
+        crate::focus_ring::sweep::prepare(&app, cx);
+        crate::model_view::tests::assert_the_canvas_keeps_its_ring(cx, "model-canvas-1", "Stashes");
+    }
+
     /// A stashed PDF's page arrows and page number are the Stashes detail's
     /// controls too, as its open control is: stacked beneath the list at
     /// 18 pt in a 461 × 490 window, with the detail scrolled to its top,
