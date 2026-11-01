@@ -24060,7 +24060,9 @@ pub(crate) mod tests {
                     layout.right() > window.right(),
                     "{at}: row {index} at {layout:?} runs past the window"
                 );
-                let node = crate::native_accessibility::clipping_node(&format!("commit-{index}"))
+                // Written under the row's ID, its commit's.
+                let id = app.read_with(cx, |app, _| commit_row_id(&app.commits[index].oid));
+                let node = crate::native_accessibility::clipping_node(&id.to_string())
                     .unwrap_or_else(|| panic!("{at}: row {index} writes its node"));
                 assert_eq!(node.role(), Role::ListBoxOption, "{at}: row {index}");
                 let bounds = node.bounds().expect("bounds");
