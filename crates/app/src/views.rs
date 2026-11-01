@@ -10866,9 +10866,10 @@ pub(crate) mod tests {
     ///
     /// Overlaid, where Before has no room of its own, it stays beneath
     /// Before's name, inside the preview: whole where After's dimensions
-    /// stay, and on one line ending in an ellipsis where they give way, with
-    /// the whole line in the name's tooltip and accessible name where that
-    /// cuts it. A long reason of about a hundred characters once wrapped to
+    /// stay, and on one line ending in an ellipsis where they give way, a
+    /// reason of two lines joined there by " · " as an absent side's are
+    /// (it was drawn unjoined), with the whole line in the name's tooltip
+    /// and accessible name where that cuts it. A long reason of about a hundred characters once wrapped to
     /// five lines at 18 pt in a 461 × 490 window and ran past the footer and
     /// the preview's clip. After's dimensions give way only where that frees
     /// room: beside a one-line reason as tall as they are, they stay.
@@ -11064,7 +11065,10 @@ pub(crate) mod tests {
 
         // Side by side and overlaid, with Before saying it has no image and
         // then why its image could not be shown.
-        for message in [None, Some(short), Some(failure)] {
+        // A reason of two lines, overlaid only: beneath the name, once the
+        // dimensions give way, its lines are joined on its one line.
+        let two_lines = "Could not read the image\nThe PNG header is damaged";
+        for message in [None, Some(short), Some(failure), Some(two_lines)] {
             edit_image_sides(&app, cx, |side, image| {
                 if side == 0 {
                     image.message = message.map(str::to_owned);
@@ -11072,6 +11076,9 @@ pub(crate) mod tests {
             });
             let text = message.unwrap_or(absent);
             for overlaid in [false, true] {
+                if message == Some(two_lines) && !overlaid {
+                    continue;
+                }
                 app.update(cx, |app, cx| {
                     app.set_image_mode(if overlaid {
                         crate::image_compare::Mode::Overlay
@@ -11200,6 +11207,15 @@ pub(crate) mod tests {
                             shown, 1,
                             "{at}: with the dimensions given way, Before's line {line:?} takes one line"
                         );
+                        if message == Some(two_lines) {
+                            met.insert("message joined");
+                            let joined = text.replace('\n', " · ");
+                            assert!(
+                                cx.debug_bounds(format!("image-side-details-0: {joined}").leak())
+                                    .is_some(),
+                                "{at}: Before's reason joins its lines, {joined:?}"
+                            );
+                        }
                         // After's dimensions gave way only where that frees
                         // room: drawn, either they or Before's reason would
                         // take more than that one line.
@@ -11215,7 +11231,9 @@ pub(crate) mod tests {
                             "{at}: After's dimensions ({after_lines} lines) gave way beside Before's {lines}-line reason, freeing no room"
                         );
                         met.insert("dimensions gave way");
-                        if kept.is_none() && lines > 1 {
+                        // Its lines joined, as the one line draws them.
+                        let joined = wraps(&text.replace('\n', " · "), room, cx).0;
+                        if kept.is_none() && joined > 1 {
                             met.insert("kept cut");
                             assert!(
                                 shows_tooltip(cx, "image-side-name-0"),
@@ -11343,6 +11361,7 @@ pub(crate) mod tests {
                 "kept joined",
                 "kept short",
                 "kept whole",
+                "message joined",
                 "one line",
                 "short in its place",
                 "source area named",

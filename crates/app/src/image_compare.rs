@@ -1038,8 +1038,15 @@ impl GitTurtle {
                             // The short line stands for both sentences, which
                             // the name's tooltip keeps.
                             Some(line) => *line != one_line(&details[i]),
+                            // Its lines joined, as drawn once the dimensions
+                            // give way, the only place this answer is read.
                             None => {
-                                wrapped_lines(&details[i], caption_size, caption_text, window) > 1
+                                wrapped_lines(
+                                    &one_line(&details[i]),
+                                    caption_size,
+                                    caption_text,
+                                    window,
+                                ) > 1
                             }
                         }
                 });
@@ -1666,7 +1673,9 @@ fn absent_short(index: usize, side: &worker::ImageSide) -> Option<&'static str> 
 }
 
 /// `details` on one line, as an absent side keeps it beneath its name in
-/// Overlay and Wipe where that line holds it: its lines joined.
+/// Overlay and Wipe where that line holds it, and as a side that says why
+/// its image could not be shown keeps it there once the dimensions give
+/// way: its lines joined.
 fn one_line(details: &str) -> String {
     details.replace('\n', " · ")
 }
@@ -2109,8 +2118,18 @@ impl Captions<'_> {
                                             line.truncate()
                                         })
                                         .child({
+                                            // A side that says why its image
+                                            // could not be shown joins its
+                                            // lines on the one line it keeps
+                                            // once the dimensions give way.
                                             let line =
-                                                self.kept_lines[i].clone().unwrap_or(details);
+                                                self.kept_lines[i].clone().unwrap_or_else(|| {
+                                                    if kept && !dimensions {
+                                                        one_line(&details)
+                                                    } else {
+                                                        details
+                                                    }
+                                                });
                                             div()
                                                 .debug_selector({
                                                     let line = line.clone();
