@@ -5823,10 +5823,12 @@ impl PathRow {
 /// the top directory fits whole beside the name, as much of its start as fits
 /// before "…" ("ass…/turtle.png"), down to "…/" and the name. Where not even
 /// that fits, the name alone, elided in its middle where it does not fit
-/// either ([`name_middle`]). It cuts only at a separator or a character
-/// boundary, so a name that is not UTF-8 keeps the replacement characters its
-/// display shows.
+/// either ([`name_middle`]). It cuts only at a separator or between
+/// graphemes, so an accent stays on its letter, a flag stays whole and a
+/// name that is not UTF-8 keeps the replacement characters its display
+/// shows.
 pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels) -> String {
+    use unicode_segmentation::UnicodeSegmentation as _;
     if width(path) <= room {
         return path.to_owned();
     }
@@ -5847,8 +5849,9 @@ pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels
             return shown;
         }
     }
-    // The top directory's first `keep` characters before "…".
-    let starts: Vec<usize> = top.char_indices().map(|(at, _)| at).collect();
+    // The top directory's first `keep` characters before "…", whole
+    // graphemes, so an accent or a flag is never split.
+    let starts: Vec<usize> = top.grapheme_indices(true).map(|(at, _)| at).collect();
     let shown = |keep: usize| format!("{}…{name}", &top[..starts[keep]]);
     match most_that_fit(starts.len(), |keep| width(&shown(keep)) <= room) {
         Some(keep) => shown(keep),
@@ -5864,14 +5867,16 @@ pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels
 /// not even the name's first character, "…" and the extension fit, the name
 /// whole, which the line's own middle elision cuts ([`ellipsis_middle`]).
 pub(crate) fn name_middle(name: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> String {
+    use unicode_segmentation::UnicodeSegmentation as _;
     if width(name) <= room {
         return name.to_owned();
     }
     let dot = name.rfind('.').filter(|dot| *dot > 0).unwrap_or(name.len());
     let (stem, extension) = name.split_at(dot);
-    let starts: Vec<usize> = stem.char_indices().map(|(at, _)| at).collect();
+    let starts: Vec<usize> = stem.grapheme_indices(true).map(|(at, _)| at).collect();
     let count = starts.len();
-    // `keep` of the stem's characters, the larger half from its start.
+    // `keep` of the stem's characters, whole graphemes, the larger half from
+    // its start.
     let shown = |keep: usize| {
         let front = starts.get(keep.div_ceil(2)).copied().unwrap_or(stem.len());
         let back = starts.get(count - keep / 2).copied().unwrap_or(stem.len());
@@ -18241,6 +18246,20 @@ pub(crate) mod tests {
         assert_eq!(
             tail("n\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}e.rs", 8.),
             "n\u{FFFD}…\u{FFFD}e.rs"
+        );
+        // Cuts fall between graphemes: a combining accent stays on its
+        // letter, in a directory and in a name, and a flag stays whole.
+        assert_eq!(tail("Re\u{301}sume\u{301}s/cv.pdf", 10.), "R…/cv.pdf");
+        assert_eq!(
+            tail("Re\u{301}sume\u{301}-final-draft.pdf", 9.),
+            "Re\u{301}…t.pdf"
+        );
+        assert_eq!(
+            tail(
+                "\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}\u{1F1EB}\u{1F1F7}.png",
+                7.
+            ),
+            "\u{1F1EF}\u{1F1F5}….png"
         );
     }
 
