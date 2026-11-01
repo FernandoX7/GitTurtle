@@ -1828,12 +1828,14 @@ fn source_text_inset() -> Pixels {
     gpui_kit::component::Size::default().input_px()
         + gpui_kit::base::input::LINE_NUMBER_RIGHT_MARGIN
 }
-/// A Changes row's height: the code text's line at 1.65, on whole device pixels at `scale`.
-/// Layout rounds an authored height to device pixels, so a row of 19.8 px at 12 pt is drawn
-/// 20 px tall at 2x: counted at 19.8 px, the box's rows ran 2.6 px past its clip and cut the
-/// last one. Snapped here, the height counted is the height drawn.
+/// A Changes row's height: one of Source's lines, the kit editor's [`EDITOR_LINE_HEIGHT`]
+/// times the code text, so both modes draw one row height (Changes' rows were 20 px at 1.65
+/// beside Source's 18 px lines), on whole device pixels at `scale`. Layout rounds an authored
+/// height to device pixels, so a row of 19.8 px was drawn 20 px tall at 2x: counted at
+/// 19.8 px, the box's rows ran 2.6 px past its clip and cut the last one. Snapped here, the
+/// height counted is the height drawn.
 fn patch_row_height(scale: f32) -> Pixels {
-    px((f32::from(appearance::code_text()) * 1.65 * scale).round() / scale)
+    px((f32::from(appearance::code_text()) * EDITOR_LINE_HEIGHT * scale).round() / scale)
 }
 
 /// One patch row's layout, `height` tall, in Source's geometry: the old and new line numbers
@@ -3326,7 +3328,8 @@ mod tests {
     /// one place in the box they share: the first row and the first line one inset below the
     /// box's top, the editor's top padding, the old and new line numbers right-aligned where
     /// Compare's gutter paints Source's, and the code text where the editor draws its first
-    /// character. Changes started flush with the box, its numbers left-aligned in columns that
+    /// character; and each Changes row is as tall as one of Source's lines, where it was 20 px
+    /// beside Source's 18 px at 12 pt. Changes started flush with the box, its numbers left-aligned in columns that
     /// kept 36 px, so at 15 pt code its text began 12.5 px before Source's; then, measured
     /// against the editor's text area rather than its drawn text, 10 px before it.
     #[gpui::test]
@@ -3402,13 +3405,20 @@ mod tests {
                 let editor = cx.read(|cx| panel.read(cx).review.source.clone().unwrap());
                 // Where the editor draws the first line's first character: past the margin
                 // its code editor keeps inside the text area, not at the text area's edge.
-                let (input, drawn) = cx.read(|cx| {
+                let (input, drawn, line) = cx.read(|cx| {
                     let editor = editor.read(cx);
                     (
                         editor.input_bounds(),
                         editor.range_to_bounds(&(0..0)).expect("laid out"),
+                        editor.line_height().expect("laid out"),
                     )
                 });
+                // One row height: a Changes row is one of Source's lines, within the device
+                // pixel layout puts a row's edge on.
+                assert!(
+                    (first.size.height - line).abs() < px(0.51),
+                    "{at}: a Changes row {first:?} beside Source's {line:?} line"
+                );
                 // Compare's gutter paints each number this far inside its column's right edge,
                 // its columns starting inside the box's 1 px border.
                 let scale = appearance::code_scale();

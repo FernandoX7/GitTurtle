@@ -566,11 +566,7 @@ impl GitTurtle {
                     .when(!back_to_projects, |trailing| {
                         trailing.child(self.render_projects_button(cx))
                     })
-                    .child(self.render_profile_button(
-                        true,
-                        crate::profiles::COMPACT_ROW_CONTROL,
-                        cx,
-                    ))
+                    .child(self.render_profile_button(true, true, cx))
                     .child(self.render_settings_button(cx)),
             )
             .into_any_element()
@@ -803,7 +799,7 @@ impl GitTurtle {
             .when(!back_to_projects && !own_row, |header| {
                 header.child(self.render_projects_button(cx))
             })
-            .child(self.render_profile_button(compact, 36., cx))
+            .child(self.render_profile_button(compact, false, cx))
             .child(self.render_settings_button(cx))
             .when(!back_to_projects && own_row, |header| {
                 header.child(self.render_projects_button(cx))
@@ -5515,9 +5511,9 @@ impl GitTurtle {
                 spacer: first > items.len(),
             }
         };
-        // Within its 230 px limit.
+        // Within its 230 px limit, and as tall as the row's other controls.
         let profile = if narrow {
-            scaled(36.)
+            control
         } else {
             profile_width(widths.profile, window).min(snap(px(230.)))
         };
@@ -5529,7 +5525,7 @@ impl GitTurtle {
             items.push(slot);
         }
         let profile_at = items.len();
-        items.push((profile, scaled(36.)));
+        items.push((profile, control));
         items.push((control, control));
         if projects && trailing != Trailing::Shared {
             items.push(slot);
@@ -12712,7 +12708,7 @@ pub(crate) mod tests {
             );
             let profile = cx.debug_bounds("profile-button").expect("the profile");
             assert_eq!(
-                profile.size.width == appearance::ui_size(36.),
+                profile.size.width == appearance::ui_size(28.),
                 narrow,
                 "{at}: the profile {profile:?}"
             );
@@ -14695,6 +14691,36 @@ pub(crate) mod tests {
         (fixture, app, cx)
     }
 
+    /// One height per row kind: the header's profile picker is as tall as
+    /// Settings beside it and on the same line, labelled in a wide window,
+    /// as its icon below the 800 px breakpoint and in the compact header, at
+    /// 13 and 18 pt. In the full header it was a 36 px tile, 50 px at 18 pt,
+    /// beside the 28 px Settings, 39 px at 18 pt.
+    #[gpui::test]
+    async fn the_profile_picker_is_as_tall_as_the_headers_controls(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for width in [1480., 1000., 760., 461.] {
+                cx.simulate_resize(size(px(width), px(800.)));
+                settle(&app, cx).await;
+                draw(cx);
+                let at = format!("{text} pt at {width} px");
+                let mut bounds = |selector: &'static str| {
+                    cx.debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector}"))
+                };
+                let (profile, settings) = (bounds("profile-button"), bounds("settings"));
+                assert_eq!(
+                    profile.size.height, settings.size.height,
+                    "{at}: the profile {profile:?} beside Settings {settings:?}"
+                );
+                assert_eq!(profile.center().y, settings.center().y, "{at}: one line");
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Tiling window managers such as Hyprland ignore the window's minimum
     /// size, so a half-screen tile is often 600–800 px wide, and at a
     /// fractional scale a half tile of a display about 1,000 logical pixels
@@ -14741,7 +14767,7 @@ pub(crate) mod tests {
                 "profile at {width}: {profile:?}"
             );
             if width < COMPACT_HEADER_WIDTH {
-                assert_eq!(profile.size.width, appearance::ui_size(36.), "at {width}");
+                assert_eq!(profile.size.width, appearance::ui_size(28.), "at {width}");
             }
             let sidebar = cx.debug_bounds("history-sidebar").is_some();
             let rail = cx.debug_bounds("repository-rail").is_some();
