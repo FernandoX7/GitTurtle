@@ -529,7 +529,7 @@ files, is the panel's border where an application sets one; unset, the panel
 keeps `border`, as upstream. A caller's own `border_color` on a dialog still
 wins, as GitTurtle's raised pickers set theirs. The consumers are every app
 dialog; the app sets the edge to `Palette::dialog_edge`
-(`crates/app/src/appearance.rs`), fitted to 1.4:1 against the dialog's surface
+(`crates/app/src/appearance.rs`), fitted to 3:1 against the dialog's surface
 and each page surface its backdrop dims.
 `cargo test --locked -p gitturtle a_dialog_draws_its_edge_in_the_themes_dialog_edge`
 opens a bare kit dialog and reads its painted border, in `border` unset and in
@@ -537,6 +537,28 @@ the edge once set, and
 `every_dialog_edge_holds_against_the_dialog_and_the_dimmed_page` applies every
 built-in and embedded Omarchy palette and reads the edge each dialog draws.
 Remove this part of the patch when upstream lets a theme set a dialog's border
+apart from `border`, and those tests pass without it.
+
+The secondary-edge patch modifies `src/theme/mod.rs` and
+`src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
+the shared `border` at rest and sets it from `border` again in its hovered,
+pressed and selected styles, over any `border_color` its caller gives it, so
+an application cannot fit that edge to the surface the Button lies on.
+GitTurtle's one bordered secondary is every dialog's Cancel
+(`tags::dialog_cancel` in `crates/app/src/tags.rs`), whose `border` edge read
+1.28:1 against Braden's dialog. `Theme::secondary_edge`, `None` by default,
+set in code and skipped by theme files, is that edge in every one of those
+states where an application sets one; unset, it is `border`, as upstream. The
+disabled style is unchanged. The app sets it to its dialog edge,
+`Palette::dialog_edge` (`crates/app/src/appearance.rs`), 3:1 against the
+dialog and the page its backdrop dims. The kit's own
+`a_secondary_buttons_edge_is_the_themes_secondary_edge`
+(`scripts/vendor-crate-test.sh vendor/gpui-component`) reads the variant's
+border in each state with the edge unset and set, and
+`cargo test --locked -p gitturtle a_dialogs_cancel_draws_the_dialog_edge_in_every_state`
+opens a dialog holding the app's Cancel in every built-in and embedded Omarchy
+palette and reads its painted edge at rest, hovered and pressed. Remove this
+part of the patch when upstream lets a theme set a secondary Button's border
 apart from `border`, and those tests pass without it.
 
 The popup-inset patch modifies `src/menu/context_menu.rs`,

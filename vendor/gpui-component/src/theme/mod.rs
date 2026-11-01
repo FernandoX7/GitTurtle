@@ -174,6 +174,16 @@ pub struct Theme {
     /// against both: the page's `border` is fitted against the page.
     #[serde(skip)]
     pub dialog_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px edge a bordered secondary Button draws at
+    /// rest, hovered, pressed and selected, or `None` for the shared
+    /// `border`, as upstream draws it.
+    ///
+    /// Set in code, not read from theme files, so an application can fit the
+    /// edge to the surface such a Button lies on: the Button's hover and
+    /// pressed styles set its border from the theme, over any colour its
+    /// caller gives it, and the page's `border` is fitted against the page.
+    #[serde(skip)]
+    pub secondary_edge: Option<Hsla>,
     /// The label of a control that cannot be used, which
     /// [`Self::disabled_foreground`] resolves, or `None` for
     /// `muted_foreground` at half strength.
@@ -716,6 +726,7 @@ impl From<&ThemeColor> for Theme {
             ghost_active: None,
             popover_edge: None,
             dialog_edge: None,
+            secondary_edge: None,
             disabled_label: None,
             menu_label_size: None,
             scrollbar_mode: ScrollbarMode::default(),

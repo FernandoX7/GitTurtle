@@ -1083,7 +1083,8 @@ impl ButtonVariant {
     fn border_color(&self, outline: bool, cx: &mut App) -> Hsla {
         match self {
             Self::Default => cx.theme().input,
-            Self::Secondary => cx.theme().border,
+            // GitTurtle patch: the theme's secondary edge where it sets one.
+            Self::Secondary => cx.theme().secondary_edge.unwrap_or(cx.theme().border),
             Self::Primary => cx.theme().primary,
             Self::Danger => {
                 if outline {
@@ -1965,6 +1966,34 @@ mod tests {
                 ButtonVariant::Danger.disabled(true, cx).bg,
                 cx.theme().tokens.button_danger.background.opacity(0.15)
             );
+        });
+    }
+
+    /// GitTurtle patch: a bordered secondary Button, such as an application's
+    /// dialog Cancel, draws the theme's `secondary_edge` at rest, hovered,
+    /// pressed and selected where the theme sets one, and the shared `border`
+    /// otherwise, as upstream does. Its hover and pressed styles set the
+    /// border over any colour the caller gives it, so only the theme reaches
+    /// every state.
+    #[gpui::test]
+    fn a_secondary_buttons_edge_is_the_themes_secondary_edge(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|_, cx| {
+            let edges = |cx: &mut App| {
+                let variant = ButtonVariant::Secondary;
+                [
+                    variant.normal(false, cx).border,
+                    variant.hovered(false, cx).border,
+                    variant.active(false, cx).border,
+                    variant.selected(false, cx).border,
+                ]
+            };
+            let border = cx.theme().border;
+            assert_eq!(edges(cx), [border; 4], "unset: the border");
+            let edge = gpui::hsla(0.75, 0.4, 0.4, 1.);
+            crate::Theme::global_mut(cx).secondary_edge = Some(edge);
+            assert_eq!(edges(cx), [edge; 4], "set: the secondary edge");
         });
     }
 }

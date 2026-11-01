@@ -87,13 +87,16 @@ pub(crate) fn dialog_footer(
 }
 
 /// A dialog's Cancel, `id`, reading `label`, on the compact frame: the
-/// secondary variant, its `subtle` fill bordered by the palette's `border`
-/// at rest, as macOS draws Cancel as a bordered push button beside the
-/// filled default action, and one Cancel style in every dialog, the ones
-/// `dialog_footer` builds and those that build their own footers alike
-/// (Create tag, forced worktree removal, Discard). The frame's transparent
-/// rest left Cancel reading as plain text beside the filled primary. The
-/// border is the toolkit's 1 px in every state, so nothing moves.
+/// secondary variant, its `subtle` fill bordered by the dialog's own edge,
+/// 3:1 or more against the dialog (`Palette::dialog_edge`, which the palette
+/// installs as the toolkit's secondary edge, so hover and press keep it), as
+/// macOS draws Cancel as a bordered push button beside the filled default
+/// action, and one Cancel style in every dialog, the ones `dialog_footer`
+/// builds and those that build their own footers alike (Create tag, forced
+/// worktree removal, Discard). The frame's transparent rest left Cancel
+/// reading as plain text beside the filled primary, and the page's `border`
+/// stood 1.28:1 off Braden's dialog. The border is the toolkit's 1 px in
+/// every state, so nothing moves.
 pub(crate) fn dialog_cancel(id: &'static str, label: &'static str) -> Button {
     button(id, label, "", false).secondary().border_1()
 }
@@ -1729,7 +1732,7 @@ pub(crate) mod tests {
     /// Cancel and Review tag, and forced worktree removal's Cancel and Force
     /// remove worktree, is as tall as the frame, 28 px at the interface size,
     /// at 13 and 18 pt. Every Cancel rests on the palette's `subtle` fill with
-    /// a 1 px edge in its `border`, in Midnight and Daylight alike. The kit's
+    /// a 1 px edge in the dialog's edge, in Midnight and Daylight alike. The kit's
     /// own Buttons stood 26 px at 13 pt and 36 px at 18 pt beside the
     /// dialogs' 28 px controls, and Cancel, once moved, rested transparent,
     /// reading as plain text beside the filled primary.
@@ -1846,7 +1849,7 @@ pub(crate) mod tests {
                                 .collect::<Vec<_>>()
                         });
                         let fill = gpui_kit::Background::from(Hsla::from(rgb(p.subtle)));
-                        let edge = Hsla::from(rgb(p.border));
+                        let edge = Hsla::from(rgb(p.dialog_edge()));
                         // GPUI paints the fill and the edge as quads of their own.
                         let filled = rest.iter().any(|quad| quad.background == fill);
                         let edged = rest.iter().any(|quad| {
@@ -1854,7 +1857,7 @@ pub(crate) mod tests {
                         });
                         if !(filled && edged) {
                             failures.push(format!(
-                                "{at}: {button} rests as {:?}, not on subtle with a border edge",
+                                "{at}: {button} rests as {:?}, not on subtle with the dialog edge",
                                 rest.iter()
                                     .map(|quad| (
                                         quad.background,

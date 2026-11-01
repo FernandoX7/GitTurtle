@@ -824,13 +824,15 @@ impl Palette {
             .unwrap_or(f64::from(base) / 100.)
     }
 
-    /// The 1 px edge of a dialog's panel (the kit's `Theme::dialog_edge`):
-    /// `border`, unless it misses [`POPUP_EDGE`] against the dialog's
+    /// The 1 px edge of a dialog's panel (the kit's `Theme::dialog_edge`) and
+    /// of the bordered Cancel on it (the kit's `Theme::secondary_edge`):
+    /// `border`, unless it misses [`DIALOG_EDGE`] against the dialog's
     /// surface, `canvas`, or a page surface its backdrop dims
-    /// ([`Self::dialog_backdrop`]), as Braden's did against its dialog
-    /// (1.28:1). Then it takes the first of 256 even steps toward black in a
-    /// light palette or white in a dark one, the text's side as for the
-    /// popup edge, that clears it on all of them.
+    /// ([`Self::dialog_backdrop`]), as every palette's does: Braden's stood
+    /// 1.28:1 against its dialog and 1.08:1 against the dimmed page. Then it
+    /// takes the first of 256 even steps toward black in a light palette or
+    /// white in a dark one, the text's side as for the popup edge, that
+    /// clears it on all of them.
     pub fn dialog_edge(self) -> u32 {
         let alpha = self.dialog_backdrop();
         let surfaces = [
@@ -842,7 +844,7 @@ impl Palette {
         let clears = |edge| {
             surfaces
                 .iter()
-                .all(|&surface| custom::contrast(edge, surface) >= POPUP_EDGE)
+                .all(|&surface| custom::contrast(edge, surface) >= DIALOG_EDGE)
         };
         if clears(self.border) {
             return self.border;
@@ -1075,6 +1077,15 @@ pub fn cursor_marker(palette: Palette) -> gpui_kit::Div {
 /// draw a hairline below its token: an edge fitted to the border rule's 1.3
 /// drew 1.21:1 to 1.26:1 natively, so the token keeps room above that rule.
 const POPUP_EDGE: f64 = 1.4;
+
+/// The contrast a dialog's 1 px edge keeps against the dialog and every page
+/// surface its backdrop dims, which its bordered Cancel keeps against the
+/// dialog too ([`Palette::dialog_edge`]): the 3:1 a control's or a
+/// container's boundary keeps (WCAG's non-text contrast). The backdrop lifts
+/// a dialog as little as 1.05:1 off the page it dims, so the edge is what sets
+/// the dialog apart; at the popup edge's 1.4:1 Braden's read 1.41:1 against
+/// its dimmed page, and its Cancel, in `border`, 1.28:1 against the dialog.
+const DIALOG_EDGE: f64 = 3.0;
 
 /// How much lighter a dialog's surface stands than any page surface its
 /// backdrop dims ([`Palette::dialog_backdrop`]): the step at which the page
@@ -2108,7 +2119,11 @@ impl Palette {
         theme.colors.list_even = rgb(palette.subtle).into();
         theme.colors.popover = rgb(palette.raised()).into();
         theme.popover_edge = Some(rgb(palette.raised_edge()).into());
-        theme.dialog_edge = Some(rgb(palette.dialog_edge()).into());
+        let dialog_edge = rgb(palette.dialog_edge()).into();
+        theme.dialog_edge = Some(dialog_edge);
+        // The only bordered secondary Button is a dialog's Cancel, on the
+        // dialog's surface, so it draws the dialog's edge in every state.
+        theme.secondary_edge = Some(dialog_edge);
         theme.disabled_label = Some(palette.disabled_label().into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
@@ -2922,8 +2937,8 @@ mod tests {
     /// least level with every dimmed surface wherever 60% allows that. With
     /// the kit's 20% black, Midnight's dialog was darker than History's
     /// dimmed panel (1.03:1 the other way) and 1.00:1 over the dimmed
-    /// subtle; there its edge keeps the popup edge's 1.4:1 against the
-    /// dialog and the dimmed page alike.
+    /// subtle; there its edge keeps 3:1 against the dialog and the dimmed
+    /// page alike.
     #[test]
     fn every_dialog_stands_above_the_page_its_backdrop_dims() {
         /// The least lift of `canvas` over the page surfaces dimmed by
@@ -3115,12 +3130,12 @@ mod tests {
         assert_eq!(painted_dialog_edge(cx), vec![edge], "set: the dialog edge");
     }
 
-    /// In every palette a dialog's edge holds the popup edge's 1.4:1 against
-    /// the dialog's surface and against every page surface its backdrop
-    /// dims, keeping `border` where that already does and otherwise taking
-    /// the least step toward the text side that does. Braden's `border` stood
-    /// 1.28:1 off its dialog. Every applied palette draws its dialog in that
-    /// edge.
+    /// In every palette a dialog's edge holds 3:1 against the dialog's
+    /// surface and against every page surface its backdrop dims, keeping
+    /// `border` where that already does and otherwise taking the least step
+    /// toward the text side that does. Braden's `border` stood 1.28:1 off its
+    /// dialog, and the popup edge's 1.4:1 left its edge 1.41:1 off the dimmed
+    /// page. Every applied palette draws its dialog in that edge.
     #[gpui::test]
     fn every_dialog_edge_holds_against_the_dialog_and_the_dimmed_page(
         cx: &mut gpui::TestAppContext,
@@ -3143,13 +3158,13 @@ mod tests {
             };
             for (surface, color) in surfaces {
                 let ratio = contrast(edge, color);
-                if ratio < POPUP_EDGE {
+                if ratio < DIALOG_EDGE {
                     failures.push(format!(
                         "{name}: #{edge:06x} on the {surface} #{color:06x} {ratio:.3}:1"
                     ));
                 }
             }
-            if least(palette.border) >= POPUP_EDGE {
+            if least(palette.border) >= DIALOG_EDGE {
                 if edge != palette.border {
                     failures.push(format!("{name}: #{edge:06x} where the border clears"));
                 }
@@ -3170,7 +3185,7 @@ mod tests {
                     })
                 };
                 match (1..=256).find(|&n| nth(n) == edge) {
-                    Some(n) if least(nth(n - 1)) < POPUP_EDGE => {}
+                    Some(n) if least(nth(n - 1)) < DIALOG_EDGE => {}
                     _ => failures.push(format!("{name}: #{edge:06x} is not the least step")),
                 }
             }
@@ -3189,6 +3204,70 @@ mod tests {
                 "{name}: the dialog draws its edge"
             );
         }
+    }
+
+    /// A dialog's bordered Cancel (`tags::dialog_cancel`) draws the dialog's
+    /// edge at rest, hovered and pressed in every palette, 3:1 or more
+    /// against the dialog around it. In the page's `border` it stood 1.28:1
+    /// off Braden's dialog, and the kit sets a secondary Button's edge from
+    /// its theme in each of those states, over any colour its caller gives.
+    #[gpui::test]
+    fn a_dialogs_cancel_draws_the_dialog_edge_in_every_state(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::component::{Root, WindowExt as _};
+        use gpui_kit::{
+            AppContext as _, InteractiveElement as _, Modifiers, MouseButton, ParentElement as _,
+            point,
+        };
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| DialogProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Probe").child(
+                    crate::tags::dialog_cancel("probe-cancel", "Cancel")
+                        .debug_selector(|| "probe-cancel".into()),
+                )
+            })
+        });
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            crate::tags::tests::draw(cx);
+            let edge = palette.dialog_edge();
+            let ratio = contrast(edge, palette.canvas);
+            if ratio < DIALOG_EDGE {
+                failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on the dialog"));
+            }
+            let center = cx
+                .debug_bounds("probe-cancel")
+                .expect("the Cancel")
+                .center();
+            let painted = |cx: &mut gpui::VisualTestContext| {
+                crate::tags::tests::draw(cx);
+                crate::views::tests::painted_edges(cx, "probe-cancel")
+            };
+            let rest = painted(cx);
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            let hovered = painted(cx);
+            cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            let pressed = painted(cx);
+            cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+            let away = point(gpui::px(-1.), gpui::px(-1.));
+            cx.simulate_mouse_move(away, None, Modifiers::default());
+            for (state, edges) in [
+                ("at rest", rest),
+                ("hovered", hovered),
+                ("pressed", pressed),
+            ] {
+                if edges != vec![Hsla::from(rgb(edge))] {
+                    failures.push(format!("{name} {state}: {edges:?}, not #{edge:06x}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
