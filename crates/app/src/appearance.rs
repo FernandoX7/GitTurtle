@@ -899,16 +899,25 @@ impl Palette {
     /// fill, a primary action, a secondary control or a selected shared
     /// helper (the kit's `Theme::disabled_edge`): `border`, unless it misses
     /// [`DISABLED_EDGE`] against a surface such a Button rests on, the page's
-    /// surfaces and the raised menu surface, the fill itself among them. Then
-    /// it takes the first of 256 even steps toward black in a light palette or
-    /// white in a dark one, the text's side as for the popup edge, that clears
-    /// it on all of them. The fill stands no more than 1.34:1 off any of them,
-    /// and 1.03 to 1.05:1 off a dialog in Rosé Pine, Graphite, Midnight,
-    /// Braden and Ember, where a disabled default action drew only its dim
-    /// label. A fill 1.5:1 off its surface would read stronger than an
-    /// enabled secondary control and pull the disabled label below 3:1.
+    /// surfaces, the raised menu surface and the hovered and selected rows a
+    /// row's action lies in, the fill itself among them. Then it takes the
+    /// first of 256 even steps toward black in a light palette or white in a
+    /// dark one, the text's side as for the popup edge, that clears it on all
+    /// of them; the selected row sets the step in most palettes. The fill
+    /// stands no more than 1.34:1 off any page surface, and 1.03 to 1.05:1
+    /// off a dialog in Rosé Pine, Graphite, Midnight, Braden and Ember, where
+    /// a disabled default action drew only its dim label. A fill 1.5:1 off
+    /// its surface would read stronger than an enabled secondary control and
+    /// pull the disabled label below 3:1.
     pub fn disabled_edge(self) -> u32 {
-        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let surfaces = [
+            self.canvas,
+            self.panel,
+            self.subtle,
+            self.raised(),
+            self.hover,
+            self.selected,
+        ];
         let clears = |edge| {
             surfaces
                 .iter()
@@ -965,8 +974,8 @@ impl Palette {
             .unwrap_or(layer(16))
     }
 
-    /// The fill the kit's default Button (no variant: Settings' Save, a
-    /// dialog's Cancel) paints over its surface while disabled: half of the
+    /// The fill the kit's default Button (no variant: Settings' Save)
+    /// paints over its surface while disabled: half of the
     /// kit's input background, which is the `input` color (the app's `border`)
     /// at 30% in a dark palette and the `background` (`canvas`) in a light
     /// one. Over Settings' panel card it is Midnight's #1a222f, where the dim
@@ -4938,7 +4947,8 @@ mod tests {
     /// The disabled Buttons [`DisabledControls`] draws, by kind: the kit's
     /// secondary (Fetch and Pull) and primary (Push, Commit), the shared helper
     /// at rest and selected (a dialog's default action), the kit's ghost, and
-    /// its default Button with no variant (Settings' Save, a dialog's Cancel).
+    /// its default Button with no variant (Settings' Save). A dialog's Cancel
+    /// is the bordered secondary (`tags::dialog_cancel`).
     const DISABLED_BUTTONS: [&str; 6] = [
         "secondary",
         "primary",
@@ -5191,7 +5201,8 @@ mod tests {
     /// fill stood 1.03 to 1.05:1 off the dialog in Rosé Pine, Graphite,
     /// Midnight, Braden and Ember, and no more than 1.34:1 off any surface,
     /// so it drew only its dim label. The edge holds 1.5:1 against each
-    /// surface and the fill, and stays fainter than the dialog Cancel's
+    /// surface, the hovered and selected rows a row's action lies in, and
+    /// the fill, and stays fainter than the dialog Cancel's
     /// edge; the Buttons that turn transparent, the shared helper at rest and
     /// the ghost, draw none.
     #[gpui::test]
@@ -5224,6 +5235,12 @@ mod tests {
                 let ratio = contrast(edge, color);
                 if ratio < DISABLED_EDGE {
                     failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on the {surface}"));
+                }
+            }
+            for (row, color) in [("hovered", palette.hover), ("selected", palette.selected)] {
+                let ratio = contrast(edge, color);
+                if ratio < DISABLED_EDGE {
+                    failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on a {row} row"));
                 }
             }
             let on_fill = contrast(edge, palette.subtle);
