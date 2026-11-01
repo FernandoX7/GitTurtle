@@ -4119,10 +4119,12 @@ pub(crate) struct TabStripLabels {
 }
 
 impl TabStripLabels {
-    /// Every form the strip can take.
-    pub(crate) const ALL: [Self; 4] = [
+    /// The forms the strip takes as its room narrows, each label giving way
+    /// once, in turn: both labels, then Menu's alone, Workspaces' wider label
+    /// going first, then neither. Off Linux, where no Menu stands in the
+    /// strip, the second form is the third.
+    pub(crate) const ORDER: [Self; 3] = [
         Self::labelled(true, true),
-        Self::labelled(false, true),
         Self::labelled(true, false),
         Self::labelled(false, false),
     ];
@@ -4643,34 +4645,35 @@ impl GitTurtle {
     }
 
     /// Which of the repository tab strip's labelled actions, Menu (on Linux)
-    /// and Workspaces, keep their labels in this window: the richest form
-    /// whose tab list holds every tab's whole label, to the tab's cap
-    /// (`tabs_whole_width`), richest meaning the most room labelled, so the
-    /// least of the list stands empty. Content comes first (DESIGN.md, "One
-    /// responsive order"), so a label gives way before any tab's name is
-    /// cut, but only where the tabs need its room, one label at a time: both
-    /// labelled, then Workspaces' wider label alone, then Menu's, then both
-    /// as 28 px icons. At 18 pt in a 461 × 490 half tile Workspaces keeps
-    /// its label beside Menu's icon, where both icons once left about 175 px
-    /// of the list empty. Like the chrome, it is decided before layout from
-    /// the interface font ([`Self::tab_list_room`]).
+    /// and Workspaces, keep their labels in this window: the first form in
+    /// [`TabStripLabels::ORDER`] whose tab list holds every tab's whole
+    /// label, to the tab's cap (`tabs_whole_width`). Content comes first
+    /// (DESIGN.md, "One responsive order"), so a label gives way before any
+    /// tab's name is cut, and only where the tabs need its room, one label
+    /// at a time and each once as the window narrows: Workspaces' wider
+    /// label first, then Menu's, so Menu, the primary control, keeps its
+    /// label longest. At 18 pt in a 461 × 490 half tile Menu keeps its label
+    /// beside Workspaces' icon, where both icons once left about 175 px of
+    /// the list empty. The order is fixed rather than the form that labels
+    /// the most room: ranked so, Menu's label went off, on and off again as
+    /// the window narrowed, moving the tab list's left edge about 60 px each
+    /// time. Like the chrome, it is decided before layout from the interface
+    /// font ([`Self::tab_list_room`]).
     pub(super) fn tab_strip_labels(&self, window: &Window, cx: &App) -> TabStripLabels {
         let whole = self.tabs_whole_width(window);
         let (menu, workspaces) = self.tab_strip_labelled_actions(window);
         let icons = self.tab_list_room(TabStripLabels::default(), window, cx);
         let control = window.pixel_snap(appearance::ui_size(28.));
-        let mut forms = TabStripLabels::ALL.map(|labels| {
-            let labelled = |shown: bool, width: Pixels| {
-                if shown { width - control } else { px(0.) }
-            };
-            let room = labelled(labels.menu, menu) + labelled(labels.workspaces, workspaces);
-            (labels, room)
-        });
-        forms.sort_by(|a, b| f32::from(b.1).total_cmp(&f32::from(a.1)));
-        forms
+        let labelled = |shown: bool, width: Pixels| {
+            if shown { width - control } else { px(0.) }
+        };
+        TabStripLabels::ORDER
             .into_iter()
-            .find(|(_, labelled)| whole <= icons - *labelled)
-            .map_or_else(TabStripLabels::default, |(labels, _)| labels)
+            .find(|labels| {
+                let room = labelled(labels.menu, menu) + labelled(labels.workspaces, workspaces);
+                whole <= icons - room
+            })
+            .unwrap_or_default()
     }
 
     /// The widths Menu (none off Linux, where the menu bar holds it) and
@@ -12202,8 +12205,10 @@ pub(crate) mod tests {
     /// chrome leaves History its minimum at 13 pt. At every step the first
     /// frame draws the chrome where the settled frame does. Menu, Workspaces
     /// and the tab list are as wide as predicted, the tab whole beside a
-    /// label and a label gone only where the list could not hold it; the
-    /// compact header keeps one row, its name in exactly the room predicted
+    /// label and a label gone only where the list could not hold it, and
+    /// from the narrowest width walked to the widest each label changes
+    /// once at most (ranked by the room each form labels, Menu's went off,
+    /// on and off again); the compact header keeps one row, its name in exactly the room predicted
     /// for it and the turtle where that keeps the name 100 px; the full
     /// chrome's tab strip, header, action bar and status bar take the
     /// heights predicted for them, so History keeps its minimum, and the
@@ -12282,7 +12287,7 @@ pub(crate) mod tests {
             let breakpoints: BTreeSet<u32> = cx.update(|window, cx| {
                 let app = app.read(cx);
                 let (body, whole) = (body_size(window).width, app.tabs_whole_width(window));
-                TabStripLabels::ALL
+                TabStripLabels::ORDER
                     .iter()
                     .map(|labels| body + whole - app.tab_list_room(*labels, window, cx))
                     .map(|fits| (f32::from(fits) * scale).ceil() as u32)
@@ -12290,6 +12295,7 @@ pub(crate) mod tests {
                     .collect()
             });
             let mut seen = BTreeSet::new();
+            let mut walked = std::collections::BTreeMap::new();
             for breakpoint in breakpoints {
                 for device in breakpoint - 2..=breakpoint + 1 {
                     let at = format!("{} at {text} pt", step(device, tall, cx));
@@ -12310,6 +12316,7 @@ pub(crate) mod tests {
                             )
                         });
                     seen.insert(labels);
+                    walked.insert(device, labels);
                     let width = |cx: &mut VisualTestContext, selector: &'static str| {
                         cx.debug_bounds(selector).map(|bounds| bounds.size.width)
                     };
@@ -12345,6 +12352,18 @@ pub(crate) mod tests {
                 }
             }
             assert!(seen.len() > 1, "{text} pt crosses a breakpoint: {seen:?}");
+            // From the narrowest body walked to the widest, each label
+            // changes once at most: none comes back after giving way.
+            let changes = |of: fn(&TabStripLabels) -> bool| {
+                let shown: Vec<bool> = walked.values().map(of).collect();
+                shown.windows(2).filter(|pair| pair[0] != pair[1]).count()
+            };
+            let (menu, workspaces) = (changes(|l| l.menu), changes(|l| l.workspaces));
+            assert!(
+                menu <= 1 && workspaces <= 1,
+                "{text} pt: Menu's label changes {menu} times and Workspaces' {workspaces} \
+                 from the narrowest body to the widest: {walked:?}"
+            );
         }
 
         // The compact header at 18 pt in a 490 px tall window, its name too

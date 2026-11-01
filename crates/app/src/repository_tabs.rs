@@ -4059,7 +4059,8 @@ mod tests {
     /// keep their labels only where every tab's name is whole beside them,
     /// and become 28 px icons, keeping their names, "Main Menu" and
     /// "Workspaces and tab actions", before a tab's name is cut, one at a
-    /// time and only where the tabs need the room. At 13 and 18 pt in 461 ×
+    /// time, Workspaces' first, and only where the tabs need the room. At 13
+    /// and 18 pt in 461 ×
     /// 490, 640 × 680 and 1480 × 980 windows, with one tab named "compact" or
     /// "a much longer repository name" and then with "second" beside it, the
     /// form drawn is the one `tab_strip_labels` decides before layout, and
@@ -4069,8 +4070,8 @@ mod tests {
     /// whole tabs leave empty in the list is less than the label takes. At 18
     /// pt in the 461 × 490 half tile, where "compact" was cut to "com…"
     /// beside a 100 px Menu and a 173 px Workspaces and then both became
-    /// icons with about 175 px of the list empty, Workspaces keeps its label
-    /// beside Menu's icon and the name is whole.
+    /// icons with about 175 px of the list empty, Menu keeps its label beside
+    /// Workspaces' icon and the name is whole.
     #[gpui::test]
     async fn tab_strip_actions_become_icons_before_a_tab_name_is_cut(cx: &mut TestAppContext) {
         use crate::tags::tests::{draw, rendered};
@@ -4175,8 +4176,9 @@ mod tests {
             }
         }
         // Each form is reached where its room is: both labels where the tabs
-        // leave room, Workspaces' alone beside "compact" at 18 pt in the 461
-        // × 490 half tile, and both icons beside the long name there.
+        // leave room, Menu's alone beside "compact" at 18 pt in the 461 × 490
+        // half tile, where Linux draws Menu, and both icons beside the long
+        // name there.
         let labelled = |menu: bool, workspaces| TabStripLabels {
             menu: menu && cfg!(target_os = "linux"),
             workspaces,
@@ -4186,7 +4188,8 @@ mod tests {
             "{forms:?}"
         );
         assert!(
-            forms.contains(&(18, 461, 1, "compact", labelled(false, true))),
+            !cfg!(target_os = "linux")
+                || forms.contains(&(18, 461, 1, "compact", labelled(true, false))),
             "{forms:?}"
         );
         assert!(
