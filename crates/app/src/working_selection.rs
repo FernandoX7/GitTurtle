@@ -377,13 +377,14 @@ impl GitTurtle {
         }
     }
 
-    /// Where the cursor stood among the shown rows' files, as the rows of a
-    /// newer status that no longer lists its file land, while focus is in
-    /// the list or in a menu opened from it: the person's place, which
+    /// Where the cursor stood, its group and its place among that group's
+    /// file rows in the shown rows, as the rows of a newer status that no
+    /// longer lists its file land, while focus is in the list or in a menu
+    /// opened from it: the person's place, which
     /// [`Self::select_working_neighbour`] keeps. `None` where the cursor's
     /// file is still listed, the list does not hold focus, or no rows were
     /// shown.
-    fn vacated_working_place(&self, window: &Window, cx: &App) -> Option<usize> {
+    fn vacated_working_place(&self, window: &Window, cx: &App) -> Option<(ChangeArea, usize)> {
         let (_, Some(cursor)) = self.working_paths.retained.as_ref()? else {
             return None;
         };
@@ -395,17 +396,20 @@ impl GitTurtle {
         if self.working_selected.is_some() || self.mode != WorkspaceMode::Working || !focused {
             return None;
         }
+        let (_, group) = *cursor;
         self.working_rows
             .iter()
-            .filter(|row| matches!(row, workspace::WorkingRow::File(..)))
+            .filter(|row| matches!(row, workspace::WorkingRow::File(_, area) if *area == group))
             .position(|row| matches!(row, workspace::WorkingRow::File(index, area) if (*index, *area) == *cursor))
+            .map(|place| (group, place))
     }
 
     /// The cursor's row left the list while the person was in it, as a file
     /// deleted outside the app takes away the row a menu is open on: the
-    /// cursor goes to the file row that took its `place`, or to the one
-    /// before where its row was the last, so the keys go on from where they
-    /// were. It once restarted at the top, where Down selected the second
+    /// cursor goes to the file row that took its place in its group, Staged
+    /// or Unstaged, or to that group's row before it where its row was the
+    /// last, so the keys go on from where they were, among changes of the
+    /// same kind ([`Self::neighbour_in_group`]). It once restarted at the top, where Down selected the second
     /// row. Where other files stay selected, as after Command- or
     /// Control-clicks, only the cursor moves: the selection keeps them, with
     /// the anchor the rows landing left it (`reconcile_working_selection`
@@ -416,15 +420,19 @@ impl GitTurtle {
     /// alone, now empty, takes the neighbour.
     fn select_working_neighbour(
         &mut self,
-        place: usize,
+        vacated: (ChangeArea, usize),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut files = self.working_rows.iter().filter_map(|row| match row {
-            workspace::WorkingRow::File(index, area) => Some((*index, *area)),
-            _ => None,
-        });
-        let neighbour = files.clone().nth(place).or_else(|| files.next_back());
+        let files: Vec<_> = self
+            .working_rows
+            .iter()
+            .filter_map(|row| match row {
+                workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+                _ => None,
+            })
+            .collect();
+        let neighbour = Self::neighbour_in_group(&files, vacated);
         let Some((index, area)) = neighbour else {
             return;
         };
@@ -433,6 +441,38 @@ impl GitTurtle {
         } else {
             self.select_working(index, area, window, cx);
         }
+    }
+
+    /// Among `files`, the landed file rows in list order, the neighbour of a
+    /// row that stood at `place` in `group`'s files: the row that took that
+    /// place in the group, or the group's last; where the group is now
+    /// empty, the first row of the group that followed it, else the last of
+    /// the group before. Decided by the coordinator: the group says what
+    /// Stage or Unstage would do, so the cursor crosses its heading only
+    /// where the group has no row left; taken from all the rows, the
+    /// neighbour of the last staged file was the first unstaged one.
+    fn neighbour_in_group(
+        files: &[(usize, ChangeArea)],
+        (group, place): (ChangeArea, usize),
+    ) -> Option<(usize, ChangeArea)> {
+        // The groups as the list orders them (`rows`).
+        let rank = |area: ChangeArea| match area {
+            ChangeArea::Staged => 0,
+            ChangeArea::Unstaged => 1,
+        };
+        let within: Vec<_> = files.iter().filter(|(_, area)| *area == group).collect();
+        within
+            .get(place)
+            .or(within.last())
+            .copied()
+            .or_else(|| files.iter().find(|(_, area)| rank(*area) > rank(group)))
+            .or_else(|| {
+                files
+                    .iter()
+                    .rev()
+                    .find(|(_, area)| rank(*area) < rank(group))
+            })
+            .copied()
     }
 
     /// No rows to show: the status is gone, or the filter failed and its
@@ -731,8 +771,8 @@ impl GitTurtle {
                                 this.try_automatic_refresh(window, cx);
                             }
                         }
-                        if let Some(place) = vacated {
-                            this.select_working_neighbour(place, window, cx);
+                        if let Some(vacated) = vacated {
+                            this.select_working_neighbour(vacated, window, cx);
                         }
                         if let Some(anchor) = anchor {
                             if let Some(next_top) = this.working_rows.iter().position(|row| match row {

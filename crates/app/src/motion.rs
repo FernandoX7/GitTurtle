@@ -5133,6 +5133,62 @@ mod tests {
         );
     }
 
+    /// The neighbour stays in the cursor's group. Beta, the last staged
+    /// file, taken out of the index and the folder outside the app, leaves
+    /// the cursor on alpha, the staged row before it, not on delta below the
+    /// Unstaged heading; alpha then taken the same way, the Staged group
+    /// empty, leaves it on delta, the first row of the group that followed.
+    #[gpui::test]
+    async fn the_neighbour_stays_in_the_cursors_group(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let cursor = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let (index, area) = app.working_selected?;
+                let status = app.work_status.as_ref()?;
+                Some((
+                    status.entries[index].path.to_string_lossy().into_owned(),
+                    area,
+                ))
+            })
+        };
+        let position = position_of(&app, cx, "beta.txt", ChangeArea::Staged);
+        let selector: &'static str = format!("working-row-{position}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            cursor(cx),
+            Some(("beta.txt".to_owned(), ChangeArea::Staged)),
+            "beta is the cursor's row"
+        );
+        for (gone, neighbour, area, why) in [
+            (
+                "beta.txt",
+                "alpha.txt",
+                ChangeArea::Staged,
+                "the staged row before beta's",
+            ),
+            (
+                "alpha.txt",
+                "delta.txt",
+                ChangeArea::Unstaged,
+                "Staged empty, the first row of the group that followed",
+            ),
+        ] {
+            fixture_git(&repository, &["rm", "-q", "-f", gone]);
+            quietly_refreshed(&app, cx);
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(
+                cursor(cx),
+                Some((neighbour.to_owned(), area)),
+                "{gone} gone: {why}"
+            );
+        }
+    }
+
     #[gpui::test]
     async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_a_right_click(
         cx: &mut TestAppContext,
