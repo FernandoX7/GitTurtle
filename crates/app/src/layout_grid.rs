@@ -69,10 +69,30 @@ enum Area {
 struct Panel {
     name: &'static str,
     area: Area,
+    /// How far the panel's text starts in from where its boxes stand, for a
+    /// panel whose text starts at a compact Button's label inset, where the
+    /// Buttons at its edge, transparent at rest, start their labels: a field
+    /// there stands its box with their frames and keeps its own padding
+    /// (DESIGN.md, "One left edge"), so the grid measures it by its box, as
+    /// if its text started this far in from it.
+    boxes: Option<fn() -> Pixels>,
 }
 
 const fn panel(name: &'static str, area: Area) -> Panel {
-    Panel { name, area }
+    Panel {
+        name,
+        area,
+        boxes: None,
+    }
+}
+
+/// A [`panel`] whose text starts `inset` in from where its boxes stand.
+const fn boxed_panel(name: &'static str, area: Area, inset: fn() -> Pixels) -> Panel {
+    Panel {
+        name,
+        area,
+        boxes: Some(inset),
+    }
 }
 
 /// The panels of each surface, the most specific first: a run belongs to the
@@ -113,7 +133,11 @@ fn panels(surface: Surface) -> &'static [Panel] {
         panel("working files", Union(&["working-header", "working-pane"])),
         panel("composer", Selector("commit-composer")),
     ];
-    const GITHUB: &[Panel] = &[panel("GitHub panel", Selector("github-panel"))];
+    const GITHUB: &[Panel] = &[boxed_panel(
+        "GitHub panel",
+        Selector("github-panel"),
+        || appearance::ui_size(crate::LABEL_INSET),
+    )];
     const PROJECT_HUB: &[Panel] = &[
         panel("recent projects", Selector("project-hub-recent")),
         panel("project action", Selector("project-hub-action")),
@@ -168,6 +192,13 @@ const OFFSETS: &[Offset] = &[
         by: || appearance::ui_size(3.25),
         reason: "a reference's pill stands at the column's edge and pads its name 0.25 rem in",
     },
+    Offset {
+        panel: Some((Surface::GitHub, "GitHub panel")),
+        by: || appearance::ui_size(16. + 6.),
+        reason: "a Button whose icon leads its label, as Pull requests, Refresh PRs and New \
+                 pull request do, stands its 16 px icon at the text's edge, where its frame's \
+                 label inset puts it, and starts its label after the icon's 6 px gap",
+    },
 ];
 
 /// A panel whose text the grid finds at more than one edge until the named
@@ -205,14 +236,6 @@ const KNOWN: &[Known] = &[
         panel: "Subject column",
         sizes: &[18],
         follow_up: "narrow History's subject cell starts at the column's 10 px inset",
-    },
-    // Text at its 10 px label inset (14 px at 18 pt), fields' text at 11, a
-    // card's Button label at 20.5, a nested card's text 32 and 42.5 (44.5).
-    Known {
-        surface: Surface::GitHub,
-        panel: "GitHub panel",
-        sizes: &[13, 18],
-        follow_up: "the GitHub panel's fields, cards and nested rows start at its text inset",
     },
     // The search field's text 11 px in, the project rows' names 72 (83.5).
     Known {
@@ -263,8 +286,16 @@ const HEIGHT: f32 = 980.;
 /// What the last frame drew: its text runs and fields' text, each where it
 /// starts and as high as its line, and the open dialog's bounds.
 struct Drawn {
-    runs: Vec<Bounds<Pixels>>,
+    runs: Vec<Run>,
     dialog: Option<Bounds<Pixels>>,
+}
+
+/// A text run, or a field's text, where it starts and as high as its line.
+#[derive(Clone, Copy)]
+struct Run {
+    bounds: Bounds<Pixels>,
+    /// For a field's text, where the field's box starts.
+    field: Option<Pixels>,
 }
 
 /// Reads the last frame: the text runs and fields above an open dialog's
@@ -332,8 +363,8 @@ fn drawn(cx: &mut VisualTestContext) -> Drawn {
         .iter()
         .filter_map(|quad| {
             let (drawn, clip) = (bounds(quad.bounds), bounds(quad.content_mask.bounds));
-            let run = if quad.background == mark {
-                drawn
+            let (run, field_box) = if quad.background == mark {
+                (drawn, None)
             } else if (near(quad.border_color, field) || near(quad.border_color, focused))
                 && [
                     quad.border_widths.top,
@@ -347,9 +378,12 @@ fn drawn(cx: &mut VisualTestContext) -> Drawn {
                 // Where its text starts, a pixel wide: a field's box is
                 // centred in its panel, its text not.
                 let inset = px(1.) + padding(drawn.size.height)?;
-                Bounds::new(
-                    point(drawn.left() + inset, drawn.top()),
-                    size(px(1.), drawn.size.height),
+                (
+                    Bounds::new(
+                        point(drawn.left() + inset, drawn.top()),
+                        size(px(1.), drawn.size.height),
+                    ),
+                    Some(drawn.left()),
                 )
             } else {
                 return None;
@@ -358,7 +392,10 @@ fn drawn(cx: &mut VisualTestContext) -> Drawn {
                 && run.left() < clip.right()
                 && run.top() < clip.bottom()
                 && run.bottom() > clip.top())
-            .then_some(run)
+            .then_some(Run {
+                bounds: run,
+                field: field_box,
+            })
         })
         .collect();
     Drawn { runs, dialog }
@@ -455,9 +492,18 @@ fn inspect(
         .filter_map(|panel| area_bounds(panel.area, dialog, cx).map(|bounds| (panel, bounds)))
         .collect();
     let mut owned: Vec<Vec<Bounds<Pixels>>> = vec![Vec::new(); areas.len()];
-    for run in runs {
+    for Run { bounds: run, field } in runs {
         let start = point(run.left() + px(0.5), run.center().y);
         if let Some(index) = areas.iter().position(|(_, area)| area.contains(&start)) {
+            // A field in a panel that measures it by its box starts where the
+            // panel's text would, in from its box.
+            let run = match (field, areas[index].0.boxes) {
+                (Some(field), Some(inset)) => Bounds::new(
+                    point(field + inset(), run.top()),
+                    size(px(1.), run.size.height),
+                ),
+                _ => run,
+            };
             owned[index].push(run);
         }
     }
