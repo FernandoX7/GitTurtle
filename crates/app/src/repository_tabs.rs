@@ -2147,12 +2147,13 @@ impl GitTurtle {
     }
 
     /// Each tab's width with its label whole, to the tab's scaled 220 px
-    /// cap, without its close button: its label, rounded up to a whole
-    /// pixel, between its insets, snapped to device pixels as layout snaps
-    /// them.
+    /// cap, without its close button: its label, as layout rounds it
+    /// (`tab_label_widths`), between its insets, the insets and the cap
+    /// snapped to device pixels as layout snaps them (at 18 pt and scale
+    /// factor 1.5 the cap is drawn 304⅔ px wide, not 304.62).
     pub(super) fn tab_whole_widths(&self, window: &Window) -> Vec<Pixels> {
         let insets = window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)) * 2.;
-        let cap = appearance::ui_size(220.);
+        let cap = window.pixel_snap(appearance::ui_size(220.));
         self.repository_tabs
             .tabs
             .iter()
@@ -2181,10 +2182,14 @@ impl GitTurtle {
 /// The rule under the repository tab strip, inside its height.
 const TAB_STRIP_BORDER: Pixels = px(1.);
 
-/// Tab labels' whole widths and floors by label, with the font and sizes
-/// they were laid out with.
-type LabelWidths =
-    std::cell::RefCell<Option<(crate::views::LineKey, Vec<(String, (Pixels, Pixels))>)>>;
+/// Tab labels' whole widths and floors by label, with the font, sizes and
+/// scale factor they were laid out with.
+type LabelWidths = std::cell::RefCell<
+    Option<(
+        (crate::views::LineKey, u32),
+        Vec<(String, (Pixels, Pixels))>,
+    )>,
+>;
 
 thread_local! {
     /// Each tab label's whole width and floor (`tab_label_widths`), so a
@@ -2192,8 +2197,9 @@ thread_local! {
     static TAB_LABEL_WIDTHS: LabelWidths = const { std::cell::RefCell::new(None) };
 }
 
-/// A repository tab label's whole width, rounded up to a whole pixel, and
-/// its floor: the narrowest it is drawn in without a lone ellipsis, in the
+/// A repository tab label's whole width, rounded up as layout rounds it, to
+/// a whole pixel and then a whole device pixel
+/// (`views::laid_out_text_width`), and its floor: the narrowest it is drawn in without a lone ellipsis, in the
 /// interface font at the tab's text size: the whole label, or, where that is
 /// narrower, its pin (the first `pin` bytes) and the name's first character
 /// before the ellipsis. The toolkit's truncation keeps the characters that
@@ -2201,7 +2207,10 @@ thread_local! {
 /// punctuation, so the cut runs to the first character it keeps, and takes
 /// the next whole pixel past its width.
 fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels) {
-    let key = crate::views::LineKey::current(window);
+    let key = (
+        crate::views::LineKey::current(window),
+        window.scale_factor().to_bits(),
+    );
     TAB_LABEL_WIDTHS.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
@@ -2214,7 +2223,7 @@ fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels
         let size = appearance::ui_text(12.);
         let weight = window.text_style().font_weight;
         let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
-        let whole = width(label).ceil();
+        let whole = crate::views::laid_out_text_width(width(label), window);
         let floor = label[pin..]
             .char_indices()
             .find(|(_, c)| !(c.is_whitespace() || c.is_ascii_punctuation()))

@@ -3972,7 +3972,8 @@ struct ChromeText {
 }
 
 /// The widths `ChromeText` and the chrome's fixed labels take, each as its
-/// control lays it out: at its size and weight, rounded up to a whole pixel.
+/// control lays it out: at its size and weight, rounded up to a whole pixel
+/// and then to a whole device pixel ([`laid_out_text_width`]).
 #[derive(Clone, Copy, Default)]
 struct ChromeWidths {
     projects: Pixels,
@@ -4014,10 +4015,12 @@ impl ChromeWidths {
     fn measure(text: &ChromeText, window: &Window) -> Self {
         #[cfg(test)]
         CHROME_MEASURED.with(|measured| measured.set(measured.get() + 1));
-        let regular = |text: &str, size: Pixels| line_widths(&[(text, size)], window);
-        let medium = |text: &str| {
-            shaped_width(text, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
+        let laid_out = |text: &str, size: Pixels, weight: FontWeight| {
+            laid_out_text_width(shaped_width(text, size, weight, window), window)
         };
+        let weight = window.text_style().font_weight;
+        let regular = |text: &str, size: Pixels| laid_out(text, size, weight);
+        let medium = |text: &str| laid_out(text, appearance::ui_text(12.), FontWeight::MEDIUM);
         let label = appearance::ui_text(12.);
         let small = appearance::ui_text(11.);
         Self {
@@ -4050,13 +4053,7 @@ impl ChromeWidths {
                 .map(|cancel| regular(cancel, window.rem_size() * 0.875))
                 .into_iter()
                 .fold(px(0.), Pixels::max),
-            name: shaped_width(
-                &text.name,
-                appearance::ui_text(14.),
-                FontWeight::SEMIBOLD,
-                window,
-            )
-            .ceil(),
+            name: laid_out(&text.name, appearance::ui_text(14.), FontWeight::SEMIBOLD),
             busy: regular(&text.busy, small),
             busy_named: regular(&text.busy_named, small),
         }
@@ -4064,9 +4061,10 @@ impl ChromeWidths {
 }
 
 thread_local! {
-    /// [`ChromeWidths`] for each chrome text and font and sizes drawn
-    /// lately, so the windows and text sizes drawn in turn keep their own.
-    static CHROME_WIDTHS: RefCell<Measured<(LineKey, ChromeText), ChromeWidths>> =
+    /// [`ChromeWidths`] for each chrome text, font, sizes and scale factor
+    /// drawn lately, so the windows and text sizes drawn in turn keep their
+    /// own; its widths snap to the window's device pixels.
+    static CHROME_WIDTHS: RefCell<Measured<(LineKey, u32, ChromeText), ChromeWidths>> =
         const { RefCell::new(Measured::new()) };
 }
 
@@ -4122,7 +4120,7 @@ pub(crate) struct TabStripLabels {
 
 impl TabStripLabels {
     /// Every form the strip can take.
-    const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 4] = [
         Self::labelled(true, true),
         Self::labelled(false, true),
         Self::labelled(true, false),
@@ -4698,9 +4696,12 @@ impl GitTurtle {
     /// its controls `gap_1` apart, and holds the window controls
     /// (`window_chrome::strip_width`), Menu, the list, the 28 px New tab and
     /// Workspaces, every length snapped to device pixels as layout snaps
-    /// it. Labels are measured rounded up to a whole pixel, as the chrome's
-    /// are, so the labelled room is less than a pixel per label short of
-    /// what layout gives: the labels give way that much early, never late.
+    /// it. Labels are measured as layout lays them out, rounded up to a
+    /// whole pixel and then to a whole device pixel
+    /// ([`laid_out_text_width`]), as the chrome's are, so the room is the
+    /// room layout gives at a fractional scale factor too: the labels give
+    /// way neither early nor late (rounded to whole pixels alone, at 1.5 a
+    /// 71 px Menu was drawn 71⅓ px wide and a tab predicted whole was cut).
     pub(super) fn tab_list_room(
         &self,
         labels: TabStripLabels,
@@ -5028,10 +5029,13 @@ impl GitTurtle {
                 .operation_busy
                 .map_or_else(String::new, |label| self.operation_text(label)),
         };
+        let key = (
+            LineKey::current(window),
+            window.scale_factor().to_bits(),
+            text,
+        );
         CHROME_WIDTHS.with_borrow_mut(|cache| {
-            *cache.get((LineKey::current(window), text), |(_, text)| {
-                ChromeWidths::measure(text, window)
-            })
+            *cache.get(key, |(_, _, text)| ChromeWidths::measure(text, window))
         })
     }
 
@@ -6771,6 +6775,17 @@ pub(crate) fn line_widths(texts: &[(&str, Pixels)], window: &Window) -> Pixels {
         .iter()
         .map(|(text, size)| shaped_width(text, *size, weight, window).ceil())
         .sum()
+}
+
+/// The width layout gives a line of text whose shaped width is `width`: its
+/// text element rounds it up to a whole pixel, and layout rounds that up to
+/// a whole device pixel (GPUI's `ceil_to_device_pixel`). At a whole scale
+/// factor the two agree; at a fractional one, as at 1.5, the whole pixel
+/// alone falls up to a device pixel short of what is drawn, so a form chosen
+/// for a room it measured would not fit it.
+pub(crate) fn laid_out_text_width(width: Pixels, window: &Window) -> Pixels {
+    let scale = window.scale_factor();
+    px((f32::from(width.ceil()) * scale).ceil() / scale)
 }
 
 /// One line of `text` as [`line_widths`] lays it out, at `weight`, unrounded.
@@ -12174,6 +12189,278 @@ pub(crate) mod tests {
         }
         seen.dedup();
         assert!(seen.len() > 1, "the walk crosses a breakpoint: {seen:?}");
+    }
+
+    /// The tab strip's labels, the compact header's name and turtle and the
+    /// chrome's full or compact form are decided for the body they are drawn
+    /// in and drawn in the first frame after a resize: one frame, one form
+    /// and one size per width. In the client-decorated frame at scale factor
+    /// 1.5 ([`TEST_FRAME`]) the body is taken a device pixel at a time across
+    /// each width at which a form of the tab strip's labels starts to fit, at
+    /// 13 and 18 pt, across the compact header's turtle breakpoint at 18 pt
+    /// in a 490 px tall window, and across the height at which the full
+    /// chrome leaves History its minimum at 13 pt. At every step the first
+    /// frame draws the chrome where the settled frame does. Menu, Workspaces
+    /// and the tab list are as wide as predicted, the tab whole beside a
+    /// label and a label gone only where the list could not hold it; the
+    /// compact header keeps one row, its name in exactly the room predicted
+    /// for it and the turtle where that keeps the name 100 px; the full
+    /// chrome's tab strip, header, action bar and status bar take the
+    /// heights predicted for them, so History keeps its minimum, and the
+    /// compact chrome comes where they would not leave it. With labels
+    /// measured to whole pixels alone, as a whole scale factor lays them out,
+    /// a 71 px Menu was drawn 71⅓ px wide at 1.5 and a tab predicted whole
+    /// beside a label was cut.
+    #[gpui::test]
+    async fn the_tab_strip_and_the_chrome_fit_the_body_they_are_drawn_in(cx: &mut TestAppContext) {
+        use std::collections::BTreeSet;
+        let paddings = Edges::all(px(20.));
+        let frame = (
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            paddings,
+        );
+        let (_fixture, app, cx) =
+            styled_history_window(cx, history_script(2, 3).as_bytes(), move |root| {
+                root.p(paddings.left).border_1()
+            })
+            .await;
+        let _frame = Seam::new(&TEST_FRAME, Some(frame));
+        let scale = 1.5;
+        // The frame's insets are whole device pixels on either axis.
+        let body = laid_out_size(size(px(1000.), px(980.)), scale, frame.0, frame.1);
+        let insets = size(px(1000.) - body.width, px(980.) - body.height);
+        const DRAWN: [&str; 11] = [
+            "repository-tab-strip",
+            "main-menu",
+            "repository-tabs",
+            "repository-tab-0",
+            "repository-workspaces",
+            "repository-header",
+            "page-back",
+            "repository-heading",
+            "settings",
+            "git-actions",
+            "status-bar",
+        ];
+        let drawn = |cx: &mut VisualTestContext| DRAWN.map(|selector| cx.debug_bounds(selector));
+        // A body `width` × `height` device pixels, drawn once and then
+        // settled: the chrome stands in the first frame where it settles.
+        let step = move |width: u32, height: u32, cx: &mut VisualTestContext| {
+            let body = size(px(width as f32 / scale), px(height as f32 / scale));
+            cx.simulate_resize(size(body.width + insets.width, body.height + insets.height));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            crate::width_walk::frame(cx);
+            let first = drawn(cx);
+            draw(cx);
+            let at = format!("a body {width} × {height} device pixels");
+            assert_eq!(first, drawn(cx), "{at}: the first frame draws the chrome");
+            assert_eq!(cx.update(|window, _| body_size(window)), body, "{at}");
+            at
+        };
+        let snapped = |cx: &mut VisualTestContext, base: f32| {
+            cx.update(|window, _| window.pixel_snap(appearance::ui_size(base)))
+        };
+        let tall = 1470;
+        let path = app.read_with(cx, |app, _| app.path.clone().expect("the repository"));
+        let name = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            let path = path.clone();
+            app.update(cx, |app, cx| {
+                app.project_names.insert(path, name.into());
+                cx.notify();
+            });
+        };
+
+        // The tab strip, its tab named as the strip's tests name it: each
+        // form of its labels fits from the body width at which its list
+        // holds the whole tab.
+        name("a much longer repository name", &app, cx);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            step(1500, tall, cx);
+            let breakpoints: BTreeSet<u32> = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let (body, whole) = (body_size(window).width, app.tabs_whole_width(window));
+                TabStripLabels::ALL
+                    .iter()
+                    .map(|labels| body + whole - app.tab_list_room(*labels, window, cx))
+                    .map(|fits| (f32::from(fits) * scale).ceil() as u32)
+                    .filter(|device| (694..2220).contains(device))
+                    .collect()
+            });
+            let mut seen = BTreeSet::new();
+            for breakpoint in breakpoints {
+                for device in breakpoint - 2..=breakpoint + 1 {
+                    let at = format!("{} at {text} pt", step(device, tall, cx));
+                    let icon = snapped(cx, 28.);
+                    let (labels, room, whole, (menu, workspaces), tab, ring) =
+                        cx.update(|window, cx| {
+                            let app = app.read(cx);
+                            let labels = app.tab_strip_labels(window, cx);
+                            (
+                                labels,
+                                app.tab_list_room(labels, window, cx),
+                                app.tabs_whole_width(window),
+                                app.tab_strip_labelled_actions(window),
+                                app.tab_whole_widths(window)[0],
+                                // The list's padding for a focused tab's ring,
+                                // as layout snaps it: 4 device pixels for 3 px.
+                                window.pixel_snap(appearance::button_ring_room(cx)),
+                            )
+                        });
+                    seen.insert(labels);
+                    let width = |cx: &mut VisualTestContext, selector: &'static str| {
+                        cx.debug_bounds(selector).map(|bounds| bounds.size.width)
+                    };
+                    for (selector, labelled, wide) in [
+                        ("main-menu", labels.menu, menu),
+                        ("repository-workspaces", labels.workspaces, workspaces),
+                    ] {
+                        // Menu stands in the strip on Linux only.
+                        let Some(drawn) = width(cx, selector) else {
+                            continue;
+                        };
+                        let predicted = if labelled { wide } else { icon };
+                        assert!(
+                            (drawn - predicted).abs() < px(0.01),
+                            "{at}: {selector} is {drawn:?}, predicted {predicted:?} wide"
+                        );
+                        assert!(
+                            labelled || room - whole < wide - icon,
+                            "{at}: {selector} is its icon beside {:?} of empty list",
+                            room - whole
+                        );
+                    }
+                    let list = width(cx, "repository-tabs").expect("the tab list") - ring * 2.;
+                    assert!(
+                        (list - room).abs() < px(0.01),
+                        "{at}: the tab list takes {list:?}, predicted {room:?}"
+                    );
+                    let drawn = width(cx, "repository-tab-0").expect("the tab");
+                    assert!(
+                        !labels.any() || (drawn - tab).abs() < px(0.01),
+                        "{at}: the tab is {drawn:?} beside a label, {tab:?} whole"
+                    );
+                }
+            }
+            assert!(seen.len() > 1, "{text} pt crosses a breakpoint: {seen:?}");
+        }
+
+        // The compact header at 18 pt in a 490 px tall window, its name too
+        // long for any row: the turtle shows from the body width at which
+        // the name keeps its 100 px beside it.
+        let short = 735;
+        name(
+            "a repository name longer than any compact row has room for",
+            &app,
+            cx,
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        step(1500, short, cx);
+        let breakpoint = cx.update(|window, cx| {
+            let Chrome::Compact { app_icon, name } = app.read(cx).chrome(window, cx) else {
+                panic!("the compact chrome at 18 pt in a 490 px tall window");
+            };
+            let control = window.pixel_snap(appearance::ui_size(28.));
+            let gap = window.pixel_snap(window.rem_size() * 0.5);
+            let room = if app_icon { name + control + gap } else { name };
+            let least = window.pixel_snap(appearance::ui_size(100.)) + control + gap;
+            (f32::from(body_size(window).width + least - room) * scale).ceil() as u32
+        });
+        let mut seen = BTreeSet::new();
+        for device in breakpoint - 2..=breakpoint + 1 {
+            let at = format!("{} at 18 pt", step(device, short, cx));
+            let chrome = cx.update(|window, cx| app.read(cx).chrome(window, cx));
+            let Chrome::Compact { app_icon, name } = chrome else {
+                panic!("{at}: the compact chrome");
+            };
+            seen.insert(app_icon);
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let [header, back, heading, settings] = [
+                "repository-header",
+                "page-back",
+                "repository-heading",
+                "settings",
+            ]
+            .map(|selector| bounds(cx, selector));
+            assert!(
+                (settings.top() - back.top()).abs() < px(0.01)
+                    && settings.right() <= header.right() + px(0.01),
+                "{at}: one row, Settings {settings:?} beside Back {back:?} in {header:?}"
+            );
+            assert!(
+                (heading.size.width - name).abs() < px(0.01),
+                "{at}: the name takes {:?} of its {name:?}",
+                heading.size.width
+            );
+            assert_eq!(
+                heading.left() - back.right() > snapped(cx, 28.),
+                app_icon,
+                "{at}: the turtle between Back {back:?} and the name {heading:?}"
+            );
+        }
+        assert_eq!(seen.len(), 2, "the turtle comes and goes at its breakpoint");
+
+        // The chrome's form at 13 pt in a 1,000 px wide body: full from the
+        // body height at which the full forms leave History its minimum.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        step(1500, tall, cx);
+        let (breakpoint, [tabs, header, actions, status, need]) = cx.update(|window, cx| {
+            let app = app.read(cx);
+            let widths = app.chrome_widths(window);
+            let (header, actions) = app.full_chrome_heights(&widths, window, cx);
+            let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
+                appearance::button_ring_room(cx),
+            ));
+            let status = window.pixel_snap(appearance::ui_size(26.));
+            let need = app
+                .history_minimum(window)
+                .max(app.compare_minimum(window, cx));
+            let least = tabs + header + actions + status + need;
+            (
+                (f32::from(least) * scale).ceil() as u32,
+                [tabs, header, actions, status, need],
+            )
+        });
+        let mut seen = BTreeSet::new();
+        for device in breakpoint - 2..=breakpoint + 1 {
+            let at = format!("{} at 13 pt", step(1500, device, cx));
+            let compact = cx.update(|window, cx| app.read(cx).chrome(window, cx).is_compact());
+            seen.insert(compact);
+            let left = px(device as f32 / scale) - tabs - header - actions - status;
+            if compact {
+                assert!(
+                    left < need,
+                    "{at}: compact where the full forms leave {left:?}"
+                );
+                continue;
+            }
+            for (selector, predicted) in [
+                ("repository-tab-strip", tabs),
+                ("repository-header", header),
+                ("git-actions", actions),
+                ("status-bar", status),
+            ] {
+                let drawn = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+                    .size
+                    .height;
+                assert!(
+                    (drawn - predicted).abs() < px(0.01),
+                    "{at}: {selector} is {drawn:?} tall, predicted {predicted:?}"
+                );
+            }
+            assert!(
+                left >= need - px(0.01),
+                "{at}: History keeps {left:?} of {need:?}"
+            );
+        }
+        assert_eq!(seen.len(), 2, "the chrome changes form at its breakpoint");
     }
 
     /// The breakpoints decided from a width read the body as it is laid out
