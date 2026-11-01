@@ -4935,9 +4935,11 @@ impl GitTurtle {
         let text = ChromeText {
             changes: self.changes_label(),
             profile: self.profile_title(),
+            // The label beside which the line is measured
+            // (`compact_edge_fits`).
             compact_branch: edge
                 .as_ref()
-                .and_then(|edge| edge.compact_branch())
+                .and_then(|edge| edge.compact_branch(false))
                 .unwrap_or_else(|| branch.clone()),
             branch,
             ahead: status.map_or_else(String::new, |s| format!("{} ahead", s.ahead)),
@@ -5460,7 +5462,8 @@ impl GitTurtle {
     /// go, before anything else gives way. Measured for the repository page
     /// as the chrome measures it. The `compact` bar, one row that never
     /// wraps, draws the barest form, and its line as its glyph where even
-    /// its shortest whole form would be cut ([`Self::compact_edge_fits`]).
+    /// its shortest whole form would be cut ([`Self::compact_edge_fits`]),
+    /// a detached HEAD's branch picker saying that line's word instead.
     pub(super) fn edge_form(
         &self,
         compact: bool,

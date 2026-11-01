@@ -4762,7 +4762,8 @@ impl GitTurtle {
     /// `edge_form` is how the repository edge is drawn
     /// (`views::GitTurtle::edge_form`); the compact form draws its barest
     /// form, its shortest line or, where even that would be cut, its glyph,
-    /// and a detached HEAD's picker names the commit. An action drawn as its
+    /// and a detached HEAD's picker names the commit, or, where its line
+    /// would be cut, says "Detached" in the line's place. An action drawn as its
     /// icon keeps its label as its accessible name and tooltip, and a line
     /// without its caption, or a glyph, keeps the whole line as its name and
     /// in its tooltip.
@@ -4793,11 +4794,20 @@ impl GitTurtle {
         let target = format!("{selected_remote}/{selected_branch}");
         let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
         let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
-        let branch_picker = self.render_branch_picker(compact, sync.picker, cx);
+        // Where the compact bar has no room for the edge's line, it draws
+        // the line's glyph, and a detached HEAD's picker says the line's
+        // word, the line leaving, so the bar draws one commit glyph.
+        let narrow = compact && edge_form.glyph;
+        let branch_picker = self.render_branch_picker(compact, narrow, sync.picker, cx);
         // A repository at an edge (detached HEAD, no remote, no commits yet
         // or no upstream) says so in the counts' place, and its next action, if any,
         // joins the actions (`empty_state`).
         let edge = self.repository_edge();
+        let glyph = edge
+            .as_ref()
+            .and_then(|edge| edge.glyph())
+            .filter(|_| narrow);
+        let line_left = narrow && glyph.is_none();
         // The edge's action joins the actions, after Push and before
         // Targets, so in a half tile it wraps with Targets rather than
         // pushing Push to a row of its own.
@@ -4846,7 +4856,7 @@ impl GitTurtle {
                         )
                         .named(edge.line())
                         .tooltip(edge.explanation())
-                        .glyph((compact && edge_form.glyph).then(|| edge.glyph()))
+                        .glyph(glyph)
                         .truncating(compact)
                         .inline(cx),
                     )
@@ -5097,7 +5107,7 @@ impl GitTurtle {
                         .items_center()
                         .gap_2()
                         .child(branch_picker)
-                        .children(sync_state)
+                        .children(sync_state.filter(|_| !line_left))
                         .children(operation_state),
                 )
                 .children(actions)

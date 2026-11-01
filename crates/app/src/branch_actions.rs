@@ -14,6 +14,13 @@ const PREPARING: &str = "Preparing branch action…";
 const CHOICE_LIMIT: usize = 40;
 type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 
+#[cfg(test)]
+thread_local! {
+    /// The label the branch picker last drew, for a test to read back.
+    pub(crate) static PICKER_LABEL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[derive(Default)]
 pub(super) struct State {
     generation: u64,
@@ -129,10 +136,13 @@ impl GitTurtle {
     /// `compact`, in the action bar's compact row, it is a 28 px control that
     /// gives up its width, truncating the branch name, before its row wraps,
     /// and at most `most` wide where given: the room the ahead and behind
-    /// counts leave it (`GitTurtle::sync_fit`).
+    /// counts leave it (`GitTurtle::sync_fit`). `narrow` where the bar's
+    /// repository edge has no room for its line
+    /// (`empty_state::EdgeForm::glyph`).
     pub(super) fn render_branch_picker(
         &self,
         compact: bool,
+        narrow: bool,
         most: Option<Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -160,28 +170,38 @@ impl GitTurtle {
         .into_iter()
         .find_map(|(mark, action)| copy_feedback::confirmed(&mark, cx).then_some(action.done));
 
-        // Detached, HEAD is a commit: the picker says which, as "Detached
-        // HEAD at" its short ID, and in the compact bar, whose line then
-        // says only "Detached", its label is that ID beside the commit glyph,
-        // whole where "Detached HEAD" would be cut (`empty_state`).
+        // Detached, HEAD is a commit: the picker draws the commit glyph in
+        // both bars, where the full bar drew the branch glyph beside
+        // "Detached HEAD", and says which commit, as "Detached HEAD at" its
+        // short ID. In the compact bar, whose line then says only
+        // "Detached", its label is that ID, whole where "Detached HEAD"
+        // would be cut, and where even that line has no room the picker
+        // says "Detached" in its place: one commit glyph and the word
+        // (`empty_state::RepositoryEdge::compact_branch`).
         let head = self
             .work_status
             .as_ref()
             .filter(|status| status.branch.is_none())
             .and_then(|status| status.head.as_deref())
             .map(short_oid);
-        let (label, named) = match &head {
-            Some(head) if compact => (head.clone(), format!("Detached HEAD at {head}")),
-            Some(head) => (branch.clone(), format!("Detached HEAD at {head}")),
-            None => (branch.clone(), branch.clone()),
+        let compact_label = self
+            .repository_edge()
+            .filter(|_| compact)
+            .and_then(|edge| edge.compact_branch(narrow));
+        let (label, named) = match (&head, compact_label) {
+            (Some(head), Some(label)) => (label, format!("Detached HEAD at {head}")),
+            (Some(head), None) => (branch.clone(), format!("Detached HEAD at {head}")),
+            (None, _) => (branch.clone(), branch.clone()),
         };
         let symbol = if confirmation.is_some() {
             "icons/check.svg"
-        } else if head.is_some() && compact {
+        } else if head.is_some() {
             "icons/commit.svg"
         } else {
             "icons/branch.svg"
         };
+        #[cfg(test)]
+        PICKER_LABEL.with(|drawn| drawn.replace(Some(label.clone())));
         let tooltip = match confirmation {
             Some(done) => format!("{done} · {branch}"),
             None => format!("{named} · Switch branch and repository actions"),

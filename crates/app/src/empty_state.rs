@@ -312,7 +312,9 @@ pub(crate) struct EdgeForm {
     pub(crate) labelled: bool,
     /// In the compact bar, the line's glyph in its place, where even its
     /// shortest whole form (`compact_line`) would be cut beside the branch
-    /// picker's whole label: the line stays its name and tooltip.
+    /// picker's whole label: the line stays its name and tooltip. A
+    /// detached HEAD's line, which has no glyph, leaves, and the picker says
+    /// its word (`RepositoryEdge::compact_branch`).
     pub(crate) glyph: bool,
 }
 
@@ -353,6 +355,10 @@ pub(crate) const CREATE_BRANCH_HERE: EdgeAction = EdgeAction {
     label: "Create branch…",
     symbol: "branch-add",
 };
+
+/// What the compact bar says of a detached HEAD: its line, or its branch
+/// picker's label where the line has no room.
+pub(crate) const DETACHED: &str = "Detached";
 
 /// No remote's action: the remote form the branch menu's Manage remotes
 /// opens.
@@ -402,27 +408,38 @@ impl RepositoryEdge {
     /// names the commit (`compact_branch`), so the line need not.
     pub(crate) fn compact_line(&self) -> String {
         match self {
-            Self::Detached { .. } => "Detached".into(),
+            Self::Detached { .. } => DETACHED.into(),
             _ => self.short_line(),
         }
     }
 
     /// The compact bar's branch picker label at this edge, if it is not the
     /// branch's name: a detached HEAD's short commit ID, which says what
-    /// HEAD is in fewer words than "Detached HEAD".
-    pub(crate) fn compact_branch(&self) -> Option<String> {
+    /// HEAD is in fewer words than "Detached HEAD", beside the line's
+    /// "Detached". Where the line has no room beside it (`EdgeForm::glyph`),
+    /// as at 18 pt in a 461 × 490 half tile, the picker says "Detached" in
+    /// the line's place, the ID staying in its name and tooltip: the bar
+    /// draws the picker's one commit glyph and the word, where it drew a
+    /// second commit glyph for the line and never the word.
+    pub(crate) fn compact_branch(&self, narrow: bool) -> Option<String> {
         match self {
+            Self::Detached { .. } if narrow => Some(DETACHED.into()),
             Self::Detached { oid } => Some(short_oid(oid)),
             _ => None,
         }
     }
 
     /// The `icons/` asset the compact bar draws in the line's place where
-    /// even [`Self::compact_line`] would be cut.
-    pub(crate) fn glyph(&self) -> &'static str {
+    /// even [`Self::compact_line`] would be cut: one glyph per meaning, the
+    /// commit for a branch with no commits and the remote, a server, for
+    /// no remote or no upstream, never Fetch's cloud. A detached HEAD has
+    /// none: its picker, already drawn with the commit glyph, says the
+    /// line's word instead (`compact_branch`).
+    pub(crate) fn glyph(&self) -> Option<&'static str> {
         match self {
-            Self::Detached { .. } | Self::Unborn => "commit",
-            Self::NoRemote | Self::NoUpstream => "remote",
+            Self::Detached { .. } => None,
+            Self::Unborn => Some("commit"),
+            Self::NoRemote | Self::NoUpstream => Some("remote"),
         }
     }
 
@@ -754,16 +771,23 @@ pub(crate) mod tests {
     fn compact_edge(cx: &mut VisualTestContext) -> (Option<SharedString>, Option<SharedString>) {
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
-        crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
-        draw(cx);
-        let drawn = (
-            shown("branch-edge"),
-            crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get("current-branch").cloned()),
-        );
+        let drawn = bar_edge(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(1280.), px(800.)));
         draw(cx);
         drawn
+    }
+
+    /// What the Git action bar's edge drew in a fresh frame, if its line is
+    /// drawn at all, and the branch picker's icon.
+    fn bar_edge(cx: &mut VisualTestContext) -> (Option<SharedString>, Option<SharedString>) {
+        crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        draw(cx);
+        (
+            cx.debug_bounds("branch-edge-line")
+                .and_then(|_| shown("branch-edge")),
+            crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get("current-branch").cloned()),
+        )
     }
 
     fn click(cx: &mut VisualTestContext, selector: &'static str) {
@@ -913,7 +937,13 @@ pub(crate) mod tests {
     }
 
     /// Detached HEAD: the bar names the commit beside Create branch…, which
-    /// opens Targets on its branch field.
+    /// opens Targets on its branch field. One glyph per meaning: the picker
+    /// draws the commit glyph in both bars, where the full bar drew the
+    /// branch glyph beside "Detached HEAD", and the bar draws no other. In
+    /// the compact bar the picker names the commit and the line says only
+    /// "Detached"; where even that would be cut, as at 18 pt in a half tile,
+    /// the picker says "Detached" whole and the line leaves, where the bar
+    /// drew a second commit glyph in the line's place and never the word.
     #[gpui::test]
     async fn detached_head_offers_a_branch_here(cx: &mut TestAppContext) {
         let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
@@ -925,21 +955,69 @@ pub(crate) mod tests {
                 .and_then(|status| status.head.clone())
                 .unwrap()
         });
-        let line = format!("Detached at {}", &head[..7]);
-        // In the compact bar the picker names the commit, and the line says
-        // only "Detached", or where even that would be cut, as at 18 pt in
-        // a half tile, where the line was not drawn at all, its glyph.
-        check_lines(
+        let short = &head[..7];
+        let line = format!("Detached at {short}");
+        check_in(
             cx,
             "branch-edge",
-            &[&line, "Detached", "glyph:commit"],
+            &[&line],
             Some("edge-create-branch"),
             "git-actions",
+            &[(461., 980.)],
         );
-        assert_eq!(
-            compact_edge(cx),
-            (Some("glyph:commit".into()), Some("icons/commit.svg".into()))
+        for (interface, width, height, edge, label) in [
+            (13, 1280., 800., Some(line.as_str()), "Detached HEAD"),
+            (13, 461., 490., Some(line.as_str()), "Detached HEAD"),
+            (18, 700., 490., Some(DETACHED), short),
+            (18, 461., 490., None, DETACHED),
+        ] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            let (drawn, icon) = bar_edge(cx);
+            assert_eq!(drawn.as_deref(), edge, "{at}: the line");
+            assert_eq!(
+                icon.as_deref(),
+                Some("icons/commit.svg"),
+                "{at}: the picker's glyph"
+            );
+            let said = crate::branch_actions::PICKER_LABEL.with(|label| label.borrow().clone());
+            assert_eq!(said.as_deref(), Some(label), "{at}: the picker's label");
+            let tooltip = crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("current-branch").cloned())
+                .unwrap_or_default();
+            assert!(
+                tooltip.starts_with(&format!("Detached HEAD at {short} · ")),
+                "{at}: the picker's tooltip {tooltip:?} names the commit"
+            );
+            // Whole, its text as wide as its words, beside Create branch….
+            let picker = cx.debug_bounds("current-branch").unwrap();
+            let whole = cx.update(|window, _| {
+                crate::views::shaped_width(
+                    label,
+                    appearance::ui_text(12.),
+                    FontWeight::MEDIUM,
+                    window,
+                )
+            });
+            assert!(
+                marked_runs(cx, picker)
+                    .iter()
+                    .any(|run| !run.cut && run.drawn.size.width >= whole - px(0.5)),
+                "{at}: the picker {picker:?} draws {label:?} whole"
+            );
+            assert!(
+                cx.debug_bounds("edge-create-branch").is_some(),
+                "{at}: Create branch…"
+            );
+        }
+        assert!(
+            tab_reaches(cx, "edge-create-branch"),
+            "Tab rings Create branch… beside the picker that says Detached"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        draw(cx);
         click(cx, "edge-create-branch");
         let (open, field) = app.read_with(cx, |app, cx| {
             (

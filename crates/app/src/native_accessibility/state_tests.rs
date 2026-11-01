@@ -183,7 +183,30 @@ async fn every_repository_edge_is_read_by_its_line(cx: &mut TestAppContext) {
             .unwrap()
     });
     let detached = format!("Detached at {}", &head[..7]);
-    read(cx, "Detached", &[("branch-edge", &detached)], &[]);
+    read_at(
+        cx,
+        "Detached",
+        &[("branch-edge", &detached)],
+        &[],
+        &SIZES[..1],
+    );
+    // In the half tile the line leaves for the branch picker, which says
+    // "Detached" and is named "Current branch: Detached HEAD at" the commit
+    // (`empty_state::tests::detached_head_offers_a_branch_here`): no label
+    // is left on the bus for a line that is not drawn.
+    let (text, width, height) = SIZES[1];
+    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+    cx.simulate_resize(size(px(width), px(height)));
+    draw(cx);
+    written::forget();
+    draw(cx);
+    assert!(
+        cx.debug_bounds("branch-edge-line").is_none() && written::get("branch-edge-line").is_none(),
+        "the half tile's detached line is neither drawn nor read"
+    );
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    cx.simulate_resize(size(px(1280.), px(800.)));
+    draw(cx);
 }
 
 /// An empty repository's History and Changes, without and with a remote:

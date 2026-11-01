@@ -75,7 +75,8 @@ enum Rule {
     /// The Git action bar's repository edge is not drawn, or its line is
     /// drawn short of its whole text, as "No r…", or a line no wider than
     /// nothing beside a detached HEAD's picker, was at 18 pt in a 461 × 490
-    /// half tile: a line is whole or gives way to its glyph.
+    /// half tile: a line is whole or gives way to its glyph, and a detached
+    /// HEAD's to its picker, which then says "Detached" whole.
     StateCut,
     /// A control in the Git action bar runs into the one after it on its
     /// row, as a detached HEAD's "Detached HEAD" picker ran under Fetch.
@@ -467,10 +468,7 @@ impl Walk<'_> {
     /// than the text it says.
     fn inspect_edge(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
         let at = (width, height);
-        if self
-            .app
-            .read_with(cx, |app, _| app.repository_edge().is_some())
-        {
+        if let Some(edge) = self.app.read_with(cx, |app, _| app.repository_edge()) {
             let drawn = cx.debug_bounds("branch-edge-line");
             let shown = crate::empty_state::shown("branch-edge");
             let need = shown.as_ref().map(|shown| {
@@ -485,7 +483,14 @@ impl Walk<'_> {
                     .ceil(),
                 })
             });
+            // Where a detached HEAD's line has no room, it leaves, and the
+            // branch picker says its word in its place.
+            let in_picker = drawn.is_none()
+                && matches!(edge, crate::empty_state::RepositoryEdge::Detached { .. })
+                && crate::branch_actions::PICKER_LABEL
+                    .with(|label| label.borrow().as_deref() == Some(crate::empty_state::DETACHED));
             match (drawn, need) {
+                _ if in_picker => self.inspect_picker_word(at, cx),
                 (Some(drawn), Some(need)) if drawn.size.width < need - px(0.5) => {
                     let detail = format!("{shown:?} in {:?} of its {need:?}", drawn.size.width);
                     self.found(Rule::StateCut, "git-actions", at, detail);
@@ -516,6 +521,34 @@ impl Walk<'_> {
                 let detail = format!("{first} {a:?} runs into {second} {b:?}");
                 self.found(Rule::Overlap, "git-actions", at, detail);
             }
+        }
+    }
+
+    /// Records a detached HEAD's branch picker, which says "Detached" in
+    /// the place of the line that had no room, drawing the word short of
+    /// its whole text: no marked run inside the picker is as wide as it.
+    fn inspect_picker_word(&mut self, at: (f32, f32), cx: &mut VisualTestContext) {
+        let word = crate::empty_state::DETACHED;
+        let picker = cx.debug_bounds("current-branch").unwrap_or_default();
+        let text = gpui_kit::Background::from(text_mark());
+        let (need, scale, quads) = cx.update(|window, _| {
+            (
+                shaped_width(word, appearance::ui_text(12.), FontWeight::MEDIUM, window),
+                window.scale_factor(),
+                window.painted_quads(),
+            )
+        });
+        let whole = quads.iter().any(|quad| {
+            let left = px(quad.bounds.left().0 / scale);
+            let right = px(quad.bounds.right().0 / scale);
+            quad.background == text
+                && left >= picker.left() - px(0.5)
+                && right <= picker.right() + px(0.5)
+                && right - left >= need - px(0.5)
+        });
+        if !whole {
+            let detail = format!("the picker {picker:?} says {word:?} short of its {need:?}");
+            self.found(Rule::StateCut, "git-actions", at, detail);
         }
     }
 
