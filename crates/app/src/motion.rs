@@ -5834,6 +5834,57 @@ mod tests {
         next_frame(cx);
     }
 
+    /// The window's refusal for conflicts alone, which a paused merge's end
+    /// leaves standing since it resolves none of them
+    /// (`integration_ended`), stays while a read finds conflicts left and
+    /// goes in the frame a read finds none: the merge here ends outside
+    /// the app with notes.txt still conflicted, then notes.txt is resolved.
+    /// It once stayed in the window's error until dismissed, saying
+    /// conflicts remained after they were resolved.
+    #[gpui::test]
+    async fn a_refusal_for_conflicts_alone_goes_as_they_are_resolved(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let refusal = gitturtle_core::paused_recovery_refusal(None);
+        let error = |cx: &mut VisualTestContext| {
+            (
+                app.read_with(cx, |app, _| app.operation_error.clone()),
+                cx.debug_bounds("operation-error-summary").is_some(),
+            )
+        };
+        merge_stopping_on_notes(&repository);
+        refreshed(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
+        app.update(cx, |app, cx| {
+            app.operation_error = Some(refusal.to_owned());
+            cx.notify();
+        });
+        next_frame(cx);
+        // The merge ends with notes.txt still conflicted: its state goes,
+        // the index's conflict stages stay.
+        for state in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"] {
+            let _ = std::fs::remove_file(repository.join(".git").join(state));
+        }
+        refreshed(&app, cx).await;
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_none()));
+        assert_eq!(
+            error(cx),
+            (Some(refusal.to_owned()), true),
+            "the refusal stays while conflicts remain"
+        );
+        // Resolved outside the app, read quietly.
+        std::fs::write(repository.join("notes.txt"), "resolved\n").unwrap();
+        fixture_git(&repository, &["add", "notes.txt"]);
+        quietly_refreshed(&app, cx);
+        next_frame(cx);
+        assert!(!notes_unmerged(&repository));
+        assert_eq!(
+            error(cx),
+            (None, false),
+            "the refusal goes in the frame the read finds no conflict"
+        );
+    }
+
     /// Merges `side` into [`narrow_notes`]' main outside the app, which
     /// stops with notes.txt conflicted.
     fn merge_stopping_on_notes(repository: &Path) {
