@@ -36,10 +36,9 @@ pub(super) struct State {
     pub prepared: Option<Definition>,
 }
 
-/// The height, at the default interface size, of the header's controls,
-/// the profile picker's in either header: one height for the row's controls
-/// (it was a 36 px tile in the full header beside the 28 px Settings).
-const ROW_CONTROL: f32 = 28.;
+/// The height, at the default interface size, of the compact header's
+/// controls, among which the profile picker takes their form.
+pub(super) const COMPACT_ROW_CONTROL: f32 = 28.;
 
 /// The profile's icon, the person artwork, which only the profile draws.
 const PROFILE_ICON: &str = "icons/user.svg";
@@ -116,20 +115,21 @@ impl GitTurtle {
             })
     }
 
-    /// The picker, [`ROW_CONTROL`] px tall at the default interface size, as
-    /// the header's other controls are; `compact` draws only the icon, in a
-    /// square of that size. In the compact header's `row` it takes its
-    /// neighbours' transparent frame and scaled icon; in the full header it
-    /// is the secondary picker.
+    /// `compact` draws only the icon, in a square `size` px control at the
+    /// default interface size: 36 in the full header, [`COMPACT_ROW_CONTROL`]
+    /// in its compact row, where it takes its neighbours' transparent frame
+    /// and scaled icon.
     pub(super) fn render_profile_button(
         &self,
         compact: bool,
-        row: bool,
+        size: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let title = self.profile_title();
         let owner = cx.entity().downgrade();
-        let size = ROW_CONTROL;
+        // In the compact header's row of 28 px controls the profile is one of
+        // them: the shared helper's transparent frame and its scaled icon.
+        let row = size == COMPACT_ROW_CONTROL;
         crate::views::note_control_icon(&"profile".into(), PROFILE_ICON);
         Button::new("profile")
             .debug_selector(|| "profile-button".into())
