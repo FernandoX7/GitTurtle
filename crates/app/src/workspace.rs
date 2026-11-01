@@ -2501,8 +2501,13 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Refused, the arrow still selects nothing (`choose_working_selection`),
-        // and the busy look says why at once.
+        // With no file drawn the arrow has nowhere to go and refuses
+        // nothing, so it shows no busy look: one there once showed it at
+        // once during a write. Refused, the arrow still selects nothing
+        // (`choose_working_selection`), and the busy look says why at once.
+        if !self.working_files_drawn() {
+            return;
+        }
         self.refuse_working_press(cx);
         let files: Vec<_> = self
             .actionable_working_rows()

@@ -6173,6 +6173,73 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// An arrow or Select All on a Working list that draws no file, as one
+    /// whose filter matches nothing, has nothing to act on and refuses
+    /// nothing, so a write running shows no busy look for it: the look
+    /// waits its 200 ms. Each once showed it at once. On rows kept drawn
+    /// while new ones are prepared, which it cannot act on, an arrow is
+    /// refused and still shows the look at once.
+    #[gpui::test]
+    async fn an_arrow_on_a_list_drawing_no_file_shows_no_busy_look(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _repository) = narrow_notes(cx).await;
+        let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let filter = |cx: &mut VisualTestContext, query: &'static str| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.working_filter
+                        .update(cx, |input, cx| input.set_value(query, window, cx));
+                    app.filter_working_paths(window, cx);
+                })
+            });
+            crate::path_filter::filters_land(&app, cx);
+            cx.update(|window, cx| list.focus(window, cx));
+            next_frame(cx);
+        };
+        filter(cx, "zzz");
+        assert!(
+            cx.debug_bounds("working-clear-filter").is_some(),
+            "the filter matches nothing"
+        );
+        let write = held_write(&app, cx);
+        assert!(!looks_busy(cx), "the write's look waits");
+        for press in ["down", "up", "Select All"] {
+            match press {
+                "Select All" => app.update(cx, |app, cx| app.select_all_working(cx)),
+                keys => cx.simulate_keystrokes(keys),
+            }
+            next_frame(cx);
+            assert!(!looks_busy(cx), "{press}: no busy look");
+        }
+        release(&app, write, cx).await;
+
+        // A quiet refresh's rows, held on the filter's thread, the rows
+        // before them still drawn.
+        filter(cx, "");
+        assert!(app.read_with(cx, |app, _| app.working_files_drawn()));
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.schedule_working_filter(
+                    None,
+                    false,
+                    crate::working_selection::Preparation::Status,
+                    window,
+                    cx,
+                )
+            })
+        });
+        next_frame(cx);
+        assert!(!looks_busy(cx), "the rows' look waits");
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert!(looks_busy(cx), "an arrow on rows being replaced shows it");
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A click on the selected conflicted file's row, or Enter, while the
     /// Working list refuses a choice, as while a discard review is prepared
     /// (a write in the window's busy spell that leaves the preview open) or

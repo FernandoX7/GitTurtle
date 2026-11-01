@@ -274,6 +274,17 @@ impl GitTurtle {
         }
     }
 
+    /// Whether the list draws a file's row, its own or one kept while new
+    /// rows are prepared: an arrow or Select All on a list that draws none,
+    /// clean or matching no filter, has nothing to act on and refuses
+    /// nothing, while on rows being replaced it is refused
+    /// ([`Self::refuse_working_press`]).
+    pub(super) fn working_files_drawn(&self) -> bool {
+        self.working_rows
+            .iter()
+            .any(|row| matches!(row, workspace::WorkingRow::File(..)))
+    }
+
     /// The element ID of the shown rows' row of the `index`th file in
     /// `area`, made once per row of the status they show
     /// (`workspace::WorkingRowIds`).
@@ -611,7 +622,12 @@ impl GitTurtle {
         self.select_working(index, area, window, cx);
     }
     pub(super) fn select_all_working(&mut self, cx: &mut Context<Self>) {
-        if self.mode != WorkspaceMode::Working || self.refuse_working_press(cx) {
+        // With no file drawn there is nothing to select or refuse, so no
+        // busy look either (`working_files_drawn`).
+        if self.mode != WorkspaceMode::Working
+            || !self.working_files_drawn()
+            || self.refuse_working_press(cx)
+        {
             return;
         }
         self.working_selection.selected = self.visible_working_keys().into_iter().collect();
