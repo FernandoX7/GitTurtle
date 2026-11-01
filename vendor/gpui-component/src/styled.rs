@@ -145,6 +145,19 @@ pub(crate) fn popover_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
     ]
 }
 
+/// GitTurtle patch: how far a popup's fill stands from the trigger it opened
+/// from: [`crate::Theme::popup_gap`] of page between the trigger and the
+/// popup's drawn edge, plus that edge's band ([`POPOVER_EDGE_WIDTH`]), or,
+/// where the theme sets no gap, upstream's quarter rem between the trigger
+/// and the fill (`mt_1`), which left the drawn edge 2.25 px from a button at
+/// GitTurtle's 13 px root, 3.5 px at 18 pt.
+pub fn popup_offset(window: &Window, cx: &App) -> Pixels {
+    cx.theme().popup_gap.map_or_else(
+        || rems(0.25).to_pixels(window.rem_size()),
+        |gap| gap + POPOVER_EDGE_WIDTH,
+    )
+}
+
 /// shadcn/ui's `shadow-lg`, the elevation it lifts a toast to, at `strength` of
 /// its full ink.
 ///

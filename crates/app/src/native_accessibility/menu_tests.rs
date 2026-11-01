@@ -907,3 +907,108 @@ fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
         "moved, fitting on neither side"
     );
 }
+
+/// A row `lead` below the window's top with the app's right-click menu of
+/// four items, as History's and Working Changes' rows open theirs.
+struct GapRowProbe {
+    lead: Pixels,
+}
+
+impl Render for GapRowProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().pt(self.lead).px_4().child(
+            div()
+                .id("gap-row")
+                .debug_selector(|| "gap-row".into())
+                .h(px(24.))
+                .w_full()
+                .child("A row")
+                .app_context_menu(|menu, _, _| {
+                    ["One", "Two", "Three", "Four"]
+                        .into_iter()
+                        .fold(menu, |menu, name| menu.item(PopupMenuItem::new(name)))
+                }),
+        )
+    }
+}
+
+/// The page between a menu's drawn edge, the ring outside its fill, and the
+/// button or row it opened from (`appearance::popup_gap`, 4 px at 13 pt),
+/// with the half pixel the kit's popup host rounds its place by.
+fn assert_one_gap(gap: Pixels, at: &str) {
+    let expected = appearance::popup_gap();
+    assert!(
+        (gap - expected).abs() <= px(0.5),
+        "{at}: {gap:?} between the menu's drawn edge and what it opened from, not {expected:?}"
+    );
+}
+
+/// Every menu keeps one gap, 4 px at 13 pt and scaled with the text, between
+/// its drawn edge and the button or row it opened from: a button's menu
+/// below or above its button, and a row's right-click menu moved wholly
+/// above its row at the window's foot. A dropdown kept the kit's quarter rem
+/// to its fill, its edge 2 or 2.5 px from its button at 13 pt, and a row's
+/// menu above its row drew its edge on the row's top.
+#[gpui::test]
+fn menus_keep_one_gap_from_their_button_or_row(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+    for text in [13, 18] {
+        // A button with the room below it, and one low in the window, whose
+        // menu opens above it.
+        for (lead, above) in [(40., false), (380., true)] {
+            let at = format!("{text} pt, a button {lead} px down");
+            let (_, cx) = cx.add_window_view(move |window, cx| {
+                let probe = cx.new(|_| AppDropdownProbe {
+                    lead: px(lead),
+                    chosen: Chosen::default(),
+                });
+                Root::new(probe, window, cx)
+            });
+            cx.update(|window, cx| {
+                appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+                appearance::apply_text_sizes(text, 12, window, cx);
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+            cx.simulate_click(button.center(), Modifiers::default());
+            draw(cx);
+            draw(cx);
+            let drawn = open_menu_surface(cx).dilate(edge);
+            if above {
+                assert_one_gap(button.top() - drawn.bottom(), &format!("{at}, above it"));
+            } else {
+                assert_one_gap(drawn.top() - button.bottom(), &format!("{at}, below it"));
+            }
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        }
+
+        let at = format!("{text} pt, a row at the window's foot");
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| GapRowProbe { lead: px(400.) });
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            appearance::apply_text_sizes(text, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let row = cx.debug_bounds("gap-row").expect("the row");
+        cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+        draw(cx);
+        draw(cx);
+        let drawn = open_menu_surface(cx).dilate(edge);
+        assert!(
+            drawn.bottom() <= row.top(),
+            "{at}: the menu {drawn:?} lies wholly above the row {row:?}"
+        );
+        assert_one_gap(row.top() - drawn.bottom(), &at);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+}

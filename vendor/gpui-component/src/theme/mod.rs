@@ -215,6 +215,16 @@ pub struct Theme {
     /// nearly as strong as its text.
     #[serde(skip)]
     pub menu_label_size: Option<Pixels>,
+    /// GitTurtle patch: the page a popup leaves between its drawn edge, the
+    /// ring outside its fill ([`crate::POPOVER_EDGE_WIDTH`]), and the
+    /// trigger it opened from, or `None` for upstream's quarter rem between
+    /// the trigger and its fill ([`crate::popup_offset`]).
+    ///
+    /// Set in code, not read from theme files, so an application can keep
+    /// one gap, scaled with its text, between every menu and the button or
+    /// row it opened from, its own row menus among them.
+    #[serde(skip)]
+    pub popup_gap: Option<Pixels>,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -742,6 +752,7 @@ impl From<&ThemeColor> for Theme {
             disabled_edge: None,
             disabled_label: None,
             menu_label_size: None,
+            popup_gap: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),

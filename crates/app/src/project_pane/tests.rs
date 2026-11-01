@@ -1519,3 +1519,62 @@ fn a_project_rows_key_and_id_share_its_path() {
         "the element ID shares it too"
     );
 }
+
+/// A row's menu opened from the keyboard lies below its row with the gap
+/// every menu keeps from what it opened from, 4 px at 13 pt and scaled with
+/// the text, between the row's foot and the menu's drawn edge, the ring
+/// outside its fill (`appearance::popup_gap`): its fill started at the
+/// row's foot, so its edge lay on the row.
+#[gpui::test]
+fn a_keyboard_row_menu_keeps_the_menu_gap_below_its_row(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+    for text in [13, 18] {
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+        settle(cx);
+        // The first row, the group, at the list's top.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.move_project_cursor(false, true, window, cx)
+            })
+        });
+        settle(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.manage_project_row(window, cx)));
+        settle(cx);
+        let row = cx
+            .debug_bounds("project-pane-row-0")
+            .expect("the group's row");
+        let label = cx
+            .debug_bounds("menu-item: Work · Label")
+            .expect("the row's menu");
+        let surface = cx.update(|window, cx| {
+            let fill = gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).popover);
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == fill)
+                .map(|quad| {
+                    let bounds = Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    );
+                    (quad.order, bounds)
+                })
+                .filter(|(_, surface)| surface.contains(&label.center()))
+                .max_by_key(|(order, _)| *order)
+                .map(|(_, surface)| surface)
+                .expect("the menu's surface")
+        });
+        let gap = surface.top() - edge - row.bottom();
+        let expected = crate::appearance::popup_gap();
+        assert!(
+            (gap - expected).abs() <= px(0.5),
+            "{text} pt: the menu {surface:?} draws its edge {gap:?} below the row {row:?}, not {expected:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+    }
+}

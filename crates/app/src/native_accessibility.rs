@@ -63,9 +63,10 @@ pub(super) fn bind_keys(cx: &mut App) {
 /// The row a menu opens beside: a keyboard's cursor row, within the list's
 /// visible part ([`KeyboardMenu::cursor_row`]), or the row a pointer pressed
 /// ([`RowAnchor::pointer`]). It holds where the menu's leading edge starts,
-/// the row's top edge, above which a menu that does not fit below ends, and
-/// where the menu's top goes when it opens below: the row's foot, or the
-/// pointer. A menu can end at the
+/// the row's top edge, above which a menu that does not fit below ends
+/// [`menu_offset`] clear of it, and where the menu's top goes when it opens
+/// below: [`menu_offset`] below the row's foot, or the pointer, where a
+/// right-click's menu starts as macOS's does. A menu can end at the
 /// list's trailing inset instead ([`RowAnchor::trailing`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RowAnchor {
@@ -100,10 +101,11 @@ impl RowAnchor {
     /// The tallest the menu's items may be with its fill inside `room`: the
     /// room below where that holds about four rows ([`MENU_FLOOR`]), and
     /// otherwise the larger of the room below and the room above the row,
-    /// where it goes when the room below is too short for it ([`RowMenu`]).
+    /// where it goes when the room below is too short for it ([`RowMenu`]),
+    /// [`menu_offset`] above it.
     fn cap(&self, room: Bounds<Pixels>) -> Pixels {
         let below = room.bottom() - self.below;
-        let above = self.top - MENU_EDGE - room.top();
+        let above = self.top - menu_offset() - room.top();
         if below >= appearance::ui_size(MENU_FLOOR) {
             below
         } else {
@@ -575,7 +577,7 @@ impl KeyboardMenu {
         RowAnchor {
             x: bounds.left() + inset,
             top: visible(top),
-            below: visible(top + height),
+            below: visible(top + height) + menu_offset(),
             trailing: None,
         }
     }
@@ -653,7 +655,8 @@ impl KeyboardMenu {
 
 /// A row's menu, placed beside its row once its size is known: below the
 /// row, or a pointer's menu below the pointer, where it fits in `room`
-/// there, and otherwise wholly above the row, its edge clear of it, at the
+/// there, and otherwise wholly above the row, its drawn edge the menu gap
+/// clear of it ([`menu_offset`]), as a keyboard's menu below its row is, at the
 /// row's leading inset or the pointer, or ending at its trailing inset, and
 /// inside `room` either way. GPUI's anchor, which placed a keyboard's menu
 /// before, slid a menu that ran past the window up just far enough, over its
@@ -695,8 +698,8 @@ fn leaves_its_row(
     size: Size<Pixels>,
     room: Bounds<Pixels>,
 ) -> bool {
-    let fits =
-        now.below + size.height <= room.bottom() || now.top - MENU_EDGE - size.height >= room.top();
+    let fits = now.below + size.height <= room.bottom()
+        || now.top - menu_offset() - size.height >= room.top();
     !drawn || (now.moved_from(opened) && !fits)
 }
 
@@ -707,7 +710,7 @@ impl RowMenu {
         let y = if row.below + size.height <= room.bottom() {
             row.below
         } else {
-            (row.top - MENU_EDGE - size.height).max(room.top())
+            (row.top - menu_offset() - size.height).max(room.top())
         };
         let x = row.trailing.map_or(row.x, |right| right - size.width);
         let x = x.min(room.right() - size.width).max(room.left());
@@ -799,6 +802,16 @@ const MENU_MARGIN: Pixels = px(8.);
 /// the popup's shadow. A menu whose fill ended [`MENU_MARGIN`] above the
 /// status bar showed its edge 7 px above it.
 const MENU_EDGE: Pixels = px(1.);
+/// How far a row's menu's fill stands from the row it lies beside, below its
+/// foot or above its top: the gap every menu keeps from what it opened from
+/// ([`appearance::popup_gap`]) past its drawn edge ([`MENU_EDGE`]), as the
+/// kit keeps a dropdown's from its button (`gpui_kit::component::popup_offset`).
+/// A keyboard's menu below its row lay with its edge on the row's foot, and
+/// one above a row 1 px above it, where a dropdown lay a quarter rem from its
+/// button.
+fn menu_offset() -> Pixels {
+    appearance::popup_gap() + MENU_EDGE
+}
 /// The least height a menu's items take, at the default interface size,
 /// where its top lies too near the status bar for more: about four rows. A
 /// keyboard's menu there moves above its row instead ([`RowMenu`]).
@@ -843,9 +856,10 @@ impl DropdownRoom {
     /// where that room holds the least rows ([`MENU_FLOOR`]); otherwise
     /// above it, up to the window's top margin, where that room holds them;
     /// otherwise on the roomier side, with the whole rows that side holds.
-    /// The kit's popover keeps a quarter rem from the Button on either side.
-    fn of(trigger: Bounds<Pixels>, window: &Window) -> Self {
-        let gap = window.rem_size() * 0.25;
+    /// The kit's popover keeps its fill [`gpui_kit::component::popup_offset`]
+    /// from the Button on either side.
+    fn of(trigger: Bounds<Pixels>, window: &Window, cx: &App) -> Self {
+        let gap = gpui_kit::component::popup_offset(window, cx);
         let floor = appearance::ui_size(MENU_FLOOR);
         let below = menu_foot(window) - trigger.bottom() - gap;
         let above = trigger.top() - gap - menu_bounds(window).top();
@@ -1419,7 +1433,7 @@ impl RenderOnce for AppDropdown {
         // is chosen here instead, from the same painted bounds as the room.
         let corner = match anchor
             .get()
-            .map(|trigger| DropdownRoom::of(trigger, window))
+            .map(|trigger| DropdownRoom::of(trigger, window, cx))
         {
             Some(DropdownRoom { above: true, .. }) => gpui::Anchor::BottomLeft,
             _ => gpui::Anchor::TopLeft,
@@ -1435,7 +1449,7 @@ impl RenderOnce for AppDropdown {
                 let menu = build(menu, window, cx);
                 let room = bounds
                     .get()
-                    .map(|trigger| DropdownRoom::of(trigger, window).room);
+                    .map(|trigger| DropdownRoom::of(trigger, window, cx).room);
                 open_menu_in(menu, keyboard, room, max, cx)
             },
         );

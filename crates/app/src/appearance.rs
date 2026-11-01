@@ -258,13 +258,27 @@ pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut Ap
 /// in those palettes.
 pub const SECTION_LABEL_TEXT: f32 = 11.;
 
+/// The page every menu leaves between its drawn edge and the button or row
+/// it opened from, at the default interface size: a dropdown below or above
+/// its button, a row's menu below or above its row (`DESIGN.md`, "One gap
+/// between a menu and what it opened from"). It scales with the interface
+/// text, as the rows and buttons beside it do.
+pub const POPUP_GAP: f32 = 4.;
+
+/// [`POPUP_GAP`] at the current interface size.
+pub fn popup_gap() -> Pixels {
+    ui_size(POPUP_GAP)
+}
+
 /// The kit theme's text sizes at the current interface and code sizes: its
-/// root and code text and the menu label's size. Applying a palette restores
-/// the kit's default theme first, so both paths set all three.
+/// root and code text, the menu label's size and the gap its popups keep
+/// from their trigger, which scales with them. Applying a palette restores
+/// the kit's default theme first, so both paths set all four.
 fn set_theme_text_sizes(theme: &mut Theme) {
     theme.font_size = ui_text(13.);
     theme.mono_font_size = code_text();
     theme.menu_label_size = Some(ui_text(SECTION_LABEL_TEXT));
+    theme.popup_gap = Some(popup_gap());
 }
 
 /// [`sync_text_sizes`] for callers that own no entity to notify: a text-size

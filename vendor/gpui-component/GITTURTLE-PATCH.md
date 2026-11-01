@@ -687,6 +687,28 @@ a dropdown, and the first test passes without it; since no app menu uses the
 kit's context menu, a kit update may instead drop that half rather than carry
 it forward, with that test's right-click case.
 
+The popup-gap patch modifies `src/theme/mod.rs`, `src/styled.rs` and
+`src/popover.rs`. Upstream keeps a popover's fill a quarter rem from its
+trigger (`mt_1`, `mb_1`), whatever gap an application keeps elsewhere: at
+GitTurtle's 13 px root a dropdown's drawn edge, the ring outside its fill,
+stood 2 to 2.5 px from its button and 3.5 px at 18 pt, while the app's own
+row menus drew their edge on their row. `Theme::popup_gap`, set in code, is
+the page a popup leaves between its drawn edge and its trigger;
+`popup_offset` turns it into the margin a popover keeps to its fill, the gap
+and `POPOVER_EDGE_WIDTH`, and keeps upstream's quarter rem where the theme
+sets no gap. The popover's content takes that margin on its anchor's side,
+as it took `mt_1` and `mb_1`; the hover card, which builds the same content,
+follows it. The consumer is every app dropdown (`AppDropdown`): the app sets
+the gap with its text sizes (`appearance::popup_gap`, 4 px at 13 pt, scaled
+with the text) and reads `popup_offset` for the room on either side of a
+button (`DropdownRoom`), and its row menus keep the same gap from their row
+(`menu_offset`), so every menu stands one gap from what it opened from.
+`cargo test --locked -p gitturtle menus_keep_one_gap_from_their_button_or_row`
+reads that gap below and above a button and above a right-click's row at 13
+and 18 pt, and `a_keyboard_row_menu_keeps_the_menu_gap_below_its_row` below
+a keyboard's row. Remove this part when upstream lets an application set the
+gap a popover keeps from its trigger, and those tests pass without it.
+
 The input-menu patch also modifies `src/native_menu/fallback.rs`. The
 fallback menu gives the base `Positioner::point` a gap of
 `POPOVER_EDGE_WIDTH` ([base patch](../gpui-base/GITTURTLE-PATCH.md)), so its

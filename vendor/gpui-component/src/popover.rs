@@ -282,9 +282,12 @@ impl Popover {
     pub(crate) fn render_popover_content(
         anchor: Anchor,
         appearance: bool,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
+        // GitTurtle patch: the theme's popup gap past the drawn edge, or
+        // upstream's quarter rem to the fill ([`crate::popup_offset`]).
+        let offset = crate::popup_offset(window, cx);
         v_flex()
             .id("content")
             .occlude()
@@ -296,9 +299,9 @@ impl Popover {
             // the surface by its relative `top`, which the host never saw,
             // so a surface it moved to the inset ended a quarter rem past it.
             .map(|this| match anchor {
-                Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.mt_1(),
-                Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.mb_1(),
-                Anchor::LeftCenter | Anchor::RightCenter => this.mt_1(), // Fallback for centered
+                Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.mt(offset),
+                Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.mb(offset),
+                Anchor::LeftCenter | Anchor::RightCenter => this.mt(offset), // Fallback for centered
             })
     }
 }
