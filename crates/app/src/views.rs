@@ -8868,6 +8868,68 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The image toolbar keeps the rows it has without the sides' open
+    /// controls wherever it holds them: from 461 to 520 px, at 13 and 18 pt,
+    /// side by side and overlaid, the toolbar is as tall with both controls
+    /// offered as with neither, and the walk meets them in the toolbar.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_open_controls_never_add_a_toolbar_row(cx: &mut TestAppContext) {
+        use crate::image_compare::Mode;
+        use crate::system_preview::tests::png;
+        /// The toolbar's height at each text size, mode and width, and
+        /// whether it held the controls there.
+        fn toolbars(
+            app: &Entity<GitTurtle>,
+            cx: &mut VisualTestContext,
+        ) -> Vec<(String, Pixels, bool)> {
+            let mut toolbars = Vec::new();
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for mode in [Mode::SideBySide, Mode::Overlay] {
+                    app.update(cx, |app, cx| {
+                        app.set_image_mode(mode);
+                        cx.notify();
+                    });
+                    for width in 461..=520 {
+                        cx.simulate_resize(size(px(width as f32), px(490.)));
+                        draw(cx);
+                        let toolbar = cx.debug_bounds("image-toolbar").expect("the toolbar");
+                        toolbars.push((
+                            format!("{text} pt, {mode:?}, {width} px"),
+                            toolbar.size.height,
+                            cx.debug_bounds("image-open-controls").is_some(),
+                        ));
+                    }
+                }
+            }
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+            toolbars
+        }
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let offered = toolbars(&app, cx);
+        assert!(
+            offered.iter().any(|(_, _, held)| *held),
+            "the walk meets the controls in the toolbar"
+        );
+        edit_image_sides(&app, cx, |_, image| image.system_preview = None);
+        let none = toolbars(&app, cx);
+        for ((at, offered, _), (_, none, held)) in offered.iter().zip(&none) {
+            assert!(!held, "{at}: no control offered");
+            assert!(
+                (*offered - *none).abs() <= px(0.5),
+                "{at}: the toolbar is {offered:?} tall with the controls and {none:?} without"
+            );
+        }
+    }
+
     /// The room beneath an image comparison's toolbar measures its captions,
     /// a click's band and an absent side's reason again only where the
     /// column's width, the text sizes or font, or what the captions and the
