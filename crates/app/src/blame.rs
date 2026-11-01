@@ -554,12 +554,12 @@ impl GitTurtle {
                     .child(button("blame-compare-commit", "Compare commit", "", false).accessibility_label(action_label("Compare commit")).disabled(attribution.is_none() || busy).tooltip("Open the line's originating commit; Back restores this attribution and selected line").on_click(cx.listener(|this, _, window, cx| this.open_blame_commit(window, cx))))
                     .child(button("blame-line-history", "History of line", "clock", false).accessibility_label(action_label("History of line")).disabled(attribution.is_none() || busy).on_click(cx.listener(|this, _, window, cx| this.load_line_history(window, cx))))
                     .child(copy_feedback::copy_button(self.copy_line_mark(), "Copy line", "", cx).accessibility_label(if selected.is_some() { "Copy line" } else { "Copy line, unavailable until a line is selected" }).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| { this.copy_blame_line(true, window, cx); })))
-                    .children(attribution.map(|attribution| { let oid = attribution.oid.clone(); let mark = copy_feedback::Mark::new("copy-blame-commit", &oid); let copy_mark = mark.clone(); copy_feedback::copy_hash_button(mark, short_oid(&oid), "Copy originating commit hash", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit hash", oid.clone())) })))
+                    .children(attribution.map(|attribution| { commit_hash_button(copy_feedback::Mark::new("copy-blame-commit", &attribution.oid), &attribution.oid, ORIGINATING_HASH, cx) })))
                 .children(matches!(self.blame.pending, Some(Pending::History(_))).then(|| static_text("blame-line-history-loading", "Tracing the selected line…").text_size(crate::appearance::ui_text(11.))))
                 .children(self.blame.history.as_ref().map(|history| div().flex().flex_col().min_h_0().gap_1()
                     .child(static_text("blame-line-history-limit", if history.truncated { "Latest 100 line changes · limit reached. First-parent lineage; copies and other merge parents are excluded." } else { "Line changes · first-parent lineage; copies and other merge parents are excluded." }).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
-                    .child(crate::native_accessibility::clips_children(div().id("line-history-results").overflow_y_scroll().max_h(px(130.)).children(history.commits.iter().enumerate().map(|(index, commit)| { let oid = commit.oid.clone(); let mark = copy_feedback::Mark::new(("copy-line-history-commit", index), &oid); let copy_mark = mark.clone();
-                        div().py_1().flex().items_center().gap_2().child(copy_feedback::copy_hash_button(mark, short_oid(&oid), "Copy this line-history commit hash", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit hash", oid.clone()))).child(static_text(("blame-line-history-subject", index), commit.subject.clone()).flex_1().truncate().text_size(crate::appearance::ui_text(11.))).child(static_text(("blame-line-history-author", index), commit.author.clone()).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
+                    .child(crate::native_accessibility::clips_children(div().id("line-history-results").overflow_y_scroll().max_h(px(130.)).children(history.commits.iter().enumerate().map(|(index, commit)| { 
+                        div().py_1().flex().items_center().gap_2().child(commit_hash_button(copy_feedback::Mark::new(("copy-line-history-commit", index), &commit.oid), &commit.oid, LINE_HISTORY_HASH, cx)).child(static_text(("blame-line-history-subject", index), commit.subject.clone()).flex_1().truncate().text_size(crate::appearance::ui_text(11.))).child(static_text(("blame-line-history-author", index), commit.author.clone()).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
                     })))))))
             .into_any_element()
     }
@@ -662,6 +662,41 @@ fn display_excerpt(source: &str, limit: usize) -> String {
     }
 }
 
+/// Blame's originating commit hash button: its name, then its tooltip.
+const ORIGINATING_HASH: (&str, &str) = (
+    "Copy originating commit hash",
+    "Copy originating commit hash",
+);
+/// A line-history commit's hash button: its name, then its tooltip.
+const LINE_HISTORY_HASH: (&str, &str) = (
+    "Copy line-history commit hash",
+    "Copy this line-history commit hash",
+);
+
+/// A copy of `oid`, a commit Blame shows, drawn as its short ID after the hash glyph and named
+/// by its action, `text`'s name, with `text`'s tooltip: named by the short ID alone, it told a
+/// screen reader nothing of what it did, where the inspector's Hash is "Copy full commit hash".
+fn commit_hash_button(
+    mark: copy_feedback::Mark,
+    oid: &str,
+    text: (&'static str, &'static str),
+    cx: &App,
+) -> Button {
+    let (name, tooltip) = text;
+    let (copy_mark, oid) = (mark.clone(), oid.to_owned());
+    copy_feedback::copy_hash_button(mark, short_oid(&oid), tooltip, cx)
+        .accessibility_label(name)
+        .on_click(move |_, window, cx| {
+            copy_feedback::copy(
+                window,
+                cx,
+                Some(copy_mark.clone()),
+                "commit hash",
+                oid.clone(),
+            )
+        })
+}
+
 /// Returns once the attribution `open_blame` started has landed and been
 /// drawn. It is read on the app's reader, a thread `run_until_parked` cannot
 /// wait for, so the test waits for that thread, which holds the test clock,
@@ -683,6 +718,29 @@ mod tests {
     use gitturtle_core::BlameTarget;
     use gpui_kit::{IntoElement as _, ParentElement as _};
     use std::path::Path;
+
+    /// Blame's two commit hash buttons draw the short ID and are named by what they copy, as
+    /// the inspector's Hash is: they were named by the short ID alone.
+    #[gpui_kit::test]
+    fn commit_hash_buttons_are_named_by_their_action(cx: &mut gpui_kit::TestAppContext) {
+        use gpui::Element as _;
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        for (text, name) in [
+            (super::ORIGINATING_HASH, "Copy originating commit hash"),
+            (super::LINE_HISTORY_HASH, "Copy line-history commit hash"),
+        ] {
+            let node = crate::views::tests::view_node(cx, move |window, cx| {
+                let mark = crate::copy_feedback::Mark::new("copy-blame-commit", oid);
+                let button = super::commit_hash_button(mark, oid, text, cx).base(window, cx);
+                let element = gpui::RenderOnce::render(button, window, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+                element.write_a11y_info(&mut node);
+                node
+            });
+            assert_eq!(node.label(), Some(name), "{text:?}");
+        }
+    }
 
     #[gpui_kit::test]
     fn blame_source_uses_the_code_font(cx: &mut gpui_kit::TestAppContext) {
