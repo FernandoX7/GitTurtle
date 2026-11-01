@@ -748,6 +748,11 @@ struct Panel {
     page: u32,
     has_next: bool,
     pull: Option<PullRequest>,
+    /// The PR row a left press is held down on, which draws the whole row pressed, title and
+    /// context line alike. The row records it as the press is captured, since the title
+    /// Button keeps the press from GPUI's own pressed state for anything around it; any
+    /// release ends it.
+    pressed: std::rc::Rc<std::cell::Cell<Option<u64>>>,
     status: Option<PullStatus>,
     description: Option<Entity<EditorState>>,
     create: bool,
@@ -815,7 +820,7 @@ impl Panel {
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
-            rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
+            rows:vec![],page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
@@ -1771,6 +1776,8 @@ impl Panel {
         if let Some(control) = &self.local_control {
             control.cancel();
         }
+        // A press the closing panel took ends with it, so a reopened list is drawn at rest.
+        self.pressed.set(None);
         self.save_draft(window, cx);
         self.closed = true;
         self.heard = Heard::default();
@@ -2012,13 +2019,17 @@ impl Render for Panel {
                         // label at the panel's text inset, and the context line below, outside the
                         // Button, takes the same inset as its padding and the row's foot below it,
                         // so the whole lit row opens the PR (as a margin and the row's own padding,
-                        // they left 10 px each side and the foot unclickable). The title draws no
-                        // hover of its own, so the row lifts once; selected, its opaque fill
-                        // follows the row's.
-                        let hover=p.row_hover(selected);let group=SharedString::from(format!("github-pr-card-{number}"));let open=pull.clone();
-                        let title=crate::button_frame(("github-pr",number),&name,"",selected);
-                        let title=if selected{title.group_hover(group.clone(),move|style|style.bg(rgb(hover)))}else{title.with_variant(appearance::still_control_button_variant())};
-                        div().id(("github-pr-card",pull.number)).group(group).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected{p.selected}else{p.panel})).when(!pending,|row|row.hover(move|row|row.bg(rgb(hover)))).flex().flex_col()
+                        // they left 10 px each side and the foot unclickable). A press anywhere on
+                        // the row darkens it whole to the selected surface, as list rows do. The
+                        // title draws no fill of its own, at rest, hovered, pressed or selected,
+                        // so the row's surface shows through it: the row lifts and darkens once,
+                        // under both lines, where the title once pressed its own line alone.
+                        let hover=p.row_hover(selected);let open=pull.clone();
+                        let flat=gpui_kit::component::button::ButtonVariant::Custom(gpui_kit::component::button::ButtonCustomVariant::new(cx).foreground(rgb(p.control_label()).into()));
+                        let title=crate::button_frame(("github-pr",number),&name,"",false).with_variant(flat).selected(selected);
+                        let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
+                        div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
+                            .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
                             .child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
@@ -5709,12 +5720,13 @@ mod tests {
     }
 
     /// PR rows are list rows, as the Files list's are: unselected, a row rests on the panel
-    /// surface and lifts to the hover surface under both its lines, its title Button drawing
-    /// no fill of its own, so the row lifts once; the selected row rests on the selected
-    /// surface and lifts to the selected row's hover, its title following from either line.
+    /// surface and lifts to the hover surface under both its lines; the selected row rests on
+    /// the selected surface and lifts to the selected row's hover. A press on the title or the
+    /// row's foot darkens the whole row to the selected surface, as list rows do. The title
+    /// Button draws no fill of its own in any of these, so the row lifts and darkens once.
     /// The whole lit row opens the PR as the title does, at 18 pt even 6 px in from its edge
-    /// in the row's foot. Unselected rows once drew nothing at rest, and the pointer lifted
-    /// the title's line alone.
+    /// in the row's foot. Unselected rows once drew nothing at rest, the pointer lifted the
+    /// title's line alone, and a press darkened that line alone.
     #[gpui::test]
     async fn pull_request_rows_rest_and_lift_as_list_rows(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -5781,11 +5793,43 @@ mod tests {
             assert_eq!(other, [fill(p.panel)], "{line} leaves #42 at rest");
         }
 
+        // A press on the title darkens the whole row, the title drawing nothing of its own;
+        // released off the row, on a control it did not press, it opens nothing.
+        let title = cx.debug_bounds("github-pr-43").unwrap();
+        cx.simulate_mouse_down(title.center(), MouseButton::Left, Modifiers::default());
+        draw(cx);
+        let pressed = (
+            painted(cx, "github-pr-card-43".into()),
+            painted(cx, "github-pr-43".into()),
+        );
+        assert_eq!(
+            pressed,
+            (vec![fill(p.selected)], vec![]),
+            "a press on #43's title"
+        );
+        let away = cx.debug_bounds("github-pr-42").unwrap().center();
+        cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
+        draw(cx);
+
         // The whole lit row opens the PR: 6 px in from its left edge, in its foot below the
         // context line, where the line's margin and the row's own padding took no click.
+        // Pressed there, the whole row darkens.
         let row = cx.debug_bounds("github-pr-card-42").unwrap();
         let foot = point(row.left() + px(6.), row.bottom() - px(2.));
-        cx.simulate_click(foot, Modifiers::default());
+        cx.simulate_mouse_move(foot, None, Modifiers::default());
+        cx.simulate_mouse_down(foot, MouseButton::Left, Modifiers::default());
+        draw(cx);
+        let pressed = (
+            painted(cx, "github-pr-card-42".into()),
+            painted(cx, "github-pr-42".into()),
+        );
+        assert_eq!(
+            pressed,
+            (vec![fill(p.selected)], vec![]),
+            "a press at {foot:?}"
+        );
+        cx.simulate_mouse_up(foot, MouseButton::Left, Modifiers::default());
         settle_panel(&app, cx).await;
         draw(cx);
         assert_eq!(
@@ -5800,15 +5844,14 @@ mod tests {
         for line in ["github-pr-context-42", "github-pr-42"] {
             hover(cx, line);
             assert_eq!(painted(cx, "github-pr-card-42".into()), [lifted], "{line}");
-            assert_eq!(
-                painted(cx, "github-pr-42".into()),
-                [lifted],
-                "{line}: the title follows"
+            assert!(
+                painted(cx, "github-pr-42".into()).is_empty(),
+                "{line}: the row lifts once"
             );
         }
         hover(cx, "github-pr-context-43");
         assert_eq!(painted(cx, "github-pr-card-42".into()), [fill(p.selected)]);
-        assert_eq!(painted(cx, "github-pr-42".into()), [fill(p.selected)]);
+        assert!(painted(cx, "github-pr-42".into()).is_empty());
         cx.update(|window, cx| {
             window.close_dialog(cx);
             appearance::apply_text_sizes(13, 12, window, cx);
