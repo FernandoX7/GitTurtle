@@ -22,6 +22,7 @@ use gpui_kit::*;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// What the group dialog will do when the user confirms it.
@@ -44,7 +45,9 @@ pub enum PaneRow {
         projects: usize,
     },
     Project {
-        path: PathBuf,
+        /// Shared with the row's key and element ID, which each frame
+        /// clones rather than copying the path.
+        path: Arc<Path>,
         name: String,
         /// The parent folder, shown only when another project has the same
         /// display name, so two identically named checkouts stay apart.
@@ -75,7 +78,8 @@ impl PaneRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowKey {
     Group(u32),
-    Project(PathBuf),
+    /// The project's path, shared with its row ([`PaneRow::Project`]).
+    Project(Arc<Path>),
 }
 
 impl RowKey {
@@ -85,10 +89,12 @@ impl RowKey {
     /// it, and goes with the row when it leaves the list. Keyed by its place,
     /// a menu open on a project passed to the row that moved into that
     /// place, as a project added above it or a renamed one sorted elsewhere.
+    /// It allocates nothing: a group's is its number beside a static name, a
+    /// project's its row's shared path.
     fn element_id(&self) -> ElementId {
         match self {
             Self::Group(id) => ElementId::NamedInteger("project-group".into(), u64::from(*id)),
-            Self::Project(path) => ElementId::Path(std::sync::Arc::from(path.as_path())),
+            Self::Project(path) => ElementId::Path(path.clone()),
         }
     }
 }
@@ -139,7 +145,7 @@ pub fn present_rows(library: &ProjectLibrary, name_of: impl Fn(&Path) -> String)
                     (counts.get(&name).copied().unwrap_or(0) > 1).then(|| parent_label(&path));
                 let location = path.display().to_string();
                 PaneRow::Project {
-                    path,
+                    path: path.into(),
                     name,
                     detail,
                     location,
@@ -592,7 +598,9 @@ impl GitTurtle {
         window.focus(&self.project_pane.focus, cx);
         match row {
             PaneRow::Group { id, .. } => self.toggle_project_group(id, window, cx),
-            PaneRow::Project { path, .. } => self.open_project_from_pane(path, window, cx),
+            PaneRow::Project { path, .. } => {
+                self.open_project_from_pane(path.to_path_buf(), window, cx)
+            }
         }
         cx.notify();
     }
@@ -1063,7 +1071,7 @@ impl GitTurtle {
                 location,
                 ..
             } => {
-                let active = self.path.as_ref() == Some(path);
+                let active = self.path.as_deref() == Some(&**path);
                 let body = div()
                     .flex_1()
                     .min_w_0()
@@ -1315,7 +1323,7 @@ fn row_menu(
                 .item(
                     native_accessibility::waiting_item("Open project", false, busy).on_click(
                         move |_, window, cx| {
-                            let target = open_path.clone();
+                            let target = open_path.to_path_buf();
                             let _ = open.update(cx, |this, cx| {
                                 this.open_project_from_pane(target, window, cx)
                             });
@@ -1324,7 +1332,7 @@ fn row_menu(
                 )
                 .item(
                     PopupMenuItem::new("Rename project…").on_click(move |_, window, cx| {
-                        let target = rename_path.clone();
+                        let target = rename_path.to_path_buf();
                         let _ = rename
                             .update(cx, |this, cx| this.open_rename_project(target, window, cx));
                     }),

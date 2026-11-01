@@ -206,7 +206,7 @@ fn move_destinations_exclude_impossible_targets_and_mark_the_current_place() {
     assert_eq!(
         labels(&move_destinations(
             &library,
-            &RowKey::Project(project.to_owned())
+            &RowKey::Project(project.into())
         )),
         vec![
             "Top level",
@@ -316,7 +316,7 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
     app.read_with(cx, |app, _| {
         assert!(matches!(
             &app.project_pane.rows[1],
-            PaneRow::Project { path, depth: 1, .. } if *path == paths[0]
+            PaneRow::Project { path, depth: 1, .. } if **path == paths[0]
         ));
     });
 
@@ -365,7 +365,7 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
         let index = app.project_pane.cursor.expect("cursor follows the project");
         assert!(matches!(
             &app.project_pane.rows[index],
-            PaneRow::Project { path, depth: 0, .. } if *path == paths[0]
+            PaneRow::Project { path, depth: 0, .. } if **path == paths[0]
         ));
     });
 }
@@ -1398,7 +1398,7 @@ fn a_project_rows_menus_stay_with_it_as_a_row_arrives_above(cx: &mut TestAppCont
     let (library, _, paths) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
     cx.update(|_, cx| native_accessibility::bind_keys(cx));
-    let beta = RowKey::Project(paths[1].clone());
+    let beta = RowKey::Project(paths[1].as_path().into());
     let row_of = |cx: &mut VisualTestContext| {
         app.read_with(cx, |app, _| {
             app.project_pane
@@ -1493,4 +1493,29 @@ fn a_project_rows_menus_stay_with_it_as_a_row_arrives_above(cx: &mut TestAppCont
     );
     cx.simulate_keystrokes("escape");
     settle(cx);
+}
+
+/// A project row's key and element ID share the row's path rather than
+/// copying it, so drawing the row allocates nothing for either: the ID
+/// once copied the path into a new allocation in every frame.
+#[test]
+fn a_project_rows_key_and_id_share_its_path() {
+    let (library, _, _) = library_with_group();
+    let rows = present_rows(&library, folder_name);
+    let (row, path) = rows
+        .iter()
+        .find_map(|row| match row {
+            PaneRow::Project { path, .. } => Some((row, path)),
+            PaneRow::Group { .. } => None,
+        })
+        .expect("a project row");
+    let key = row.key();
+    assert!(
+        matches!(&key, RowKey::Project(shared) if std::sync::Arc::ptr_eq(shared, path)),
+        "the key shares the row's path"
+    );
+    assert!(
+        matches!(key.element_id(), ElementId::Path(shared) if std::sync::Arc::ptr_eq(&shared, path)),
+        "the element ID shares it too"
+    );
 }
