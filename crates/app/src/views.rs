@@ -8332,9 +8332,10 @@ pub(crate) mod tests {
     /// third line below the preview's clip: offered, never drawn. Now the
     /// groups become one-control menus where they do not fit, the scale
     /// notice follows the image with the guidance, one line each, and the
-    /// control follows the side's name, so in the narrow window, at 13 and
-    /// at 18 pt, each control
-    /// and its ring lie in what the preview shows of its caption, and the two
+    /// control follows the side's name, or stands in the toolbar where the
+    /// caption cannot hold it there, so in the narrow window, at 13 and at
+    /// 18 pt, each control and its ring lie in what the preview shows of its
+    /// caption or the toolbar, and the two
     /// names share their top (Before once sat 8 px below After, centred
     /// beside a wrapped control). The notes keep their one line where the
     /// column holds it and otherwise leave. When a click opens nothing, the
@@ -8378,12 +8379,14 @@ pub(crate) mod tests {
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
             let content = bounds("preview-content", cx);
+            let in_toolbar = cx.debug_bounds("image-open-controls").is_some();
             for (control, caption) in sides {
-                let (control, caption) = (bounds(control, cx), bounds(caption, cx));
+                let control = bounds(control, cx);
+                let caption = bounds(if in_toolbar { "image-toolbar" } else { caption }, cx);
                 let visible = caption.intersect(&content);
                 assert!(
                     holds_with_ring(visible, control),
-                    "{at}: {control:?} and its ring lie in the visible part {visible:?} of its side's caption {caption:?}"
+                    "{at}: {control:?} and its ring lie in the visible part {visible:?} of its side's caption or the toolbar {caption:?}"
                 );
             }
             let names = ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx));
@@ -8511,15 +8514,14 @@ pub(crate) mod tests {
     /// wrapped onto a line of its own, 48 px of the image's room, while
     /// After's stayed beside its name. Each control stays on its name's line
     /// wherever the name, the gap and the scaled 28 px icon fit in the
-    /// narrower caption, and otherwise both sit beneath their names; both
+    /// narrower caption, and otherwise both stand in the toolbar's row; both
     /// are labelled or both icons. At 13 and 18 pt in 461 × 490, 461 × 980,
     /// 640 × 680 and 1,480 × 980 windows, the controls share their top and
     /// their width, and the walk meets both places. Where only Before offers
-    /// its control, its place is chosen from Before's room alone, and beneath
-    /// the names After keeps an empty line of the control's height, so both
-    /// names and both sides' dimensions stay level: they ended about 36 px
-    /// apart. A source image's one caption places its control by the same
-    /// rule.
+    /// its control, its place is chosen from Before's room alone, and both
+    /// names and both sides' dimensions stay level (beneath the names they
+    /// once ended about 36 px apart). A source image's one caption places
+    /// its control by the same rule.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn image_caption_controls_take_one_place(cx: &mut TestAppContext) {
@@ -8538,7 +8540,7 @@ pub(crate) mod tests {
         assert_eq!(
             both,
             (true, true, true),
-            "with both offered, the walk meets controls on the names' line, beneath them, and level dimensions beneath them"
+            "with both offered, the walk meets controls on the names' line, in the toolbar, and level dimensions beneath the names"
         );
         edit_image_sides(&app, cx, |side, image| {
             if side == 1 {
@@ -8550,7 +8552,7 @@ pub(crate) mod tests {
         assert_eq!(
             single,
             (true, true, true),
-            "with Before alone offered, the walk meets its control on the names' line, beneath them, and level dimensions beneath them"
+            "with Before alone offered, the walk meets its control on the names' line, in the toolbar, and level dimensions beneath the names"
         );
         show_source(&app, cx, "image").await;
         let source = caption_controls_take_one_place(cx, "a source", &[1], ["Source", "Source"]);
@@ -8565,10 +8567,11 @@ pub(crate) mod tests {
     /// windows, the open controls of the sides `offered` (each side's caption
     /// named `names`) share one top and one width, on their names' line
     /// where the narrower caption among them holds the scaled 28 px icon
-    /// beside its name, and otherwise beneath their names, where every drawn
-    /// side's name and dimensions stay level with the other's. Whether the
-    /// walk met controls on the names' line, beneath them, and both sides'
-    /// dimensions drawn beneath them.
+    /// beside its name, and otherwise in the toolbar's row, above the
+    /// captions, where every drawn side's name and dimensions stay level with
+    /// the other's. Whether the walk met controls on the names' line, in the
+    /// toolbar, and both sides' dimensions drawn beneath the names with the
+    /// controls in the toolbar.
     fn caption_controls_take_one_place(
         cx: &mut VisualTestContext,
         what: &str,
@@ -8581,7 +8584,7 @@ pub(crate) mod tests {
                 .unwrap_or_else(|| panic!("{selector} is drawn"))
         };
         let slack = px(0.5);
-        let (mut inline_met, mut beneath_met, mut level_met) = (false, false, false);
+        let (mut inline_met, mut toolbar_met, mut level_met) = (false, false, false);
         for (text, width, height) in [
             (13, 461., 490.),
             (18, 461., 490.),
@@ -8649,9 +8652,10 @@ pub(crate) mod tests {
                         "{at}: where the narrower caption holds the icon beside its name, control {index} {control:?} stays on its name's line {name:?}"
                     );
                 } else {
+                    let toolbar = bounds("image-toolbar".into(), cx);
                     assert!(
-                        control.top() >= name.bottom() - slack,
-                        "{at}: where the narrower caption cannot hold it, control {index} {control:?} sits beneath its name {name:?}"
+                        holds_with_ring(toolbar, *control) && control.bottom() <= name.top(),
+                        "{at}: where the narrower caption cannot hold it, control {index} {control:?} stands in the toolbar {toolbar:?}, above its name {name:?}"
                     );
                 }
             }
@@ -8672,9 +8676,151 @@ pub(crate) mod tests {
                 }
             }
             inline_met |= fits;
-            beneath_met |= !fits;
+            toolbar_met |= !fits;
         }
-        (inline_met, beneath_met, level_met)
+        (inline_met, toolbar_met, level_met)
+    }
+
+    /// Where the captions cannot hold an open control beside its side's
+    /// name, as at 13 and 18 pt in a 461 × 490 window, both stand as their
+    /// icons in the comparison's toolbar, on the zoom menu's row after it,
+    /// Before's first, and never over the image: beneath the names they took
+    /// a line of their own, 48 px of the image's room at 18 pt. The toolbar
+    /// keeps the rows it has with no control offered, and the captions and
+    /// the image keep the room they have then. Away from its side's name,
+    /// each tooltip names the side, as its accessible name does. Focused on
+    /// its name's line in a wide window, Before's control keeps focus as the
+    /// window narrows and moves it into the toolbar, where Tab moves on to
+    /// After's.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn narrow_image_open_controls_stand_in_the_toolbar_row(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let slack = px(0.5);
+        // The toolbar, the captions and the image's room in each window, with
+        // the controls offered.
+        let mut offered = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
+            draw(cx);
+            let at = format!("{text} pt in 461 × 490");
+            let toolbar = bounds("image-toolbar", cx);
+            let zoom = bounds("image-zoom-menu", cx);
+            let group = bounds("image-open-controls", cx);
+            let controls = ["image-system-preview-0", "image-system-preview-1"]
+                .map(|selector| bounds(selector, cx));
+            assert!(
+                holds_with_ring(toolbar, group),
+                "{at}: the controls {group:?} lie in the toolbar {toolbar:?}"
+            );
+            for control in controls {
+                assert!(
+                    group.contains(&control.center())
+                        && holds_with_ring(toolbar, control)
+                        && (control.center().y - zoom.center().y).abs() <= slack
+                        && control.left() >= zoom.right(),
+                    "{at}: {control:?} stands after the zoom menu {zoom:?} on its row"
+                );
+            }
+            assert!(
+                controls[0].right() <= controls[1].left(),
+                "{at}: Before's first: {controls:?}"
+            );
+            let captions = bounds("image-captions-and-stage", cx);
+            assert!(
+                toolbar.bottom() <= captions.top() + slack,
+                "{at}: above the captions and the image {captions:?}"
+            );
+            for (index, side) in ["Before", "After"].into_iter().enumerate() {
+                let tooltip = CONTROL_TOOLTIPS.with(|tooltips| {
+                    tooltips
+                        .borrow()
+                        .get(format!("image-system-preview-{index}").as_str())
+                        .cloned()
+                });
+                assert_eq!(
+                    tooltip.as_deref(),
+                    Some(
+                        format!("Open in default app: {side}, a read-only copy as a PNG image")
+                            .as_str()
+                    ),
+                    "{at}: its tooltip names its side"
+                );
+            }
+            offered.push([
+                toolbar.size.height,
+                bounds("image-side-caption-0", cx).size.height,
+                bounds("image-canvas-area", cx).size.height,
+            ]);
+        }
+        // Focused on its name's line, Before's control keeps focus as the
+        // window narrows and moves it.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let [before_focus, after_focus] = app.read_with(cx, |app, _| {
+            app.image_comparison
+                .open_focus()
+                .expect("the controls' focus handles")
+        });
+        let caption = bounds("image-side-caption-0", cx);
+        assert!(
+            caption.contains(&bounds("image-system-preview-0", cx).center()),
+            "wide, Before's control follows its name"
+        );
+        cx.update(|window, cx| window.focus(&before_focus, cx));
+        draw(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(
+            bounds("image-open-controls", cx)
+                .contains(&bounds("image-system-preview-0", cx).center()),
+            "narrow, Before's control stands in the toolbar"
+        );
+        assert!(
+            cx.update(|window, _| before_focus.is_focused(window)),
+            "Before's control keeps focus"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| after_focus.is_focused(window)),
+            "Tab moves from Before's control to After's"
+        );
+        // With no control offered, the toolbar, the captions and the image
+        // take the same room.
+        edit_image_sides(&app, cx, |_, image| image.system_preview = None);
+        for (text, offered) in [13, 18].into_iter().zip(offered) {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            assert!(cx.debug_bounds("image-system-preview-0").is_none());
+            let none = [
+                bounds("image-toolbar", cx).size.height,
+                bounds("image-side-caption-0", cx).size.height,
+                bounds("image-canvas-area", cx).size.height,
+            ];
+            assert_eq!(
+                offered, none,
+                "{text} pt in 461 × 490: the toolbar, a caption and the image keep their heights"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// At a zoom other than Fit the pan follows the zooms and never takes a
@@ -9424,7 +9570,7 @@ pub(crate) mod tests {
         let surface = cx.update(|_, cx| {
             gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette(cx).panel)))
         });
-        for (text, heights) in [(13, 440..=510), (18, 460..=550)] {
+        for (text, heights) in [(13, 295..=320), (18, 405..=470)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(980.)));
             draw(cx);

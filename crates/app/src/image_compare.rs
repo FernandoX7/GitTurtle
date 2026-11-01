@@ -40,6 +40,9 @@ pub(super) struct State {
     bounds: Bounds<Pixels>,
     drag: Option<Drag>,
     playback: gif_playback::Playback,
+    /// The focus handle each side's open control tracks, wherever the
+    /// comparison places it ([`crate::system_preview::Target::tracking`]).
+    open_focus: std::cell::OnceCell<[FocusHandle; 2]>,
 }
 impl Clone for State {
     fn clone(&self) -> Self {
@@ -50,6 +53,7 @@ impl Clone for State {
             bounds: self.bounds,
             drag: None,
             playback: self.playback.clone(),
+            open_focus: self.open_focus.clone(),
         }
     }
 }
@@ -83,6 +87,13 @@ fn source_geometry(sides: [Option<[u32; 4]>; 2]) -> Geometry {
         source_scale,
     }
 }
+impl State {
+    /// The focus handles the sides' open controls track, once drawn.
+    #[cfg(test)]
+    pub(super) fn open_focus(&self) -> Option<[FocusHandle; 2]> {
+        self.open_focus.get().cloned()
+    }
+}
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -92,6 +103,7 @@ impl Default for State {
             bounds: Bounds::default(),
             drag: None,
             playback: gif_playback::Playback::default(),
+            open_focus: std::cell::OnceCell::new(),
         }
     }
 }
@@ -411,7 +423,8 @@ impl GitTurtle {
     /// The comparison in Compare's preview column, `width` wide in the frame
     /// it is drawn ([`GitTurtle::render_preview`] lays it out there), which
     /// its toolbar's groups fit, with Compare's `footer` at its foot, where
-    /// the footer gives way before the image's minimum. What lies beneath
+    /// the footer gives way before the image's minimum, and where the sides'
+    /// open controls stand, in the captions or the toolbar. What lies beneath
     /// the toolbar takes the column's width again from its own bounds.
     pub(super) fn render_image_comparison(
         &self,
@@ -434,6 +447,87 @@ impl GitTurtle {
             "100% comparison scale equals {:.1}% of source pixels. Source and decoded dimensions are shown below.",
             self.image_geometry().source_scale * 100.
         );
+        let mut copies = Vec::new();
+        let names = if source {
+            ["Source"; 2]
+        } else {
+            ["Before", "After"]
+        };
+        let opener =
+            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
+        // Each side's open control and what it offers, which its caption or
+        // the toolbar draws, and why its last click opened nothing, which a
+        // band beneath the captions says.
+        let mut offers: [Option<(crate::system_preview::Target, crate::system_preview::Offer)>; 2] =
+            [None, None];
+        let mut answers: [Option<crate::system_preview::Answer>; 2] = [None, None];
+        for (index, side) in [old, new].into_iter().enumerate() {
+            let label = if index == 0 { "Before" } else { "After" };
+            let side_path = self
+                .selected_file
+                .and_then(|selected| self.files.get(selected))
+                .and_then(|file| {
+                    if index == 0 {
+                        file.old_path.as_deref()
+                    } else {
+                        file.new_path.as_deref()
+                    }
+                });
+            if let Some(literal) = side.literal_source.clone() {
+                // The control's id names the side; the mark adds its path.
+                let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
+                let copy_mark = mark.clone();
+                copies.push(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
+            }
+            if let (Some(bytes), Some(offer), false) =
+                (&side.captured, side.system_preview, source && index == 0)
+            {
+                let label = names[index];
+                let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
+                let target = opener.target(
+                    ("image-system-preview", index),
+                    label,
+                    bytes,
+                    path,
+                    "image",
+                    offer,
+                );
+                answers[index] = target.answered(cx);
+                offers[index] = Some((target, offer));
+            }
+        }
+        // Where both sides' open controls stand, chosen from the narrower
+        // room a side's name leaves its control in the captions, which share
+        // the column equally: on the names' line, labelled where the label
+        // fits beside the name and otherwise as its icon, wherever the
+        // scaled 28 px icon fits there; otherwise both as their icons in the
+        // toolbar's row, never over the image nor on a line of their own
+        // beneath the names, which took the image 48 px at 18 pt in a
+        // 461 × 490 window.
+        let caption_width = width / if source { 1. } else { 2. };
+        let open_room = offers
+            .iter()
+            .enumerate()
+            .filter(|(_, offered)| offered.is_some())
+            .map(|(index, _)| caption_room(index, caption_width, names[index], window))
+            .reduce(|narrower, room| narrower.min(room));
+        let open_icon = crate::appearance::ui_size(28.);
+        let in_toolbar = open_room.is_some_and(|room| room < open_icon);
+        // Each side's control keeps one focus handle wherever it stands, so
+        // focus stays on it when a resize moves it.
+        let focus = state
+            .open_focus
+            .get_or_init(|| [cx.focus_handle(), cx.focus_handle()]);
+        let offers = [0, 1].map(|index| {
+            offers[index]
+                .take()
+                .map(|(target, offer)| (target.tracking(&focus[index]), offer))
+        });
+        let opens = in_toolbar.then(|| {
+            let icon = window.pixel_snap(open_icon);
+            let count = offers.iter().flatten().count() as f32;
+            icon * count + window.rem_size() * 0.5 * (count - 1.)
+        });
         let mode_group = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
         let modes_labelled = mode_group <= room;
         let mode_label = MODES
@@ -461,6 +555,7 @@ impl GitTurtle {
                     menu_width("Pan", &PAN_MENU, window),
                 ]
             }),
+            opens,
             adjust: (!source && state.mode != Mode::SideBySide)
                 .then(|| adjust_width(adjust_line, window)),
         }
@@ -760,12 +855,6 @@ impl GitTurtle {
         } else {
             "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned"
         };
-        let mut copies = Vec::new();
-        let names = if source {
-            ["Source"; 2]
-        } else {
-            ["Before", "After"]
-        };
         let details = [0, 1].map(|index| side_details(index, [old, new][index]));
         // The one short line an absent side draws where its two do not fit.
         let shorts = [0, 1].map(|index| absent_short(index, [old, new][index]));
@@ -786,49 +875,29 @@ impl GitTurtle {
             }
         });
         let stage_min = crate::appearance::ui_size(STAGE_MIN);
-        let opener =
-            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
-        // Each side's open control and what it offers, which its caption
-        // draws, and why its last click opened nothing, which a band beneath
-        // the captions says.
-        let mut offers: [Option<(crate::system_preview::Target, crate::system_preview::Offer)>; 2] =
-            [None, None];
-        let mut answers: [Option<crate::system_preview::Answer>; 2] = [None, None];
-        for (index, side) in [old, new].into_iter().enumerate() {
-            let label = if index == 0 { "Before" } else { "After" };
-            let side_path = self
-                .selected_file
-                .and_then(|selected| self.files.get(selected))
-                .and_then(|file| {
-                    if index == 0 {
-                        file.old_path.as_deref()
-                    } else {
-                        file.new_path.as_deref()
-                    }
-                });
-            if let Some(literal) = side.literal_source.clone() {
-                // The control's id names the side; the mark adds its path.
-                let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
-                let copy_mark = mark.clone();
-                copies.push(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
-            }
-            if let (Some(bytes), Some(offer), false) =
-                (&side.captured, side.system_preview, source && index == 0)
-            {
-                let label = names[index];
-                let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
-                let target = opener.target(
-                    ("image-system-preview", index),
-                    label,
-                    bytes,
-                    path,
-                    "image",
-                    offer,
-                );
-                answers[index] = target.answered(cx);
-                offers[index] = Some((target, offer));
-            }
-        }
+        // In the toolbar's row, both controls follow the zooms at its
+        // trailing edge, Before's first, as the halves are ordered; in the
+        // captions, each follows its side's name.
+        let open_group = in_toolbar.then(|| {
+            div()
+                .debug_selector(|| "image-open-controls".into())
+                .ml_auto()
+                .flex()
+                .items_center()
+                .gap_2()
+                .children(
+                    offers
+                        .iter()
+                        .flatten()
+                        .map(|(target, _)| target.toolbar_control(cx)),
+                )
+        });
+        let controls = offers.map(|offered| {
+            offered.filter(|_| !in_toolbar).map(|(target, offer)| {
+                let form = offer.form(open_room.unwrap_or_default(), window);
+                (target, form)
+            })
+        });
         // The band saying why a click opened nothing, and the comparison's
         // notes: their text's size and their lines' height and padding.
         let band_size = crate::appearance::ui_text(11.);
@@ -884,26 +953,7 @@ impl GitTurtle {
         let beneath = crate::in_frame::in_frame(move |bounds, window, cx| {
             // What the column's width decides, from its width in this frame.
             let width = bounds.size.width;
-            // The captions share the column equally, and their open controls
-            // take one form and one place, chosen from the narrower room a
-            // side's name leaves its control: labelled where the label fits
-            // beside the name, otherwise its icon, and on the name's line
-            // where the icon's scaled 28 px fits there, otherwise both on the
-            // line beneath, so the sides' names and details stay level.
             let caption_width = width / if source { 1. } else { 2. };
-            let room = offers
-                .iter()
-                .enumerate()
-                .filter(|(_, offered)| offered.is_some())
-                .map(|(index, _)| caption_room(index, caption_width, names[index], window))
-                .reduce(|narrower, room| narrower.min(room));
-            let inline = room.is_none_or(|room| room >= crate::appearance::ui_size(28.));
-            let controls = offers.map(|offered| {
-                offered.map(|(target, offer)| {
-                    let form = offer.form(room.unwrap_or_default(), window);
-                    (target, form)
-                })
-            });
             // The band shows each side's short line in that side's half,
             // whole where the image keeps its usable minimum beneath it and
             // otherwise on two lines, and always ends at a whole line.
@@ -960,7 +1010,6 @@ impl GitTurtle {
                 kinds,
                 source,
                 controls: &controls,
-                inline,
                 kept_lines: &kept_lines,
                 kept_wraps,
             };
@@ -1295,7 +1344,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             // Only copies of literal source have a row of their own; each
-            // open control sits in its side's caption.
+            // open control sits in its side's caption or the toolbar's row.
             .when(!copies.is_empty(), |element| {
                 element.child(
                     div()
@@ -1320,8 +1369,10 @@ impl GitTurtle {
                     .bg(rgb(p.panel))
                     .border_b_1()
                     .border_color(rgb(p.border))
+                    .debug_selector(|| "image-toolbar".into())
                     .when(!source, |element| element.child(modes))
                     .child(zoom_group)
+                    .children(open_group)
                     // Only overlaid or wiped does the adjustment have controls;
                     // side by side it takes no place in the row.
                     .when(!source && state.mode != Mode::SideBySide, |element| {
@@ -1735,6 +1786,8 @@ struct ToolbarWidths {
     /// The pan's four arrows, and the one Pan menu they fold into, where the
     /// images pan (not a source image).
     pan: Option<[Pixels; 2]>,
+    /// The sides' open controls, where they stand in the toolbar's row.
+    opens: Option<Pixels>,
     /// The overlay's or the wipe's adjustment labelled at its widest, where
     /// drawn, whatever form it takes.
     adjust: Option<Pixels>,
@@ -1764,7 +1817,7 @@ impl ToolbarWidths {
     /// one row: the modes and the adjustment counted labelled, the widest
     /// they are, so each form below changes at one width.
     fn fits(&self, zooms: Pixels) -> bool {
-        let groups = [self.modes, Some(zooms), self.adjust];
+        let groups = [self.modes, Some(zooms), self.opens, self.adjust];
         let width = groups
             .iter()
             .flatten()
@@ -1852,18 +1905,15 @@ pub(crate) const STAGE_MIN: f32 = 96.;
 /// document's header has them, and its details beneath where they stay.
 /// The name's line is as tall as the scaled 28 px control and the caption
 /// keeps to its top, so both sides' names and details line up whether or not
-/// a side offers the control. The `controls` share one form and one place,
-/// on the names' line where the narrower room beside a name holds them
-/// (`inline`), otherwise on the line beneath, both together, so one side's
-/// control never wraps alone; there a side without one keeps an empty line
-/// of the control's height in its place.
+/// a side offers the control. The `controls` share one form, on the names'
+/// line; where the narrower room beside a name cannot hold them, the
+/// comparison's toolbar holds both instead and the captions none.
 struct Captions<'a> {
     names: [&'static str; 2],
     details: &'a [String; 2],
     kinds: [Details; 2],
     source: bool,
     controls: &'a [Option<(crate::system_preview::Target, crate::system_preview::Form)>; 2],
-    inline: bool,
     /// The one line an absent side keeps beneath its name, whatever the
     /// dimensions: its two lines joined, or its short line.
     kept_lines: &'a [Option<String>; 2],
@@ -1889,7 +1939,6 @@ impl Captions<'_> {
         p: &crate::appearance::Palette,
         cx: &App,
     ) -> Div {
-        let offered = self.controls.iter().any(Option::is_some);
         div()
             .flex()
             .border_b_1()
@@ -1907,10 +1956,6 @@ impl Captions<'_> {
                         let control = self.controls[i]
                             .as_ref()
                             .map(|(target, form)| target.control(*form, cx));
-                        // Beneath the names, a side without a control keeps
-                        // its line, so both sides' details stay level.
-                        let keep_place = (!self.inline && offered && control.is_none())
-                            .then(|| div().h(crate::appearance::ui_size(28.)).flex_shrink_0());
                         let kept = self.kinds[i] == Details::Kept;
                         let one_line_kept = self.kept_lines[i].is_some();
                         let (drawn, cut) = match self.kinds[i] {
@@ -1939,13 +1984,9 @@ impl Captions<'_> {
                                 div()
                                     .flex()
                                     .gap_2()
-                                    .map(|line| {
-                                        if self.inline {
-                                            line.flex_wrap().items_center().content_start()
-                                        } else {
-                                            line.flex_col().items_start()
-                                        }
-                                    })
+                                    .flex_wrap()
+                                    .items_center()
+                                    .content_start()
                                     .child(
                                         native_accessibility::static_text(
                                             div().id(("image-side-description", i)).debug_selector(
@@ -1967,8 +2008,7 @@ impl Captions<'_> {
                                         })
                                         .child(name),
                                     )
-                                    .children(control)
-                                    .children(keep_place),
+                                    .children(control),
                             )
                             .when(drawn, |caption| {
                                 caption.child(
@@ -2413,6 +2453,7 @@ mod tests {
             modes: Some(px(233.)),
             zooms: [px(191.), px(58.5)],
             pan: Some([px(130.), px(51.)]),
+            opens: None,
             adjust: adjust.map(px),
         };
         let forms = |zooms_labelled, pan| ToolbarForms {

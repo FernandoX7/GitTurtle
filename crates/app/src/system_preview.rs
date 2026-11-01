@@ -443,6 +443,7 @@ impl Opener {
             side,
             bytes: Arc::clone(bytes),
             offer,
+            focus: None,
             #[cfg(not(target_os = "linux"))]
             name: name.to_path_buf(),
             #[cfg(not(target_os = "linux"))]
@@ -502,6 +503,9 @@ pub(crate) struct Target {
     side: &'static str,
     bytes: Arc<[u8]>,
     offer: Offer,
+    /// The focus handle its button tracks where the comparison owns one
+    /// ([`Self::tracking`]), so focus stays on it wherever it is placed.
+    focus: Option<FocusHandle>,
     #[cfg(not(target_os = "linux"))]
     name: std::path::PathBuf,
     /// What the surface shows, which macOS's name says Quick Look receives.
@@ -621,11 +625,17 @@ impl Target {
     /// comparison lies in a container that reveals its controls, it is one
     /// of them.
     fn button(&self, form: Form, cx: &App) -> Button {
-        let label = self.offer.label();
         let (shown, tooltip) = match form {
-            Form::Labelled => (label, self.offer.tooltip()),
+            Form::Labelled => (self.offer.label(), self.offer.tooltip()),
             Form::Icon => ("", self.offer.icon_tooltip()),
         };
+        self.button_with(shown, tooltip, cx)
+    }
+
+    /// Its button showing `shown`, its label or nothing beside its icon,
+    /// with `tooltip`.
+    fn button_with(&self, shown: &'static str, tooltip: String, cx: &App) -> Button {
+        let label = self.offer.label();
         let target = self.clone();
         let button = copy_feedback::feedback_button(self.mark.clone(), OPEN, shown, tooltip, cx)
             .on_click(move |_, window, cx| {
@@ -651,9 +661,39 @@ impl Target {
     /// container knows it holds focus. Its wrapper keeps the button's own
     /// size and does not shrink, as the button does not.
     pub(crate) fn control(&self, form: Form, cx: &App) -> AnyElement {
-        let button = self.button(form, cx);
+        self.placed(self.button(form, cx), cx)
+    }
+
+    /// Its icon in the toolbar of a comparison too narrow to hold it beside
+    /// its side's name, where both sides' controls stand together away from
+    /// the names: its tooltip is its accessible name, so it says which side
+    /// it opens ("Open in default app: Before, a read-only copy as a PNG
+    /// image"), and it is placed as [`Self::control`] places it.
+    pub(crate) fn toolbar_control(&self, cx: &App) -> AnyElement {
+        let name = accessible_name(self.offer.label(), Some(self.side), &self.copy());
+        crate::views::note_control_tooltip(
+            &ElementId::Name(self.control.to_string().into()),
+            &name,
+        );
+        self.placed(self.button_with("", name, cx), cx)
+    }
+
+    /// The comparison owning the focus handle its button tracks, so focus
+    /// stays on it when the comparison moves it between a caption and the
+    /// toolbar: a button's own handle is kept for its place in the element
+    /// tree, which the move changes.
+    pub(crate) fn tracking(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
+
+    /// `button` as [`Self::control`] places it.
+    fn placed(&self, button: Button, cx: &App) -> AnyElement {
         let Some((reveal, margin)) = &self.opener.reveal else {
-            return button.into_any_element();
+            return match &self.focus {
+                Some(focus) => button.track_focus(focus).into_any_element(),
+                None => button.into_any_element(),
+            };
         };
         let focus = reveal.focus(self.control.clone(), cx);
         div()
@@ -2630,6 +2670,7 @@ pub(crate) mod tests {
                 #[cfg(target_os = "linux")]
                 kind: passive::Kind::Png,
             },
+            focus: None,
             #[cfg(not(target_os = "linux"))]
             name: "captured".into(),
             #[cfg(not(target_os = "linux"))]
