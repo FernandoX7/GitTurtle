@@ -71,8 +71,11 @@ pub(super) struct ReviewState {
     /// The room the panel's top line took in the last frame: how tall it stood above the body
     /// while a conversation is open (`Panel::pin_top_line`), or the room it took among the
     /// content while none is (`Panel::flow_top_line`). The body's scroll moves with each change
-    /// of it while a conversation is open, so the body's content stays where it was drawn.
+    /// of it, so the body's content stays where it was drawn: while a conversation is open,
+    /// and in the frame the line moves back among the content as the conversation closes.
     pub top_line: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// Whether the last frame stood the top line above the body ([`Self::top_line`]).
+    pub top_line_pinned: std::cell::Cell<bool>,
     /// The scroll of the top line's text while it stands above the body, which its scrollbar
     /// cues where the text is taller than its room.
     pub top_line_scroll: ScrollHandle,
@@ -128,6 +131,7 @@ impl ReviewState {
             body_blocks: Blocks::default(),
             opened: Default::default(),
             top_line: Default::default(),
+            top_line_pinned: Default::default(),
             top_line_scroll: ScrollHandle::new(),
             files: vec![],
             file_page: 1,
@@ -1233,20 +1237,40 @@ impl Panel {
                         )
                 }),
             )
-            // Grows to push the draft status to the row's end beside the tabs; where the status
-            // wraps below them this stays on the tabs' line.
-            .child(div().flex_1())
+            .child(self.render_save_status(cx))
+            .into_any_element()
+    }
+    /// The draft status at the end of the section tabs' last line, in the room the tabs leave
+    /// there, ending where the Buttons at the panel's right edge end their labels. It takes no
+    /// room of its own on the line, its basis zero and its margin giving back the row's gap
+    /// before it, so it never starts a line below the tabs and nothing moves as Reply saves
+    /// the drafts and says so: on a line of its own at 461 px it moved the rows below the
+    /// tabs 39 px. One line, elided in its middle where it is longer than that room, with the
+    /// whole text in its tooltip and accessible name, as a long failure's remedy is there
+    /// (decision of 2026-11-01).
+    fn render_save_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let status: SharedString = self.save_status.clone().into();
+        let tooltip = status.clone();
+        div()
+            .flex()
+            .justify_end()
+            .flex_grow(1.)
+            .flex_basis(px(0.))
+            .min_w_0()
+            .overflow_hidden()
+            .ml(rems(-0.25))
             .child(
-                // Beside the tabs where it fits there whole, ending where the Buttons at the
-                // panel's right edge end their labels; otherwise on a line of its own below
-                // them, from the panel's text inset, wrapping at that end. The long statuses
-                // are the failed ones, whose remedy ("keep this window open or copy the text")
-                // stays readable rather than cut behind an ellipsis.
-                label("github-local-save", self.save_status.clone())
-                    .debug_selector(|| "github-local-save".into())
-                    .min_w_0()
-                    .mx(super::text_inset())
-                    .text_color(rgb(palette(cx).muted)),
+                crate::views::ellipsis_middle(
+                    label("github-local-save", status.clone())
+                        .debug_selector(|| "github-local-save".into())
+                        .min_w_0()
+                        .mx(super::text_inset())
+                        .text_color(rgb(palette(cx).muted)),
+                )
+                .when(!status.is_empty(), |status| {
+                    status
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                }),
             )
             .into_any_element()
     }

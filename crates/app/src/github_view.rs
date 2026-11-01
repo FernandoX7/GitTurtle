@@ -59,6 +59,79 @@ fn phrases(
 fn text_inset() -> Pixels {
     appearance::ui_size(crate::LABEL_INSET)
 }
+/// Moves the body's scroll up by `grew`, the room its top line took more than in the last
+/// frame, before the body places its content, and the reveal it last made with it, so the
+/// content stays where it was drawn ([`Panel::pin_top_line`], [`Panel::unpin_top_line`]).
+fn shift_body(
+    scroll: &ScrollHandle,
+    revealed: &std::cell::RefCell<review::FocusObservation>,
+    grew: Pixels,
+) {
+    if grew != Pixels::ZERO {
+        let offset = scroll.offset();
+        scroll.set_offset(point(offset.x, offset.y - grew));
+        let mut revealed = revealed.borrow_mut();
+        revealed.viewport.origin.y += grew;
+        revealed.viewport.size.height -= grew;
+    }
+}
+/// An element that holds `child` and records the layout ID it is laid out under in `laid`,
+/// so an element prepainted before it can read where this frame's layout puts it
+/// ([`Panel::unpin_top_line`]).
+struct LaidOut {
+    child: AnyElement,
+    laid: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>,
+}
+impl IntoElement for LaidOut {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for LaidOut {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let id = self.child.request_layout(window, cx);
+        self.laid.set(Some(id));
+        (id, ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
 /// The tallest the panel's scrolling body grows in `window`, its padding included: the
 /// window less the dialog's chrome around it, scaled with the interface text.
 fn body_max_height(window: &Window) -> Pixels {
@@ -1727,16 +1800,31 @@ impl Panel {
             .flex_shrink_0()
             .on_children_prepainted(move |line, _, _| {
                 let height = line.first().map_or(Pixels::ZERO, |line| line.size.height);
-                let grew = height - drawn.replace(height);
-                if grew != Pixels::ZERO {
-                    let offset = scroll.offset();
-                    scroll.set_offset(point(offset.x, offset.y - grew));
-                    let mut revealed = revealed.borrow_mut();
-                    revealed.viewport.origin.y += grew;
-                    revealed.viewport.size.height -= grew;
-                }
+                shift_body(&scroll, &revealed, height - drawn.replace(height));
             })
             .children(line)
+    }
+    /// For the frame in which the top line moves back among the content from above the body,
+    /// as the open conversation closes: an empty element prepainted before the body, which
+    /// moves the body's scroll by the room the line takes there, read from this frame's layout
+    /// of it (`laid`, [`LaidOut`]), less the height it stood above the body, so the
+    /// conversation stays where it was drawn, as [`Self::pin_top_line`] does as it opens. The
+    /// room is the line's height and the content's gap after it. Without it, the conversation
+    /// moved by that difference as a reply closed: a pixel for a short line, the divider it no
+    /// longer draws, and for a long line capped above the body all of its text the cap hid.
+    fn unpin_top_line(&self, laid: std::rc::Rc<std::cell::Cell<Option<LayoutId>>>) -> Div {
+        let drawn = self.review.top_line.clone();
+        let scroll = self.review.body_scroll.clone();
+        let revealed = self.review.revealed_focus.clone();
+        let stood = drawn.get();
+        div().on_children_prepainted(move |_, window, _| {
+            // The content's `gap_2` after the line.
+            let room = laid.get().map_or(Pixels::ZERO, |line| {
+                window.layout_bounds(line).size.height + window.rem_size() * 0.5
+            });
+            drawn.set(room);
+            shift_body(&scroll, &revealed, room - stood);
+        })
     }
     /// The panel's top line among the content, under the toolbar, while no conversation is
     /// open: `lines`, then `busy`, as one part of the content whose lines each start a block of
@@ -1790,6 +1878,8 @@ impl Panel {
         self.closed = true;
         self.heard = Heard::default();
         self.review.opened.set(false);
+        // A reopened panel draws no line where it was, so it moves nothing for one.
+        self.review.top_line_pinned.set(false);
         self.request_generation = self.request_generation.wrapping_add(1);
         self.pending = false;
         self.task = None;
@@ -1968,11 +2058,29 @@ impl Render for Panel {
         });
         // Where the line lies among the content this frame, its top and bottom, if it does.
         let flowing = std::rc::Rc::new(std::cell::Cell::new(None));
+        // A line the last frame stood above the body moves back among the content as the
+        // conversation closes, and an element before the body moves the body's scroll by the
+        // difference, read from where this frame lays the line out ([`Self::unpin_top_line`]).
+        let unpinned = self.review.top_line_pinned.replace(pinned) && !pinned;
         let (flowing_line, top_line) = if pinned {
             (None, Some(self.pin_top_line(lines, busy, window, cx)))
+        } else if unpinned {
+            let laid = std::rc::Rc::new(std::cell::Cell::new(None));
+            let ahead = self.unpin_top_line(laid.clone());
+            let line = self
+                .flow_top_line(lines, busy, flowing.clone())
+                .map(|line| {
+                    LaidOut {
+                        child: line.into_any_element(),
+                        laid,
+                    }
+                    .into_any_element()
+                });
+            (line, Some(ahead))
         } else {
             self.review.top_line.set(Pixels::ZERO);
-            (self.flow_top_line(lines, busy, flowing.clone()), None)
+            let line = self.flow_top_line(lines, busy, flowing.clone());
+            (line.map(IntoElement::into_any_element), None)
         };
         // Each part of the content starts a block of the body ([`review::Blocks`]), and the
         // line among it records the room it takes there, up to the part after it
@@ -2156,7 +2264,8 @@ impl Render for Panel {
         );
         match top_line {
             // The line and the body share the body's height, the body taking what the line
-            // leaves.
+            // leaves; in the frame the line moves back among the content, the empty element
+            // that moves the body's scroll stands here instead.
             Some(top_line) => div()
                 .min_w_0()
                 .max_h(body_max_height(window))
@@ -5004,6 +5113,127 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A reply closing while the panel's top line stands above the body takes the line back
+    /// among the content ([`Panel::unpin_top_line`]), and the conversation drawn below the
+    /// line stays where it was in the frame the reply closes, the body scrolled partway: for
+    /// a "Cancelled", for the moved-head notice and for a notice long enough that the line
+    /// caps it above the body, at 13 and 18 pt in a 461 × 490 window and at 13 pt in a
+    /// 1,000 × 680 one, where the body still overflows once the composer has gone (in a
+    /// 1,480 × 980 window it fits then, and the body scrolls back to its top, moving the
+    /// conversation as any view does whose content ends above its fold). With no
+    /// adjustment in that frame, the rows moved by the room the line
+    /// takes among the content less the height it stood above the body: the divider's pixel,
+    /// or all of a capped line's hidden text.
+    #[gpui::test]
+    async fn closing_a_reply_keeps_the_conversation_where_it_was(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        // Rows of the conversation below the line, above the composer that closes.
+        const ROWS: [&str; 5] = [
+            "github-pull-title",
+            "github-branch-context",
+            "github-captured-identities",
+            "github-threads",
+            "github-open-changes",
+        ];
+        let long = format!("{MOVED} {MOVED} {MOVED} {MOVED}");
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+            })
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let text = panel.read_with(cx, |panel, _| panel.review.top_line_scroll.clone());
+        let placed = |scroll: &ScrollHandle| scroll.bounds().top() + scroll.offset().y;
+        let rows = |cx: &mut VisualTestContext| {
+            ROWS.map(|row| cx.debug_bounds(row).expect("the row is drawn").top())
+        };
+        let mut capped = false;
+        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1000., 680.)] {
+            for (said, notice, cancelled) in [
+                ("a cancel", None, RequestKind::Compare.cancelled(false)),
+                ("the notice", Some(MOVED.to_owned()), None),
+                ("a long notice", Some(long.clone()), None),
+            ] {
+                let at = format!("{said} at {interface} pt in {width} × {height}");
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, _| {
+                        panel.conversations.active = Some(target.clone());
+                        panel.notice = notice.clone();
+                        panel.cancelled = cancelled;
+                    })
+                });
+                open_notice_panel(&app, &panel, (interface, width, height), cx).await;
+                assert!(
+                    cx.debug_bounds("github-top-line").is_some(),
+                    "{at}: the line stands above the body beside the open reply"
+                );
+                capped |= text.max_offset().y > px(0.);
+                // The body scrolled partway: the PR's identities at its top.
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let identities = cx
+                    .debug_bounds("github-captured-identities")
+                    .expect("the identities");
+                scroll.set_offset(point(
+                    px(0.),
+                    (scroll.offset().y - (identities.top() - body.top()))
+                        .clamp(-scroll.max_offset().y, px(0.)),
+                ));
+                draw(cx);
+                let before = rows(cx);
+                let content = placed(&scroll);
+
+                // The reply closes, and the frame that draws it.
+                let closed = cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.conversations.active = None;
+                        cx.notify();
+                    });
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    placed(&scroll)
+                });
+                assert!(
+                    cx.debug_bounds("github-top-line").is_none(),
+                    "{at}: the line moved back among the content"
+                );
+                let after = rows(cx);
+                let now = placed(&scroll);
+                let drawn = after.map(|top| top - now + closed);
+                assert_eq!(
+                    drawn, before,
+                    "{at}: the rows {ROWS:?} stayed where they were as the reply closed \
+                     (content placed at {content:?}, then {closed:?})"
+                );
+                cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+                settle_panel(&app, cx).await;
+            }
+        }
+        assert!(capped, "some layout caps the long notice above the body");
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.conversations.active = None;
+                panel.notice = None;
+                panel.cancelled = None;
+                panel.close(window, cx);
+            });
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+    }
+
     /// Reply opened while the panel's top line says something takes the line from among the
     /// content ([`Panel::flow_top_line`]): a "Cancelled" moves above the body
     /// ([`Panel::pin_top_line`]), and a notice from before goes (`Panel::begin_reply`). Either
@@ -6201,17 +6431,17 @@ mod tests {
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
-    /// The local draft status at the end of a PR's section tabs ends at the panel's label
-    /// inset whatever its length, and gives way to the tabs rather than run past the panel:
-    /// where it fits beside them whole it stays on their line, centred on it; where it does
-    /// not, it takes a line of its own below them inside the panel's text column, wrapping
-    /// there, so its whole text, the failed save's remedy included, stays drawn. The tabs
-    /// keep their place. At 13 and 18 pt in a 1480 × 980 and a 1000 × 700 window, with
-    /// "Draft saved locally", the failed save's status and the unsaved draft's longer one:
-    /// at 18 pt in 1480 × 980 the unsaved draft's status was 1,067 px wide on one line and
-    /// ran past the window.
+    /// The local draft status ends a PR's section tabs' last line, centred on it, one line
+    /// that ends at the panel's label inset whatever its length, elided in its middle where
+    /// the tabs leave less room than it needs, its whole text its accessible name: it never
+    /// takes a line of its own, so the tabs and the conversation below them stay where they
+    /// were as it appears, changes or clears. At 13 and 18 pt in a 1480 × 980, a 1000 × 700
+    /// and a 461 × 490 window, with no status, "Saving local draft…", as Reply says, "Draft
+    /// saved locally", the failed save's status and the unsaved draft's longer one: at 461 px
+    /// "Saving local draft…" once took a line below the tabs and moved the rows under them
+    /// 39 px.
     #[gpui::test]
-    async fn the_draft_status_gives_way_to_the_tabs(cx: &mut TestAppContext) {
+    async fn the_draft_status_stays_on_the_tabs_line(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
         let (_fixture, app, cx) = repository_window(cx);
         let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
@@ -6239,19 +6469,26 @@ mod tests {
             })
         });
         settle_panel(&app, cx).await;
+        let saving = "Saving local draft…";
         let saved = "Draft saved locally";
         let failed = "Draft save failed — keep this window open or copy the text";
         let unsaved = DraftIssue::Selection.save_message();
+        // Whether some layout elided a status, and named one it elided in view.
+        let mut elided = false;
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut named_elided = cfg!(not(target_os = "linux"));
         for (interface, width, height) in [
             (13, 1480., 980.),
             (18, 1480., 980.),
             (13, 1000., 700.),
             (18, 1000., 700.),
+            (13, 461., 490.),
+            (18, 461., 490.),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
-            let mut tabs = None;
-            for status in [saved, failed, unsaved] {
+            let mut placed = None;
+            for status in ["", saving, saved, failed, unsaved, ""] {
                 cx.update(|_, cx| {
                     panel.update(cx, |panel, cx| {
                         panel.save_status = status.into();
@@ -6267,6 +6504,21 @@ mod tests {
                 let edge = bounds(cx, "github-panel-content");
                 let row = ["github-section-0", "github-section-1", "github-section-2"]
                     .map(|selector| bounds(cx, selector));
+                let below = bounds(cx, "github-captured-identities");
+                // The tabs and the conversation stay where no status leaves them in the
+                // panel, which the dialog places.
+                let drawn = (
+                    row.map(|tab| tab.origin - edge.origin),
+                    below.origin - edge.origin,
+                );
+                assert_eq!(
+                    *placed.get_or_insert(drawn),
+                    drawn,
+                    "{at}: the tabs or the rows below them moved"
+                );
+                if status.is_empty() {
+                    continue;
+                }
                 let shown = bounds(cx, "github-local-save");
                 let (line, whole) = cx.update(|window, _| {
                     let size = appearance::ui_text(12.);
@@ -6283,57 +6535,39 @@ mod tests {
                         ),
                     )
                 });
-                // The tabs stay where the short status leaves them in the panel, which the
-                // dialog places.
-                let placed = row.map(|tab| tab.origin - edge.origin);
-                assert_eq!(*tabs.get_or_insert(placed), placed, "{at}: the tabs moved");
+                // On the last tab's line, centred on it, one line ending where the Buttons at
+                // the panel's right edge end their labels, and elided where it is narrower
+                // than its text.
                 let slack = px(0.5);
-                let (start, end) = (edge.left() + text_inset(), edge.right() - text_inset());
+                let end = edge.right() - text_inset();
                 let last = row[2];
-                if shown.top() < last.bottom() {
-                    // Beside the tabs, whole on one line centred on theirs, ending where the
-                    // Buttons at the panel's right edge end their labels.
+                assert!(
+                    shown.left() >= last.right()
+                        && (shown.right() - end).abs() < slack
+                        && shown.size.height <= line + slack
+                        && (shown.center().y - last.center().y).abs() < slack,
+                    "{at}: {shown:?} ({whole:?} as one line) beside {last:?}, ending at {end:?}"
+                );
+                let cut = shown.size.width + slack < whole;
+                elided |= cut;
+                // Where the body shows it, an assistive technology reaches its whole text.
+                #[cfg(target_os = "linux")]
+                if shown.bottom() <= bounds(cx, "github-panel").bottom() {
+                    use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
                     assert!(
-                        shown.left() >= last.right()
-                            && (shown.right() - end).abs() < slack
-                            && shown.size.width + slack >= whole
-                            && shown.size.height <= line + slack
-                            && (shown.center().y - last.center().y).abs() < slack,
-                        "{at}: {shown:?} ({whole:?} on one line) beside {last:?}, ending at \
-                         {end:?}"
+                        reached(next_frame(cx))
+                            .iter()
+                            .any(|found| found.name == status),
+                        "{at}: the status's whole text is its accessible name"
                     );
-                } else {
-                    // Below them, from the panel's text inset to at most that end, its lines
-                    // holding the whole text: one line as wide as the text, or several that
-                    // span the column.
-                    let lines = (shown.size.height / line).round();
-                    let holds = if lines == 1. {
-                        shown.size.width + slack >= whole
-                    } else {
-                        (shown.right() - end).abs() < slack && shown.size.width * lines >= whole
-                    };
-                    assert!(
-                        status != saved
-                            && shown.top() >= last.bottom()
-                            && (shown.left() - start).abs() < slack
-                            && shown.right() <= end + slack
-                            && lines >= 1.
-                            && (shown.size.height - line * lines).abs() < slack
-                            && holds,
-                        "{at}: {shown:?} ({whole:?}) below {last:?} from {start:?} to {end:?}, \
-                         {lines} lines of {line:?}"
-                    );
-                }
-                // The unsaved draft's status, 1,067 px on one line at 18 pt, wraps below the
-                // tabs inside the 1480 px window.
-                if interface == 18 && status == unsaved {
-                    assert!(
-                        shown.top() >= last.bottom() && shown.size.height > line * 1.5,
-                        "{at}: {shown:?} wraps below {last:?}"
-                    );
+                    named_elided |= cut;
                 }
             }
         }
+        assert!(
+            elided && named_elided,
+            "a narrow window elides a long status, named whole in view"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.update(|window, cx| window.close_dialog(cx));
     }
