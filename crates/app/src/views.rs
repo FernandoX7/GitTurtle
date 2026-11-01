@@ -21430,6 +21430,49 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The Linux Main Menu keeps the gap every menu keeps from what it opened
+    /// from (`appearance::popup_gap`, 4 px at 13 pt, scaled with the text)
+    /// between its button and its drawn edge, the ring outside its fill, as
+    /// the app's dropdowns and row menus keep theirs
+    /// (`native_accessibility::menu_tests::menus_keep_one_gap_from_their_button_or_row`).
+    /// Its 4 px of top padding put its edge 3 px below the button at 13 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_main_menu_keeps_the_menu_gap_below_its_button(cx: &mut TestAppContext) {
+        let open = crate::command_palette::COMMANDS
+            .iter()
+            .find(|spec| spec.id == crate::command_palette::CommandId::Open)
+            .unwrap()
+            .label;
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        settle(&app, cx).await;
+        for text in [13, 18] {
+            let at = format!("{text} pt in 1280 × 800");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1280.), px(800.)));
+            draw(cx);
+            let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            let item = menu_rows(cx, &[open])
+                .first()
+                .map(|(_, row)| *row)
+                .unwrap_or_else(|| panic!("{at}: the Main Menu opened"));
+            let drawn = menu_surface(cx, item).dilate(edge);
+            let gap = drawn.top() - trigger.bottom();
+            let expected = appearance::popup_gap();
+            assert!(
+                (gap - expected).abs() <= px(0.5),
+                "{at}: the Main Menu {drawn:?} draws its edge {gap:?} below its button {trigger:?}, not {expected:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 and the Menu key open the Working Changes cursor row's
     /// menu, the one a right-click opens, below the row: Ignore and Discard
     /// beside the row's Stage control, and at 18 pt in a 461 × 490 window,

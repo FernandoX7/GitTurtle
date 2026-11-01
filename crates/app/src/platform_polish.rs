@@ -110,13 +110,15 @@ impl PrimaryMenu {
             })
         });
         let target = self.owner.clone();
-        // The menu opens 4 px below its trigger (the popup's top padding),
-        // and from F10, Enter or Space with its first command under the
+        // The menu's fill opens the kit's popup offset below its trigger
+        // (the popup's top padding), the gap every menu keeps between its
+        // drawn edge and what it opened from (`appearance::popup_gap`), and
+        // from F10, Enter or Space with its first command under the
         // keyboard's cursor (`native_accessibility::open_menu`).
         let top = self
             .trigger
             .get()
-            .map(|trigger| trigger.bottom() + appearance::ui_size(4.));
+            .map(|trigger| trigger.bottom() + gpui_kit::component::popup_offset(window, cx));
         let keyboard = window.last_input_was_keyboard();
         let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
             menu = menu
@@ -178,7 +180,7 @@ impl PrimaryMenu {
 
 #[cfg(target_os = "linux")]
 impl Render for PrimaryMenu {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::{
             base::{ElementExt as _, Popup},
             component::IconName,
@@ -211,7 +213,11 @@ impl Render for PrimaryMenu {
                 }),
         )
         .when_some(self.menu.clone(), |popup, menu| {
-            popup.content(div().pt(appearance::ui_size(4.)).child(menu))
+            popup.content(
+                div()
+                    .pt(gpui_kit::component::popup_offset(window, cx))
+                    .child(menu),
+            )
         });
         // App shortcuts still work from an open menu. Close it before the
         // existing handler captures focus for its next workflow/dialog.

@@ -701,12 +701,16 @@ as it took `mt_1` and `mb_1`; the hover card, which builds the same content,
 follows it. The consumer is every app dropdown (`AppDropdown`): the app sets
 the gap with its text sizes (`appearance::popup_gap`, 4 px at 13 pt, scaled
 with the text) and reads `popup_offset` for the room on either side of a
-button (`DropdownRoom`), and its row menus keep the same gap from their row
-(`menu_offset`), so every menu stands one gap from what it opened from.
+button (`DropdownRoom`), its Linux Main Menu (`PrimaryMenu`, on the base
+popup host) takes `popup_offset` as its top padding and for its room, and its
+row menus keep the same gap from their row (`menu_offset`), so every menu
+stands one gap from what it opened from.
 `cargo test --locked -p gitturtle menus_keep_one_gap_from_their_button_or_row`
 reads that gap below and above a button and above a right-click's row at 13
-and 18 pt, and `a_keyboard_row_menu_keeps_the_menu_gap_below_its_row` below
-a keyboard's row. Remove this part when upstream lets an application set the
+and 18 pt, `a_keyboard_row_menu_keeps_the_menu_gap_below_its_row` below
+a keyboard's row, and, on Linux,
+`the_main_menu_keeps_the_menu_gap_below_its_button` below the Main Menu's
+button, whose 4 px of padding left its edge 3 px from it at 13 pt. Remove this part when upstream lets an application set the
 gap a popover keeps from its trigger, and those tests pass without it.
 
 The opener-clip patch modifies `src/styled.rs`, `src/popover.rs` and
