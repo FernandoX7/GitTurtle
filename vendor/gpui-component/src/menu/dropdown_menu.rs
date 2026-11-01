@@ -274,14 +274,18 @@ mod tests {
         assert!(cx.debug_bounds(ACT).is_some(), "the click opened it");
     }
 
-    /// A dropdown taken away while its menu is open lets its state and its
-    /// menu go, with what the menu's items hold. Upstream's dismiss callback
-    /// held the dropdown's state strongly and was detached, so GPUI kept it
-    /// while the menu lived, and the state holds the menu: taken away open,
-    /// as a view built again without it takes it, the dropdown kept its
-    /// state and menu for the app's life. Escape, a click outside, an item
-    /// chosen and a second click on the trigger each still close the menu
-    /// and let it go, and the next click builds it again.
+    /// A dropdown taken away while its menu is open lets its state, its
+    /// popover state and its menu go, with what the menu's items hold, and
+    /// leaves no deferred popup registered. Upstream's dismiss callback held
+    /// the dropdown's state and popover state strongly and was detached, so
+    /// GPUI kept it while the menu lived, and the state holds the menu:
+    /// taken away open, as a view built again without it takes it, the
+    /// dropdown kept all three until its menu was next dismissed, which no
+    /// input could do once the dropdown was gone. The popover state goes
+    /// only with gpui-base's popover patch, whose own dismiss subscription
+    /// held it too. Escape, a click outside, an item chosen and a second
+    /// click on the trigger each still close the menu and let it go, and
+    /// the next click builds it again.
     #[gpui::test]
     fn a_dropdown_taken_away_open_releases_its_menu(cx: &mut TestAppContext) {
         cx.update(crate::init);
@@ -289,6 +293,7 @@ mod tests {
         let _recording = cx.update(|cx| {
             [
                 built.record::<DropdownMenuState>("dropdown state", cx),
+                built.record::<gpui_base::PopoverState>("popover state", cx),
                 built.record::<PopupMenu>("menu", cx),
             ]
         });
@@ -316,7 +321,11 @@ mod tests {
         ];
         for (way, close) in ways {
             open(cx);
-            assert_eq!(built.alive(), ["dropdown state", "menu"], "{way}: one menu");
+            assert_eq!(
+                built.alive(),
+                ["dropdown state", "popover state", "menu"],
+                "{way}: one menu"
+            );
             close(cx, trigger);
             draw(cx);
             assert!(cx.debug_bounds(ACT).is_none(), "{way} closed it");
@@ -324,7 +333,11 @@ mod tests {
                 !cx.update(|_, cx| GlobalState::is_in_deferred_context(cx)),
                 "{way} closed its popover"
             );
-            assert_eq!(built.alive(), ["dropdown state"], "{way} let the menu go");
+            assert_eq!(
+                built.alive(),
+                ["dropdown state", "popover state"],
+                "{way} let the menu go"
+            );
             assert_eq!(
                 token.strong_count(),
                 1,
@@ -334,7 +347,7 @@ mod tests {
         assert_eq!(owner.read_with(cx, |owner, _| owner.chosen.get()), 1);
         assert_eq!(
             built.0.borrow().len(),
-            1 + ways.len(),
+            2 + ways.len(),
             "each open built its menu"
         );
 
@@ -351,6 +364,10 @@ mod tests {
             built.alive().is_empty(),
             "alive after their dropdown went: {:?}",
             built.alive()
+        );
+        assert!(
+            !cx.update(|_, cx| GlobalState::is_in_deferred_context(cx)),
+            "the dropdown left its popover's deferred popup registered"
         );
         assert_eq!(token.strong_count(), 1, "only the owner holds the token");
     }

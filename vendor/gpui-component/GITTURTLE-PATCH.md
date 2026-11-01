@@ -1680,33 +1680,50 @@ subscription. GPUI keeps a detached callback while the menu it watches lives,
 and the state holds the menu, so the callback, the state and the menu kept one
 another: a dropdown taken away with its menu open, as a view drawn again
 without it takes it, kept its state, its popover state and its menu, with
-everything the menu's items held, for the app's life. The callback now holds
-both states weakly and passes over one that is gone, and the state keeps the
+everything the menu's items held, until something dismissed that menu, which
+no input could do once the dropdown was gone. The callback now holds both
+states weakly and passes over one that is gone, and the state keeps the
 subscription beside the menu it watches, so both go together when a dismissal
 clears the menu or the state goes. Opening and closing are unchanged, as are
 the menu's look, place and input: Escape, a press outside the menu, an item
 chosen and a second press on the trigger each still close the popover and
-clear the menu, and the next press builds it again. The popover state is
-gpui-base's `PopoverState`, which keeps itself, with its deferred-popup
-context, while it is open, through its own dismiss subscription; this part
-does not change it.
+clear the menu, and the next press builds it again.
+
+This part relies on gpui-base's popover-lifetime patch
+([base patch](../gpui-base/GITTURTLE-PATCH.md)). The popover state is the
+base `PopoverState`, whose own dismiss subscription held it strongly while it
+was open, and with it the deferred-popup registration that, left behind,
+refuses every input's right-click menu. With both patches, a dropdown taken
+away open lets its state, its menu and its popover state go with its element,
+and its registration with them. With this part alone the popover state stayed
+open for good, because the dismissal that once closed it no longer comes:
+upstream's strong callback outlived the dropdown and still reached the
+popover when the orphaned menu was dismissed, while here the menu, and
+whatever would dismiss it, goes at once.
 
 The consumers are every app dropdown, Settings' profile dropdown
 (`crates/app/src/profiles.rs`) among them: each is an `AppDropdown`
 (`crates/app/src/native_accessibility.rs`), which opens through the kit's
-`dropdown_menu_with_anchor`. Each builder holds what its items act on, so a
-dropdown its view stopped drawing while its menu was open kept that, and its
-menu, for the rest of the session.
+`dropdown_menu_with_anchor`. Each builder holds what its items act on, and
+`AppDropdown`'s builder also registers, detached, an observer of the window's
+bounds that dismisses its menu once the viewport changes. With upstream's
+code, a dropdown its view stopped drawing while its menu was open kept its
+menu and what its items held until that next viewport change, as a resize or
+a tiling compositor's re-tile makes, which dismissed the orphan through the
+strong callback, closed its popover and dropped the popover's registration;
+until then every input refused its right-click menu.
 
 `scripts/vendor-crate-test.sh vendor/gpui-component menu::dropdown_menu` runs
 `a_dropdown_taken_away_open_releases_its_menu`, which this part adds. It opens
 a dropdown with a press on its trigger and closes it each of the four ways,
 reading after each that the menu is no longer drawn, its popover holds no
 deferred-popup context, and the menu is released with the value its item
-held, then opens it again and takes the dropdown away, reading its state and
-its menu released. With upstream's code under it, every closing check still
-passes and the last check fails, naming the dropdown's state and its menu
-alive. Remove this part of the patch when upstream's dismiss callback no
+held, then opens it again and takes the dropdown away, reading its state, its
+popover state and its menu released and no deferred popup registered. With
+upstream's dropdown code under it, every closing check still passes and the
+release check fails, naming the dropdown's state, its popover state and its
+menu alive; with the base popover patch removed instead, it names the popover
+state alive. Remove this part of the patch when upstream's dismiss callback no
 longer holds the dropdown's state strongly, and that test passes without it.
 
 The menu-bar lifetime patch modifies `src/menu/app_menu_bar.rs`. The
