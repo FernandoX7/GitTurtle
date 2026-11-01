@@ -4837,7 +4837,9 @@ impl GitTurtle {
                         this.run_edge_action(action, window, cx)
                     }))
             });
-        let sync_state = self.work_status.as_ref().map(|status| {
+        // A line that leaves for the picker is not built at all.
+        let shown = self.work_status.as_ref().filter(|_| !line_left);
+        let sync_state = shown.map(|status| {
             if let Some(edge) = &edge {
                 let caption = edge_form.caption && !compact;
                 return div()
@@ -5107,7 +5109,7 @@ impl GitTurtle {
                         .items_center()
                         .gap_2()
                         .child(branch_picker)
-                        .children(sync_state.filter(|_| !line_left))
+                        .children(sync_state)
                         .children(operation_state),
                 )
                 .children(actions)
