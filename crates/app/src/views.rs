@@ -4661,8 +4661,10 @@ impl GitTurtle {
     /// font ([`Self::tab_list_room`]).
     pub(super) fn tab_strip_labels(&self, window: &Window, cx: &App) -> TabStripLabels {
         let whole = self.tabs_whole_width(window);
+        // Measured once, for every form.
         let (menu, workspaces) = self.tab_strip_labelled_actions(window);
-        let icons = self.tab_list_room(TabStripLabels::default(), window, cx);
+        let icons =
+            self.tab_list_room_beside(TabStripLabels::default(), (menu, workspaces), window, cx);
         let control = window.pixel_snap(appearance::ui_size(28.));
         let labelled = |shown: bool, width: Pixels| {
             if shown { width - control } else { px(0.) }
@@ -4711,10 +4713,22 @@ impl GitTurtle {
         window: &Window,
         cx: &App,
     ) -> Pixels {
+        self.tab_list_room_beside(labels, self.tab_strip_labelled_actions(window), window, cx)
+    }
+
+    /// [`Self::tab_list_room`] beside Menu and Workspaces as wide as
+    /// `labelled` has them labelled ([`Self::tab_strip_labelled_actions`]),
+    /// which the strip's choice measures once for every form.
+    fn tab_list_room_beside(
+        &self,
+        labels: TabStripLabels,
+        (labelled_menu, labelled_workspaces): (Pixels, Pixels),
+        window: &Window,
+        cx: &App,
+    ) -> Pixels {
         let rem = window.rem_size();
         let gap = window.pixel_snap(rem * 0.25);
         let control = window.pixel_snap(appearance::ui_size(28.));
-        let (labelled_menu, labelled_workspaces) = self.tab_strip_labelled_actions(window);
         let menu = if labels.menu { labelled_menu } else { control };
         let workspaces = if labels.workspaces {
             labelled_workspaces
