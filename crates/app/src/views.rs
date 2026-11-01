@@ -21706,6 +21706,103 @@ pub(crate) mod tests {
         }
     }
 
+    /// Shift-F10 on History's lowest whole row, where the room down to the
+    /// status bar holds too few of the commit's menu's rows, opens the menu
+    /// wholly above the row, with the gap every menu keeps from what it
+    /// opened from (`appearance::popup_gap`, 4 px at 13 pt, scaled with the
+    /// text) between the row's top and the menu's drawn edge, the ring
+    /// outside its fill, and nothing it draws, its shadow included, below
+    /// the row's top. A keyboard's menu above its row drew its edge on the
+    /// row's top.
+    #[gpui::test]
+    async fn a_keyboard_menu_above_its_row_keeps_the_menu_gap(cx: &mut TestAppContext) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 1)).await;
+        cx.update(|window, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        for text in [13, 18] {
+            let at = format!("{text} pt in 461 × 490");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            settle(&app, cx).await;
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            let lowest = (0..40)
+                .filter_map(|index| {
+                    cx.debug_bounds(format!("history-row-{index}").leak())
+                        .map(|row| (index, row))
+                })
+                .filter(|(_, row)| row.bottom() <= status)
+                .max_by(|(_, a), (_, b)| f32::from(a.bottom()).total_cmp(&f32::from(b.bottom())))
+                .map(|(index, _)| index)
+                .unwrap_or_else(|| panic!("{at}: a whole History row"));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_commit(lowest, window, cx);
+                    app.pane = Pane::History;
+                    window.focus(&app.focus, cx);
+                })
+            });
+            settle(&app, cx).await;
+            let row = cx
+                .debug_bounds(format!("history-row-{lowest}").leak())
+                .unwrap_or_else(|| panic!("{at}: the selected row"));
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            let item = cx
+                .debug_bounds(REVERT)
+                .unwrap_or_else(|| panic!("{at}: Shift-F10 opened the commit's menu"));
+            let surface = menu_surface(cx, item);
+            let drawn = surface.dilate(edge);
+            assert!(
+                drawn.bottom() <= row.top(),
+                "{at}: the menu {drawn:?} lies wholly above the row {row:?}"
+            );
+            let gap = row.top() - drawn.bottom();
+            let expected = appearance::popup_gap();
+            assert!(
+                (gap - expected).abs() <= px(0.5),
+                "{at}: the menu {drawn:?} draws its edge {gap:?} above the row {row:?}, not {expected:?}"
+            );
+            let mask = cx.update(|window, cx| {
+                let fill = Background::from(gpui_kit::component::Theme::global(cx).popover);
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == fill)
+                    .filter(|quad| {
+                        let bounds = quad.bounds;
+                        Bounds::from_corners(
+                            point(
+                                px(bounds.left().as_f32() / scale),
+                                px(bounds.top().as_f32() / scale),
+                            ),
+                            point(
+                                px(bounds.right().as_f32() / scale),
+                                px(bounds.bottom().as_f32() / scale),
+                            ),
+                        )
+                        .contains(&item.center())
+                    })
+                    .max_by_key(|quad| quad.order)
+                    .map(|quad| px(quad.content_mask.bounds.bottom().as_f32() / scale))
+                    .expect("the menu's surface")
+            });
+            assert!(
+                mask <= row.top() + px(0.01),
+                "{at}: the menu draws down to {mask:?}, below the row's top {:?}",
+                row.top()
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 on a commit opens its menu ending at the commit list's
     /// trailing inset, the visible list's inner right edge less the inset
     /// its rows start at, at 13 pt in 1000 × 680 and at 18 pt in 461 × 490.
