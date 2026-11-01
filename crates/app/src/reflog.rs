@@ -1073,7 +1073,7 @@ impl Render for ReflogBrowser {
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
-                    .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
+                    .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_hash_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
                     .children(loading_below)
                     .children(error_below)
             })

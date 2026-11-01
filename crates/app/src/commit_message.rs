@@ -663,9 +663,9 @@ impl GitTurtle {
                 // Compact beside the compact Copy message, so the two keep
                 // one row.
                 .child(if compact {
-                    compact_control_name(copy_feedback::copy_button(hash_mark, "", format!("Hash · Copy full commit hash · {}", commit.oid), cx), "copy-commit", "Copy full commit hash")
+                    compact_control_name(copy_feedback::copy_hash_button(hash_mark, "", format!("Hash · Copy full commit hash · {}", commit.oid), cx), "copy-commit", "Copy full commit hash")
                 } else {
-                    copy_feedback::copy_button(hash_mark, "Hash", format!("Copy full commit hash · {}", commit.oid), cx)
+                    copy_feedback::copy_hash_button(hash_mark, "Hash", format!("Copy full commit hash · {}", commit.oid), cx)
                         .accessibility_label("Copy full commit hash")
                 }
                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))

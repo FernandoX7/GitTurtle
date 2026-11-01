@@ -83,6 +83,15 @@ pub(crate) const COPY: Action = Action {
     state: "copied",
 };
 
+/// A copy of a hash, a commit's or an object's ID: the hash glyph, then
+/// Copied. One glyph per meaning: Hash once drew Copy message's copy icon
+/// beside it, so the two read as one action twice.
+pub(crate) const COPY_HASH: Action = Action {
+    icon: "hash",
+    done: COPIED,
+    state: "copied",
+};
+
 #[derive(Default)]
 struct Feedback {
     /// Counts confirmations; each one is a fresh announcement node.
@@ -317,9 +326,10 @@ pub(crate) fn confirmed(mark: &Mark, cx: &App) -> bool {
 /// and hiding the other, so it is as wide as the wider of the two in both
 /// states. Both start at its leading inset, so the check replaces the copy
 /// icon in place, the label and "Copied" start at one x, and nothing moves.
-/// Every copy button carries the copy icon: a label alone gained the check
-/// where no icon was and shifted 22 px when copied. It is named `label`, and
-/// `tooltip` (if not empty) stays.
+/// Every copy button carries an icon, the copy icon here and the hash glyph
+/// on [`copy_hash_button`]: a label alone gained the check where no icon was
+/// and shifted 22 px when copied. It is named `label`, and `tooltip` (if not
+/// empty) stays.
 /// An icon-only button (an empty `label`) keeps its 28 px square, swaps its
 /// icon for the check and its tooltip for "Copied", and is named as `button`
 /// names one until the caller names it.
@@ -330,6 +340,17 @@ pub(crate) fn copy_button(
     cx: &App,
 ) -> Button {
     feedback_button(mark, COPY, label, tooltip, cx)
+}
+
+/// [`copy_button`] for a hash, a commit's or an object's ID, which leads
+/// with the hash glyph rather than the copy icon ([`COPY_HASH`]).
+pub(crate) fn copy_hash_button(
+    mark: Mark,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    feedback_button(mark, COPY_HASH, label, tooltip, cx)
 }
 
 /// A button that confirms `action` in place as [`copy_button`] confirms a
@@ -440,6 +461,9 @@ fn confirming_with(
 ) -> Button {
     let copied = confirmed(&mark, cx);
     let id = mark.control.clone();
+    // Only tests read the icon back; a render builds no path for it.
+    #[cfg(test)]
+    crate::views::note_control_icon(&id, &format!("icons/{}.svg", action.icon));
     let label = label.into();
     let labelled = !label.is_empty();
     let gap = gap.into();
@@ -820,7 +844,7 @@ pub(crate) mod tests {
     /// Copy message and Hash start their content at the button's leading
     /// inset at rest, with no gap before the icon, and copied the check
     /// starts where the icon did; neither state moves either button. Hash
-    /// carries Copy message's icon before its label.
+    /// carries its 16 px hash glyph before its label.
     #[gpui::test]
     fn copied_takes_the_icons_place_and_moves_nothing(cx: &mut TestAppContext) {
         let (_app, cx) = history(cx, vec![commit("a", "Selected title", "Body.")]);
@@ -861,10 +885,59 @@ pub(crate) mod tests {
         );
     }
 
+    /// One glyph per meaning: Copy message leads with the copy icon and Hash
+    /// with the hash glyph, labelled and as icons (18 pt in 461 × 490), two
+    /// different pieces of artwork the app's assets hold, where Hash once drew
+    /// Copy message's copy icon beside it.
+    #[gpui::test]
+    fn copy_message_and_hash_draw_their_own_glyphs(cx: &mut TestAppContext) {
+        let (_app, cx) = history(cx, vec![commit("a", "Selected title", "Body.")]);
+        let glyphs = |cx: &mut VisualTestContext| {
+            crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+            draw(cx);
+            crate::views::CONTROL_ICONS.with(|icons| {
+                let icons = icons.borrow();
+                ["copy-message", "copy-commit"].map(|id| {
+                    icons
+                        .get(id)
+                        .unwrap_or_else(|| panic!("{id} draws an icon"))
+                        .clone()
+                })
+            })
+        };
+        let artwork = |path: &SharedString| {
+            crate::Assets
+                .load(path)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{path} is an app asset"))
+                .into_owned()
+        };
+        let labelled = glyphs(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(
+            cx.debug_bounds("copy-commit").unwrap().size.width,
+            appearance::ui_size(28.).ceil(),
+            "Hash is its icon"
+        );
+        let compact = glyphs(cx);
+        for [message, hash] in [labelled, compact] {
+            assert_eq!(message.as_ref(), "icons/copy.svg", "Copy message copies");
+            assert_eq!(hash.as_ref(), "icons/hash.svg", "Hash draws the hash glyph");
+            assert_ne!(
+                artwork(&message),
+                artwork(&hash),
+                "{hash} repeats {message}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The copy actions that once drew a label alone (Copy details, Copy saved
     /// text, Copy exact text, Copy commit ID, Copy object ID, the GitHub
     /// panel's Copy sign-in command, Copy complete draft and Copy reply) lead
-    /// with the copy icon, as every copy button does, so the check takes the
+    /// with an icon, as every copy button does, so the check takes the
     /// icon's place and "Copied" starts where the label did: copied, they
     /// gained a check where no icon was and the label moved 22 px. Neither
     /// state moves the button.
@@ -883,9 +956,20 @@ pub(crate) mod tests {
         struct Buttons;
         impl Render for Buttons {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div().flex().flex_col().items_start().gap_2().children(
-                    LABELS.map(|label| copy_button(Mark::new(label, "subject"), label, "", cx)),
-                )
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .children(LABELS.map(|label| {
+                        let mark = Mark::new(label, "subject");
+                        // The IDs lead with the hash glyph, as their callers draw them.
+                        if label.ends_with(" ID") {
+                            copy_hash_button(mark, label, "", cx)
+                        } else {
+                            copy_button(mark, label, "", cx)
+                        }
+                    }))
             }
         }
         cx.update(gpui_kit::init);
@@ -907,7 +991,7 @@ pub(crate) mod tests {
             );
             assert!(
                 (text.left() - rest.left() - icon).abs() < px(0.5),
-                "{label} leads with the copy icon: {rest:?} {text:?}"
+                "{label} leads with an icon: {rest:?} {text:?}"
             );
             cx.update(|window, cx| {
                 copy(
