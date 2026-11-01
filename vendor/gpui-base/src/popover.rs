@@ -113,8 +113,9 @@ impl PopoverState {
             // `cx.entity()`, a strong handle that the app's subscriber set
             // keeps until this subscription, which the state holds, drops: a
             // popover taken out of the tree while open kept its state, and
-            // the deferred-popup registration the state holds, for the
-            // window's life.
+            // the deferred-popup registration the state holds, for the app's
+            // life: the subscriber set and that registry are the app's, and
+            // closing the popover's window clears neither.
             self.dismiss_subscription =
                 Some(
                     window.subscribe(&cx.entity(), cx, |state, _: &DismissEvent, window, cx| {
@@ -656,8 +657,9 @@ mod tests {
     /// GitTurtle patch: a popover whose view is taken away while it is open
     /// — a page left by a shortcut with its dropdown's menu open — goes with
     /// it. Its dismiss subscription held its own state, so the state outlived
-    /// its element and kept its deferred-popup registration, and every input
-    /// then refused its right-click menu for the window's life.
+    /// its element, for the app's life, and kept its deferred-popup
+    /// registration, which is the app's, and every input in every window
+    /// then refused its right-click menu for the rest of the session.
     #[gpui::test]
     fn a_popover_taken_away_while_open_lets_its_state_go(cx: &mut gpui::TestAppContext) {
         use gpui::Modifiers;

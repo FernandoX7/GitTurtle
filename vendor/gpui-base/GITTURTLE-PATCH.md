@@ -331,12 +331,14 @@ subscriber set keeps the callback until the subscription drops, and only
 the state drops the subscription, so the state, its subscription and the
 callback formed a cycle that no drop broke: a popover taken out of the tree
 while open, as a page left by a shortcut with a dropdown's menu open or a
-trigger scrolled out of a list, kept its state for the window's life, and
+trigger scrolled out of a list, kept its state for the app's life, and
 with it the deferred-popup registration an open state holds
 (`DeferredPopover`), the token that exists so that a state dropped without
-being closed takes its registration with it. With the registration left,
-`GlobalState::is_in_deferred_context` stayed true, and every input then
-refused its right-click menu (`handle_right_click_menu` in
+being closed takes its registration with it. The subscriber set and the
+registry are the app's, so closing the popover's window cleared neither,
+and the app opens several windows. With the registration left,
+`GlobalState::is_in_deferred_context` stayed true, and every input in every
+window then refused its right-click menu (`handle_right_click_menu` in
 `src/input/base/state.rs`), the kit's drawn menu on Linux and the OS's own
 on macOS, for the rest of the session and with nothing to say why. The
 callback now dismisses the state the subscription hands it, which GPUI
