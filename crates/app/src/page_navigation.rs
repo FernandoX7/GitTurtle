@@ -2250,7 +2250,40 @@ mod tests {
         use crate::views::tests::{draw, settle};
         use gpui_kit::component::dialog::{Cancel, Confirm};
         type Step = fn(&Entity<GitTurtle>, &mut VisualTestContext);
+        /// Lets the dialog that just opened finish its slide-in. The kit's
+        /// dialog slides in on GPUI's animation element, which reads the wall
+        /// clock rather than the test clock, so no count of drawn frames can
+        /// tell the slide-in is over: on a loaded host a frame drawn between
+        /// the read of a control's bounds and the press, as the redraw after
+        /// the press goes down, moved the control and the press missed it.
+        /// Real time passes the slide-in's duration once; only that lower
+        /// bound matters, so a slow host changes nothing.
+        fn settle_dialog(cx: &mut VisualTestContext) {
+            // Drawn first, so the slide-in has begun before the wait.
+            crate::views::tests::draw(cx);
+            std::thread::sleep(
+                *gpui_kit::component::dialog::ANIMATION_DURATION
+                    + std::time::Duration::from_millis(50),
+            );
+            // The frame that finds the slide-in over draws the dialog at
+            // rest and asks for no other; a running preparation may keep
+            // asking for frames of its own, so the draws are bounded.
+            for _ in 0..4 {
+                let asked = cx.update(|window, cx| {
+                    let asked = window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    asked
+                });
+                cx.executor().run_until_parked();
+                if asked == 0 {
+                    break;
+                }
+            }
+        }
+        /// Presses the control `selector` names in the dialog over the
+        /// window, once that dialog is at rest.
         fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            settle_dialog(cx);
             crate::views::tests::draw(cx);
             let bounds = cx
                 .debug_bounds(selector)
