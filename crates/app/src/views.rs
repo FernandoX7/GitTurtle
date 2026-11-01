@@ -3186,11 +3186,12 @@ impl GitTurtle {
                     }),
             )
             .child({
-                // Where not even the actions' menu leaves it room, the file
-                // name stays whole with as much of its directory as fits
-                // (`path_tail`), and where not even "…/" and the name fit
-                // beside the actions, the name is elided from its start on
-                // their line; the whole path is its tooltip and its
+                // Where not even the actions' menu leaves it room, the path
+                // is elided in its middle, its top directory and its file
+                // name staying (`path_tail`), and where not even "…/" and the
+                // name fit beside the actions, the name alone is elided in
+                // its middle on their line, keeping its start and its
+                // extension; the whole path is its tooltip and its
                 // accessible name.
                 let whole: SharedString = file
                     .map(|file| file.path().display().to_string())
@@ -3201,9 +3202,9 @@ impl GitTurtle {
                 COMPARE_PATH_SHOWN.with(|shown_path| {
                     *shown_path.borrow_mut() = Some((shown.clone(), whole.clone()))
                 });
-                // The line's own start elision cuts a name wider than its
-                // room, and guards a measurement a fraction of a pixel short.
-                ellipsis_start(
+                // The line's own middle elision guards a measurement a
+                // fraction of a pixel short.
+                ellipsis_middle(
                     div()
                         .id("preview-file-path")
                         .debug_selector(|| "preview-file-path".into())
@@ -5814,55 +5815,91 @@ impl PathRow {
     };
 }
 
-/// `path`, a path's displayed form, in `room`, as `width` measures a line:
-/// whole where it fits; otherwise its file name whole after "…/" and as many
-/// of its nearest directories as fit whole ("…/src/app/views.rs"); where not
-/// even the nearest one does, as much of that directory's end as fits
-/// ("…ets/turtle.png"), down to "…/" and the file name alone. Where not even
-/// that fits, the whole path, which the line's own start elision cuts. It
-/// cuts only at a separator or a character boundary, so a name that is not
-/// UTF-8 keeps the replacement characters its display shows.
+/// `path`, a path's displayed form, in `room`, as `width` measures a line,
+/// elided in its middle as macOS elides a path, so its top directory and its
+/// file name stay: whole where it fits; otherwise the top directory and the
+/// name around "…" with as many of the nearest directories between them as
+/// fit whole ("crates/…/src/views.rs", "crates/…/views.rs"); where not even
+/// the top directory fits whole beside the name, as much of its start as fits
+/// before "…" ("ass…/turtle.png"), down to "…/" and the name. Where not even
+/// that fits, the name alone, elided in its middle where it does not fit
+/// either ([`name_middle`]). It cuts only at a separator or a character
+/// boundary, so a name that is not UTF-8 keeps the replacement characters its
+/// display shows.
 pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels) -> String {
     if width(path) <= room {
         return path.to_owned();
     }
     let Some(slash) = path.rfind('/') else {
-        return path.to_owned();
+        return name_middle(path, room, &width);
     };
-    // Whole directories, the most first.
-    for (separator, _) in path[..slash].match_indices('/') {
-        let tail = format!("…{}", &path[separator..]);
-        if width(&tail) <= room {
-            return tail;
+    let (directory, name) = path.split_at(slash);
+    let (top, between) = directory.split_at(directory.find('/').unwrap_or(directory.len()));
+    // The nearest whole directories after the top one, the most first, then
+    // none of them.
+    let nearest = between
+        .match_indices('/')
+        .skip(1)
+        .map(|(separator, _)| separator);
+    for from in nearest.chain((!between.is_empty()).then_some(between.len())) {
+        let shown = format!("{top}/…{}{name}", &between[from..]);
+        if width(&shown) <= room {
+            return shown;
         }
     }
-    let start = path[..slash]
-        .rfind('/')
-        .map_or(0, |separator| separator + 1);
-    let nearest = &path[start..slash];
-    let name = &path[slash..];
-    // The nearest directory from its `skip`th character; all of them
-    // skipped leaves "…/" and the name.
-    let starts: Vec<usize> = nearest.char_indices().map(|(at, _)| at).collect();
-    let tail = |skip: usize| {
-        let from = starts.get(skip).copied().unwrap_or(nearest.len());
-        format!("…{}{name}", &nearest[from..])
-    };
-    // A first directory with nothing before it is not shown whole after
-    // the ellipsis.
-    let (mut low, mut high) = (usize::from(start == 0), starts.len());
-    if width(&tail(high)) > room {
-        return path.to_owned();
+    // The top directory's first `keep` characters before "…".
+    let starts: Vec<usize> = top.char_indices().map(|(at, _)| at).collect();
+    let shown = |keep: usize| format!("{}…{name}", &top[..starts[keep]]);
+    match most_that_fit(starts.len(), |keep| width(&shown(keep)) <= room) {
+        Some(keep) => shown(keep),
+        None => name_middle(&name[1..], room, &width),
     }
+}
+
+/// A file name in `room`, as `width` measures a line: whole where it fits,
+/// else elided in its middle as macOS elides a name, its start and its
+/// extension kept around "…" with as much of the rest of the name as fits,
+/// the start taking the odd character ("Reposito…Sidebar.tsx"). The
+/// extension runs from the last dot, unless that dot starts the name. Where
+/// not even the name's first character, "…" and the extension fit, the name
+/// whole, which the line's own middle elision cuts ([`ellipsis_middle`]).
+pub(crate) fn name_middle(name: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> String {
+    if width(name) <= room {
+        return name.to_owned();
+    }
+    let dot = name.rfind('.').filter(|dot| *dot > 0).unwrap_or(name.len());
+    let (stem, extension) = name.split_at(dot);
+    let starts: Vec<usize> = stem.char_indices().map(|(at, _)| at).collect();
+    let count = starts.len();
+    // `keep` of the stem's characters, the larger half from its start.
+    let shown = |keep: usize| {
+        let front = starts.get(keep.div_ceil(2)).copied().unwrap_or(stem.len());
+        let back = starts.get(count - keep / 2).copied().unwrap_or(stem.len());
+        format!("{}…{}{extension}", &stem[..front], &stem[back..])
+    };
+    // At least the name's first character.
+    most_that_fit(count.saturating_sub(1), |more| {
+        width(&shown(more + 1)) <= room
+    })
+    .map_or_else(|| name.to_owned(), |more| shown(more + 1))
+}
+
+/// The most of `0..count` for which `fits`, which holds for every number
+/// below one it holds for; `None` where it holds for none.
+fn most_that_fit(count: usize, fits: impl Fn(usize) -> bool) -> Option<usize> {
+    if count == 0 || !fits(0) {
+        return None;
+    }
+    let (mut low, mut high) = (0, count - 1);
     while low < high {
-        let middle = (low + high) / 2;
-        if width(&tail(middle)) <= room {
-            high = middle;
+        let middle = (low + high).div_ceil(2);
+        if fits(middle) {
+            low = middle;
         } else {
-            low = middle + 1;
+            high = middle - 1;
         }
     }
-    tail(low)
+    Some(low)
 }
 
 /// Compare's path as it shows in `room` (`path_tail`), in its font, laid
@@ -5916,13 +5953,13 @@ pub(crate) fn ellipsis_end<E: Styled>(element: E) -> E {
     element.truncate().pr(px(ELLIPSIS_SLACK))
 }
 
-/// [`ellipsis_end`] eliding from the line's start, so a path keeps its file
-/// name.
-pub(crate) fn ellipsis_start<E: Styled>(element: E) -> E {
+/// [`ellipsis_end`] eliding the line's middle, as macOS elides a file name,
+/// so a name keeps its start and its extension.
+pub(crate) fn ellipsis_middle<E: Styled>(element: E) -> E {
     element
         .overflow_hidden()
         .whitespace_nowrap()
-        .text_ellipsis_start()
+        .text_ellipsis_middle()
         .pr(px(ELLIPSIS_SLACK))
 }
 
@@ -18157,51 +18194,70 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// A path too long for its room keeps its file name whole and as much
-    /// of its directory as fits: whole directories after "…/" where they
-    /// fit, else the nearest one's end, else "…/" and the name; where not
-    /// even that fits, the whole path, for the line's own elision. Measured
-    /// a pixel per character.
+    /// A path too long for its room is elided in its middle, as macOS elides
+    /// a path, so its top directory and its file name stay: the nearest
+    /// whole directories between them where they fit, else none, else as
+    /// much of the top directory's start as fits, down to "…/" and the name;
+    /// where not even that fits, the name alone, itself elided in its middle,
+    /// keeping its start and its extension. Measured a pixel per character.
     #[test]
-    fn a_long_path_keeps_its_file_name_and_nearest_directory() {
+    fn a_long_path_keeps_its_top_directory_and_file_name() {
         let tail = |path: &str, room: f32| {
             path_tail(path, px(room), |text| px(text.chars().count() as f32))
         };
         assert_eq!(tail("src/app/views.rs", 16.), "src/app/views.rs");
-        assert_eq!(tail("crates/app/src/views.rs", 18.), "…/app/src/views.rs");
-        assert_eq!(tail("crates/app/src/views.rs", 17.), "…/src/views.rs");
-        assert_eq!(tail("crates/app/src/views.rs", 13.), "…src/views.rs");
-        assert_eq!(tail("crates/app/src/views.rs", 12.), "…rc/views.rs");
-        assert_eq!(tail("crates/app/src/views.rs", 10.), "…/views.rs");
-        assert_eq!(
-            tail("crates/app/src/views.rs", 9.),
-            "crates/app/src/views.rs"
-        );
-        assert_eq!(tail("assets/turtle.png", 15.), "…ets/turtle.png");
+        let deep = "crates/app/src/components/views.rs";
+        assert_eq!(tail(deep, 33.), "crates/…/src/components/views.rs");
+        assert_eq!(tail(deep, 31.), "crates/…/components/views.rs");
+        assert_eq!(tail(deep, 27.), "crates/…/views.rs");
+        let path = "crates/app/src/views.rs";
+        assert_eq!(tail(path, 22.), "crates/…/src/views.rs");
+        assert_eq!(tail(path, 20.), "crates/…/views.rs");
+        assert_eq!(tail(path, 16.), "crate…/views.rs");
+        assert_eq!(tail(path, 13.), "cra…/views.rs");
+        assert_eq!(tail(path, 10.), "…/views.rs");
+        assert_eq!(tail(path, 9.), "views.rs");
+        assert_eq!(tail(path, 7.), "vi…s.rs");
+        assert_eq!(tail(path, 4.), "views.rs", "left to the line's elision");
+        assert_eq!(tail("assets/turtle.png", 15.), "ass…/turtle.png");
         assert_eq!(tail("assets/turtle.png", 12.), "…/turtle.png");
+        assert_eq!(tail("assets/turtle.png", 11.), "turtle.png");
+        // A name alone keeps its start, the larger half, and its extension.
+        assert_eq!(
+            tail("RepositoryNavigationSidebar.tsx", 20.),
+            "Reposito…Sidebar.tsx"
+        );
+        assert_eq!(tail("README.md", 6.), "R…E.md");
+        assert_eq!(
+            tail(".gitignore", 6.),
+            ".gi…re",
+            "a dot file has no extension"
+        );
         assert_eq!(tail("README.md", 4.), "README.md");
         // A name that is not UTF-8 keeps the replacement characters its
         // display shows, cut only at character boundaries.
-        let lossy = "plan\u{FFFD}\u{FFFD}/na\u{FFFD}ve.rs";
-        assert_eq!(tail(lossy, 12.), "…\u{FFFD}\u{FFFD}/na\u{FFFD}ve.rs");
-        assert_eq!(tail(lossy, 11.), "…\u{FFFD}/na\u{FFFD}ve.rs");
-        assert_eq!(tail(lossy, 10.), "…/na\u{FFFD}ve.rs");
+        let lossy = "pl\u{FFFD}\u{FFFD}an/na\u{FFFD}ve.rs";
+        assert_eq!(tail(lossy, 13.), "pl\u{FFFD}…/na\u{FFFD}ve.rs");
+        assert_eq!(
+            tail("n\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}e.rs", 8.),
+            "n\u{FFFD}…\u{FFFD}e.rs"
+        );
     }
 
     /// Compare's path in a 461 × 490 half tile at 13 and 18 pt: a path too
-    /// long for its room keeps its file name whole and as much of its
-    /// directory as fits, where the line's own start elision showed
-    /// "…avigationSidebar.tsx" with no directory. Where "…/" and the name do
-    /// not fit beside File actions, the line elides the name from its start
-    /// beside the control: it once wrapped below the path, a row Compare's
-    /// minimum (`compare_toolbar_minimum`) left out, so the toolbar is as tall
-    /// as the minimum counts for every path. The shown text fits its box; the
-    /// whole path stays the accessible name, and a name that is not UTF-8
-    /// shows the replacement characters its display does.
+    /// long for its room is elided in its middle, as macOS elides a path, so
+    /// its top directory, or as much of its start as fits, and its file name
+    /// stay, where the line's own start elision showed
+    /// "…avigationSidebar.tsx" with no directory and then "…/" and the name
+    /// with none either. Where "…/" and the name do not fit beside File
+    /// actions, the name alone shows, elided in its middle where it does not
+    /// fit either, keeping its start and its extension, where its start was
+    /// cut. The toolbar is as tall as Compare's minimum
+    /// (`compare_toolbar_minimum`) counts for every path. The shown text fits
+    /// its box; the whole path stays the accessible name, and a name that is
+    /// not UTF-8 shows the replacement characters its display does.
     #[gpui::test]
-    async fn a_long_compare_path_keeps_its_file_name_and_nearest_directory(
-        cx: &mut TestAppContext,
-    ) {
+    async fn a_long_compare_path_keeps_its_top_directory_and_file_name(cx: &mut TestAppContext) {
         const DIRECTORY: &str = "src/components/navigation/";
         let names = [
             "Repository.tsx",
@@ -18263,33 +18319,44 @@ pub(crate) mod tests {
                 );
                 let slash = display.rfind('/').unwrap();
                 let name = &display[slash..];
+                let top = &display[..display.find('/').unwrap()];
                 let least = format!("…{name}");
-                // A name whose "…/" form does not fit beside the actions is
-                // left to the line's own elision there; every other is
-                // whole, in a line that fits.
-                if measure(cx, &least) <= path.size.width + px(0.5) {
+                let fits = |cx: &mut VisualTestContext, line: &str| {
+                    measure(cx, line) <= path.size.width + px(0.5)
+                };
+                if fits(cx, &least) {
                     assert!(shown.ends_with(name), "{at}: {shown:?} keeps {name:?}");
-                    assert!(
-                        measure(cx, &shown) <= path.size.width + px(0.5),
-                        "{at}: {shown:?} fits {path:?}"
-                    );
-                    elided += usize::from(shown.as_ref() != display);
-                } else {
-                    assert_eq!(shown.as_ref(), display, "{at}");
-                    cut += 1;
-                }
-                if shown.as_ref() != display && shown.ends_with(name) {
-                    let directory = &display[..slash];
-                    let last = directory.chars().last().unwrap();
-                    if shown.as_ref() == least {
-                        let more = format!("…{last}{name}");
+                    assert!(fits(cx, &shown), "{at}: {shown:?} fits {path:?}");
+                    if shown.as_ref() != display {
+                        elided += 1;
+                        // Before "…" stands the top directory, or its start.
+                        let (head, _) = shown.split_once('…').expect("an ellipsis");
                         assert!(
-                            measure(cx, &more) > path.size.width,
-                            "{at}: {shown:?} where {more:?} fits {path:?}"
+                            head == format!("{top}/") || top.starts_with(head),
+                            "{at}: {shown:?} keeps {top:?} or its start"
                         );
-                    } else {
-                        assert!(shown.starts_with('…'), "{at}: {shown:?}");
+                        if shown.as_ref() == least {
+                            let first = top.chars().next().unwrap();
+                            let more = format!("{first}…{name}");
+                            assert!(
+                                measure(cx, &more) > path.size.width,
+                                "{at}: {shown:?} where {more:?} fits {path:?}"
+                            );
+                        }
                     }
+                } else {
+                    // The name alone, its start and its extension kept.
+                    let alone = &name[1..];
+                    let extension = &alone[alone.rfind('.').unwrap()..];
+                    let first = alone.chars().next().unwrap();
+                    assert!(
+                        !shown.contains('/')
+                            && shown.starts_with(first)
+                            && shown.ends_with(extension),
+                        "{at}: {shown:?} keeps the start and {extension:?} of {alone:?}"
+                    );
+                    assert!(fits(cx, &shown), "{at}: {shown:?} fits {path:?}");
+                    cut += 1;
                 }
                 if let Some(menu) = cx.debug_bounds("file-actions-menu") {
                     assert!(
