@@ -2901,31 +2901,49 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// The text the comparison's pane shows this frame, whose keyboard focus
+    /// draws a ring on its edge (`FocusRing::edge`): the editor of the patch,
+    /// the Before or the After text, which the pane rings, or Split, whose
+    /// sides ring their own. `None` where the pane shows anything else, as
+    /// an error ("Preview unavailable"), an empty patch, Blame, a document or
+    /// an image, though an editor kept from before may still hold focus. The
+    /// preview's ring and the inspector's row marker both ask it, so the row
+    /// gives up its accent only where the ring is drawn.
+    fn shown_text(&self) -> Option<ShownText<'_>> {
+        if self.mode == WorkspaceMode::History
+            || self.blame.is_visible()
+            || self.error.is_some()
+            || self
+                .selected_file
+                .and_then(|index| self.files.get(index))
+                .is_none()
+        {
+            return None;
+        }
+        let Some(Content::Text { patch, .. }) = self.content.as_deref() else {
+            return None;
+        };
+        match self.text_mode {
+            TextMode::Split => self.split_view.as_ref().map(ShownText::Split),
+            TextMode::Unified if patch.is_empty() => None,
+            TextMode::Unified => self.patch_editor.as_ref().map(ShownText::Editor),
+            TextMode::Before => self.before_editor.as_ref().map(ShownText::Editor),
+            TextMode::After => self.after_editor.as_ref().map(ShownText::Editor),
+            TextMode::Diagrams | TextMode::Markdown => None,
+        }
+    }
+
     /// Whether the comparison's text draws the keyboard ring on its pane's
-    /// edge (`FocusRing::edge`): the patch, the Before or After text, or a
-    /// Split side, whichever the text mode shows, in Compare or a Working
+    /// edge this frame ([`Self::shown_text`]), in Compare or a Working
     /// preview. The inspector's selected row, whose leading marker stands a
     /// few pixels right of that edge, then leaves the accent to the ring.
     pub(crate) fn text_ring_shows(&self, cx: &App) -> bool {
-        if self.mode == WorkspaceMode::History {
-            return false;
-        }
-        let shows = |editor: &Option<Entity<EditorState>>| {
-            editor
-                .as_ref()
-                .is_some_and(|editor| self.focus_ring.shows(&editor.read(cx).focus_handle(cx)))
-        };
-        match self.text_mode {
-            TextMode::Unified => shows(&self.patch_editor),
-            TextMode::Before => shows(&self.before_editor),
-            TextMode::After => shows(&self.after_editor),
-            TextMode::Split => self.split_view.as_ref().is_some_and(|view| {
-                view.read(cx)
-                    .editors()
-                    .iter()
-                    .any(|editor| self.focus_ring.shows(&editor.read(cx).focus_handle(cx)))
-            }),
-            TextMode::Diagrams | TextMode::Markdown => false,
+        let shows =
+            |editor: &Entity<EditorState>| self.focus_ring.shows(&editor.read(cx).focus_handle(cx));
+        match self.shown_text() {
+            Some(ShownText::Editor(editor)) => shows(editor),
+            Some(ShownText::Split(view)) => view.read(cx).editors().iter().any(shows),
+            None => false,
         }
     }
 
@@ -3362,8 +3380,11 @@ impl GitTurtle {
             }
         });
         // The editor the text pane shows, which draws no edge of its own, so
-        // the pane rings its edge for it.
-        let mut text_focus = None;
+        // the pane rings its edge for it ([`Self::shown_text`]).
+        let text_focus = match self.shown_text() {
+            Some(ShownText::Editor(editor)) => Some(editor.read(cx).focus_handle(cx)),
+            _ => None,
+        };
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -3537,13 +3558,8 @@ impl GitTurtle {
                     } else if self.text_mode == TextMode::Unified
                         && let Some(view) = &self.patch_view
                     {
-                        text_focus = self
-                            .patch_editor
-                            .as_ref()
-                            .map(|editor| editor.read(cx).focus_handle(cx));
                         div().size_full().child(view.clone()).into_any_element()
                     } else if let Some(editor) = editor {
-                        text_focus = Some(editor.read(cx).focus_handle(cx));
                         crate::editor_find::Editor::new(editor)
                             .h(relative(1.))
                             .readonly(true)
@@ -5797,6 +5813,15 @@ impl GitTurtle {
         let rows = wrapped_height(&items, width - snap(rem * 0.75) * 2., snap(rem * 0.5));
         (rows + snap(rem * 0.25) * 2.).max(scaled(46.)) + snap(px(1.))
     }
+}
+
+/// The text the comparison's pane shows (`GitTurtle::shown_text`).
+#[derive(Clone, Copy)]
+enum ShownText<'a> {
+    /// The patch, the Before or the After text, which the pane rings.
+    Editor(&'a Entity<EditorState>),
+    /// Split, whose sides ring their own text.
+    Split(&'a Entity<split_diff::SplitView>),
 }
 
 /// How the comparison path's row lays out (`path_actions`): its actions and
@@ -15645,6 +15670,25 @@ pub(crate) mod tests {
         cx.simulate_keystrokes("right");
         draw(cx);
         assert_eq!(marker(cx), fill, "a key shows the text's ring again");
+
+        // An error in the pane draws no ring though the editor keeps focus,
+        // so the row keeps its marker.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.error = Some("The file is not available.".into());
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert!(cx.update(|window, _| text.is_focused(window)));
+        assert_eq!(marker(cx), accent, "the pane shows an error, unringed");
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.error = None;
+                cx.notify();
+            })
+        });
+        draw(cx);
         cx.update(|window, cx| window.focus(&list, cx));
         cx.simulate_keystrokes("down");
         draw(cx);
