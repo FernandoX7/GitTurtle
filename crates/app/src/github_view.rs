@@ -2006,12 +2006,18 @@ impl Render for Panel {
                 // the panel's scrolling body to its padding).
                 .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
-                        // A list row: the title Button spans it, its label at the panel's text inset,
-                        // and the context line below, outside the Button, takes the same inset. The
-                        // selected row keeps the selected surface under both lines.
-                        div().id(("github-pr-card",pull.number)).flex_shrink_0().pb_1().rounded(px(7.)).when(selected,|row|row.bg(rgb(p.selected))).flex().flex_col()
-                            .child(crate::button_frame(("github-pr",number),&name,"",selected).key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
-                            .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).child(row_text(format!("github-pr-context-{number}"),context)))
+                        // A list row, as the Files list's rows are: it rests on the panel surface,
+                        // the selected one on the selected surface, and lifts to the row hover under
+                        // both its lines, which open the PR alike. The title Button spans it, its
+                        // label at the panel's text inset, and the context line below, outside the
+                        // Button, takes the same inset. The title draws no hover of its own, so the
+                        // row lifts once; selected, its opaque fill follows the row's.
+                        let hover=p.row_hover(selected);let group=SharedString::from(format!("github-pr-card-{number}"));let open=pull.clone();
+                        let title=crate::button_frame(("github-pr",number),&name,"",selected);
+                        let title=if selected{title.group_hover(group.clone(),move|style|style.bg(rgb(hover)))}else{title.with_variant(appearance::still_control_button_variant())};
+                        div().id(("github-pr-card",pull.number)).group(group).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().pb_1().rounded(px(7.)).bg(rgb(if selected{p.selected}else{p.panel})).when(!pending,|row|row.hover(move|row|row.bg(rgb(hover)))).flex().flex_col()
+                            .child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
+                            .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
                     // the destination first, and one with a destination reads its PRs with
@@ -5696,6 +5702,98 @@ mod tests {
                 );
             }
         }
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// PR rows are list rows, as the Files list's are: unselected, a row rests on the panel
+    /// surface and lifts to the hover surface under both its lines, its title Button drawing
+    /// no fill of its own, so the row lifts once; the selected row rests on the selected
+    /// surface and lifts to the selected row's hover, its title following from either line.
+    /// The context line opens the PR as the title does. Unselected rows once drew nothing at
+    /// rest, and the pointer lifted the title's line alone.
+    #[gpui::test]
+    async fn pull_request_rows_rest_and_lift_as_list_rows(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let p = cx.update(|_, cx| palette(cx));
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                let short = github::review::fixture_pull(false);
+                let mut other = short.clone();
+                other.number = 43;
+                panel.rows = vec![short, other];
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            panel
+        });
+        settle_panel(&app, cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
+        let painted = |cx: &mut VisualTestContext, selector: String| {
+            let bounds = cx
+                .debug_bounds(selector.clone().leak())
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            appearance::painted_row(cx, bounds).0
+        };
+        let hover = |cx: &mut VisualTestContext, selector: &str| {
+            let bounds = cx.debug_bounds(selector.to_owned().leak()).unwrap();
+            cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+            draw(cx);
+        };
+        for number in [42, 43] {
+            let card = painted(cx, format!("github-pr-card-{number}"));
+            assert_eq!(card, [fill(p.panel)], "#{number} rests on the panel");
+            assert!(
+                painted(cx, format!("github-pr-{number}")).is_empty(),
+                "#{number}'s title"
+            );
+        }
+        for line in ["github-pr-43", "github-pr-context-43"] {
+            hover(cx, line);
+            let card = painted(cx, "github-pr-card-43".into());
+            assert_eq!(card, [fill(p.row_hover(false))], "{line} lifts the row");
+            assert!(
+                painted(cx, "github-pr-43".into()).is_empty(),
+                "{line}: the row lifts once"
+            );
+            let other = painted(cx, "github-pr-card-42".into());
+            assert_eq!(other, [fill(p.panel)], "{line} leaves #42 at rest");
+        }
+
+        crate::copy_feedback::tests::click(cx, "github-pr-context-42");
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+            Some(42),
+            "the context line opens its PR"
+        );
+        // The open PR's "Pull requests" shows the list above it, #42 selected.
+        crate::copy_feedback::tests::click(cx, "github-back-list");
+        draw(cx);
+        let lifted = fill(p.row_hover(true));
+        for line in ["github-pr-context-42", "github-pr-42"] {
+            hover(cx, line);
+            assert_eq!(painted(cx, "github-pr-card-42".into()), [lifted], "{line}");
+            assert_eq!(
+                painted(cx, "github-pr-42".into()),
+                [lifted],
+                "{line}: the title follows"
+            );
+        }
+        hover(cx, "github-pr-context-43");
+        assert_eq!(painted(cx, "github-pr-card-42".into()), [fill(p.selected)]);
+        assert_eq!(painted(cx, "github-pr-42".into()), [fill(p.selected)]);
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
