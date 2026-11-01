@@ -48,12 +48,22 @@ struct ActiveMenu {
 /// its foot, as the kit's context menu and dropdowns keep theirs. With its
 /// fill at the point the ring lay on the row clicked, and on a whole-pixel
 /// pointer, as X11 reports, the fill's top held the point.
+///
+/// The margin is kept from the drawn edge, not the fill: the fill stays
+/// [`WINDOW_MARGIN`] and the edge's band inside the window. A menu capped
+/// at the room the point leaves ([`gpui_base::Positioner::point_room`]),
+/// measured to the fill, filled it whole where that room held less than its
+/// first row, and drew its ring 7 px from the window's top.
 fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::Positioner {
     gpui_base::Positioner::point(position)
         .offset(crate::POPOVER_EDGE_WIDTH)
-        .margin(px(8.))
+        .margin(WINDOW_MARGIN + crate::POPOVER_EDGE_WIDTH)
         .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
 }
+
+/// GitTurtle patch: how far the menu's drawn edge stays inside the window,
+/// as the kit's popup hosts keep theirs.
+const WINDOW_MARGIN: Pixels = px(8.);
 
 impl FallbackMenuOverlay {
     pub(crate) fn new() -> Self {

@@ -20627,6 +20627,90 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// At 18 pt in a 461 × 110 window, as the app keeps its menus above the
+    /// status bar, a right-click mid-way down a code editor, a little below
+    /// the middle of the room, opens its menu above the pointer, capped at
+    /// the room there, which holds less than its first row: its items column
+    /// takes the whole room, and its drawn edge, the ring outside its fill,
+    /// stays 8 px inside the window's top, as every other menu's edge keeps
+    /// its margin. Capped at the room for its fill, the menu drew its ring
+    /// 7 px from the window's top.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_capped_menu_keeps_its_drawn_edge_inside_the_window_margin(
+        cx: &mut TestAppContext,
+    ) {
+        let at = "18 pt in 461 × 110";
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+        });
+        let editor = std::rc::Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let editor = editor.clone();
+            move |window, cx| {
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx).default_value("one\ntwo\nthree\nfour\nfive")
+                });
+                *editor.borrow_mut() = Some(state.clone());
+                let probe = cx.new(|_| CodeEditorProbe {
+                    editor: state,
+                    top: px(16.),
+                });
+                gpui_kit::component::Root::new(probe, window, cx)
+            }
+        });
+        let editor = editor.borrow().clone().expect("the editor");
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            appearance::apply_text_sizes(18, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(110.)));
+        draw(cx);
+        let field = cx.debug_bounds("code-editor-probe").expect("the editor");
+        let (status, foot) = cx.update(|window, _| {
+            (
+                crate::theme_editor::status_bar_top(window),
+                crate::native_accessibility::menu_foot(window),
+            )
+        });
+        // A little below the middle of the room between the window's 8 px
+        // margin and the menu's foot, so more of it lies above the pointer.
+        let pointer = point(
+            field.center().x,
+            (px(8.) + (foot - px(8.)) * 0.55).floor() + px(0.3),
+        );
+        assert!(
+            field.contains(&pointer),
+            "{at}: {pointer:?} lies in {field:?}"
+        );
+        cx.update(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx));
+        let surface = right_click_field(cx, pointer, "Go to Definition", at);
+        let first = menu_rows(cx, &["Go to Definition"])[0].1;
+        // The items column's padding above and below its rows.
+        let padding = first.top() - surface.top();
+        assert!(
+            surface.bottom() < pointer.y && surface.size.height < first.size.height + padding * 2.,
+            "{at}: the menu {surface:?} opens above {pointer:?}, capped short of its first row {first:?}"
+        );
+        assert!(
+            cx.debug_bounds("popup-menu-scrollbar").is_some(),
+            "{at}: the capped menu shows its scrollbar"
+        );
+        let drawn = surface.dilate(edge);
+        assert!(
+            drawn.top() >= px(8.) - px(0.01),
+            "{at}: the menu {surface:?} draws its edge {:?} from the window's top, inside its 8 px margin",
+            drawn.top()
+        );
+        assert!(
+            drawn.bottom() <= status - px(8.) + px(0.01),
+            "{at}: the menu {surface:?} draws its edge 8 px above the bar at {status:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// As on macOS, a right-click in a text field acts on that field, not
     /// on whatever held focus before: with focus and a selected file in the
     /// Working Changes list, a right-click's press in its filter focuses the

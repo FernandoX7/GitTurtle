@@ -724,8 +724,19 @@ pointer on a whole pixel and part way into one.
 `an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` now
 right-clicks low in the code editor, where the room above the pointer is the
 larger, and reads the capped menu drawn wholly above the point and taller
-than the room below, so a cap at the smaller room fails it. Remove this part
-with the fallback menu's placement.
+than the room below, so a cap at the smaller room fails it. The fallback
+also keeps its 8 px window margin from its drawn edge rather than its fill,
+giving the positioner a margin of 8 px and `POPOVER_EDGE_WIDTH`: the room
+`Positioner::point_room` gives is measured to the fill, so a menu capped at
+a room shorter than its first row, whose items column then takes the whole
+room, ended its fill at the margin and drew its ring 7 px from the window's
+top. At the window's foot the application's inset already counts the edge,
+so nothing there moves.
+`an_inputs_capped_menu_keeps_its_drawn_edge_inside_the_window_margin`
+right-clicks a code editor at 18 pt in a 461 × 110 window, where the room
+above the pointer holds less than one row, and reads the capped menu's
+drawn edge 8 px inside the window's top. Remove this part with the fallback
+menu's placement.
 
 The fallback's items patch modifies `src/native_menu/fallback.rs`. Upstream
 built every native item as a check item (`menu_with_check_and_disabled`, or
