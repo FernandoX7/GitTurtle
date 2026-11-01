@@ -4120,7 +4120,12 @@ mod tests {
                             let labels = app.tab_strip_labels(window, cx);
                             (
                                 labels,
-                                app.tab_list_room(labels, window, cx),
+                                app.tab_list_room(
+                                    labels,
+                                    app.tab_strip_labelled_actions(window),
+                                    window,
+                                    cx,
+                                ),
                                 app.tab_strip_labelled_actions(window),
                                 app.tabs_whole_width(window),
                                 window.pixel_snap(appearance::ui_size(28.)),

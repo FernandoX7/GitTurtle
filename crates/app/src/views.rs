@@ -4666,8 +4666,7 @@ impl GitTurtle {
         let whole = self.tabs_whole_width(window);
         // Measured once, for every form.
         let (menu, workspaces) = self.tab_strip_labelled_actions(window);
-        let icons =
-            self.tab_list_room_beside(TabStripLabels::default(), (menu, workspaces), window, cx);
+        let icons = self.tab_list_room(TabStripLabels::default(), (menu, workspaces), window, cx);
         let control = window.pixel_snap(appearance::ui_size(28.));
         let labelled = |shown: bool, width: Pixels| {
             if shown { width - control } else { px(0.) }
@@ -4710,19 +4709,10 @@ impl GitTurtle {
     /// room layout gives at a fractional scale factor too: the labels give
     /// way neither early nor late (rounded to whole pixels alone, at 1.5 a
     /// 71 px Menu was drawn 71⅓ px wide and a tab predicted whole was cut).
+    /// Menu and Workspaces take the widths `labelled` gives them labelled
+    /// ([`Self::tab_strip_labelled_actions`]), which the strip's choice
+    /// measures once for every form.
     pub(super) fn tab_list_room(
-        &self,
-        labels: TabStripLabels,
-        window: &Window,
-        cx: &App,
-    ) -> Pixels {
-        self.tab_list_room_beside(labels, self.tab_strip_labelled_actions(window), window, cx)
-    }
-
-    /// [`Self::tab_list_room`] beside Menu and Workspaces as wide as
-    /// `labelled` has them labelled ([`Self::tab_strip_labelled_actions`]),
-    /// which the strip's choice measures once for every form.
-    fn tab_list_room_beside(
         &self,
         labels: TabStripLabels,
         (labelled_menu, labelled_workspaces): (Pixels, Pixels),
@@ -12314,9 +12304,12 @@ pub(crate) mod tests {
                 let breakpoints: BTreeSet<u32> = cx.update(|window, cx| {
                     let app = app.read(cx);
                     let (body, whole) = (body_size(window).width, app.tabs_whole_width(window));
+                    let actions = app.tab_strip_labelled_actions(window);
                     TabStripLabels::ORDER
                         .iter()
-                        .map(|labels| body + whole - app.tab_list_room(*labels, window, cx))
+                        .map(|labels| {
+                            body + whole - app.tab_list_room(*labels, actions, window, cx)
+                        })
                         .map(|fits| (f32::from(fits) * scale).ceil() as u32)
                         .filter(|device| (narrowest..widest).contains(device))
                         .collect()
@@ -12333,7 +12326,12 @@ pub(crate) mod tests {
                                 let labels = app.tab_strip_labels(window, cx);
                                 (
                                     labels,
-                                    app.tab_list_room(labels, window, cx),
+                                    app.tab_list_room(
+                                        labels,
+                                        app.tab_strip_labelled_actions(window),
+                                        window,
+                                        cx,
+                                    ),
                                     app.tabs_whole_width(window),
                                     app.tab_strip_labelled_actions(window),
                                     app.tab_whole_widths(window)[0],
