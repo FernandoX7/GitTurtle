@@ -20215,6 +20215,70 @@ pub(crate) mod tests {
         );
     }
 
+    /// At 13 pt in a 461 × 490 window, a text field opens its right-click
+    /// menu only for a right-press that began on it and is released over it.
+    /// A right-press in the Working Changes filter dragged onto the commit
+    /// title and released there once left the filter's press pending, so a
+    /// right-press in the title, which focused the title, dragged into the
+    /// filter and released there opened the filter's menu at the old point,
+    /// and its Paste, which acts on the window's focus, pasted into the
+    /// title.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_menu_opens_only_for_a_right_click_pressed_on_it(cx: &mut TestAppContext) {
+        let at = "13 pt in 461 × 490";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(&app, cx).await;
+        let title = app.read_with(cx, |app, cx| app.commit_title.read(cx).focus_handle(cx));
+        let field = |selector: &'static str, cx: &mut VisualTestContext| {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{at}: {selector}"));
+            point(bounds.left() + px(16.), bounds.center().y.floor() + px(0.4))
+        };
+        let in_filter = field("working-filter", cx);
+        let in_title = field("commit-title", cx);
+        let right_drag = |from: Point<Pixels>, to: Point<Pixels>, cx: &mut VisualTestContext| {
+            cx.simulate_mouse_move(from, None, Modifiers::default());
+            cx.simulate_mouse_down(from, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_move(to, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(to, MouseButton::Right, Modifiers::default());
+            // A field shows its menu in a deferred callback.
+            cx.run_until_parked();
+            draw(cx);
+        };
+
+        // A right-click in the filter opens the filter's menu.
+        right_click_field(cx, in_filter, "Paste", at);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+
+        right_drag(in_filter, in_title, cx);
+        assert!(
+            menu_rows(cx, &["Paste"]).is_empty(),
+            "{at}: a right-press in the filter released over the title opens no menu"
+        );
+        right_drag(in_title, in_filter, cx);
+        assert!(
+            menu_rows(cx, &["Paste"]).is_empty(),
+            "{at}: a right-press in the title released over the filter opens no menu"
+        );
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "{at}: the title's right-press focused it, and focus stays there"
+        );
+
+        // A right-click in the title opens the title's menu.
+        right_click_field(cx, in_title, "Paste", at);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "{at}: Escape returned focus to the title"
+        );
+    }
+
     /// On Linux a text field's drawn right-click menu gives Cut, Copy,
     /// Paste and Select All the role of the plain menu items they are, as
     /// a macOS menu item without a mark is one: built as unticked check

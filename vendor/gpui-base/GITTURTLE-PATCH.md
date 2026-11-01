@@ -255,12 +255,44 @@ only the kit test reaches the move up to a whole pixel. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 
-The doc of the input's right-click menu (`handle_right_click_menu` in
-`src/input/base/state.rs`) said it is a native OS menu; it now says it is the
-OS's own on macOS and Windows and drawn by the kit on Linux, and that the
-right-click's press has focused the input, so the menu's actions act on it
-([component patch](../gpui-component/GITTURTLE-PATCH.md)). This is a comment
-only.
+The input's right-click menu (`on_mouse_up`, the added
+`drop_pending_context_menu` and `handle_right_click_menu` in
+`src/input/base/state.rs`) opens, on every platform, only for a release over
+the input of a right-press that began on it, and only while the input holds
+focus. Upstream a right-press kept its point pending until a release over the
+same input took it, so a press dragged out and released elsewhere left it
+pending, and a later right-release over the input of a press that began
+elsewhere opened its menu at the old point. The menu's actions go to the
+window's focus (the [component's](../gpui-component/GITTURTLE-PATCH.md)
+drawn fallback on Linux), so with another field holding focus after a click
+in it, the menu's Cut and Paste acted on that field. A right-button release
+outside the input (`on_mouse_up_out`) now drops its pending press, and the
+release over it opens the menu only while the input's own focus handle is
+focused, as the press left it, since GPUI focuses a focusable element under
+any mouse-down; that check also keeps the menu closed when Tab or a shortcut
+moves focus while the button is held. An input not drawn in the frame a
+release lands in runs no handler and keeps its press pending, and the focus
+check still holds its menu to a release while it has focus. Decided by the
+owner's rule to keep focus where the person put it: a menu opened over one
+field must not act on another, and a release that began elsewhere is no
+right-click on the field. The doc of `handle_right_click_menu` said it is a
+native OS menu; it now says it is the OS's own on macOS and Windows and drawn
+by the kit on Linux, and that its caller opens it only for that release,
+while the input holds the focus its press gave it, so the menu's actions act
+on it. `scripts/vendor-crate-test.sh vendor/gpui-base a_right_release` runs
+`input::state::tests::a_right_release_opens_no_menu_for_a_press_begun_elsewhere`,
+which renders two inputs, A and B: a right-click in A opens A's menu, and no
+menu opens for a right-press in A released over blank space and then a
+right-press on blank space released over A, with B focused by a click and
+again with A focused, and
+`a_right_release_opens_no_menu_once_focus_has_left_the_input`, which moves
+focus to B between a right-press in A and its release over A. In the app,
+`cargo test --locked -p gitturtle an_inputs_menu_opens_only_for_a_right_click_pressed_on_it`
+drags a right-press from the Working Changes filter onto the commit title and
+one from the title into the filter, and neither opens a menu, focus staying
+in the title. Remove this part when upstream drops a pending right-press
+released outside the input and opens its menu only while the input holds
+focus, and those tests pass without it.
 
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
