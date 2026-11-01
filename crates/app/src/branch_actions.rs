@@ -132,26 +132,26 @@ impl GitTurtle {
         self.branch_actions.task.is_some() && self.branch_actions.asked_in_changes
     }
 
-    /// Replaces the existing picker; its frequent switch actions remain first.
-    /// `compact`, in the action bar's compact row, it is a 28 px control that
-    /// gives up its width, truncating the branch name, before its row wraps,
-    /// and at most `most` wide where given: the room the ahead and behind
-    /// counts leave it (`GitTurtle::sync_fit`). `narrow` where the bar's
-    /// repository edge has no room for its line
-    /// (`empty_state::EdgeForm::glyph`).
-    pub(super) fn render_branch_picker(
+    /// The branch picker's control, without its menu
+    /// ([`Self::render_branch_picker`]): its glyph, label, name and tooltip,
+    /// which a test reads as the window writes them. `compact`, in the
+    /// action bar's compact row, it is a 28 px control that gives up its
+    /// width, truncating the branch name, before its row wraps, and at most
+    /// `most` wide where given: the room the ahead and behind counts leave
+    /// it (`GitTurtle::sync_fit`). `narrow` where the bar's repository edge
+    /// has no room for its line (`empty_state::EdgeForm::glyph`).
+    pub(crate) fn branch_picker(
         &self,
         compact: bool,
         narrow: bool,
         most: Option<Pixels>,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Button {
         let branch = self
             .work_status
             .as_ref()
             .and_then(|status| status.branch.clone())
             .unwrap_or_else(|| "Detached HEAD".into());
-        let owner = cx.entity().downgrade();
         // A switch chosen from this menu confirms here once the picker names
         // the branch it switched to: the check takes the branch icon's place
         // and the tooltip says Switched, while the label, the width and the
@@ -184,10 +184,13 @@ impl GitTurtle {
             .filter(|status| status.branch.is_none())
             .and_then(|status| status.head.as_deref())
             .map(short_oid);
-        let compact_label = self
-            .repository_edge()
-            .filter(|_| compact)
-            .and_then(|edge| edge.compact_branch(narrow));
+        let edge = self.repository_edge().filter(|_| compact);
+        let compact_label = edge.as_ref().and_then(|edge| edge.compact_branch(narrow));
+        // Where the line leaves for the picker, which says its word, the
+        // picker's tooltip carries the line's advice after its name.
+        let advice = edge
+            .filter(|edge| narrow && edge.glyph().is_none())
+            .map(|edge| edge.advice());
         let (label, named) = match (&head, compact_label) {
             (Some(head), Some(label)) => (label, format!("Detached HEAD at {head}")),
             (Some(head), None) => (branch.clone(), format!("Detached HEAD at {head}")),
@@ -202,9 +205,12 @@ impl GitTurtle {
         };
         #[cfg(test)]
         PICKER_LABEL.with(|drawn| drawn.replace(Some(label.clone())));
-        let tooltip = match confirmation {
-            Some(done) => format!("{done} · {branch}"),
-            None => format!("{named} · Switch branch and repository actions"),
+        let tooltip = match (confirmation, advice) {
+            (Some(done), _) => format!("{done} · {branch}"),
+            (None, Some(advice)) => {
+                format!("{named} · {advice} · Switch branch and repository actions")
+            }
+            (None, None) => format!("{named} · Switch branch and repository actions"),
         };
         crate::views::note_control_icon(&"current-branch".into(), symbol);
         crate::views::note_control_tooltip(&"current-branch".into(), &tooltip);
@@ -236,6 +242,19 @@ impl GitTurtle {
                 "Current branch: {named}. Switch or manage branches"
             ))
             .tooltip(tooltip)
+    }
+
+    /// Replaces the existing picker ([`Self::branch_picker`]); its frequent
+    /// switch actions remain first.
+    pub(super) fn render_branch_picker(
+        &self,
+        compact: bool,
+        narrow: bool,
+        most: Option<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        self.branch_picker(compact, narrow, most, cx)
             .app_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;

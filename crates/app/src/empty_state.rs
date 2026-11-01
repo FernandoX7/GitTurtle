@@ -443,20 +443,30 @@ impl RepositoryEdge {
         }
     }
 
-    /// What the line's tooltip adds.
+    /// What the line's tooltip adds: what the edge is, then what to do
+    /// there ([`Self::advice`]).
     pub(crate) fn explanation(&self) -> String {
-        match self {
-            Self::Detached { oid } => format!(
-                "HEAD is at commit {} with no branch. Create a branch here to keep new commits on it.",
-                short_oid(oid)
-            ),
-            Self::NoRemote => {
-                "This repository has no remote. Add one to fetch, pull and push.".into()
+        let edge = match self {
+            Self::Detached { oid } => {
+                format!("HEAD is at commit {} with no branch", short_oid(oid))
             }
-            Self::Unborn => "This branch has no commits yet. Commit in Changes first.".into(),
+            Self::NoRemote => "This repository has no remote".into(),
+            Self::Unborn => "This branch has no commits yet".into(),
+            Self::NoUpstream => "No upstream is configured".into(),
+        };
+        format!("{edge}. {}.", self.advice())
+    }
+
+    /// What to do at the edge, the explanation's second sentence without
+    /// its period: where a detached HEAD's line leaves for the branch
+    /// picker, the picker's tooltip carries it after its name.
+    pub(crate) fn advice(&self) -> &'static str {
+        match self {
+            Self::Detached { .. } => "Create a branch here to keep new commits on it",
+            Self::NoRemote => "Add one to fetch, pull and push",
+            Self::Unborn => "Commit in Changes first",
             Self::NoUpstream => {
-                "No upstream is configured. Push publishes this branch to the target in Targets and sets it as the upstream."
-                    .into()
+                "Push publishes this branch to the target in Targets and sets it as the upstream"
             }
         }
     }
@@ -986,9 +996,17 @@ pub(crate) mod tests {
             let tooltip = crate::views::CONTROL_TOOLTIPS
                 .with(|tooltips| tooltips.borrow().get("current-branch").cloned())
                 .unwrap_or_default();
-            assert!(
-                tooltip.starts_with(&format!("Detached HEAD at {short} · ")),
-                "{at}: the picker's tooltip {tooltip:?} names the commit"
+            // Where the picker takes the line's place, its tooltip carries
+            // the line's advice between its name and its own purpose.
+            let advice = if edge.is_none() {
+                " · Create a branch here to keep new commits on it"
+            } else {
+                ""
+            };
+            assert_eq!(
+                tooltip,
+                format!("Detached HEAD at {short}{advice} · Switch branch and repository actions"),
+                "{at}: the picker's tooltip"
             );
             // Whole, its text as wide as its words, beside Create branch….
             let picker = cx.debug_bounds("current-branch").unwrap();

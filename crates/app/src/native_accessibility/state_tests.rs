@@ -191,9 +191,9 @@ async fn every_repository_edge_is_read_by_its_line(cx: &mut TestAppContext) {
         &SIZES[..1],
     );
     // In the half tile the line leaves for the branch picker, which says
-    // "Detached" and is named "Current branch: Detached HEAD at" the commit
-    // (`empty_state::tests::detached_head_offers_a_branch_here`): no label
-    // is left on the bus for a line that is not drawn.
+    // "Detached" (`empty_state::tests::detached_head_offers_a_branch_here`):
+    // no label is left on the bus for a line that is not drawn, and the
+    // picker's node, as the window writes it, names the commit.
     let (text, width, height) = SIZES[1];
     cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
     cx.simulate_resize(size(px(width), px(height)));
@@ -203,6 +203,31 @@ async fn every_repository_edge_is_read_by_its_line(cx: &mut TestAppContext) {
     assert!(
         cx.debug_bounds("branch-edge-line").is_none() && written::get("branch-edge-line").is_none(),
         "the half tile's detached line is neither drawn nor read"
+    );
+    let picker = app.clone();
+    let node = crate::views::tests::view_node(cx, move |window, cx| {
+        use gpui::Element as _;
+        let button = picker.update(cx, |app, cx| {
+            let narrow = app.edge_form(true, window, cx).glyph;
+            assert!(narrow, "the half tile's bar has no room for the line");
+            app.branch_picker(true, narrow, None, cx)
+        });
+        let element = RenderOnce::render(button.base(window, cx), window, cx).into_element();
+        let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("the picker's role"));
+        element.write_a11y_info(&mut node);
+        node
+    });
+    assert_eq!(node.role(), Role::Button);
+    assert_eq!(
+        node.label(),
+        Some(
+            format!(
+                "Current branch: Detached HEAD at {}. Switch or manage branches",
+                &head[..7]
+            )
+            .as_str()
+        ),
+        "the narrow picker's name on the bus names the commit"
     );
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     cx.simulate_resize(size(px(1280.), px(800.)));
