@@ -1926,7 +1926,7 @@ mod tests {
                 );
                 div()
                     .w(px(900.))
-                    .child(patch_row(0, &self.0, column, px(20.), cx))
+                    .child(patch_row(0, &self.0, column, patch_row_height(1.), cx))
             }
         }
         cx.update(|cx| {
@@ -3132,8 +3132,9 @@ mod tests {
                     "{at}: the hint {hint:?} centres its first line off Previous {previous:?}"
                 );
                 let rows = cx.debug_bounds("github-patch-rows").expect("rows");
-                // The rows as drawn: at 12 pt a row of 19.8 px is drawn 20 px tall at 2x, and
-                // counted at 19.8 px the 13th row of the first file was cut 2.6 px short.
+                // The rows as drawn, each on whole device pixels (18 px at 12 pt): when rows
+                // were 19.8 px, drawn 20 px tall at 2x, counting them at 19.8 px cut the 13th
+                // row of the first file 2.6 px short.
                 let row = cx
                     .debug_bounds("github-patch-line-0")
                     .expect("row")
