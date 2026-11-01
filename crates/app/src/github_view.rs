@@ -2796,6 +2796,8 @@ mod tests {
         use crate::views::tests::{draw, settle};
         use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON, refusals};
         let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Projects' tooltip ends with its shortcut, after any reason.
+        let projects_key = crate::shortcuts::label(crate::shortcuts::ShortcutId::Projects);
         // Wide enough that the header draws the busy look's progress label,
         // and Changes, whose header has Projects, where History's root has
         // Back to Projects.
@@ -2845,7 +2847,10 @@ mod tests {
             assert!(cx.debug_bounds("github-busy").is_some());
             assert_eq!(
                 tooltip,
-                Some(format!("Open Projects · {}", kind.reason())),
+                Some(format!(
+                    "Open Projects · {} · {projects_key}",
+                    kind.reason()
+                )),
                 "{kind:?}: Projects waits for it"
             );
             assert_eq!(palette, Some(kind.reason()), "{kind:?}: so does Tags");
@@ -2877,7 +2882,7 @@ mod tests {
         let (tooltip, palette) = refusals_once_busy(cx);
         assert_eq!(
             tooltip.as_deref(),
-            Some(format!("Open Projects · {BUSY_REASON}").as_str())
+            Some(format!("Open Projects · {BUSY_REASON} · {projects_key}").as_str())
         );
         assert_eq!(palette, Some(BUSY_REASON));
         drop(held);
@@ -2957,7 +2962,10 @@ mod tests {
             );
             assert_eq!(
                 refusals::tooltip("projects").map(|tooltip| tooltip.to_string()),
-                Some(format!("Open Projects · {reason}")),
+                Some(format!(
+                    "Open Projects · {reason} · {}",
+                    crate::shortcuts::label(crate::shortcuts::ShortcutId::Projects)
+                )),
                 "{name}: Projects waits for it"
             );
             assert_eq!(

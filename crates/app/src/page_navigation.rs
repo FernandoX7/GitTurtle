@@ -645,7 +645,7 @@ mod tests {
             "Stage all refuses at once"
         );
         let tooltip = |key| refusals::tooltip(key).map(|tooltip| tooltip.to_string());
-        let projects = "Open Projects".to_owned();
+        let projects = projects_tooltip(None);
         assert_eq!(
             tooltip("projects"),
             Some(projects.clone()),
@@ -700,7 +700,7 @@ mod tests {
         assert!(changes(cx), "Ctrl+2 once the write looks busy");
         assert_eq!(
             tooltip("projects"),
-            Some(format!("{projects} · {BUSY_REASON}")),
+            Some(projects_tooltip(Some(BUSY_REASON))),
             "Projects once the write looks busy"
         );
         drop(held);
@@ -740,6 +740,16 @@ mod tests {
         crate::path_filter::filters_land(&app, cx);
         let root = app.read_with(cx, |app, _| app.path.clone()).unwrap();
         (fixture, app, cx, root)
+    }
+
+    /// The header's Projects tooltip: its name, `reason` while it waits,
+    /// then its shortcut, as every tab tooltip ends.
+    fn projects_tooltip(reason: Option<&str>) -> String {
+        let key = crate::shortcuts::label(crate::shortcuts::ShortcutId::Projects);
+        match reason {
+            Some(reason) => format!("Open Projects · {reason} · {key}"),
+            None => format!("Open Projects · {key}"),
+        }
     }
 
     fn primary(keys: &str) -> String {
@@ -1081,14 +1091,14 @@ mod tests {
             cx.debug_bounds(format!("projects/tooltip/{text}").leak())
                 .is_some()
         };
-        let rest = "Open Projects";
-        let waiting = format!("{rest} · {BUSY_REASON}");
+        let rest = projects_tooltip(None);
+        let waiting = projects_tooltip(Some(BUSY_REASON));
         let projects = cx.debug_bounds("projects").expect("the header's Projects");
         cx.simulate_mouse_move(projects.center(), None, Modifiers::default());
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(600));
         draw(cx);
-        assert!(shows(cx, rest), "at rest");
+        assert!(shows(cx, &rest), "at rest");
 
         // A write held open, as a Fetch from an unreachable remote stays.
         let held = app.update(cx, |app, _| app.operations.hold());
@@ -1103,7 +1113,7 @@ mod tests {
             })
         });
         draw(cx);
-        assert!(shows(cx, rest), "through the busy look's delay");
+        assert!(shows(cx, &rest), "through the busy look's delay");
         cx.executor().advance_clock(BUSY_LOOK_DELAY);
         draw(cx);
         assert_eq!(
@@ -1112,7 +1122,7 @@ mod tests {
             "Projects stays under the pointer"
         );
         assert!(shows(cx, &waiting), "once the write looks busy");
-        assert!(!shows(cx, rest));
+        assert!(!shows(cx, &rest));
 
         drop(held);
         let write = app
@@ -1122,7 +1132,7 @@ mod tests {
         settle(&app, cx).await;
         assert!(app.read_with(cx, |app, _| app.operation_busy.is_none()));
         draw(cx);
-        assert!(shows(cx, rest), "once the write ends");
+        assert!(shows(cx, &rest), "once the write ends");
         assert!(!shows(cx, &waiting));
     }
 
@@ -3100,7 +3110,7 @@ mod tests {
             assert!(cx.debug_bounds("operation-progress").is_some());
             assert_eq!(
                 refusals::tooltip("projects").as_deref(),
-                Some("Open Projects")
+                Some(projects_tooltip(None).as_str())
             );
             let (label, reason) =
                 app.read_with(cx, |app, _| (app.operation_shown(), app.busy_reason()));
@@ -3286,6 +3296,7 @@ mod tests {
         // header's room from Projects, which Changes shows.
         cx.simulate_resize(size(px(1600.), px(900.)));
         let back = format!("Back to Projects · {}[", primary_label());
+        let open = projects_tooltip(None);
         /// Whether File ▸ Projects… is disabled.
         fn file_menu_refuses(cx: &mut VisualTestContext) -> bool {
             cx.update(|_, cx| cx.get_menus())
@@ -3347,7 +3358,7 @@ mod tests {
         cx.simulate_keystrokes(&primary("1"));
         draw(cx);
         for (keys, control, tooltip) in [
-            ("2", "projects", "Open Projects"),
+            ("2", "projects", open.as_str()),
             ("1", "page-back", back.as_str()),
         ] {
             assert_eq!(
@@ -3368,7 +3379,7 @@ mod tests {
         assert_eq!(app.read_with(cx, |app, _| app.path.clone()), Some(other));
         for (keys, control, tooltip) in [
             ("1", "page-back", back.as_str()),
-            ("2", "projects", "Open Projects"),
+            ("2", "projects", open.as_str()),
         ] {
             assert_eq!(
                 offered(keys, control, cx),
@@ -3412,7 +3423,7 @@ mod tests {
         });
         assert_eq!(
             offered("2", "projects", cx),
-            refused(format!("Open Projects · {BUSY_REASON}"), BUSY_REASON),
+            refused(projects_tooltip(Some(BUSY_REASON)), BUSY_REASON),
             "the header's Projects during a write"
         );
         let projects = cx.debug_bounds("projects").expect("the header's Projects");

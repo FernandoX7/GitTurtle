@@ -380,7 +380,7 @@ impl GitTurtle {
                     self.projects_refusal().0,
                     |app| crate::workspace::WaitingTooltip {
                         name: "Open Projects".into(),
-                        shortcut: None,
+                        shortcut: Some(shortcuts::label(shortcuts::ShortcutId::Projects).into()),
                         dimmed: app.projects_refusal().1,
                     },
                     cx,
