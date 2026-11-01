@@ -8688,10 +8688,10 @@ pub(crate) mod tests {
     /// a line of their own, 48 px of the image's room at 18 pt. The toolbar
     /// keeps the rows it has with no control offered, and the captions and
     /// the image keep the room they have then. Away from its side's name,
-    /// each tooltip names the side, as its accessible name does. Focused on
-    /// its name's line in a wide window, Before's control keeps focus as the
-    /// window narrows and moves it into the toolbar, where Tab moves on to
-    /// After's.
+    /// each tooltip names the side, as its accessible name does. Reached by
+    /// Tab on its name's line in a wide window, where it draws its ring,
+    /// Before's control keeps focus and its ring as the window narrows and
+    /// moves it into the toolbar, where Tab moves on to After's.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn narrow_image_open_controls_stand_in_the_toolbar_row(cx: &mut TestAppContext) {
@@ -8768,8 +8768,8 @@ pub(crate) mod tests {
                 bounds("image-canvas-area", cx).size.height,
             ]);
         }
-        // Focused on its name's line, Before's control keeps focus as the
-        // window narrows and moves it.
+        // Reached by Tab on its name's line, Before's control keeps focus and
+        // its ring as the window narrows and moves it.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);
@@ -8783,8 +8783,51 @@ pub(crate) mod tests {
             caption.contains(&bounds("image-system-preview-0", cx).center()),
             "wide, Before's control follows its name"
         );
-        cx.update(|window, cx| window.focus(&before_focus, cx));
+        // The control `selector` draws the button's focus ring around it.
+        let ringed = |selector: &'static str, cx: &mut VisualTestContext| {
+            let ring = bounds(selector, cx).dilate(cx.read(appearance::button_ring_room));
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                    let edge = Bounds::new(
+                        point(logical(quad.bounds.origin.x), logical(quad.bounds.origin.y)),
+                        size(
+                            logical(quad.bounds.size.width),
+                            logical(quad.bounds.size.height),
+                        ),
+                    );
+                    quad.border_widths.top.0 > 0.
+                        && (edge.left() - ring.left()).abs() < px(0.5)
+                        && (edge.right() - ring.right()).abs() < px(0.5)
+                        && (edge.top() - ring.top()).abs() < px(0.5)
+                        && (edge.bottom() - ring.bottom()).abs() < px(0.5)
+                })
+            })
+        };
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        // From a click on the image toolbar's Fit, Tab reaches it beside its
+        // name.
+        let zooms = bounds("image-zooms", cx);
+        cx.simulate_click(
+            point(zooms.left() + px(8.), zooms.center().y),
+            Modifiers::default(),
+        );
         draw(cx);
+        let mut tabs = 0;
+        while !cx.update(|window, _| before_focus.is_focused(window)) {
+            assert!(tabs < 40, "Tab reaches Before's control beside its name");
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            tabs += 1;
+        }
+        assert!(
+            ringed("image-system-preview-0", cx),
+            "beside its name, Before's control draws its ring"
+        );
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
         assert!(
@@ -8793,14 +8836,16 @@ pub(crate) mod tests {
             "narrow, Before's control stands in the toolbar"
         );
         assert!(
-            cx.update(|window, _| before_focus.is_focused(window)),
-            "Before's control keeps focus"
+            cx.update(|window, _| before_focus.is_focused(window))
+                && ringed("image-system-preview-0", cx),
+            "in the toolbar, Before's control keeps focus and its ring"
         );
         cx.simulate_keystrokes("tab");
         draw(cx);
         assert!(
-            cx.update(|window, _| after_focus.is_focused(window)),
-            "Tab moves from Before's control to After's"
+            cx.update(|window, _| after_focus.is_focused(window))
+                && ringed("image-system-preview-1", cx),
+            "Tab moves from Before's control to After's, which draws the ring"
         );
         // With no control offered, the toolbar, the captions and the image
         // take the same room.
