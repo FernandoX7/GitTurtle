@@ -11226,6 +11226,15 @@ pub(crate) mod tests {
                                     .is_some(),
                                 "{at}: Before's reason joins its lines, {joined:?}"
                             );
+                            // Whole on that line, it is not cut: the cut is
+                            // measured on the line drawn, not on its two.
+                            if wraps(&joined, room, cx).0 == 1 {
+                                met.insert("message joined whole");
+                                assert!(
+                                    !shows_tooltip(cx, "image-side-name-0"),
+                                    "{at}: the joined reason, whole, adds no tooltip to the name"
+                                );
+                            }
                         }
                         // After's dimensions gave way only where that frees
                         // room: drawn, either they or Before's reason would
@@ -11373,6 +11382,7 @@ pub(crate) mod tests {
                 "kept short",
                 "kept whole",
                 "message joined",
+                "message joined whole",
                 "one line",
                 "short in its place",
                 "source area named",
