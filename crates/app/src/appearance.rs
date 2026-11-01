@@ -899,25 +899,20 @@ impl Palette {
     /// fill, a primary action, a secondary control or a selected shared
     /// helper (the kit's `Theme::disabled_edge`): `border`, unless it misses
     /// [`DISABLED_EDGE`] against a surface such a Button rests on, the page's
-    /// surfaces, the raised menu surface and the hovered and selected rows a
-    /// row's action lies in, the fill itself among them. Then it takes the
-    /// first of 256 even steps toward black in a light palette or white in a
-    /// dark one, the text's side as for the popup edge, that clears it on all
-    /// of them; the selected row sets the step in most palettes. The fill
-    /// stands no more than 1.34:1 off any page surface, and 1.03 to 1.05:1
-    /// off a dialog in Rosé Pine, Graphite, Midnight, Braden and Ember, where
-    /// a disabled default action drew only its dim label. A fill 1.5:1 off
-    /// its surface would read stronger than an enabled secondary control and
-    /// pull the disabled label below 3:1.
+    /// surfaces and the raised menu surface, the fill itself among them. Then
+    /// it takes the first of 256 even steps toward black in a light palette or
+    /// white in a dark one, the text's side as for the popup edge, that clears
+    /// it on all of them. The fill stands no more than 1.34:1 off any of them,
+    /// and 1.03 to 1.05:1 off a dialog in Rosé Pine, Graphite, Midnight,
+    /// Braden and Ember, where a disabled default action drew only its dim
+    /// label. A fill 1.5:1 off its surface would read stronger than an
+    /// enabled secondary control and pull the disabled label below 3:1.
+    /// Disabled filled Buttons stand on page surfaces only, so the hovered
+    /// and selected rows are left out: fitting against `selected` made every
+    /// edge heavier (2 to 2.4:1 on dark pages) for a case that does not
+    /// occur. A future one on a row surface gets its own fit then.
     pub fn disabled_edge(self) -> u32 {
-        let surfaces = [
-            self.canvas,
-            self.panel,
-            self.subtle,
-            self.raised(),
-            self.hover,
-            self.selected,
-        ];
+        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
         let clears = |edge| {
             surfaces
                 .iter()
@@ -5201,8 +5196,7 @@ mod tests {
     /// fill stood 1.03 to 1.05:1 off the dialog in Rosé Pine, Graphite,
     /// Midnight, Braden and Ember, and no more than 1.34:1 off any surface,
     /// so it drew only its dim label. The edge holds 1.5:1 against each
-    /// surface, the hovered and selected rows a row's action lies in, and
-    /// the fill, and stays fainter than the dialog Cancel's
+    /// surface and the fill, and stays fainter than the dialog Cancel's
     /// edge; the Buttons that turn transparent, the shared helper at rest and
     /// the ghost, draw none.
     #[gpui::test]
@@ -5235,12 +5229,6 @@ mod tests {
                 let ratio = contrast(edge, color);
                 if ratio < DISABLED_EDGE {
                     failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on the {surface}"));
-                }
-            }
-            for (row, color) in [("hovered", palette.hover), ("selected", palette.selected)] {
-                let ratio = contrast(edge, color);
-                if ratio < DISABLED_EDGE {
-                    failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on a {row} row"));
                 }
             }
             let on_fill = contrast(edge, palette.subtle);

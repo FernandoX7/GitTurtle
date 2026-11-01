@@ -585,7 +585,7 @@ Button of those variants while disabled: dialogs' default actions, the
 toolbar's Fetch, Pull and Push, the composer's Commit and the command
 palette's Open command; the app sets the edge to `Palette::disabled_edge`
 (`crates/app/src/appearance.rs`), fitted to 1.5:1 against every page surface,
-the raised one, the hovered and selected rows and the fill, and drops the bordered copy it had drawn at those
+the raised one and the fill, and drops the bordered copy it had drawn at those
 four places only where the fill fell below 1.05:1. The kit's own
 `a_disabled_filled_button_draws_the_themes_disabled_edge` reads a disabled
 primary's painted edge with the theme's unset and set and that it keeps its
