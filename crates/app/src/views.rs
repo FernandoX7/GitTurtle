@@ -10255,9 +10255,10 @@ pub(crate) mod tests {
     /// description: at 18 pt in that window the toolbar and the names left the
     /// image about 109 px above the footer's 33, under its scaled 133 px
     /// minimum. The test fonts' glyphs are wider than the interface font's,
-    /// so in a 461 px window the toolbar's menus take two rows and both
-    /// sides' controls sit below their names, and that room falls at 461 × 560 at
-    /// 13 pt and 461 × 590 at 18 pt: there the image now keeps its scaled
+    /// so in a 461 px window the toolbar's menus take two rows, the second
+    /// holding both sides' controls, and that room falls at 461 × 490 at
+    /// 13 pt and 461 × 530 at 18 pt (461 × 560 and 461 × 590 while the
+    /// controls sat below their names): there the image now keeps its scaled
     /// minimum. At every height of a 461 px window from 490 to 980, the
     /// dimensions and the footer are drawn only above an image that keeps
     /// it; the dimensions leave before the footer, the footer before the
