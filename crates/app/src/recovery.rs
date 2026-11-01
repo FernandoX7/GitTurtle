@@ -2103,12 +2103,12 @@ impl StashBrowser {
     }
 
     /// The stacked detail's floor: Review restore…'s compact frame whole with
-    /// its ring's `room` above it, the note's `gap_1` and one `line` of the
+    /// its ring's `room` above it, the note's `gap_2` and one `line` of the
     /// note beneath it, so the detail's view, `room` taller than the column
     /// it fills, holds both with the ring's room at either edge
     /// ([`reveal_note`]).
     fn stacked_floor(room: Pixels, line: Pixels, window: &Window) -> Pixels {
-        room + appearance::ui_size(28.) + window.rem_size() * 0.25 + line
+        room + appearance::ui_size(28.) + window.rem_size() * 0.5 + line
     }
 
     /// The least the stacked list panel gives up its spare height to: its
@@ -3115,10 +3115,14 @@ impl Render for StashBrowser {
             div()
                 .flex()
                 .flex_col()
-                // Stacked, the note lies close beneath the buttons, so the
-                // two fit the detail's floor ([`StashBrowser::stacked_floor`]).
-                .when(pinned, |actions| actions.gap_2())
-                .when(!pinned, |actions| actions.gap_1())
+                // The note lies `gap_2` beneath the buttons, beside the list
+                // and stacked beneath it alike, at every size: the stacked
+                // detail's floor holds that gap ([`StashBrowser::stacked_floor`]).
+                // Stacked, it once lay `gap_1` beneath them, 3.5 px higher at
+                // 13 pt than beside the list and than before the floor; at
+                // 18 pt in a 461 × 490 window the list gives the floor's
+                // 4.5 px more down to its one whole row.
+                .gap_2()
                 .flex_shrink_0()
                 // Beside the list the footer ends at the browser's foot,
                 // where the dialog's content clips: it keeps the room of the
@@ -5493,18 +5497,25 @@ mod tests {
     /// Stacked beneath the list at 18 pt in a 461 × 490 window, the detail
     /// holds Review restore… and a line of its note together before anything
     /// scrolls: as Stashes opens, its view is already as tall as Review
-    /// restore…'s frame, the note's line beneath it and the ring's room at
-    /// either edge, taken from the list panel's spare height and the gap
-    /// above the detail; and once Review restore…, pressed from the keyboard
-    /// with a merge paused, is refused, the refusal lies on its own line
-    /// beneath it, both whole in that view. The detail kept
-    /// 57.5 px there, too short for the frame and the line. At 13 pt the
-    /// list and the gap keep their heights.
+    /// restore…'s frame, the note's `gap_2` and line beneath it and the
+    /// ring's room at either edge, taken from the list panel's spare height
+    /// and the gap above the detail; the note lies `gap_2` beneath the
+    /// actions at 13 and 18 pt, as beside the list; and once Review
+    /// restore…, pressed from the keyboard with a merge paused, is refused,
+    /// the refusal lies on its own line beneath it, both whole in that view,
+    /// and only the detail has scrolled, the list and the gap above it where
+    /// they were drawn. The detail kept 57.5 px there, too short for the
+    /// frame and the line, and the note once lay `gap_1` beneath the actions
+    /// in every narrow window, 3.5 px higher at 13 pt than beside the list.
+    /// At 13 pt the list and the gap keep their heights.
     #[gpui::test]
     async fn the_stacked_detail_holds_review_restore_and_its_note(cx: &mut gpui::TestAppContext) {
         let (_fixture, app, cx) =
             crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
                 .await;
+        // Stashes otherwise slides in on a wall-clock animation, which moves
+        // the whole dialog between the frames compared below.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let git = two_stashes(&repository);
         cx.simulate_resize(size(px(461.), px(490.)));
@@ -5531,12 +5542,24 @@ mod tests {
                     window.rem_size(),
                 )
             });
-            let [list, gap, view] = ["stash-list-panel", "stash-stack-gap", "stash-detail"]
-                .map(|name| cx.debug_bounds(name).expect(name));
-            let held = room * 2. + appearance::ui_size(28.) + rem * 0.25 + line;
+            let [list, gap, view, actions, note] = [
+                "stash-list-panel",
+                "stash-stack-gap",
+                "stash-detail",
+                "stash-actions",
+                "stash-restore-note",
+            ]
+            .map(|name| cx.debug_bounds(name).expect(name));
+            let held = room * 2. + appearance::ui_size(28.) + rem * 0.5 + line;
             assert!(
                 view.size.height >= held - slack,
                 "{text} pt: the detail's view {view:?} holds Review restore… and its line, {held:?}"
+            );
+            let beneath = cx.update(|window, _| window.pixel_snap(rem * 0.5));
+            assert!(
+                (note.top() - actions.bottom() - beneath).abs() < slack,
+                "{text} pt: the note {note:?} lies gap_2, {beneath:?}, beneath the actions \
+                 {actions:?}, as beside the list"
             );
             if text == 13 {
                 assert!(
@@ -5553,9 +5576,17 @@ mod tests {
                 );
             }
             // Refused for the paused merge, from the keyboard: the refusal
-            // takes the note's place, revealed with Review restore….
+            // takes the note's place, revealed with Review restore…. Only
+            // the detail scrolls, as Tab brings Review restore… into its
+            // view and the refusal follows: the dialog's content, the list
+            // above it and the gap stay where they were drawn.
             press_review_restore(&browser, cx);
             recovery_lands(&app, cx);
+            assert_eq!(
+                ["stash-list-panel", "stash-stack-gap"].map(|name| cx.debug_bounds(name)),
+                [Some(list), Some(gap)],
+                "{text} pt: nothing but the detail scrolled"
+            );
             let [restore, note, view] = [
                 "restore-saved-stash",
                 "stash-restore-refusal",
