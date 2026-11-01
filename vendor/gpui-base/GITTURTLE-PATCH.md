@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popup.rs`, `src/positioner.rs` and `src/resizable/mod.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs` and `src/resizable/mod.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -323,6 +323,53 @@ staying in the title. Remove this part when upstream ends a pending
 right-press at any other press outside the input, any release and the
 input's blur, opens its menu only while the input holds focus and clips its
 offset to a character boundary, and those tests pass without it.
+
+The popover-lifetime patch modifies `src/popover.rs`. An open
+`PopoverState` holds the subscription to its own dismiss event, and
+upstream's callback held the state strongly (`cx.entity()`). The app's
+subscriber set keeps the callback until the subscription drops, and only
+the state drops the subscription, so the state, its subscription and the
+callback formed a cycle that no drop broke: a popover taken out of the tree
+while open, as a page left by a shortcut with a dropdown's menu open or a
+trigger scrolled out of a list, kept its state for the window's life, and
+with it the deferred-popup registration an open state holds
+(`DeferredPopover`), the token that exists so that a state dropped without
+being closed takes its registration with it. With the registration left,
+`GlobalState::is_in_deferred_context` stayed true, and every input then
+refused its right-click menu (`handle_right_click_menu` in
+`src/input/base/state.rs`), the kit's drawn menu on Linux and the OS's own
+on macOS, for the rest of the session and with nothing to say why. The
+callback now dismisses the state the subscription hands it, which GPUI
+upgrades from a weak handle as each event arrives, so the callback holds
+the state only weakly. Opening and every dismissal are unchanged: Escape,
+a press outside, the trigger pressed again and a dismiss event from the
+content, as a chosen menu item sends, each close the popover and report
+it, and a dismissal that finds focus inside the popover returns it to
+where it was before the popover opened. Decided by the owner's rule to
+say why something is unavailable: a popover that is gone must not leave
+every field's menu unavailable with nothing on screen to explain it. The
+consumers are the app's dropdowns (`AppDropdown` in
+`crates/app/src/native_accessibility.rs`), built on the component's
+`DropdownMenu` and `Popover`, Settings' profile dropdown among them; the
+component's `DropdownMenu` keeps a dismiss subscription of its own on its
+menu (`src/menu/dropdown_menu.rs`), and a dropdown taken away while open
+goes with its element only where that subscription, too, holds neither
+the popover state nor the menu strongly
+([component patch](../gpui-component/GITTURTLE-PATCH.md)).
+`scripts/vendor-crate-test.sh vendor/gpui-base popover::` runs
+`popover::tests::a_popover_taken_away_while_open_lets_its_state_go`, which
+opens a popover with a press on its trigger, drops the view that holds it
+while it is open and draws a frame, reads its state no longer upgrading and
+no deferred popup registered, and then right-clicks an input above it,
+whose menu opens; with the callback holding the state strongly again, as
+upstream, the state stays alive, its registration with it, and the input
+opens no menu, though the view itself is released either way.
+`every_dismissal_still_closes_the_popover` closes a popover with Escape,
+with its trigger pressed again and with an item's dismiss event, and reads
+focus back on the trigger after Escape and the item;
+`unstyled_popover_owns_pointer_open_and_outside_dismiss` covers a press
+outside. Remove this part of the patch when upstream's dismiss callback no
+longer holds its state strongly, and those tests pass without it.
 
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
