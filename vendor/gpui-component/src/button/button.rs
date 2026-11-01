@@ -661,9 +661,12 @@ impl Button {
         };
         // GitTurtle patch: a disabled Button that keeps a fill draws the
         // theme's disabled edge, so it keeps its shape where that fill nearly
-        // equals the surface beneath. A Button with a border of its own draws
-        // the edge as that border (its disabled border colour); one without
-        // takes it from a layer laid over its bounds, which moves nothing.
+        // equals the surface beneath. One that is not an outline and has a
+        // border its caller gave it draws the edge as that border's disabled
+        // colour (`ButtonVariant::disabled`); one with no border takes it from
+        // a layer laid over its bounds, which moves nothing. A default or
+        // outline Button keeps its half-strength disabled border and takes no
+        // layer.
         let own_border = self.variant.is_default() || self.outline || {
             let widths = &instance_style.border_widths;
             [widths.top, widths.right, widths.bottom, widths.left]
@@ -1467,8 +1470,9 @@ impl ButtonVariant {
                 cx.theme().input.opacity(0.5),
             )
         } else {
-            // GitTurtle patch: a Button that keeps a fill and draws a border
-            // of its own draws the theme's disabled edge there.
+            // GitTurtle patch: a Button that keeps a fill, is neither an
+            // outline nor the default variant (both above) and has a border
+            // its caller gave it draws the theme's disabled edge there.
             let edge = cx.theme().disabled_edge;
             let border = match self {
                 Self::Primary | Self::Secondary => {

@@ -548,8 +548,11 @@ GitTurtle's one bordered secondary is every dialog's Cancel
 (`tags::dialog_cancel` in `crates/app/src/tags.rs`), whose `border` edge read
 1.28:1 against Braden's dialog. `Theme::secondary_edge`, `None` by default,
 set in code and skipped by theme files, is that edge in every one of those
-states where an application sets one; unset, it is `border`, as upstream. The
-disabled style is unchanged. The app sets it to its dialog edge,
+states where an application sets one; unset, it is `border`, as upstream.
+Disabled, an outline secondary Button draws it at half strength, where
+upstream drew `border` at half strength; a bordered secondary that is not an
+outline, the Cancel among them, draws the disabled edge below instead, where
+an application sets one. The app sets it to its dialog edge,
 `Palette::dialog_edge` (`crates/app/src/appearance.rs`), 3:1 against the
 dialog and the page its backdrop dims. The kit's own
 `a_secondary_buttons_edge_is_the_themes_secondary_edge`
@@ -569,13 +572,15 @@ surface beneath, the Button draws only its dim label: GitTurtle's neutral
 `subtle` stood 1.03 to 1.05:1 off its dialogs in five palettes, so a dialog's
 disabled default action read as stray text. `Theme::disabled_edge`, `None` by
 default, set in code and skipped by theme files, is a 1 px edge such a
-disabled Button draws where an application sets one: a Button with a border of
-its own (the default variant, an outline, a caller's `border_1`) draws it as
-that border's disabled colour, and one without takes it from a child laid over
-its bounds with the Button's corners, absolutely placed and without a role, so
-it moves nothing and adds no accessibility node. Unset, nothing changes.
-Enabled Buttons and the ghost, link, text, default, danger, warning, success
-and info variants' disabled looks are unchanged. The consumers are every app
+disabled Button draws where an application sets one: one that is not an
+outline and has a border its caller gave it (a `border_1`, as a dialog's
+Cancel has) draws it as that border's disabled colour, and one with no border
+takes it from a child laid over its bounds with the Button's corners,
+absolutely placed and without a role, so it moves nothing and adds no
+accessibility node. Unset, nothing changes. Enabled Buttons, outline Buttons,
+which keep their half-strength disabled border and take no child, and the
+ghost, link, text, default, danger, warning, success and info variants'
+disabled looks are unchanged by this part. The consumers are every app
 Button of those variants while disabled: dialogs' default actions, the
 toolbar's Fetch, Pull and Push, the composer's Commit and the command
 palette's Open command; the app sets the edge to `Palette::disabled_edge`

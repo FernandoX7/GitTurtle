@@ -176,7 +176,10 @@ pub struct Theme {
     pub dialog_edge: Option<Hsla>,
     /// GitTurtle patch: the 1 px edge a bordered secondary Button draws at
     /// rest, hovered, pressed and selected, or `None` for the shared
-    /// `border`, as upstream draws it.
+    /// `border`, as upstream draws it. Disabled, an outline secondary Button
+    /// draws it at half strength, as upstream drew `border`; a bordered one
+    /// that is not an outline draws [`Self::disabled_edge`] instead, where
+    /// that is set.
     ///
     /// Set in code, not read from theme files, so an application can fit the
     /// edge to the surface such a Button lies on: the Button's hover and
