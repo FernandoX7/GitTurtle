@@ -629,13 +629,23 @@ impl Target {
             Form::Labelled => (self.offer.label(), self.offer.tooltip()),
             Form::Icon => ("", self.offer.icon_tooltip()),
         };
-        self.button_with(shown, tooltip, cx)
+        self.button_with(shown, tooltip.into(), self.name(), cx)
+    }
+
+    /// Its accessible name ([`accessible_name`]).
+    fn name(&self) -> SharedString {
+        accessible_name(self.offer.label(), Some(self.side), &self.copy()).into()
     }
 
     /// Its button showing `shown`, its label or nothing beside its icon,
-    /// with `tooltip`.
-    fn button_with(&self, shown: &'static str, tooltip: String, cx: &App) -> Button {
-        let label = self.offer.label();
+    /// with `tooltip`, named `name`.
+    fn button_with(
+        &self,
+        shown: &'static str,
+        tooltip: SharedString,
+        name: SharedString,
+        cx: &App,
+    ) -> Button {
         let target = self.clone();
         let button = copy_feedback::feedback_button(self.mark.clone(), OPEN, shown, tooltip, cx)
             .on_click(move |_, window, cx| {
@@ -646,11 +656,7 @@ impl Target {
             });
         // Tests read each frame's form where the control is drawn
         // (`in_frame::probe`).
-        crate::in_frame::probed(button, "open-control").accessibility_label(accessible_name(
-            label,
-            Some(self.side),
-            &self.copy(),
-        ))
+        crate::in_frame::probed(button, "open-control").accessibility_label(name)
     }
 
     /// [`Self::button`] as a comparison places it. Where the opener's
@@ -670,12 +676,13 @@ impl Target {
     /// it opens ("Open in default app: Before, a read-only copy as a PNG
     /// image"), and it is placed as [`Self::control`] places it.
     pub(crate) fn toolbar_control(&self, cx: &App) -> AnyElement {
-        let name = accessible_name(self.offer.label(), Some(self.side), &self.copy());
+        let name = self.name();
+        #[cfg(test)]
         crate::views::note_control_tooltip(
             &ElementId::Name(self.control.to_string().into()),
             &name,
         );
-        self.placed(self.button_with("", name, cx), cx)
+        self.placed(self.button_with("", name.clone(), name, cx), cx)
     }
 
     /// The comparison owning the focus handle its button tracks, so focus

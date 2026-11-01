@@ -44,8 +44,9 @@ pub(super) struct State {
     /// comparison places it ([`crate::system_preview::Target::tracking`]).
     open_focus: std::cell::OnceCell<[FocusHandle; 2]>,
     /// What the room beneath the toolbar last measured, with what it was
-    /// measured for ([`CaptionFit`]). A copy starts without it.
-    caption_fit: std::rc::Rc<std::cell::RefCell<Option<(CaptionKey, CaptionFit)>>>,
+    /// measured for ([`CaptionFit`]), made with the state's first comparison.
+    /// A copy starts without it, allocating nothing.
+    caption_fit: std::cell::OnceCell<CaptionCache>,
 }
 impl Clone for State {
     fn clone(&self) -> Self {
@@ -57,7 +58,7 @@ impl Clone for State {
             drag: None,
             playback: self.playback.clone(),
             open_focus: self.open_focus.clone(),
-            caption_fit: Default::default(),
+            caption_fit: std::cell::OnceCell::new(),
         }
     }
 }
@@ -108,7 +109,7 @@ impl Default for State {
             drag: None,
             playback: gif_playback::Playback::default(),
             open_focus: std::cell::OnceCell::new(),
-            caption_fit: Default::default(),
+            caption_fit: std::cell::OnceCell::new(),
         }
     }
 }
@@ -955,7 +956,7 @@ impl GitTurtle {
         // laid out for the room the column leaves them in the frame they are
         // drawn: what gives way is chosen from that room, never from the room
         // a frame before laid out.
-        let caption_fit = state.caption_fit.clone();
+        let caption_fit = state.caption_fit.get_or_init(Default::default).clone();
         let beneath = crate::in_frame::in_frame(move |bounds, window, cx| {
             // What the column's width decides, from its width in this frame.
             let width = bounds.size.width;
@@ -972,12 +973,12 @@ impl GitTurtle {
             // a redraw that changes none of them, as each frame of a pan
             // drag or a GIF's playback, lays out no throwaway captions and
             // shapes no text for them.
-            let key = CaptionKey {
+            let inputs = CaptionInputs {
                 line: crate::views::LineKey::current(window),
                 scale: window.scale_factor().to_bits(),
                 width,
                 names,
-                details: details.clone(),
+                details: &details,
                 shorts,
                 kinds,
                 source,
@@ -986,13 +987,13 @@ impl GitTurtle {
                     .map(|control| control.as_ref().map(|(_, form)| *form)),
                 briefs: answers
                     .each_ref()
-                    .map(|answer| answer.as_ref().map(|answer| answer.brief().to_owned())),
+                    .map(|answer| answer.as_ref().map(|answer| answer.brief())),
             };
             let cached = caption_fit
                 .borrow()
                 .as_ref()
-                .filter(|(measured, _)| *measured == key)
-                .map(|(_, fit)| fit.clone());
+                .filter(|(measured, _)| inputs.matches(measured))
+                .map(|(_, fit)| std::rc::Rc::clone(fit));
             let measured = cached.unwrap_or_else(|| {
                 #[cfg(test)]
                 CAPTION_FITS.set(CAPTION_FITS.get() + 1);
@@ -1065,15 +1066,15 @@ impl GitTurtle {
                         }),
                     ]
                 });
-                let fit = CaptionFit {
+                let fit = std::rc::Rc::new(CaptionFit {
                     natural,
                     kept_lines,
                     kept_wraps,
                     names,
                     dimensions,
                     empty,
-                };
-                *caption_fit.borrow_mut() = Some((key, fit.clone()));
+                });
+                *caption_fit.borrow_mut() = Some((inputs.key(), std::rc::Rc::clone(&fit)));
                 fit
             });
             let natural = measured.natural;
@@ -1088,20 +1089,15 @@ impl GitTurtle {
                 (guidance, &GUIDANCE_LINE),
             ]
             .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
-            let CaptionFit {
-                kept_lines,
-                kept_wraps,
-                empty,
-                ..
-            } = measured;
+            let (kept_lines, empty) = (&measured.kept_lines, measured.empty);
             let captions = Captions {
                 names,
                 details: &details,
                 kinds,
                 source,
                 controls: &controls,
-                kept_lines: &kept_lines,
-                kept_wraps,
+                kept_lines,
+                kept_wraps: measured.kept_wraps,
             };
             let fit = Beneath {
                 room: bounds.size.height,
@@ -1467,7 +1463,11 @@ impl GitTurtle {
         let geometry = self.image_geometry();
         let extent = geometry.extent;
         let zoom = self.zoom;
-        let state = self.image_comparison.clone();
+        let (mode, amount, pan) = (
+            self.image_comparison.mode,
+            self.image_comparison.amount,
+            self.image_comparison.pan,
+        );
         let both = self.images.iter().all(Option::is_some);
         let weak = cx.weak_entity();
         let (key, duration, timeline) = self.gif_context();
@@ -1535,12 +1535,11 @@ impl GitTurtle {
                     .map_or(0, |timeline| timeline.frame_at(position)),
                 _ => 0,
             };
-            let opacity = if side.is_none() && state.mode == Mode::Overlay && index == 1 && both {
-                state.amount
+            let opacity = if side.is_none() && mode == Mode::Overlay && index == 1 && both {
+                amount
             } else {
                 1.
             };
-            let state = state.clone();
             let logical_size = geometry.sizes[index];
             let layer = canvas(
                 |_, _, _| (),
@@ -1550,19 +1549,19 @@ impl GitTurtle {
                         [f32::from(bounds.size.width), f32::from(bounds.size.height)],
                         extent,
                         zoom,
-                        state.pan,
+                        pan,
                     );
                     let image_bounds = Bounds::new(
                         bounds.origin + point(px(origin[0]), px(origin[1])),
                         size(px(logical_size[0] * scale), px(logical_size[1] * scale)),
                     );
                     let mut mask = bounds;
-                    if side.is_none() && state.mode == Mode::Wipe && both {
+                    if side.is_none() && mode == Mode::Wipe && both {
                         if index == 0 {
-                            mask.size.width *= state.amount;
+                            mask.size.width *= amount;
                         } else {
-                            mask.origin.x += bounds.size.width * state.amount;
-                            mask.size.width *= 1. - state.amount;
+                            mask.origin.x += bounds.size.width * amount;
+                            mask.size.width *= 1. - amount;
                         }
                     }
                     let _ = window.paint_image(
@@ -1579,12 +1578,12 @@ impl GitTurtle {
             .inset_0();
             view = view.child(div().absolute().inset_0().opacity(opacity).child(layer));
         }
-        if side.is_none() && state.mode == Mode::Wipe && both {
+        if side.is_none() && mode == Mode::Wipe && both {
             view = view.child(
                 div()
                     .id("wipe-divider")
                     .absolute()
-                    .left(relative(state.amount))
+                    .left(relative(amount))
                     .top_0()
                     .bottom_0()
                     .w(px(12.))
@@ -2120,7 +2119,6 @@ impl Captions<'_> {
 /// What the room beneath an image comparison's toolbar measures from, the
 /// height aside: the width, the text sizes and font, and what the captions
 /// and a click's band say and hold.
-#[derive(Clone, PartialEq)]
 struct CaptionKey {
     line: crate::views::LineKey,
     /// The window's scale factor, to which layout snaps lengths.
@@ -2137,13 +2135,69 @@ struct CaptionKey {
     briefs: [Option<String>; 2],
 }
 
+/// A [`CaptionKey`]'s fields as a frame has them, borrowed: compared with
+/// the cached key in every frame, and made into one only where they differ.
+struct CaptionInputs<'a> {
+    line: crate::views::LineKey,
+    scale: u32,
+    width: Pixels,
+    names: [&'static str; 2],
+    details: &'a [String; 2],
+    shorts: [Option<&'static str>; 2],
+    kinds: [Details; 2],
+    source: bool,
+    controls: [Option<crate::system_preview::Form>; 2],
+    briefs: [Option<&'a str>; 2],
+}
+
+impl CaptionInputs<'_> {
+    /// Whether `key` was measured for these inputs.
+    fn matches(&self, key: &CaptionKey) -> bool {
+        key.line == self.line
+            && key.scale == self.scale
+            && key.width == self.width
+            && key.names == self.names
+            && key.details == *self.details
+            && key.shorts == self.shorts
+            && key.kinds == self.kinds
+            && key.source == self.source
+            && key.controls == self.controls
+            && key
+                .briefs
+                .iter()
+                .zip(self.briefs)
+                .all(|(kept, brief)| kept.as_deref() == brief)
+    }
+
+    /// The owned key these inputs are measured for, made only where the
+    /// cached key does not match them.
+    fn key(&self) -> CaptionKey {
+        #[cfg(test)]
+        CAPTION_KEYS.set(CAPTION_KEYS.get() + 1);
+        CaptionKey {
+            line: self.line.clone(),
+            scale: self.scale,
+            width: self.width,
+            names: self.names,
+            details: self.details.clone(),
+            shorts: self.shorts,
+            kinds: self.kinds,
+            source: self.source,
+            controls: self.controls,
+            briefs: self.briefs.map(|brief| brief.map(str::to_owned)),
+        }
+    }
+}
+
+/// The cell a comparison's state keeps its last measurement in.
+type CaptionCache = std::rc::Rc<std::cell::RefCell<Option<(CaptionKey, std::rc::Rc<CaptionFit>)>>>;
+
 /// What the room beneath an image comparison's toolbar measured for a
 /// [`CaptionKey`]: the lines each side's band line wraps to, the line an
 /// absent side keeps beneath its name and whether it wraps, the captions'
 /// heights without and with their dimensions, and, where an absent side
 /// says why in its image's place, the lines its sentences and its short
 /// line take there.
-#[derive(Clone)]
 struct CaptionFit {
     natural: [usize; 2],
     kept_lines: [Option<String>; 2],
@@ -2157,6 +2211,8 @@ struct CaptionFit {
 thread_local! {
     /// How often the room beneath a toolbar has measured its captions.
     pub(crate) static CAPTION_FITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How often it has made an owned [`CaptionKey`].
+    pub(crate) static CAPTION_KEYS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What the line beneath a side's name says, and where it is drawn.

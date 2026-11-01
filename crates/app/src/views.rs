@@ -8874,23 +8874,27 @@ pub(crate) mod tests {
     /// band say changed (`image_compare::CaptionKey`): every redraw laid the
     /// captions out twice more, to throw away, and shaped their text, though
     /// a pan drag's or a GIF's frames change none of them. A redraw, a zoom,
-    /// another mode and a taller window measure nothing; a narrower window,
-    /// a larger interface size and an image's other dimensions each measure
-    /// once.
+    /// another mode and a taller window measure nothing and make no owned
+    /// key; a narrower window, a larger interface size and an image's other
+    /// dimensions each measure once, with one key.
     #[gpui::test]
     async fn an_image_comparison_measures_its_captions_only_when_they_change(
         cx: &mut TestAppContext,
     ) {
         use crate::system_preview::tests::png;
-        /// How often `change` and the frames it draws measured the captions.
+        /// How often `change` and the frames it draws measured the captions,
+        /// each time making one owned key and none where nothing changed.
         fn measures(
             cx: &mut VisualTestContext,
             change: impl FnOnce(&mut VisualTestContext),
         ) -> usize {
-            let start = crate::image_compare::CAPTION_FITS.get();
+            use crate::image_compare::{CAPTION_FITS, CAPTION_KEYS};
+            let (fits, keys) = (CAPTION_FITS.get(), CAPTION_KEYS.get());
             change(cx);
             draw(cx);
-            crate::image_compare::CAPTION_FITS.get() - start
+            let (fits, keys) = (CAPTION_FITS.get() - fits, CAPTION_KEYS.get() - keys);
+            assert_eq!(keys, fits, "an owned key only for a measurement");
+            fits
         }
         let (before, after) = (png(Some(b"before")), png(Some(b"after")));
         let input = file_commits(&[
