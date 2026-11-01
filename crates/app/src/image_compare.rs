@@ -517,7 +517,9 @@ impl GitTurtle {
             .filter(|(_, offered)| offered.is_some())
             .map(|(index, _)| caption_room(index, caption_width, names[index], window))
             .reduce(|narrower, room| narrower.min(room));
-        let open_icon = crate::appearance::ui_size(28.);
+        // The icon as layout draws it, snapped to the device's pixels, in
+        // both the captions' choice and the toolbar's count.
+        let open_icon = window.pixel_snap(crate::appearance::ui_size(28.));
         let in_toolbar = open_room.is_some_and(|room| room < open_icon);
         // Each side's control keeps one focus handle wherever it stands, so
         // focus stays on it when a resize moves it.
@@ -530,9 +532,8 @@ impl GitTurtle {
                 .map(|(target, offer)| (target.tracking(&focus[index]), offer))
         });
         let opens = in_toolbar.then(|| {
-            let icon = window.pixel_snap(open_icon);
             let count = offers.iter().flatten().count() as f32;
-            icon * count + window.rem_size() * 0.5 * (count - 1.)
+            open_icon * count + window.rem_size() * 0.5 * (count - 1.)
         });
         let mode_group = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
         let modes_labelled = mode_group <= room;
