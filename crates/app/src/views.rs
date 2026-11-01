@@ -8823,6 +8823,98 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The room beneath an image comparison's toolbar measures its captions,
+    /// a click's band and an absent side's reason again only where the
+    /// column's width, the text sizes or font, or what the captions and the
+    /// band say changed (`image_compare::CaptionKey`): every redraw laid the
+    /// captions out twice more, to throw away, and shaped their text, though
+    /// a pan drag's or a GIF's frames change none of them. A redraw, a zoom,
+    /// another mode and a taller window measure nothing; a narrower window,
+    /// a larger interface size and an image's other dimensions each measure
+    /// once.
+    #[gpui::test]
+    async fn an_image_comparison_measures_its_captions_only_when_they_change(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::system_preview::tests::png;
+        /// How often `change` and the frames it draws measured the captions.
+        fn measures(
+            cx: &mut VisualTestContext,
+            change: impl FnOnce(&mut VisualTestContext),
+        ) -> usize {
+            let start = crate::image_compare::CAPTION_FITS.get();
+            change(cx);
+            draw(cx);
+            crate::image_compare::CAPTION_FITS.get() - start
+        }
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            measures(cx, |cx| cx.simulate_resize(size(px(1480.), px(900.)))) > 0,
+            "the comparison measures its captions"
+        );
+        let redraw = |app: &Entity<GitTurtle>| {
+            let app = app.clone();
+            move |cx: &mut VisualTestContext| app.update(cx, |_, cx| cx.notify())
+        };
+        assert_eq!(measures(cx, redraw(&app)), 0, "a redraw measures nothing");
+        let zoom = app.clone();
+        assert_eq!(
+            measures(cx, move |cx| zoom.update(cx, |app, cx| {
+                app.set_image_zoom(2.);
+                cx.notify();
+            })),
+            0,
+            "nor does a zoom"
+        );
+        let mode = app.clone();
+        assert_eq!(
+            measures(cx, move |cx| mode.update(cx, |app, cx| {
+                app.set_image_mode(crate::image_compare::Mode::Overlay);
+                cx.notify();
+            })),
+            0,
+            "nor another mode"
+        );
+        assert_eq!(
+            measures(cx, |cx| cx.simulate_resize(size(px(1480.), px(980.)))),
+            0,
+            "nor a taller window"
+        );
+        assert_eq!(
+            measures(cx, |cx| cx.simulate_resize(size(px(1400.), px(980.)))),
+            1,
+            "a narrower window measures once"
+        );
+        assert_eq!(measures(cx, redraw(&app)), 0, "and then nothing");
+        assert_eq!(
+            measures(cx, |cx| cx.update(|window, cx| {
+                appearance::apply_text_sizes(18, 12, window, cx)
+            })),
+            1,
+            "a larger interface size measures once"
+        );
+        assert_eq!(measures(cx, redraw(&app)), 0, "and then nothing");
+        let sides = app.clone();
+        assert_eq!(
+            measures(cx, move |cx| edit_image_sides(&sides, cx, |_, side| {
+                if let Some(image) = side.image.as_mut() {
+                    (image.original_width, image.original_height) = (640, 480);
+                }
+            })),
+            1,
+            "other dimensions measure once"
+        );
+        assert_eq!(measures(cx, redraw(&app)), 0, "and then nothing");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// At a zoom other than Fit the pan follows the zooms and never takes a
     /// toolbar row of its own, so the captions and their open controls stay
     /// where Fit draws them: at 18 pt in a 461 × 490 window a row of four

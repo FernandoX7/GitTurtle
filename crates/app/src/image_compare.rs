@@ -43,6 +43,9 @@ pub(super) struct State {
     /// The focus handle each side's open control tracks, wherever the
     /// comparison places it ([`crate::system_preview::Target::tracking`]).
     open_focus: std::cell::OnceCell<[FocusHandle; 2]>,
+    /// What the room beneath the toolbar last measured, with what it was
+    /// measured for ([`CaptionFit`]). A copy starts without it.
+    caption_fit: std::rc::Rc<std::cell::RefCell<Option<(CaptionKey, CaptionFit)>>>,
 }
 impl Clone for State {
     fn clone(&self) -> Self {
@@ -54,6 +57,7 @@ impl Clone for State {
             drag: None,
             playback: self.playback.clone(),
             open_focus: self.open_focus.clone(),
+            caption_fit: Default::default(),
         }
     }
 }
@@ -104,6 +108,7 @@ impl Default for State {
             drag: None,
             playback: gif_playback::Playback::default(),
             open_focus: std::cell::OnceCell::new(),
+            caption_fit: Default::default(),
         }
     }
 }
@@ -950,19 +955,128 @@ impl GitTurtle {
         // laid out for the room the column leaves them in the frame they are
         // drawn: what gives way is chosen from that room, never from the room
         // a frame before laid out.
+        let caption_fit = state.caption_fit.clone();
         let beneath = crate::in_frame::in_frame(move |bounds, window, cx| {
             // What the column's width decides, from its width in this frame.
             let width = bounds.size.width;
             let caption_width = width / if source { 1. } else { 2. };
-            // The band shows each side's short line in that side's half,
-            // whole where the image keeps its usable minimum beneath it and
-            // otherwise on two lines, and always ends at a whole line.
             let band_room = caption_width - window.rem_size() * 1.5;
-            let natural = answers.each_ref().map(|answer| {
-                answer.as_ref().map_or(0, |answer| {
-                    wrapped_lines(answer.brief(), band_size, band_room, window).min(64)
-                })
+            // Overlaid or wiped, a side without an image keeps why beneath its
+            // name: whole beside the dimensions, and on one line ending in an
+            // ellipsis where they give way, cut there where it wraps to more.
+            let caption_text = caption_width - window.rem_size() * 1.5;
+            let caption_size = crate::appearance::ui_text(11.);
+            // What the captions, the band and an absent side's reason take at
+            // this width, measured again only where the width, the text
+            // sizes or font, or what the captions and the band say changed:
+            // a redraw that changes none of them, as each frame of a pan
+            // drag or a GIF's playback, lays out no throwaway captions and
+            // shapes no text for them.
+            let key = CaptionKey {
+                line: crate::views::LineKey::current(window),
+                scale: window.scale_factor().to_bits(),
+                width,
+                names,
+                details: details.clone(),
+                shorts,
+                kinds,
+                source,
+                controls: controls
+                    .each_ref()
+                    .map(|control| control.as_ref().map(|(_, form)| *form)),
+                briefs: answers
+                    .each_ref()
+                    .map(|answer| answer.as_ref().map(|answer| answer.brief().to_owned())),
+            };
+            let cached = caption_fit
+                .borrow()
+                .as_ref()
+                .filter(|(measured, _)| *measured == key)
+                .map(|(_, fit)| fit.clone());
+            let measured = cached.unwrap_or_else(|| {
+                #[cfg(test)]
+                CAPTION_FITS.set(CAPTION_FITS.get() + 1);
+                // The band shows each side's short line in that side's half,
+                // whole where the image keeps its usable minimum beneath it
+                // and otherwise on two lines, and always ends at a whole line.
+                let natural = answers.each_ref().map(|answer| {
+                    answer.as_ref().map_or(0, |answer| {
+                        wrapped_lines(answer.brief(), band_size, band_room, window).min(64)
+                    })
+                });
+                // An absent side keeps one line beneath its name whatever the
+                // dimensions, so the caption row never grows for it: its two
+                // lines joined where that line holds them, and otherwise its
+                // short line.
+                let kept_lines = [0, 1].map(|i| {
+                    shorts[i]
+                        .filter(|_| kinds[i] == Details::Kept)
+                        .map(|short| {
+                            let joined = one_line(&details[i]);
+                            if wrapped_lines(&joined, caption_size, caption_text, window) > 1 {
+                                short.to_owned()
+                            } else {
+                                joined
+                            }
+                        })
+                });
+                let kept_wraps = [0, 1].map(|i| {
+                    kinds[i] == Details::Kept
+                        && match &kept_lines[i] {
+                            // The short line stands for both sentences, which
+                            // the name's tooltip keeps.
+                            Some(line) => *line != one_line(&details[i]),
+                            None => {
+                                wrapped_lines(&details[i], caption_size, caption_text, window) > 1
+                            }
+                        }
+                });
+                let captions = Captions {
+                    names,
+                    details: &details,
+                    kinds,
+                    source,
+                    controls: &controls,
+                    kept_lines: &kept_lines,
+                    kept_wraps,
+                };
+                let names = crate::in_frame::measured_height(
+                    captions.build(false, [false; 2], &p, cx),
+                    width,
+                    window,
+                    cx,
+                );
+                let dimensions = crate::in_frame::measured_height(
+                    captions.build(true, [false; 2], &p, cx),
+                    width,
+                    window,
+                    cx,
+                );
+                // Where its image would be, an absent side's two sentences'
+                // lines and its short line's, at the band's size.
+                let empty = [0, 1].map(|i| {
+                    if kinds[i] != Details::InItsPlace {
+                        return [0, 0];
+                    }
+                    [
+                        wrapped_lines(&details[i], band_size, caption_text, window),
+                        shorts[i].map_or(0, |short| {
+                            wrapped_lines(short, band_size, caption_text, window)
+                        }),
+                    ]
+                });
+                let fit = CaptionFit {
+                    natural,
+                    kept_lines,
+                    kept_wraps,
+                    names,
+                    dimensions,
+                    empty,
+                };
+                *caption_fit.borrow_mut() = Some((key, fit.clone()));
+                fit
             });
+            let natural = measured.natural;
             let band = answers
                 .iter()
                 .any(Option::is_some)
@@ -974,36 +1088,12 @@ impl GitTurtle {
                 (guidance, &GUIDANCE_LINE),
             ]
             .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
-            // Overlaid or wiped, a side without an image keeps why beneath its
-            // name: whole beside the dimensions, and on one line ending in an
-            // ellipsis where they give way, cut there where it wraps to more.
-            let caption_text = caption_width - window.rem_size() * 1.5;
-            let caption_size = crate::appearance::ui_text(11.);
-            // An absent side keeps one line beneath its name whatever the
-            // dimensions, so the caption row never grows for it: its two
-            // lines joined where that line holds them, and otherwise its
-            // short line.
-            let kept_lines = [0, 1].map(|i| {
-                shorts[i]
-                    .filter(|_| kinds[i] == Details::Kept)
-                    .map(|short| {
-                        let joined = one_line(&details[i]);
-                        if wrapped_lines(&joined, caption_size, caption_text, window) > 1 {
-                            short.to_owned()
-                        } else {
-                            joined
-                        }
-                    })
-            });
-            let kept_wraps = [0, 1].map(|i| {
-                kinds[i] == Details::Kept
-                    && match &kept_lines[i] {
-                        // The short line stands for both sentences, which the
-                        // name's tooltip keeps.
-                        Some(line) => *line != one_line(&details[i]),
-                        None => wrapped_lines(&details[i], caption_size, caption_text, window) > 1,
-                    }
-            });
+            let CaptionFit {
+                kept_lines,
+                kept_wraps,
+                empty,
+                ..
+            } = measured;
             let captions = Captions {
                 names,
                 details: &details,
@@ -1015,18 +1105,8 @@ impl GitTurtle {
             };
             let fit = Beneath {
                 room: bounds.size.height,
-                names: crate::in_frame::measured_height(
-                    captions.build(false, [false; 2], &p, cx),
-                    width,
-                    window,
-                    cx,
-                ),
-                dimensions: crate::in_frame::measured_height(
-                    captions.build(true, [false; 2], &p, cx),
-                    width,
-                    window,
-                    cx,
-                ),
+                names: measured.names,
+                dimensions: measured.dimensions,
                 footer: footer_room,
                 notes: (note_line + note_pad) * 2.,
                 band,
@@ -1074,18 +1154,17 @@ impl GitTurtle {
                             // ellipsis; the tooltip and the side's line read
                             // keep both sentences.
                             let text = details[i].clone();
+                            let [whole_lines, short_lines] = empty[i];
                             let drawn = match shorts[i] {
-                                Some(short)
-                                    if wrapped_lines(&text, band_size, caption_text, window)
-                                        > empty_lines =>
-                                {
-                                    short.to_owned()
-                                }
+                                Some(short) if whole_lines > empty_lines => short.to_owned(),
                                 _ => text.clone(),
                             };
-                            let cut = drawn != text
-                                || wrapped_lines(&drawn, band_size, caption_text, window)
-                                    > empty_lines;
+                            let drawn_lines = if drawn == text {
+                                whole_lines
+                            } else {
+                                short_lines
+                            };
+                            let cut = drawn != text || drawn_lines > empty_lines;
                             let whole = text.clone();
                             native_accessibility::static_text(
                                 div()
@@ -2036,6 +2115,48 @@ impl Captions<'_> {
                     }),
             )
     }
+}
+
+/// What the room beneath an image comparison's toolbar measures from, the
+/// height aside: the width, the text sizes and font, and what the captions
+/// and a click's band say and hold.
+#[derive(Clone, PartialEq)]
+struct CaptionKey {
+    line: crate::views::LineKey,
+    /// The window's scale factor, to which layout snaps lengths.
+    scale: u32,
+    width: Pixels,
+    names: [&'static str; 2],
+    details: [String; 2],
+    shorts: [Option<&'static str>; 2],
+    kinds: [Details; 2],
+    source: bool,
+    /// The form of each side's open control where its caption holds one.
+    controls: [Option<crate::system_preview::Form>; 2],
+    /// Each side's short line in a click's band.
+    briefs: [Option<String>; 2],
+}
+
+/// What the room beneath an image comparison's toolbar measured for a
+/// [`CaptionKey`]: the lines each side's band line wraps to, the line an
+/// absent side keeps beneath its name and whether it wraps, the captions'
+/// heights without and with their dimensions, and, where an absent side
+/// says why in its image's place, the lines its sentences and its short
+/// line take there.
+#[derive(Clone)]
+struct CaptionFit {
+    natural: [usize; 2],
+    kept_lines: [Option<String>; 2],
+    kept_wraps: [bool; 2],
+    names: Pixels,
+    dimensions: Pixels,
+    empty: [[usize; 2]; 2],
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often the room beneath a toolbar has measured its captions.
+    pub(crate) static CAPTION_FITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What the line beneath a side's name says, and where it is drawn.
