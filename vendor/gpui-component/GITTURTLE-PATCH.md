@@ -760,8 +760,12 @@ giving the positioner a margin of 8 px and `POPOVER_EDGE_WIDTH`: the room
 `Positioner::point_room` gives is measured to the fill, so a menu capped at
 a room shorter than its first row, whose items column then takes the whole
 room, ended its fill at the margin and drew its ring 7 px from the window's
-top. At the window's foot the application's inset already counts the edge,
-so nothing there moves.
+top. The margin holds on all four sides, so the fallback's fill now stays
+9 px inside the window's top and sides, where the base popup host and the
+kit's context menu still clamp their fill 8 px in, and a popup they clamp
+there draws its ring 7 px in. At the window's
+foot the application's inset already counts the edge, so nothing there
+moves.
 `an_inputs_capped_menu_keeps_its_drawn_edge_inside_the_window_margin`
 right-clicks a code editor at 18 pt in a 461 × 110 window, where the room
 above the pointer holds less than one row, and reads the capped menu's
