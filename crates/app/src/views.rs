@@ -7422,15 +7422,39 @@ impl GitTurtle {
         cx: &mut App,
     ) -> StatusFit {
         let bar_room = plan.is_some_and(|plan| plan.bar_room);
-        self.fit_status_bar_in(body_size(window).width, bar_room, window, cx)
+        let carried = self.bar_operation(plan).is_some();
+        self.fit_status_bar_carrying(body_size(window).width, bar_room, carried, window, cx)
+    }
+
+    /// A running write's status where the header's rows have no room for it,
+    /// which the status bar draws in its line's place
+    /// ([`OperationPlace::StatusBar`]): the bar and its fitting read it alike.
+    fn bar_operation(&self, plan: Option<HeaderPlan>) -> Option<&'static str> {
+        self.operation_shown()
+            .filter(|_| plan.is_some_and(|plan| plan.operation.place == OperationPlace::StatusBar))
     }
 
     /// [`Self::fit_status_bar`] for a bar `width` wide that keeps Cancel's
-    /// room beside its line where `bar_room`.
+    /// room beside its line where `bar_room`, its line not taken by a
+    /// write's status: the width walks' fit at a width of their choosing.
+    #[cfg(test)]
     fn fit_status_bar_in(
         &self,
         width: Pixels,
         bar_room: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> StatusFit {
+        self.fit_status_bar_carrying(width, bar_room, false, window, cx)
+    }
+
+    /// [`Self::fit_status_bar_in`], with the line taken by a running write's
+    /// status where `carried` ([`Self::bar_operation`]).
+    fn fit_status_bar_carrying(
+        &self,
+        width: Pixels,
+        bar_room: bool,
+        carried: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> StatusFit {
@@ -7474,9 +7498,11 @@ impl GitTurtle {
             }
             // Spare hints come whole, before the others' whole form, only
             // where the status line keeps its whole text beside them and no
-            // write's status takes its place: they give way first.
+            // write's status takes its place: they give way first. A write
+            // whose status the header draws leaves the line its text, and
+            // the hints with it; they once hid through every write.
             let spare = widths.spare.as_ref().filter(|(_, width)| {
-                self.operation_shown().is_none() && {
+                !carried && {
                     let text = self.status_text();
                     let whole = cached_text_width(&STATUS_TEXT, text, window, || {
                         line_widths(&[(text, appearance::ui_text(10.))], window)
@@ -7681,9 +7707,7 @@ impl Render for GitTurtle {
         let status = self.fit_status_bar(plan, window, cx);
         // A running write's status, where the header's rows have no room for
         // it ([`OperationPlace::StatusBar`]).
-        let bar_operation = self
-            .operation_shown()
-            .filter(|_| plan.is_some_and(|plan| plan.operation.place == OperationPlace::StatusBar));
+        let bar_operation = self.bar_operation(plan);
         // Everything an open dialog covers. The dialogs and the copy
         // announcement are drawn beside it, inside the element whose actions
         // they dispatch through.

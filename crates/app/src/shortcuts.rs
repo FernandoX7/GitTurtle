@@ -2956,6 +2956,60 @@ mod list_tests {
         }
     }
 
+    /// A write whose status the header draws leaves the status line its
+    /// text, so Keyboard Shortcuts' spare hints stay beside it: at 13 pt in
+    /// a 1480 × 980 window, once a Fetch looks busy, its status stands in
+    /// the header and the bar still names the page and end keys. They once
+    /// hid through every write, though only a write whose status takes the
+    /// line's place ([`crate::views`]' `OperationPlace::StatusBar`) leaves
+    /// them without the line's whole text.
+    #[gpui::test]
+    async fn the_spare_hints_stay_through_a_write_the_header_shows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 980.));
+        let keys = DialogKeys::Shortcuts.key_hints();
+        let hints = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+        };
+        assert_eq!(hints(cx), Some(keys.whole()), "at rest");
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        let header = cx.debug_bounds("repository-header").expect("the header");
+        let status = cx
+            .debug_bounds("operation-status")
+            .expect("the write looks busy");
+        assert!(
+            header.contains(&status.center()),
+            "the header draws the write's status: {status:?} in {header:?}"
+        );
+        assert_eq!(
+            hints(cx),
+            Some(keys.whole()),
+            "the spare hints stay beside the line's whole text"
+        );
+        let drawn = cx.debug_bounds("status-hints").expect("the hints");
+        let whole = cx.update(|window, _| {
+            crate::views::line_widths(&[(&keys.whole(), appearance::ui_text(10.))], window)
+        });
+        assert!(
+            (drawn.size.width - whole).abs() < px(1.),
+            "the bar draws them whole, {whole:?}: {drawn:?}"
+        );
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        close(cx);
+    }
+
     /// The search keeps Shift-Home and Shift-End, which select from the
     /// caret to the start and end of its text, while Home and End browse the
     /// list: at 13 pt in a 1200 × 800 window, with "tab" typed and the caret
