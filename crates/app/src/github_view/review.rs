@@ -254,6 +254,14 @@ const CONVERSATION: &str = "GitTurtleGithubConversation";
 /// The key context of the panel's scrolling body, on the focus path of whatever it draws.
 pub(super) const BODY: &str = "GitTurtleGithubBody";
 
+#[cfg(test)]
+thread_local! {
+    /// The text the draft status's tooltip last showed, for a test to read back
+    /// ([`Panel::render_save_status`]).
+    pub(super) static SAVE_STATUS_TOOLTIP: std::cell::RefCell<Option<SharedString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// For the `on_children_prepainted` of `scroll`'s box, the panel's body or the conversation
 /// list: records in `revealed` the focus the frame being prepainted drew, which its reveals
 /// have shown, once the frame before it drew that focus inside the box too, which `inside`
@@ -1268,8 +1276,12 @@ impl Panel {
                         .text_color(rgb(palette(cx).muted)),
                 )
                 .when(!status.is_empty(), |status| {
-                    status
-                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    status.tooltip(move |window, cx| {
+                        #[cfg(test)]
+                        SAVE_STATUS_TOOLTIP
+                            .with(|shown| *shown.borrow_mut() = Some(tooltip.clone()));
+                        Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
                 }),
             )
             .into_any_element()

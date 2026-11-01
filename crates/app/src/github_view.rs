@@ -6442,24 +6442,37 @@ mod tests {
     /// 39 px.
     #[gpui::test]
     async fn the_draft_status_stays_on_the_tabs_line(cx: &mut TestAppContext) {
-        use crate::tags::tests::draw;
-        let (_fixture, app, cx) = repository_window(cx);
-        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
-        let panel = cx.update(|window, cx| {
-            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
-        });
-        app.read_with(cx, |app, _| app.operations.drain());
-        cx.run_until_parked();
-        let pull = github::review::fixture_pull(false);
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.rows = vec![pull.clone()];
-                panel.review.fixture = true;
-                panel.close(window, cx);
-            });
-            app.update(cx, |app, cx| app.open_github(window, cx));
-        });
-        settle_panel(&app, cx).await;
+        use crate::tags::tests::{draw, hovered_tooltips};
+        // Every text run the window draws is marked (`width_walk::text_mark`).
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        // Where the status's text is drawn inside its box `shown`.
+        let drawn_text = |cx: &mut VisualTestContext, shown: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == mark)
+                    .map(|quad| {
+                        Bounds::new(
+                            point(logical(quad.bounds.origin.x), logical(quad.bounds.origin.y)),
+                            size(
+                                logical(quad.bounds.size.width),
+                                logical(quad.bounds.size.height),
+                            ),
+                        )
+                    })
+                    // The runs on its line, not a taller one overlapping it.
+                    .filter(|run| {
+                        shown.contains(&run.center())
+                            && run.top() >= shown.top() - px(0.5)
+                            && run.bottom() <= shown.bottom() + px(0.5)
+                    })
+                    .reduce(|a, b| a.union(&b))
+            })
+        };
         cx.update(|_, cx| {
             panel.update(cx, |panel, cx| {
                 panel.pull = Some(pull);
@@ -6473,8 +6486,9 @@ mod tests {
         let saved = "Draft saved locally";
         let failed = "Draft save failed — keep this window open or copy the text";
         let unsaved = DraftIssue::Selection.save_message();
-        // Whether some layout elided a status, and named one it elided in view.
+        // Whether some layout elided a status, hovered one it elided in view, and named one.
         let mut elided = false;
+        let mut tipped = false;
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut named_elided = cfg!(not(target_os = "linux"));
         for (interface, width, height) in [
@@ -6550,9 +6564,53 @@ mod tests {
                 );
                 let cut = shown.size.width + slack < whole;
                 elided |= cut;
+                // The drawn text itself ends there, a whole status's text as wide as it is, an
+                // elided one's inside the box and narrower; the box ends in the ellipsis's
+                // pixel of slack (`views::ellipsis_middle`) after the text's width rounded up
+                // to a whole pixel, so a whole text ends at most 2 px before the inset.
+                let body = bounds(cx, "github-panel");
+                let shows = shown.bottom() <= body.bottom();
+                let text = drawn_text(cx, shown);
+                assert_eq!(
+                    text.is_some(),
+                    shows,
+                    "{at}: the status draws its text in {shown:?} where the body {body:?} shows it"
+                );
+                if let Some(text) = text {
+                    assert!(
+                        if cut {
+                            text.left() >= shown.left() - slack
+                                && text.right() <= end + slack
+                                && text.size.width < whole
+                        } else {
+                            text.right() <= end
+                                && end - text.right() <= px(2.) + slack
+                                && (text.size.width - whole).abs() <= px(1.)
+                        },
+                        "{at}: the status's text {text:?} ({whole:?} whole) ends at {end:?} in its \
+                     box {shown:?}"
+                    );
+                }
+                // Hovering an elided status in view shows its whole text in its tooltip.
+                if cut && !tipped && shows {
+                    review::SAVE_STATUS_TOOLTIP.with(|shown| shown.borrow_mut().take());
+                    assert_eq!(
+                        hovered_tooltips(cx, "github-local-save"),
+                        1,
+                        "{at}: hovering the elided status shows a tooltip"
+                    );
+                    assert_eq!(
+                        review::SAVE_STATUS_TOOLTIP
+                            .with(|shown| shown.borrow_mut().take())
+                            .as_deref(),
+                        Some(status),
+                        "{at}: the tooltip shows the status's whole text"
+                    );
+                    tipped = true;
+                }
                 // Where the body shows it, an assistive technology reaches its whole text.
                 #[cfg(target_os = "linux")]
-                if shown.bottom() <= bounds(cx, "github-panel").bottom() {
+                if shows {
                     use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
                     assert!(
                         reached(next_frame(cx))
@@ -6565,15 +6623,15 @@ mod tests {
             }
         }
         assert!(
-            elided && named_elided,
-            "a narrow window elides a long status, named whole in view"
+            elided && tipped && named_elided,
+            "a narrow window elides a long status, its tooltip and its name whole in view"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
-    /// Review's draft status gives way to Review submission… as the status beside the tabs
-    /// gives way to them: where it fits beside the button whole it stays on its line, from
+    /// Review's draft status gives way to Review submission…: where it fits beside the
+    /// button whole it stays on its line, from
     /// the panel's text inset; where it does not, it takes a line of its own below the
     /// button, wrapping inside the panel's text column, and the button keeps the panel's
     /// right edge. At 18 pt in a 1280 × 800 window the unsaved draft's status pushed the
