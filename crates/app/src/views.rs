@@ -566,11 +566,7 @@ impl GitTurtle {
                     .when(!back_to_projects, |trailing| {
                         trailing.child(self.render_projects_button(cx))
                     })
-                    .child(self.render_profile_button(
-                        true,
-                        crate::profiles::COMPACT_ROW_CONTROL,
-                        cx,
-                    ))
+                    .child(self.render_profile_button(true, true, cx))
                     .child(self.render_settings_button(cx)),
             )
             .into_any_element()
@@ -803,7 +799,7 @@ impl GitTurtle {
             .when(!back_to_projects && !own_row, |header| {
                 header.child(self.render_projects_button(cx))
             })
-            .child(self.render_profile_button(compact, 36., cx))
+            .child(self.render_profile_button(compact, false, cx))
             .child(self.render_settings_button(cx))
             .when(!back_to_projects && own_row, |header| {
                 header.child(self.render_projects_button(cx))
@@ -5515,9 +5511,9 @@ impl GitTurtle {
                 spacer: first > items.len(),
             }
         };
-        // Within its 230 px limit.
+        // Within its 230 px limit, and as tall as the row's other controls.
         let profile = if narrow {
-            scaled(36.)
+            control
         } else {
             profile_width(widths.profile, window).min(snap(px(230.)))
         };
@@ -5529,7 +5525,7 @@ impl GitTurtle {
             items.push(slot);
         }
         let profile_at = items.len();
-        items.push((profile, scaled(36.)));
+        items.push((profile, control));
         items.push((control, control));
         if projects && trailing != Trailing::Shared {
             items.push(slot);
@@ -9820,10 +9816,13 @@ pub(crate) mod tests {
     /// two, so the image stays in view: in a 461 × 490 window the band once
     /// took the whole room beneath the captions, showing "Could not / open
     /// After." at 18 pt, while the image was hidden. The test fonts' wider
-    /// glyphs reproduce that room at 13 pt in 461 × 640, where the line now
-    /// takes two lines above an image that keeps its minimum. At every size
-    /// checked the band ends at a whole line, and a band of more than two
-    /// lines leaves the image its minimum.
+    /// glyphs reproduce that room at 13 pt in 461 × 632, where the line now
+    /// takes two lines above an image that keeps its minimum (461 × 640 gave
+    /// that room while the header's profile picker was 36 px tall; at 28 px
+    /// the wrapped header gives the page 8 px more, where every line shows
+    /// above the image's minimum). At every size checked the band ends at a
+    /// whole line, and a band of more than two lines leaves the image its
+    /// minimum.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refusal_band_leads_with_its_reason_on_its_own_side(cx: &mut TestAppContext) {
@@ -9842,7 +9841,7 @@ pub(crate) mod tests {
             gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette(cx).panel)))
         });
         for size in [
-            (13, 461., 640.),
+            (13, 461., 632.),
             (13, 461., 980.),
             (18, 461., 980.),
             (13, 640., 680.),
@@ -9889,7 +9888,7 @@ pub(crate) mod tests {
                     "{at}: a band of {lines} lines leaves the image {image:?} its minimum"
                 );
             }
-            if size == (13, 461., 640.) {
+            if size == (13, 461., 632.) {
                 assert_eq!(lines.round(), 2., "{at}: two lines of the reason");
                 assert!(
                     image.size.height >= minimum - slack,
@@ -12798,7 +12797,7 @@ pub(crate) mod tests {
             );
             let profile = cx.debug_bounds("profile-button").expect("the profile");
             assert_eq!(
-                profile.size.width == appearance::ui_size(36.),
+                profile.size.width == appearance::ui_size(28.),
                 narrow,
                 "{at}: the profile {profile:?}"
             );
@@ -13955,7 +13954,10 @@ pub(crate) mod tests {
 
     /// A narrow document side's own header, a 3D model's and the PDF page
     /// view's, keeps its content first and its controls reachable. At 13 pt
-    /// in a 461 × 490 window, where the header once took the side's whole
+    /// in a 461 × 482 window, the room a 461 × 490 one left while the
+    /// header's profile picker was 36 px tall (at 28 px the wrapped header
+    /// gives the page 8 px more, and the region's first control no longer
+    /// reaches its bottom fade), where the header once took the side's whole
     /// room and left the model and the page 0 px, the content keeps its
     /// scaled 96 px minimum and the header scrolls above it, cued while it
     /// overflows as every scrolling list is: at 13 and 18 pt, at its 36–44 px
@@ -14169,7 +14171,7 @@ pub(crate) mod tests {
             );
         };
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.simulate_resize(size(px(461.), px(482.)));
 
         // The model: its content keeps its minimum, its details give way.
         select("shape.obj", &app, cx);
@@ -14250,7 +14252,7 @@ pub(crate) mod tests {
                     <= bounds("model-side-1/header", cx).bottom() + slack,
             "the details stay where the header's controls fit"
         );
-        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.simulate_resize(size(px(461.), px(482.)));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 
         // The PDF page view, each side given three pages as a build with
@@ -14781,6 +14783,36 @@ pub(crate) mod tests {
         (fixture, app, cx)
     }
 
+    /// One height per row kind: the header's profile picker is as tall as
+    /// Settings beside it and on the same line, labelled in a wide window,
+    /// as its icon below the 800 px breakpoint and in the compact header, at
+    /// 13 and 18 pt. In the full header it was a 36 px tile, 50 px at 18 pt,
+    /// beside the 28 px Settings, 39 px at 18 pt.
+    #[gpui::test]
+    async fn the_profile_picker_is_as_tall_as_the_headers_controls(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for width in [1480., 1000., 760., 461.] {
+                cx.simulate_resize(size(px(width), px(800.)));
+                settle(&app, cx).await;
+                draw(cx);
+                let at = format!("{text} pt at {width} px");
+                let mut bounds = |selector: &'static str| {
+                    cx.debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector}"))
+                };
+                let (profile, settings) = (bounds("profile-button"), bounds("settings"));
+                assert_eq!(
+                    profile.size.height, settings.size.height,
+                    "{at}: the profile {profile:?} beside Settings {settings:?}"
+                );
+                assert_eq!(profile.center().y, settings.center().y, "{at}: one line");
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Tiling window managers such as Hyprland ignore the window's minimum
     /// size, so a half-screen tile is often 600–800 px wide, and at a
     /// fractional scale a half tile of a display about 1,000 logical pixels
@@ -14827,7 +14859,7 @@ pub(crate) mod tests {
                 "profile at {width}: {profile:?}"
             );
             if width < COMPACT_HEADER_WIDTH {
-                assert_eq!(profile.size.width, appearance::ui_size(36.), "at {width}");
+                assert_eq!(profile.size.width, appearance::ui_size(28.), "at {width}");
             }
             let sidebar = cx.debug_bounds("history-sidebar").is_some();
             let rail = cx.debug_bounds("repository-rail").is_some();
@@ -15160,12 +15192,18 @@ pub(crate) mod tests {
     /// At the default interface size the narrow half tiles keep origin/main's
     /// layout: these are the bounds its fixed minimums gave (the rail, a
     /// 177 px column and a 240 px inspector at 461 px; a 209 px column at
-    /// 493 px), measured on origin/main at f695dce. Only the message toolbar
-    /// differs: it holds the commit's Actions too, which the labelled Copy
-    /// message and Hash (as wide as its copied state, the check icon and
-    /// "Copied") leave no room for on their row, so the three keep only their
-    /// icons on that one row, Actions at its trailing edge, rather than take a
-    /// row of the 80 px message area.
+    /// 493 px), measured on origin/main at f695dce, 8 px higher. The page
+    /// starts at y 199, where it started at 207: the header's profile picker
+    /// is 28 px tall, as Settings beside it is, so the row of trailing
+    /// controls the header wraps onto in these windows is 8 px shorter than
+    /// the 36 px picker made it, and the page below takes those 8 px: the
+    /// inspector's message panel, at its 45% share of the inspector's
+    /// height, 3.5 of them, so its file list starts 4.5 px higher. Only
+    /// the message toolbar differs otherwise: it holds the commit's Actions
+    /// too, which the labelled Copy message and Hash (as wide as its copied
+    /// state, the check icon and "Copied") leave no room for on their row, so
+    /// the three keep only their icons on that one row, Actions at its
+    /// trailing edge, rather than take a row of the 80 px message area.
     #[gpui::test]
     async fn default_text_size_keeps_the_narrow_layout(cx: &mut TestAppContext) {
         let (_fixture, app, cx) =
@@ -15173,28 +15211,34 @@ pub(crate) mod tests {
         let bounds = |x: f32, y: f32, width: f32, height: f32| {
             Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
         };
+        // Where the page starts below the tab strip, the wrapped header and
+        // the Git action bar.
+        let page = 199.;
         for (width, height, column, inspector, files_top) in [
-            (461., 490., 177., 222., 322.5),
-            (493., 526., 209., 254., 339.),
+            (461., 490., 177., 222., page + 119.),
+            (493., 526., 209., 254., page + 135.5),
         ] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             let files_height = height - 26. - files_top;
             let expected = [
-                ("repository-rail", bounds(0., 207., 44., height - 233.)),
-                ("history-scope-toolbar", bounds(44., 207., column, 40.)),
-                ("columns", bounds(column - 90., 212.5, 28., 28.)),
-                ("load-more", bounds(column + 6.5, 212.5, 28., 28.)),
+                (
+                    "repository-rail",
+                    bounds(0., page, 44., height - page - 26.),
+                ),
+                ("history-scope-toolbar", bounds(44., page, column, 40.)),
+                ("columns", bounds(column - 90., page + 5.5, 28., 28.)),
+                ("load-more", bounds(column + 6.5, page + 5.5, 28., 28.)),
                 (
                     "commit-inspector-files",
                     bounds(inspector, files_top, 239., files_height),
                 ),
-                ("commit-message-toolbar", bounds(inspector, 207., 239., 34.)),
-                ("copy-message", bounds(inspector + 9.5, 210., 28., 28.)),
-                ("copy-commit", bounds(inspector + 40.5, 210., 28., 28.)),
+                ("commit-message-toolbar", bounds(inspector, page, 239., 34.)),
+                ("copy-message", bounds(inspector + 9.5, page + 3., 28., 28.)),
+                ("copy-commit", bounds(inspector + 40.5, page + 3., 28., 28.)),
                 (
                     "commit-recovery-menu",
-                    bounds(inspector + 201.5, 210., 28., 28.),
+                    bounds(inspector + 201.5, page + 3., 28., 28.),
                 ),
                 (
                     "changed-files-header",
@@ -15225,13 +15269,13 @@ pub(crate) mod tests {
             draw(cx);
             assert_eq!(
                 cx.debug_bounds("working-toolbar"),
-                Some(bounds(inspector, 207., 240., 34.)),
+                Some(bounds(inspector, page, 240., 34.)),
                 "Changes at {width} × {height}"
             );
             let field = cx.read(|cx| app.read(cx).working_filter.read(cx).input_bounds());
             assert_eq!(
                 field,
-                bounds(inspector + 20.5, 216., 137., 16.),
+                bounds(inspector + 20.5, page + 9., 137., 16.),
                 "at {width}"
             );
         }
@@ -18182,10 +18226,13 @@ pub(crate) mod tests {
     /// The compact chrome's breakpoint counts Compare's need as well as
     /// History's: wherever the full chrome is drawn, Compare shows three
     /// whole diff lines, at the default and 18 pt interface sizes and code
-    /// at 12 and 24 pt, and at 13 pt with 24 pt code a 461 × 470 window,
+    /// at 12 and 24 pt, and at 13 pt with 24 pt code a 461 × 462 window,
     /// where History alone would keep the full chrome, takes the compact
-    /// one. In a narrow column the text modes keep one row as a menu named
-    /// by the current mode, which chooses another.
+    /// one. With the header's profile picker 28 px tall the full chrome
+    /// holds there from 469 px tall, and History alone would keep it from
+    /// 457, each 8 px lower than with the 36 px picker, which put the window
+    /// between them at 470. In a narrow column the text modes keep one row
+    /// as a menu named by the current mode, which chooses another.
     #[gpui::test]
     async fn the_chrome_breakpoint_keeps_compare_diff_lines(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 60)).await;
@@ -18209,7 +18256,7 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 24, window, cx));
-        cx.simulate_resize(size(px(461.), px(470.)));
+        cx.simulate_resize(size(px(461.), px(462.)));
         draw(cx);
         let ((header, actions), chrome) = predicted_chrome(&app, cx);
         let (room, history) = cx.update(|window, cx| {
@@ -18226,7 +18273,7 @@ pub(crate) mod tests {
             chrome.is_compact() && room >= history,
             "{chrome:?} with {room:?} left beside History's {history:?}"
         );
-        assert!(visible_diff_lines(&app, cx, 470.) >= 3.);
+        assert!(visible_diff_lines(&app, cx, 462.) >= 3.);
 
         // At 18 pt the modes are one menu; choosing Split from it.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
