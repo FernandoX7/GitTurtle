@@ -756,14 +756,23 @@ pub(crate) fn validate_text(value: &str, required: bool) -> Result<()> {
 
 /// What a `retry-after` header says to wait, as a sentence after the
 /// refusal: its seconds agreeing with their noun ("Retry after 1 second.",
-/// where it read "1 seconds"), or the date the header can give instead.
+/// where it read "1 seconds"), a decimal number of them with its unit
+/// ("Retry after 1.5 seconds.", where it read "Retry after 1.5."), or the
+/// date and time the header can give instead, as it gives them.
 pub(crate) fn retry_after(value: &str) -> String {
-    match value.trim().parse::<u64>() {
+    let value = value.trim();
+    // Digits with one decimal point: the header's seconds are whole, but a
+    // server that sends a fraction still means seconds.
+    let decimal = value.matches('.').count() == 1
+        && value.chars().any(|c| c.is_ascii_digit())
+        && value.chars().all(|c| c.is_ascii_digit() || c == '.');
+    match value.parse::<u64>() {
         Ok(seconds) => format!(
             " Retry after {}.",
             crate::counted(seconds, "second", "seconds")
         ),
-        Err(_) => format!(" Retry after {}.", value.trim()),
+        Err(_) if decimal => format!(" Retry after {value} seconds."),
+        Err(_) => format!(" Retry after {value}."),
     }
 }
 
@@ -771,12 +780,15 @@ pub(crate) fn retry_after(value: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    /// The wait a refusal names agrees with its noun, and a date stays a
-    /// date.
+    /// The wait a refusal names agrees with its noun, a decimal wait keeps
+    /// its unit ("1.5" read "Retry after 1.5."), and a date stays a date.
     #[test]
     fn retry_after_counts_its_seconds() {
         assert_eq!(retry_after("1"), " Retry after 1 second.");
         assert_eq!(retry_after("30"), " Retry after 30 seconds.");
+        assert_eq!(retry_after(" 1.5 "), " Retry after 1.5 seconds.");
+        assert_eq!(retry_after("0.25"), " Retry after 0.25 seconds.");
+        assert_eq!(retry_after("1.2.3"), " Retry after 1.2.3.");
         assert_eq!(
             retry_after("Wed, 21 Oct 2026 07:28:00 GMT"),
             " Retry after Wed, 21 Oct 2026 07:28:00 GMT."
