@@ -853,6 +853,31 @@ impl Palette {
         toward_extreme_in(256, self.border, extreme, clears)
     }
 
+    /// The thumb of every scrollbar the app draws (the kit's
+    /// `scrollbar_thumb`): `tags::ScrollCue`'s lists, the dialogs' and
+    /// pickers' bodies and every other scrollbar the kit draws. It is `border`,
+    /// unless that misses [`SCROLL_THUMB`] against a surface a track lies
+    /// on, the canvas, the panel, `subtle` and the raised surface the
+    /// pickers' tracks rest on. Then it takes the first of 256 even steps
+    /// toward black in a light palette or white in a dark one, the text's
+    /// side, that clears it on all of them. A thumb is the only cue that
+    /// more content lies past a list's edge, and in `border` it stood 1.52:1
+    /// off Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's
+    /// canvas. Hovered, it takes `muted`, secondary text, which reads 4.5:1.
+    pub fn scrollbar_thumb(self) -> u32 {
+        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let clears = |thumb| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(thumb, surface) >= SCROLL_THUMB)
+        };
+        if clears(self.border) {
+            return self.border;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, self.border, extreme, clears)
+    }
+
     /// The edge of an outline drawn on a picker's selected row, such as a
     /// Keyboard Shortcuts key chip: [`Self::raised_edge`], the edge it takes
     /// on a resting row, unless that misses [`POPUP_EDGE`] against `selected`,
@@ -1037,6 +1062,13 @@ const DISABLED_LABEL_MARGIN: f64 = 0.05;
 /// The most of enabled secondary text's contrast a disabled label keeps on a
 /// surface, so disabled stays clearly fainter than enabled text.
 const DISABLED_SHARE: f64 = 0.6;
+
+/// The contrast a scrollbar's thumb keeps against every surface its track
+/// lies on ([`Palette::scrollbar_thumb`]): the thumb is the only cue that
+/// more content exists, so it reads plainly, and it stays well under the
+/// 4.5:1 of secondary text, which its hovered state takes, so it never
+/// competes with the content it scrolls.
+const SCROLL_THUMB: f64 = 2.0;
 
 /// The contrast a disabled Button's edge keeps against every surface it
 /// rests on and its own fill ([`Palette::disabled_edge`]): enough that it
@@ -2145,7 +2177,7 @@ impl Palette {
         theme.colors.status_bar_border = rgb(palette.border).into();
         theme.colors.window_border = rgb(palette.border).into();
         theme.colors.scrollbar = rgb(palette.canvas).into();
-        theme.colors.scrollbar_thumb = rgb(palette.border).into();
+        theme.colors.scrollbar_thumb = rgb(palette.scrollbar_thumb()).into();
         theme.colors.scrollbar_thumb_hover = rgb(palette.muted).into();
         theme.colors.switch = rgb(palette.border).into();
         theme.colors.switch_thumb = rgb(palette.text).into();
@@ -3262,6 +3294,70 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// In every palette a scrollbar's thumb holds 2:1 against each surface
+    /// its track lies on, the canvas, the panel, `subtle` and the raised
+    /// surface, keeping `border` where that already does and otherwise
+    /// taking the least step toward the text side that does, and stays
+    /// quieter than secondary text there. In `border` it stood 1.52:1 off
+    /// Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's
+    /// canvas.
+    #[test]
+    fn every_scrollbar_thumb_reads_two_to_one_and_quieter_than_secondary_text() {
+        let mut failures = Vec::new();
+        let mut moved = 0;
+        for (name, palette) in test_palettes() {
+            let thumb = palette.scrollbar_thumb();
+            let surfaces = [
+                ("canvas", palette.canvas),
+                ("panel", palette.panel),
+                ("subtle", palette.subtle),
+                ("raised", palette.raised()),
+            ];
+            let least = |color: u32| {
+                surfaces
+                    .iter()
+                    .map(|&(_, surface)| contrast(color, surface))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            for (surface, color) in surfaces {
+                let ratio = contrast(thumb, color);
+                let text = contrast(palette.muted, color);
+                if ratio < SCROLL_THUMB || ratio >= text {
+                    failures.push(format!(
+                        "{name}: #{thumb:06x} {ratio:.3}:1 on the {surface}, secondary text {text:.3}:1"
+                    ));
+                }
+            }
+            if least(palette.border) >= SCROLL_THUMB {
+                if thumb != palette.border {
+                    failures.push(format!("{name}: #{thumb:06x} where the border clears"));
+                }
+                continue;
+            }
+            moved += 1;
+            // The thumb is a step from the border toward the text side, and
+            // the step before it, one 256th nearer the border, misses.
+            let extreme = if palette.is_light() {
+                0x000000
+            } else {
+                0xffffff
+            };
+            let nth = |n: u32| {
+                [16, 8, 0].into_iter().fold(0, |color, shift| {
+                    let from = (palette.border >> shift) & 0xff;
+                    let to = (extreme >> shift) & 0xff;
+                    color | (((from * (256 - n) + to * n) / 256) << shift)
+                })
+            };
+            match (1..=256).find(|&n| nth(n) == thumb) {
+                Some(n) if least(nth(n - 1)) < SCROLL_THUMB => {}
+                _ => failures.push(format!("{name}: #{thumb:06x} is not the least step")),
+            }
+        }
+        assert!(moved > 0, "some palette's thumb moves off its border");
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
     /// palette: at least 6 of 255 in one channel from its resting `border`.
     #[test]
@@ -3959,7 +4055,7 @@ mod tests {
                 (theme.tokens.button_secondary_active, palette.selected),
                 (theme.tokens.list_active, palette.selected),
                 (theme.tokens.popover, palette.raised()),
-                (theme.tokens.scrollbar_thumb, palette.border),
+                (theme.tokens.scrollbar_thumb, palette.scrollbar_thumb()),
             ] {
                 let color: Hsla = rgb(expected).into();
                 assert_eq!(token.color, color, "{choice} resolved color");

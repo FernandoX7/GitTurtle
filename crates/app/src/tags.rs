@@ -1578,6 +1578,29 @@ pub(crate) mod tests {
         thumbs.first().copied()
     }
 
+    /// The fill of the scrollbar thumb the last frame painted in `track`
+    /// ([`painted_thumb`]).
+    fn painted_thumb_fill(
+        cx: &mut VisualTestContext,
+        track: Bounds<Pixels>,
+    ) -> Option<gpui_kit::Background> {
+        let thumbs: Vec<_> = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent())
+                .filter(|quad| {
+                    let fill = logical(quad.bounds, scale);
+                    holds(track, fill) && fill.size.height < track.size.height - px(0.5)
+                })
+                .map(|quad| quad.background)
+                .collect()
+        });
+        assert!(thumbs.len() <= 1, "one thumb in {track:?}, not {thumbs:?}");
+        thumbs.first().copied()
+    }
+
     /// Scrolls the list `scroll` tracks to `fraction` of its reach.
     fn scroll_list_to(cx: &mut VisualTestContext, scroll: &ScrollHandle, fraction: f32) {
         let end = scroll.max_offset().y;
@@ -2751,6 +2774,43 @@ pub(crate) mod tests {
             }
         }
         (top, bottom)
+    }
+
+    /// A cued list's thumb, the only cue that more rows lie past its edge,
+    /// paints the palette's thumb in every palette, 2:1 or more against the
+    /// canvas and the panel. In `border` it stood 1.52:1 off Midnight's
+    /// canvas, 1.39:1 off its panel and 1.28:1 off Braden's canvas.
+    #[gpui::test]
+    fn a_cued_lists_thumb_reads_two_to_one_in_every_palette(cx: &mut gpui_kit::TestAppContext) {
+        use crate::appearance::custom::contrast;
+        const ROOM: Pixels = px(8.);
+        let (_list, cx) = cued_window(cx, 120., ROOM, 20);
+        let bar = Scrollbar::width();
+        let mut failures = Vec::new();
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let bounds = cx.debug_bounds("cued-list").expect("the list");
+            // The scrollbar's viewport, which its track fills.
+            let track = Bounds::new(
+                point(bounds.right() - ROOM - bar - px(4.), bounds.top() + ROOM),
+                size(bar + px(4.), bounds.size.height - ROOM * 2.),
+            );
+            let thumb = palette.scrollbar_thumb();
+            let painted = painted_thumb_fill(cx, track);
+            if painted != Some(gpui_kit::Background::from(Hsla::from(rgb(thumb)))) {
+                failures.push(format!("{name}: painted {painted:?}, not #{thumb:06x}"));
+            }
+            for (surface, color) in [("canvas", palette.canvas), ("panel", palette.panel)] {
+                let ratio = contrast(thumb, color);
+                if ratio < 2. {
+                    failures.push(format!(
+                        "{name}: #{thumb:06x} {ratio:.3}:1 on the {surface}"
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// A list that keeps room around its rows is cued where a thumb moves,
