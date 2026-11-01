@@ -2010,14 +2010,17 @@ impl Render for Panel {
                         // the selected one on the selected surface, and lifts to the row hover under
                         // both its lines, which open the PR alike. The title Button spans it, its
                         // label at the panel's text inset, and the context line below, outside the
-                        // Button, takes the same inset. The title draws no hover of its own, so the
-                        // row lifts once; selected, its opaque fill follows the row's.
+                        // Button, takes the same inset as its padding and the row's foot below it,
+                        // so the whole lit row opens the PR (as a margin and the row's own padding,
+                        // they left 10 px each side and the foot unclickable). The title draws no
+                        // hover of its own, so the row lifts once; selected, its opaque fill
+                        // follows the row's.
                         let hover=p.row_hover(selected);let group=SharedString::from(format!("github-pr-card-{number}"));let open=pull.clone();
                         let title=crate::button_frame(("github-pr",number),&name,"",selected);
                         let title=if selected{title.group_hover(group.clone(),move|style|style.bg(rgb(hover)))}else{title.with_variant(appearance::still_control_button_variant())};
-                        div().id(("github-pr-card",pull.number)).group(group).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().pb_1().rounded(px(7.)).bg(rgb(if selected{p.selected}else{p.panel})).when(!pending,|row|row.hover(move|row|row.bg(rgb(hover)))).flex().flex_col()
+                        div().id(("github-pr-card",pull.number)).group(group).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected{p.selected}else{p.panel})).when(!pending,|row|row.hover(move|row|row.bg(rgb(hover)))).flex().flex_col()
                             .child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
-                            .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
+                            .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
                     // the destination first, and one with a destination reads its PRs with
@@ -5709,8 +5712,9 @@ mod tests {
     /// surface and lifts to the hover surface under both its lines, its title Button drawing
     /// no fill of its own, so the row lifts once; the selected row rests on the selected
     /// surface and lifts to the selected row's hover, its title following from either line.
-    /// The context line opens the PR as the title does. Unselected rows once drew nothing at
-    /// rest, and the pointer lifted the title's line alone.
+    /// The whole lit row opens the PR as the title does, at 18 pt even 6 px in from its edge
+    /// in the row's foot. Unselected rows once drew nothing at rest, and the pointer lifted
+    /// the title's line alone.
     #[gpui::test]
     async fn pull_request_rows_rest_and_lift_as_list_rows(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -5742,6 +5746,7 @@ mod tests {
             panel
         });
         settle_panel(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);
         let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
@@ -5776,13 +5781,17 @@ mod tests {
             assert_eq!(other, [fill(p.panel)], "{line} leaves #42 at rest");
         }
 
-        crate::copy_feedback::tests::click(cx, "github-pr-context-42");
+        // The whole lit row opens the PR: 6 px in from its left edge, in its foot below the
+        // context line, where the line's margin and the row's own padding took no click.
+        let row = cx.debug_bounds("github-pr-card-42").unwrap();
+        let foot = point(row.left() + px(6.), row.bottom() - px(2.));
+        cx.simulate_click(foot, Modifiers::default());
         settle_panel(&app, cx).await;
         draw(cx);
         assert_eq!(
             panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
             Some(42),
-            "the context line opens its PR"
+            "a click at {foot:?} in {row:?} opens its PR"
         );
         // The open PR's "Pull requests" shows the list above it, #42 selected.
         crate::copy_feedback::tests::click(cx, "github-back-list");
@@ -5800,7 +5809,10 @@ mod tests {
         hover(cx, "github-pr-context-43");
         assert_eq!(painted(cx, "github-pr-card-42".into()), [fill(p.selected)]);
         assert_eq!(painted(cx, "github-pr-42".into()), [fill(p.selected)]);
-        cx.update(|window, cx| window.close_dialog(cx));
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
     }
 
     /// In a 1480 × 980 window, as the native review shows the panel, at 13
