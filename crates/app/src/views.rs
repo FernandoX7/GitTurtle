@@ -6482,7 +6482,8 @@ fn watch_control_height(cx: &App) -> Pixels {
 
 /// What the status bar's fitting measures, in the font and sizes of a
 /// [`LineKey`]: each form its keyboard hints can take, in the order they
-/// give way (whole, their keys alone, then fewer keys from the last); the
+/// give way (`shortcuts::KeyHints::giving_way`: whole, their keys alone,
+/// then fewer keys, Escape the last to go); the
 /// warning's words, Refresh and Details…, labelled or as its icon, with the
 /// gaps between; and the ellipsis the status line keeps at least.
 struct StatusWidths {
@@ -7373,16 +7374,17 @@ impl GitTurtle {
                 .map(shortcuts::DialogKeys::key_hints);
         }
         let key = |key: &str, action| (key.to_owned(), action);
+        let escape = |action| key(shortcuts::ESCAPE, action);
         Some(shortcuts::KeyHints::new(match self.page {
-            AppPage::Settings => vec![key("Tab", "Move between controls"), key("Esc", "Back")],
+            AppPage::Settings => vec![key("Tab", "Move between controls"), escape("Back")],
             AppPage::Projects => vec![
                 (format!("{}O", primary_label()), "Open repository"),
-                key("Esc", "Back"),
+                escape("Back"),
             ],
             AppPage::Repository => match self.mode {
-                WorkspaceMode::Compare => vec![key("Esc", "Back to history"), key("↑↓", "Files")],
+                WorkspaceMode::Compare => vec![escape("Back to history"), key("↑↓", "Files")],
                 WorkspaceMode::Working => {
-                    vec![key("↑↓", "Review files"), key("Esc", "Back to history")]
+                    vec![key("↑↓", "Review files"), escape("Back to history")]
                 }
                 WorkspaceMode::History => vec![
                     (format!("{}F", primary_label()), "Search"),
@@ -7403,7 +7405,8 @@ impl GitTurtle {
     /// place ([`OperationPlace::StatusBar`]), kept only in a Repository frame
     /// whose `plan` lets a write's status come there
     /// ([`HeaderPlan::bar_room`]); the keyboard hints, whole, else their keys
-    /// alone ("↑↓ · Enter"), else the leading keys that fit, else none, with
+    /// alone ("↑↓ · Enter"), else fewer keys, Escape the last to go
+    /// (`shortcuts::KeyHints::giving_way`), else none, with
     /// any spare hints after them, whole, only where the status line keeps
     /// its whole text beside them (Keyboard Shortcuts' page and end keys,
     /// `shortcuts::KeyHints::spare`); and
@@ -7534,22 +7537,13 @@ impl GitTurtle {
             + gap
             + self.labelled_width(text(WATCH_REFRESH), false, window)
             + gap;
-        let mut forms = Vec::new();
-        if !hints.keys.is_empty() {
-            forms.push(shortcuts::KeyHints::new(hints.keys.clone()).whole());
-            forms.extend(
-                (1..=hints.keys.len())
-                    .rev()
-                    .map(|shown| shortcuts::KeyHints::new(hints.keys[..shown].to_vec()).keys()),
-            );
-        }
         let measured = |form: String| {
             let width = text(&form);
             (form, width)
         };
         StatusWidths {
             spare: (!hints.spare.is_empty()).then(|| measured(hints.whole())),
-            forms: forms.into_iter().map(measured).collect(),
+            forms: hints.giving_way().into_iter().map(measured).collect(),
             warning: lead + self.labelled_width(text(WATCH_DETAILS), false, window),
             warning_compact: lead + window.pixel_snap(appearance::ui_size(WATCH_CONTROL)),
             ellipsis: text("…"),

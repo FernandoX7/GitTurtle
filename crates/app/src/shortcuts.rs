@@ -679,11 +679,29 @@ impl KeyHints {
         })
     }
 
-    /// The keys alone of the hints kept first, `Key · Key`: the form they
-    /// take where the status line or the refresh warning needs their room
-    /// (`GitTurtle::fit_status_bar`).
-    pub(super) fn keys(&self) -> String {
-        Self::join(self.keys.iter(), |(key, _)| key.clone())
+    /// The forms the hints kept first take as the strip's room narrows, in
+    /// the order they give way (`GitTurtle::fit_status_bar`): whole; their
+    /// keys alone, `Key · Key`, where the status line or the refresh warning
+    /// needs their room; then fewer keys, each dropping the last key but Escape,
+    /// so the way out is the last hint to go and the keys left keep their
+    /// order. Under Keyboard Shortcuts "↑↓ Browse · Esc Close" gives way to
+    /// "↑↓ · Esc" and then "Esc"; it once ended with "↑↓", the way out gone
+    /// first, though the design keeps Escape longest.
+    pub(super) fn giving_way(&self) -> Vec<String> {
+        let mut kept = self.keys.clone();
+        let mut forms = Vec::new();
+        if !kept.is_empty() {
+            forms.push(Self::new(kept.clone()).whole());
+        }
+        while !kept.is_empty() {
+            forms.push(Self::join(kept.iter(), |(key, _)| key.clone()));
+            let dropped = kept
+                .iter()
+                .rposition(|(key, _)| key != ESCAPE)
+                .unwrap_or(kept.len() - 1);
+            kept.remove(dropped);
+        }
+        forms
     }
 
     fn join<'a>(
@@ -698,6 +716,10 @@ impl KeyHints {
 /// spells them out, which took the strip's room from the status line.
 const PAGE_KEYS: &str = "PgUp / PgDn";
 
+/// Escape as the status bar's hints name it: the way out of the page or
+/// dialog, kept longest as they give way ([`KeyHints::giving_way`]).
+pub(super) const ESCAPE: &str = "Esc";
+
 impl DialogKeys {
     /// The hints the status bar names, each key with what it does. Escape
     /// is named by the dialog's own button it stands for ([`Self::dismiss`]):
@@ -705,13 +727,13 @@ impl DialogKeys {
     /// Quick Open's said "Esc Cancel".
     ///
     /// Keyboard Shortcuts keeps "↑↓ Browse · Esc Close" first, Escape kept
-    /// longest after browsing, and names its page and end keys as spare
-    /// hints after them, which give way before the status line does: named
-    /// with the rest, they took 358 px at 18 pt in a 461 × 490 window and
-    /// cut "Up to date with origin · nothing new" to about 53 px. Its inline
-    /// help names every key.
+    /// longest as they give way ([`KeyHints::giving_way`]), and names its
+    /// page and end keys as spare hints after them, which give way before
+    /// the status line does: named with the rest, they took 358 px at 18 pt
+    /// in a 461 × 490 window and cut "Up to date with origin · nothing new"
+    /// to about 53 px. Its inline help names every key.
     pub(super) fn key_hints(self) -> KeyHints {
-        let escape = ("Esc".to_owned(), self.dismiss());
+        let escape = (ESCAPE.to_owned(), self.dismiss());
         match self {
             Self::Palette | Self::QuickOpen => KeyHints::new(vec![
                 ("↑↓".into(), "Select"),
@@ -2954,6 +2976,68 @@ mod list_tests {
             assert_eq!(hints, Some(expected), "{at}: the status bar's hints");
             close(cx);
         }
+    }
+
+    /// The way out is the last hint to go: under Keyboard Shortcuts at
+    /// 18 pt in a 461 × 490 window, as a fresh outcome grows in the status
+    /// line, the hints give way from "↑↓ Browse · Esc Close" to "↑↓ · Esc",
+    /// then, where the room holds one key, to "Esc", which the bar draws,
+    /// and then leave. They once gave way to "↑↓", Escape gone first,
+    /// though the design keeps it longest.
+    #[gpui::test]
+    async fn escape_is_the_last_hint_to_go(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 18, (461., 490.));
+        let path = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository");
+        let keys = DialogKeys::Shortcuts.key_hints();
+        let mut forms: Vec<Option<String>> = Vec::new();
+        // The shortest outcome that leaves the hints one key.
+        let mut one = None;
+        for length in 0..400 {
+            let hints = cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.record_outcome(&path, format!("Pushed {}", "e".repeat(length)), cx);
+                    app.status_hints(window, cx)
+                })
+            });
+            if one.is_none() && hints.as_ref().is_some_and(|hints| !hints.contains(" · ")) {
+                one = Some(length);
+            }
+            if forms.last() != Some(&hints) {
+                forms.push(hints);
+            }
+        }
+        assert_eq!(
+            forms,
+            [
+                Some(KeyHints::new(keys.keys.clone()).whole()),
+                Some(format!("↑↓ · {ESCAPE}")),
+                Some(ESCAPE.to_owned()),
+                None,
+            ],
+            "the forms the hints give way through"
+        );
+        let length = one.expect("an outcome leaves the hints one key");
+        app.update(cx, |app, cx| {
+            app.record_outcome(&path, format!("Pushed {}", "e".repeat(length)), cx);
+            cx.notify();
+        });
+        draw(cx);
+        let drawn = cx.debug_bounds("status-hints").expect("the one hint");
+        let [escape, browse] = cx.update(|window, _| {
+            [ESCAPE, "↑↓"]
+                .map(|key| crate::views::line_widths(&[(key, appearance::ui_text(10.))], window))
+        });
+        assert!(
+            (drawn.size.width - escape).abs() < px(1.)
+                && (drawn.size.width - browse).abs() >= px(1.),
+            "the bar draws Escape, {escape:?} wide, not Up and Down, {browse:?}: {drawn:?}"
+        );
+        close(cx);
     }
 
     /// A write whose status the header draws leaves the status line its
