@@ -6566,8 +6566,9 @@ fn commit_row_id(oid: &str) -> ElementId {
         return ElementId::Name(oid.to_owned().into());
     }
     let mut id = [0u8; 20];
-    for (byte, pair) in id.iter_mut().zip(hex.chunks_exact(2)) {
-        *byte = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    let (pairs, _) = hex.as_chunks::<2>();
+    for (byte, [high, low]) in id.iter_mut().zip(pairs) {
+        *byte = (nibble(*high) << 4) | nibble(*low);
     }
     ElementId::OpaqueId(id)
 }
@@ -19256,6 +19257,33 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A History row's ID is its commit's: equal for one commit however its
+    /// hexadecimal is cased, different for commits that differ in any of the
+    /// 160 bits it keeps, a SHA-256 ID keyed by its first 160 bits, and a
+    /// text that is not an object ID kept as itself.
+    #[test]
+    fn commit_row_ids_follow_the_commit() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(commit_row_id(oid), commit_row_id(&oid.to_uppercase()));
+        let mut bytes = [0u8; 20];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef][index % 8];
+        }
+        assert_eq!(commit_row_id(oid), ElementId::OpaqueId(bytes));
+        for at in [0, 19, 39] {
+            let mut other = oid.as_bytes().to_vec();
+            other[at] = if other[at] == b'f' { b'e' } else { b'f' };
+            let other = String::from_utf8(other).unwrap();
+            assert_ne!(commit_row_id(oid), commit_row_id(&other), "digit {at}");
+        }
+        let sha256 = format!("{oid}{}", "9".repeat(24));
+        assert_eq!(commit_row_id(&sha256), commit_row_id(oid));
+        assert_eq!(
+            commit_row_id("not an id"),
+            ElementId::Name("not an id".into())
+        );
     }
 
     /// Checks that the toggle `selector` draws the selected mode's mark, the
