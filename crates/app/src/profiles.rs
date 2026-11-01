@@ -198,10 +198,12 @@ impl GitTurtle {
                 let path = this.path.clone();
                 // Read as it opens: a write refuses choosing, creating and
                 // managing profiles until its reload lands, and the menu is
-                // built again when it does (`AppDropdown::follows_writes`).
-                // Retrying the profile store, which no write touches, stays
-                // available.
-                let busy = this.write_unsettled();
+                // built again when it does (`AppDropdown::follows_writes`),
+                // each item it refuses saying why in the room its command
+                // leaves (`native_accessibility::waiting_item`); they once
+                // refused with nothing to say why. Retrying the profile
+                // store, which no write touches, stays available.
+                let wait = this.menu_wait();
                 if let Some(profile) = &this.profile {
                     menu = menu.label(current_identity(profile)).separator();
                 }
@@ -220,19 +222,19 @@ impl GitTurtle {
                         let path = path.clone();
                         let checked = assigned.is_some_and(|current| current.id == profile.id);
                         menu = menu.item(
-                            PopupMenuItem::new(format!("{} · {}", profile.label, profile.email))
-                                .checked(checked)
-                                .disabled(
-                                    busy || this.repository.is_none()
-                                        || this.page == AppPage::Projects,
-                                )
-                                .on_click(move |_, window, cx| {
-                                    let _ = owner.update(cx, |this, cx| {
-                                        if this.path == path {
-                                            this.prepare_profile(profile.clone(), window, cx);
-                                        }
-                                    });
-                                }),
+                            crate::native_accessibility::waiting_item(
+                                format!("{} · {}", profile.label, profile.email),
+                                this.repository.is_none() || this.page == AppPage::Projects,
+                                wait,
+                            )
+                            .checked(checked)
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if this.path == path {
+                                        this.prepare_profile(profile.clone(), window, cx);
+                                    }
+                                });
+                            }),
                         );
                     }
                 } else {
@@ -251,16 +253,18 @@ impl GitTurtle {
                     .item(
                         // Creating a profile needs the saved profiles it joins,
                         // as the manager's New profile… does.
-                        PopupMenuItem::new("New profile…")
-                            .disabled(busy || this.profiles.store.is_none())
-                            .on_click(move |_, window, cx| {
-                                let _ = create_owner
-                                    .update(cx, |this, cx| this.edit_profile(None, window, cx));
-                            }),
+                        crate::native_accessibility::waiting_item(
+                            "New profile…",
+                            this.profiles.store.is_none(),
+                            wait,
+                        )
+                        .on_click(move |_, window, cx| {
+                            let _ = create_owner
+                                .update(cx, |this, cx| this.edit_profile(None, window, cx));
+                        }),
                     )
                     .item(
-                        PopupMenuItem::new("Manage profiles…")
-                            .disabled(busy)
+                        crate::native_accessibility::waiting_item("Manage profiles…", false, wait)
                             .on_click(move |_, window, cx| {
                                 let _ = manage_owner
                                     .update(cx, |this, cx| this.open_profiles(window, cx));

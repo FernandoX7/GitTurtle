@@ -1116,7 +1116,8 @@ fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App
 
 /// Why the items a write refuses wait, in every menu that refuses items
 /// while a write runs or its reload has yet to land (the commit, branch,
-/// worktree and project rows' menus and the Changes Actions menu): the
+/// worktree and project rows' menus, the Changes Actions menu and the
+/// branch and Git profile pickers' menus): the
 /// write or request that runs, by the label it runs under, as the window's
 /// progress line shows it ("Fetching remote…"), or, once it has ended and
 /// the reload it asked for has yet to land,

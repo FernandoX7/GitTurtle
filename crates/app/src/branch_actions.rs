@@ -262,8 +262,11 @@ impl GitTurtle {
                 let this = view.read(cx);
                 let path = this.path.clone();
                 // Read as it opens: a write refuses every item but Activity
-                // until its reload lands.
-                let busy = this.write_unsettled();
+                // until its reload lands, and each item it refuses says why
+                // in the room its command leaves, as every menu that follows
+                // writes does (`native_accessibility::waiting_item`). They
+                // once refused with nothing to say why.
+                let wait = this.menu_wait();
                 let current = this
                     .work_status
                     .as_ref()
@@ -281,8 +284,7 @@ impl GitTurtle {
                 let find_path = path.clone();
                 menu = menu
                     .item(
-                        PopupMenuItem::new("Find or create a branch…")
-                            .disabled(busy)
+                        native_accessibility::waiting_item("Find or create a branch…", false, wait)
                             .on_click(move |_, window, cx| {
                                 let _ = find_owner.update(cx, |this, cx| {
                                     if this.path == find_path
@@ -330,9 +332,8 @@ impl GitTurtle {
                     // Choices beside the ticked current branch, announced as
                     // unticked check items.
                     menu = menu.item(
-                        PopupMenuItem::new(label)
+                        native_accessibility::waiting_item(label, occupied.is_some(), wait)
                             .checked(false)
-                            .disabled(occupied.is_some() || busy)
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     if this.path == path && this.page == AppPage::Repository {
@@ -366,7 +367,7 @@ impl GitTurtle {
                         MenuAction::ManageCurrent,
                         &owner,
                         &path,
-                        busy,
+                        wait,
                     );
                 }
                 menu = add_menu_action(
@@ -375,7 +376,7 @@ impl GitTurtle {
                     MenuAction::ManageLocal,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -383,7 +384,7 @@ impl GitTurtle {
                     MenuAction::Track,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 if current.is_some() && this.integration_state.is_none() {
                     menu = add_menu_action(
@@ -392,7 +393,7 @@ impl GitTurtle {
                         MenuAction::Merge,
                         &owner,
                         &path,
-                        busy,
+                        wait,
                     );
                     menu = add_menu_action(
                         menu,
@@ -400,7 +401,7 @@ impl GitTurtle {
                         MenuAction::Rebase,
                         &owner,
                         &path,
-                        busy,
+                        wait,
                     );
                     menu = add_menu_action(
                         menu,
@@ -408,7 +409,7 @@ impl GitTurtle {
                         MenuAction::InteractiveRebase,
                         &owner,
                         &path,
-                        busy,
+                        wait,
                     );
                 }
                 menu = add_menu_action(
@@ -417,7 +418,7 @@ impl GitTurtle {
                     MenuAction::Tags,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -425,7 +426,7 @@ impl GitTurtle {
                     MenuAction::Activity,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -433,7 +434,7 @@ impl GitTurtle {
                     MenuAction::CompareRevisions,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -441,7 +442,7 @@ impl GitTurtle {
                     MenuAction::QuickFile,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -449,7 +450,7 @@ impl GitTurtle {
                     MenuAction::Worktrees,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 menu = add_menu_action(
                     menu,
@@ -457,7 +458,7 @@ impl GitTurtle {
                     MenuAction::Reflog,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 );
                 add_menu_action(
                     menu,
@@ -465,7 +466,7 @@ impl GitTurtle {
                     MenuAction::Remotes,
                     &owner,
                     &path,
-                    busy,
+                    wait,
                 )
             })
             // A write's start or end builds the open menu again.
@@ -967,29 +968,29 @@ impl GitTurtle {
     }
 }
 
-/// The branch picker's `action`, disabled while `busy`, a write running as
-/// the menu opened: each action but Activity refuses until the write ends.
+/// The branch picker's `action`, refused while `wait` holds why, a write
+/// running or its reload yet to land as the menu was built: each action but
+/// Activity refuses until then, saying why in the room its command leaves
+/// (`native_accessibility::waiting_item`).
 fn add_menu_action(
     mut menu: PopupMenu,
     label: &'static str,
     action: MenuAction,
     owner: &WeakEntity<GitTurtle>,
     path: &Option<PathBuf>,
-    busy: bool,
+    wait: Option<native_accessibility::MenuWait>,
 ) -> PopupMenu {
     let owner = owner.clone();
     let path = path.clone();
-    let refused = busy && !matches!(action, MenuAction::Activity);
+    let wait = wait.filter(|_| !matches!(action, MenuAction::Activity));
     menu = menu.item(
-        PopupMenuItem::new(label)
-            .disabled(refused)
-            .on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.path == path && this.page == AppPage::Repository {
-                        this.branch_menu_action(action, window, cx);
-                    }
-                });
-            }),
+        native_accessibility::waiting_item(label, false, wait).on_click(move |_, window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.path == path && this.page == AppPage::Repository {
+                    this.branch_menu_action(action, window, cx);
+                }
+            });
+        }),
     );
     menu
 }

@@ -2122,11 +2122,19 @@ mod tests {
             ),
         ] {
             press(cx, picker);
+            // Each says why, by the write it waits for, as every menu that
+            // follows writes does; the pickers' once refused with nothing
+            // to say why.
             for item in disabled {
                 assert!(
-                    cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
-                        .is_some(),
-                    "{picker}: {item} disabled in the menu opened while the write runs"
+                    cx.debug_bounds(
+                        format!(
+                            "menu-item: {item}, available when working finishes · MenuItem disabled"
+                        )
+                        .leak()
+                    )
+                    .is_some(),
+                    "{picker}: {item} disabled, naming the write, in the menu opened while it runs"
                 );
             }
             assert!(
@@ -2157,9 +2165,9 @@ mod tests {
         ] {
             let held = held_write(&app, cx);
             press(cx, picker);
-            assert!(
-                cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
-                    .is_some(),
+            assert_eq!(
+                offered(cx, item),
+                Some(false),
                 "{picker}: {item} disabled while the write runs"
             );
             release(&app, held, cx).await;
@@ -3949,6 +3957,64 @@ mod tests {
             cx.simulate_keystrokes("escape");
             next_frame(cx);
             release(&app, held, cx).await;
+            drop(fixture);
+        }
+
+        /// The branch picker's and the Git profile picker's menus say why a
+        /// write refuses their items, as every other menu that follows
+        /// writes does: each opened at rest and built again in place as a
+        /// Fetch starts, every item the Fetch refuses reads "<item>,
+        /// available when fetching remote finishes" with "Fetching remote…"
+        /// in the room its command leaves, and its row stays where it was
+        /// drawn at rest, so the reason never widens the menu. Both once
+        /// refused their items with nothing to say why.
+        #[gpui::test]
+        async fn the_pickers_menus_name_the_fetch_and_move_nothing(cx: &mut TestAppContext) {
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            for (picker, items) in [
+                (
+                    "current-branch",
+                    &[
+                        "Find or create a branch…",
+                        "Current branch settings…",
+                        "Manage another branch…",
+                        "Create from a remote branch…",
+                    ][..],
+                ),
+                ("profile-button", &["Manage profiles…"][..]),
+            ] {
+                press(cx, picker);
+                let rest: Vec<_> = items
+                    .iter()
+                    .map(|item| {
+                        cx.debug_bounds(format!("menu-item: {item} · MenuItem").leak())
+                            .unwrap_or_else(|| panic!("{picker}: {item} at rest"))
+                    })
+                    .collect();
+                let held = held_fetch(&app, cx);
+                next_frame(cx);
+                for (item, rest) in items.iter().zip(&rest) {
+                    let name = format!(
+                        "menu-item: {item}, available when fetching remote finishes · MenuItem disabled"
+                    );
+                    let waiting = cx
+                        .debug_bounds(name.clone().leak())
+                        .unwrap_or_else(|| panic!("{picker}: {name}"));
+                    assert_eq!(
+                        waiting, *rest,
+                        "{picker}: {item}'s row stays where it was drawn at rest"
+                    );
+                }
+                wait_for_the_fetch(cx, items, picker);
+                cx.simulate_keystrokes("escape");
+                next_frame(cx);
+                release(&app, held, cx).await;
+                app.update(cx, |app, _| app.operation_error = None);
+                // The Fetch's reload lands on the window's reader, which
+                // `settle` does not wait for, before the next picker opens
+                // at rest: until then its items wait for "Refreshing…".
+                quiet_reads_land(&app, cx);
+            }
             drop(fixture);
         }
     }
