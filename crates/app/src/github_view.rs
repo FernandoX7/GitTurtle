@@ -5715,7 +5715,13 @@ mod tests {
     async fn pull_request_rows_rest_and_lift_as_list_rows(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
         let (_fixture, app, cx) = repository_window(cx);
-        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        // The dialog opens at rest, so the pointer lands where the rows were measured: its
+        // open animation moved them 10 to 13 px after they were read, which left the pointer
+        // above #43 in some runs.
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
         let p = cx.update(|_, cx| palette(cx));
         let panel = cx.update(|window, cx| {
             let repo = app.read(cx).repository.clone().unwrap();
