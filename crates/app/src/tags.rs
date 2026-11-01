@@ -52,6 +52,36 @@ pub(crate) fn alert_error_line(
     alerted
 }
 
+/// The most lines a dialog form's error line draws ([`error_line`]).
+pub(crate) const ERROR_LINES: usize = 3;
+
+/// A dialog form's error line, `id`, which is also its debug selector:
+/// `text` in at most [`ERROR_LINES`] lines, the last ending in an ellipsis
+/// where it needs more, its whole text, bounded
+/// (`bounded_accessible_text`), its accessible value and its tooltip, as
+/// the alert that says it ([`set_error_line`]) says it whole. Drawn whole,
+/// a long Git report, as a hook's or a remote's stderr, grew the form by
+/// each of its lines, past its fields and actions.
+pub(crate) fn error_line(
+    id: &'static str,
+    text: &str,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    let whole = native_accessibility::bounded_accessible_text(text);
+    let tooltip = whole.clone();
+    native_accessibility::static_text(
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .line_clamp(ERROR_LINES)
+            .text_ellipsis()
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            })
+            .child(whole.clone()),
+        whole,
+    )
+}
+
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's
 /// compact frame (`button_frame`, through `button`): 28 px high at the
 /// interface size, with its padding, label size and focus ring, as every
@@ -1025,7 +1055,7 @@ impl Render for TagForm {
             .when(self.annotated, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.message).aria_label("Tag annotation"))))
             .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| error_line("tag-preparation-error", error).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
 }
 
@@ -2050,6 +2080,55 @@ pub(crate) mod tests {
             refused("delete-local-tag"),
             off_page,
             "Delete local tag… is refused"
+        );
+    }
+
+    /// A long Git report in a form's error line is drawn in at most
+    /// [`ERROR_LINES`] lines, the last ending in an ellipsis, with its whole
+    /// text as the line's accessible value and in its tooltip: at 13 pt in
+    /// a 1480 × 980 window, a forty-line report under Create tag keeps three
+    /// lines, Review tag whole in the window beneath it. Drawn whole, it
+    /// grew the form by each of its lines.
+    #[gpui::test]
+    async fn a_long_error_line_keeps_three_lines(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let report = (1..=40)
+            .map(|line| format!("remote: hook line {line} declined the tag"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                set_error_line(&mut form.error, report.clone(), window, cx);
+                cx.notify();
+            })
+        });
+        written::forget();
+        draw(cx);
+        let (line, size) = cx.update(|window, _| {
+            (
+                crate::image_compare::text_line(crate::appearance::ui_text(12.), window),
+                window.viewport_size(),
+            )
+        });
+        let drawn = rendered(cx, "tag-preparation-error");
+        assert!(
+            drawn.size.height <= line * ERROR_LINES as f32 + px(0.5),
+            "{drawn:?} keeps {ERROR_LINES} lines of {line:?}"
+        );
+        let review = rendered(cx, "review-tag");
+        assert!(
+            review.top() >= drawn.bottom() && review.bottom() <= size.height,
+            "Review tag {review:?} lies whole in the window, beneath the line {drawn:?}"
+        );
+        let value = written::get("tag-preparation-error")
+            .and_then(|line| line.node.value().map(str::to_owned));
+        assert_eq!(value.as_deref(), Some(report.as_str()), "its whole text");
+        assert_eq!(
+            hovered_tooltips(cx, "tag-preparation-error"),
+            1,
+            "its tooltip"
         );
     }
 

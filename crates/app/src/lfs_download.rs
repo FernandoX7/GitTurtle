@@ -301,7 +301,7 @@ impl Render for LfsDownloadForm {
             .child(button("read-lfs-source", "Read configured source", "refresh", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx))))
             .when(self.pending, |element| element.child(label("lfs-source-loading", "Resolving the selected pointer, Git LFS tooling, and configured source…").text_size(appearance::ui_text(12.))))
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| label("lfs-download-error", error.clone()).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))))
     }
 }
