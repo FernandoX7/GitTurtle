@@ -1097,7 +1097,11 @@ impl GitTurtle {
             .justify_center()
             .gap_1()
             .border_l_2()
-            .border_color(rgb(if active { p.accent } else { p.panel }))
+            .border_color(if active {
+                self.selected_row_marker(cx)
+            } else {
+                rgb(p.panel)
+            })
             .bg(rgb(if active { p.selected } else { p.panel }))
             .hover(|style| style.bg(rgb(p.row_hover(active))))
             .when(enabled, |element| element.cursor_pointer())

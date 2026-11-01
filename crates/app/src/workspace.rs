@@ -4411,7 +4411,11 @@ impl GitTurtle {
                     .gap_2()
                     .bg(rgb(if active { p.selected } else { p.panel }))
                     .border_l_2()
-                    .border_color(if active { rgb(p.accent) } else { rgba(0) })
+                    .border_color(if active {
+                        self.selected_row_marker(cx)
+                    } else {
+                        rgba(0)
+                    })
                     .when(!still, |row| {
                         row.hover(move |s| s.bg(rgb(p.row_hover(active))))
                     })

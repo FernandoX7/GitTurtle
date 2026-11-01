@@ -2901,6 +2901,48 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Whether the comparison's text draws the keyboard ring on its pane's
+    /// edge (`FocusRing::edge`): the patch, the Before or After text, or a
+    /// Split side, whichever the text mode shows, in Compare or a Working
+    /// preview. The inspector's selected row, whose leading marker stands a
+    /// few pixels right of that edge, then leaves the accent to the ring.
+    pub(crate) fn text_ring_shows(&self, cx: &App) -> bool {
+        if self.mode == WorkspaceMode::History {
+            return false;
+        }
+        let shows = |editor: &Option<Entity<EditorState>>| {
+            editor
+                .as_ref()
+                .is_some_and(|editor| self.focus_ring.shows(&editor.read(cx).focus_handle(cx)))
+        };
+        match self.text_mode {
+            TextMode::Unified => shows(&self.patch_editor),
+            TextMode::Before => shows(&self.before_editor),
+            TextMode::After => shows(&self.after_editor),
+            TextMode::Split => self.split_view.as_ref().is_some_and(|view| {
+                view.read(cx)
+                    .editors()
+                    .iter()
+                    .any(|editor| self.focus_ring.shows(&editor.read(cx).focus_handle(cx)))
+            }),
+            TextMode::Diagrams | TextMode::Markdown => false,
+        }
+    }
+
+    /// The leading marker of the inspector's selected row: the accent, except
+    /// while the comparison's text beside it shows its keyboard ring
+    /// ([`Self::text_ring_shows`]), where the ring is the one accent stroke
+    /// and the row's selected fill keeps the selection in view; at 13 pt in a
+    /// 461 px window the two read as one doubled stroke. Transparent, the
+    /// marker shows the row's own fill, hovered or not, and nothing moves.
+    pub(crate) fn selected_row_marker(&self, cx: &App) -> Rgba {
+        if self.text_ring_shows(cx) {
+            rgba(0)
+        } else {
+            rgb(palette(cx).accent)
+        }
+    }
+
     /// A changed file's row. `status` shows its status word beside the name;
     /// without it, in an inspector too narrow for both (`FilesHeader`), the
     /// status tile's icon and colour carry the status and the name takes the
@@ -2956,7 +2998,11 @@ impl GitTurtle {
                 colors.panel
             }))
             .border_l_2()
-            .border_color(rgb(if active { colors.accent } else { colors.panel }))
+            .border_color(if active {
+                self.selected_row_marker(cx)
+            } else {
+                rgb(colors.panel)
+            })
             .hover(|s| s.bg(rgb(colors.row_hover(active))))
             .active(|s| s.bg(rgb(colors.selected)))
             .cursor_pointer()
@@ -15505,6 +15551,59 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// While Compare's text shows its keyboard ring, the selected file's row
+    /// beside it leaves its accent marker to the ring, keeping its selected
+    /// fill: at 13 pt in a 461 × 490 window the ring's right edge and the
+    /// row's 2 px accent bar, a few pixels apart, read as one doubled stroke.
+    /// The marker returns once the ring leaves the text, for the file list
+    /// by a key, or by a pointer press, and nothing in the row moves.
+    #[gpui::test]
+    async fn compare_text_ring_takes_the_selected_rows_accent(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let (accent, fill) = cx.update(|_, cx| {
+            let p = palette(cx);
+            let solid = |color| Some(gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color))));
+            (solid(p.accent), solid(p.selected))
+        });
+        let (text, list) = app.read_with(cx, |app, cx| {
+            let editor = app.patch_editor.clone().expect("a unified diff");
+            (editor.read(cx).focus_handle(cx), app.file_focus.clone())
+        });
+        let row = cx.debug_bounds("selected-changed-file").unwrap();
+        let marker = |cx: &mut VisualTestContext| painted_sides(cx, "selected-changed-file")[0];
+        assert_eq!(marker(cx), accent, "at rest");
+
+        cx.update(|window, cx| window.focus(&text, cx));
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_eq!(marker(cx), fill, "the text shows its ring");
+        assert_eq!(
+            cx.debug_bounds("selected-changed-file"),
+            Some(row),
+            "the row moved"
+        );
+
+        // A pointer press ends the ring; the text keeps focus.
+        let pane = cx.debug_bounds("preview-content").unwrap();
+        cx.simulate_mouse_down(pane.center(), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(pane.center(), MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert_eq!(marker(cx), accent, "after a pointer press");
+
+        cx.update(|window, cx| window.focus(&text, cx));
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        assert_eq!(marker(cx), fill, "a key shows the text's ring again");
+        cx.update(|window, cx| window.focus(&list, cx));
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(marker(cx), accent, "the file list holds the ring");
     }
 
     /// A local bare `origin` that `main` tracks one commit behind, read again

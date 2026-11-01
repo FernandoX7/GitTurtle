@@ -435,7 +435,6 @@ pub fn new(
 
 impl SplitView {
     /// The Before and After sides' editors.
-    #[cfg(test)]
     pub(crate) fn editors(&self) -> &[Entity<EditorState>; 2] {
         &self.editors
     }
