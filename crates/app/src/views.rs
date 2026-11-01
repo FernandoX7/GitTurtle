@@ -3137,9 +3137,10 @@ impl GitTurtle {
             .child({
                 // Where not even the actions' menu leaves it room, the file
                 // name stays whole with as much of its directory as fits
-                // (`path_tail`), the actions wrapping below where the name
-                // does not fit beside them; the whole path is its tooltip
-                // and its accessible name.
+                // (`path_tail`), and where not even "…/" and the name fit
+                // beside the actions, the name is elided from its start on
+                // their line; the whole path is its tooltip and its
+                // accessible name.
                 let whole: SharedString = file
                     .map(|file| file.path().display().to_string())
                     .unwrap_or("File comparison".into())
@@ -3149,14 +3150,14 @@ impl GitTurtle {
                 COMPARE_PATH_SHOWN.with(|shown_path| {
                     *shown_path.borrow_mut() = Some((shown.clone(), whole.clone()))
                 });
-                // The line's own start elision cuts a name wider than the
-                // row, and guards a measurement a fraction of a pixel short.
+                // The line's own start elision cuts a name wider than its
+                // room, and guards a measurement a fraction of a pixel short.
                 ellipsis_start(
                     div()
                         .id("preview-file-path")
                         .debug_selector(|| "preview-file-path".into())
                         .flex_1()
-                        .min_w(row.least),
+                        .min_w_0(),
                 )
                 .role(Role::Label)
                 .aria_label(whole.clone())
@@ -4720,9 +4721,12 @@ impl GitTurtle {
     /// and Blame (`blame`), `gap_1` apart. Blame keeps its label where the
     /// path fits beside it, the actions keep their icons where it fits beside
     /// those, and otherwise, where two or more would fold, they fold into one
-    /// File actions menu. Where not even "…/" and the file name fit beside
-    /// the actions but do on the row, the actions wrap below the path, which
-    /// takes the row; a name wider than the row keeps them beside it.
+    /// File actions menu. The path takes what they leave it on their one
+    /// line whatever its length, so the toolbar keeps one height for every
+    /// file and Compare's minimum counts every row it draws
+    /// ([`Self::compare_toolbar_minimum`]): where "…/" and the file name did
+    /// not fit beside File actions, the control wrapped onto a row of its own
+    /// that the minimum left out.
     fn path_actions(
         &self,
         path: &str,
@@ -4770,24 +4774,11 @@ impl GitTurtle {
         let count = 1 + usize::from(history) + usize::from(blame);
         let icons = (control + gap) * count as f32;
         let room = row - badge;
-        // The least the path shows: its file name whole after "…/".
-        let least = path.rfind('/').map_or(needed, |slash| {
-            let least = format!("…{}", &path[slash..]);
-            cached_text_width(&COMPARE_PATH_LEAST, &least, window, || {
-                shaped_width(&least, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
-            })
-        });
-        // A name wider than the whole row cannot be whole: the actions stay
-        // beside it and the line's own start elision cuts it.
-        let whole_name = least <= room;
+        // The path takes what its actions leave it on their one line, so
+        // the row keeps one height whatever the file's name.
         let fit = |actions, beside: Pixels| PathRow {
             actions,
-            room: if least > beside && whole_name {
-                room
-            } else {
-                beside
-            },
-            least: if whole_name { least } else { px(0.) },
+            room: beside,
         };
         if blame {
             let label = cached_width(&BLAME_LABEL, &LineKey::current(window), || {
@@ -4910,19 +4901,27 @@ impl GitTurtle {
     /// code size, and the footer. Its text widths are cached as the chrome's
     /// are, so History's frames ask the text system nothing for it either.
     pub(super) fn compare_minimum(&self, window: &Window, cx: &App) -> Pixels {
+        let rem = window.rem_size();
+        let options = rem * 0.25 * 2. + rem * 1.5 + px(1.);
+        let line = window.pixel_snap(appearance::code_text() * 1.5);
+        self.compare_toolbar_minimum(window, cx)
+            + options
+            + px(8.) * 2.
+            + line * 3.
+            + window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
+    }
+
+    /// Compare's toolbar height in the column it would have beside the rail
+    /// and the inspector (`compare_toolbar_height`), which
+    /// [`Self::compare_minimum`] counts: the path's one row and the text
+    /// modes, on that row or the next.
+    pub(super) fn compare_toolbar_minimum(&self, window: &Window, cx: &App) -> Pixels {
         let width = self.repository_width(window, cx);
         let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let rail = appearance::ui_size(44.);
         let columns = ColumnMinimums::new(width, rail, narrow);
         let column = width - rail - self.expected_inspector_width(width, &columns);
-        let rem = window.rem_size();
-        let options = rem * 0.25 * 2. + rem * 1.5 + px(1.);
-        let line = window.pixel_snap(appearance::code_text() * 1.5);
         compare_toolbar_height(column, columns.content - rail, window)
-            + options
-            + px(8.) * 2.
-            + line * 3.
-            + window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
     }
 
     /// `ChromeWidths` for the chrome's current text, measured again only when
@@ -5675,14 +5674,12 @@ impl GitTurtle {
     }
 }
 
-/// How the comparison path's row lays out (`path_actions`): its actions, the
-/// room the path gets on its line and the least width it keeps, "…/" and its
-/// file name, so the actions wrap below it rather than cut the name.
+/// How the comparison path's row lays out (`path_actions`): its actions and
+/// the room the path gets beside them on their one line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PathRow {
     actions: PathActions,
     room: Pixels,
-    least: Pixels,
 }
 
 impl PathRow {
@@ -5690,7 +5687,6 @@ impl PathRow {
     const WHOLE: Self = Self {
         actions: PathActions::Labelled,
         room: Pixels::MAX,
-        least: px(0.),
     };
 }
 
@@ -6209,7 +6205,6 @@ thread_local! {
     static TEXT_MODES: TextWidth = const { RefCell::new(None) };
     static FOOTER_LINE: TextWidth = const { RefCell::new(None) };
     static COMPARE_PATH: TextWidth = const { RefCell::new(None) };
-    static COMPARE_PATH_LEAST: TextWidth = const { RefCell::new(None) };
     /// The path Compare last showed, for its room (`shown_compare_path`).
     static COMPARE_PATH_TAIL: RefCell<Option<(LineKey, SharedString, Pixels, SharedString)>> =
         const { RefCell::new(None) };
@@ -17333,10 +17328,12 @@ pub(crate) mod tests {
     /// long for its room keeps its file name whole and as much of its
     /// directory as fits, where the line's own start elision showed
     /// "…avigationSidebar.tsx" with no directory. Where "…/" and the name do
-    /// not fit beside File actions, the control wraps below the path, which
-    /// takes the row. The shown text fits its box; the whole path stays the
-    /// accessible name, and a name that is not UTF-8 shows the replacement
-    /// characters its display does.
+    /// not fit beside File actions, the line elides the name from its start
+    /// beside the control: it once wrapped below the path, a row Compare's
+    /// minimum (`compare_toolbar_minimum`) left out, so the toolbar is as tall
+    /// as the minimum counts for every path. The shown text fits its box; the
+    /// whole path stays the accessible name, and a name that is not UTF-8
+    /// shows the replacement characters its display does.
     #[gpui::test]
     async fn a_long_compare_path_keeps_its_file_name_and_nearest_directory(
         cx: &mut TestAppContext,
@@ -17372,7 +17369,7 @@ pub(crate) mod tests {
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(490.)));
-            let (mut wrapped, mut elided) = (0, 0);
+            let (mut cut, mut elided) = (0, 0);
             for index in 0..files {
                 cx.update(|window, cx| {
                     app.update(cx, |app, cx| app.select_file(index, window, cx))
@@ -17394,13 +17391,19 @@ pub(crate) mod tests {
                 };
                 let path = cx.debug_bounds("preview-file-path").unwrap();
                 let toolbar = cx.debug_bounds("compare-toolbar").unwrap();
-                let rem = cx.update(|window, _| window.rem_size());
+                let minimum =
+                    cx.update(|window, cx| app.read(cx).compare_toolbar_minimum(window, cx));
+                assert!(
+                    (toolbar.size.height - minimum).abs() <= px(0.5),
+                    "{at}: the toolbar {toolbar:?} is as tall as Compare's minimum counts, {minimum:?}"
+                );
                 let slash = display.rfind('/').unwrap();
                 let name = &display[slash..];
                 let least = format!("…{name}");
-                // A name wider than the whole row is left to the line's
-                // own elision; every other is whole, in a line that fits.
-                if measure(cx, &least) <= toolbar.size.width - rem * 1.5 {
+                // A name whose "…/" form does not fit beside the actions is
+                // left to the line's own elision there; every other is
+                // whole, in a line that fits.
+                if measure(cx, &least) <= path.size.width + px(0.5) {
                     assert!(shown.ends_with(name), "{at}: {shown:?} keeps {name:?}");
                     assert!(
                         measure(cx, &shown) <= path.size.width + px(0.5),
@@ -17409,6 +17412,7 @@ pub(crate) mod tests {
                     elided += usize::from(shown.as_ref() != display);
                 } else {
                     assert_eq!(shown.as_ref(), display, "{at}");
+                    cut += 1;
                 }
                 if shown.as_ref() != display && shown.ends_with(name) {
                     let directory = &display[..slash];
@@ -17423,13 +17427,17 @@ pub(crate) mod tests {
                         assert!(shown.starts_with('…'), "{at}: {shown:?}");
                     }
                 }
-                if let Some(menu) = cx.debug_bounds("file-actions-menu")
-                    && menu.top() >= path.bottom()
-                {
-                    wrapped += 1;
+                if let Some(menu) = cx.debug_bounds("file-actions-menu") {
+                    assert!(
+                        menu.top() < path.bottom() && menu.left() >= path.right() - px(0.5),
+                        "{at}: File actions {menu:?} stays beside the path {path:?}"
+                    );
                 }
             }
-            assert!(wrapped > 0, "at {text} pt a name took the row");
+            assert!(
+                cut > 0,
+                "at {text} pt a name was elided beside File actions"
+            );
             assert!(elided >= 3, "at {text} pt {elided} paths elided");
             let lossy = app.read_with(cx, |app, _| {
                 app.files
