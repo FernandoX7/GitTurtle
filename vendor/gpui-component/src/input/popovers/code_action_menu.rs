@@ -18,7 +18,10 @@ use crate::{
 };
 
 struct MenuDelegate {
-    menu: Entity<CodeActionMenu>,
+    /// The menu that owns this delegate's list. Held weakly: the menu holds
+    /// the list strongly, so a strong handle here would keep both alive
+    /// once their overlay host let them go.
+    menu: WeakEntity<CodeActionMenu>,
     items: Vec<Rc<CodeActionItem>>,
     selected_ix: usize,
 }
@@ -127,7 +130,8 @@ impl ListDelegate for MenuDelegate {
             return;
         };
 
-        self.menu.update(cx, |this, cx| {
+        // A menu already released has nothing left to confirm into.
+        let _ = self.menu.update(cx, |this, cx| {
             this.select_item(&item, window, cx);
         });
     }
@@ -153,9 +157,8 @@ impl CodeActionMenu {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let view = cx.entity();
             let menu = MenuDelegate {
-                menu: view,
+                menu: cx.entity().downgrade(),
                 items: vec![],
                 selected_ix: 0,
             };
@@ -277,6 +280,17 @@ impl CodeActionMenu {
         });
 
         cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The list this menu owns, so a test can check it goes with the menu.
+    #[cfg(test)]
+    pub(crate) fn list_handle(&self) -> gpui::AnyWeakEntity {
+        self.list.downgrade().into()
     }
 
     fn origin(&self, cx: &App) -> Option<Point<Pixels>> {

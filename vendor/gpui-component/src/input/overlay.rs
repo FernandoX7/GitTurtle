@@ -600,4 +600,175 @@ mod tests {
         cx.run_until_parked();
         assert!(dropped_owner.upgrade().is_none());
     }
+
+    /// Weak handles to the views a host built, to check they go with it.
+    struct HostViews(Vec<(&'static str, gpui::AnyWeakEntity)>);
+
+    impl HostViews {
+        fn of<M: OverlayMode>(host: &InputOverlayHost<M>, cx: &App) -> Self {
+            let mut views = vec![("search panel", host.search.downgrade().into())];
+            if let Some(lsp) = host.lsp.as_ref() {
+                let completion = lsp.completion.read(cx);
+                let code_actions = lsp.code_actions.read(cx);
+                views.extend([
+                    ("completion menu", lsp.completion.downgrade().into()),
+                    ("completion list", completion.list_handle()),
+                    ("code action menu", lsp.code_actions.downgrade().into()),
+                    ("code action list", code_actions.list_handle()),
+                ]);
+                views.extend(lsp.hover.as_ref().map(|hover| {
+                    (
+                        "hover popover",
+                        gpui::AnyWeakEntity::from(hover.downgrade()),
+                    )
+                }));
+            }
+            Self(views)
+        }
+
+        fn assert_released(&self) {
+            let alive = self
+                .0
+                .iter()
+                .filter(|(_, view)| view.is_upgradable())
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>();
+            assert!(alive.is_empty(), "alive after their host went: {alive:?}");
+        }
+    }
+
+    fn completion(label: &str) -> CompletionItem {
+        CompletionItem {
+            label: label.into(),
+            ..Default::default()
+        }
+    }
+
+    fn code_action(title: &str) -> CodeActionItem {
+        CodeActionItem {
+            provider_id: SharedString::from("test"),
+            action: CodeAction {
+                title: title.into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// A host dropped with its completion and code-action menus open lets
+    /// both go, with their lists. Each list's delegate points back at the
+    /// menu that owns the list; held strongly, that pair kept itself alive
+    /// until the app exited, which GPUI's leak check, run as the app drops
+    /// and releases every entity, cannot see.
+    #[gpui::test]
+    fn a_dropped_host_releases_its_open_menus(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| OverlayProbe {
+            state: cx.new(|cx| crate::input::EditorState::new(window, cx).language("sql")),
+        });
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+
+        let views = in_frame(cx, |window, cx| {
+            state.update(cx, |state, cx| {
+                state.present_completion_items(0, "f", vec![completion("foo")], cx);
+                state.present_code_actions(vec![code_action("Fix")], cx);
+            });
+            let mut host = InputOverlayHost::new(state.clone(), window, cx);
+            assert_eq!(host.sync(&state, window, cx).floating.len(), 2);
+            let lsp = host.lsp.as_ref().expect("a code editor's host has menus");
+            assert!(lsp.completion.read(cx).is_open());
+            assert!(lsp.code_actions.read(cx).is_open());
+            let views = HostViews::of(&host, cx);
+            drop(host);
+            views
+        });
+        cx.run_until_parked();
+
+        views.assert_released();
+    }
+
+    /// Closing an editor's last overlay drops its host, which takes the
+    /// menus it built with it although they never opened. The application's
+    /// code-editor Find closes an open kit search this way as it opens its
+    /// own, and each such close left a pair of menus and their lists behind.
+    #[gpui::test]
+    fn closing_the_last_overlay_releases_the_hosts_views(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| OverlayProbe {
+            state: cx.new(|cx| {
+                crate::input::EditorState::new(window, cx)
+                    .language("sql")
+                    .searchable(true)
+            }),
+        });
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+
+        let views = in_frame(cx, |window, cx| {
+            state.update(cx, |state, cx| state.open_search(false, cx));
+            assert_eq!(render_overlays(&state, window, cx).len(), 1);
+            let views = cx
+                .global::<InputOverlayRegistry<crate::input::EditorMode>>()
+                .hosts
+                .get(&state.entity_id())
+                .map(|(_, host)| HostViews::of(host, cx))
+                .expect("an open search keeps its host");
+
+            state.update(cx, |state, cx| state.close_search(cx));
+            assert!(render_overlays(&state, window, cx).is_empty());
+            views
+        });
+        cx.run_until_parked();
+
+        views.assert_released();
+    }
+
+    /// An editor state its owner lets go while its hover popover shows is
+    /// released, and its host goes at the registry's next sweep. The registry
+    /// keeps a host only while its state lives, so a popover that held the
+    /// state strongly kept both alive for good.
+    #[gpui::test]
+    fn a_state_dropped_with_its_hover_shown_is_released(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let (probe, cx) = cx.add_window_view(|window, cx| OverlayProbe {
+            state: cx.new(|cx| crate::input::EditorState::new(window, cx).language("sql")),
+        });
+        let survivor = probe.read_with(cx, |probe, _| probe.state.clone());
+
+        let (owner, views) = in_frame(cx, |window, cx| {
+            let state = cx.new(|cx| crate::input::EditorState::new(window, cx).language("sql"));
+            state.update(cx, |state, cx| {
+                state.set_value("foo", window, cx);
+                state.present_hover(
+                    0..3,
+                    Hover {
+                        contents: HoverContents::Scalar(MarkedString::String("docs".into())),
+                        range: None,
+                    },
+                    cx,
+                );
+            });
+            assert_eq!(render_overlays(&state, window, cx).floating.len(), 1);
+            let views = cx
+                .global::<InputOverlayRegistry<crate::input::EditorMode>>()
+                .hosts
+                .get(&state.entity_id())
+                .map(|(_, host)| HostViews::of(host, cx))
+                .expect("a shown hover keeps its host");
+            assert!(views.0.iter().any(|(name, _)| *name == "hover popover"));
+            (state.downgrade(), views)
+        });
+        cx.run_until_parked();
+        assert!(owner.upgrade().is_none(), "the hover kept its state alive");
+
+        // Another editor's frame without overlays sweeps hosts whose state went.
+        in_frame(cx, |window, cx| {
+            assert!(render_overlays(&survivor, window, cx).is_empty());
+            assert!(
+                cx.global::<InputOverlayRegistry<crate::input::EditorMode>>()
+                    .hosts
+                    .is_empty()
+            );
+        });
+        cx.run_until_parked();
+        views.assert_released();
+    }
 }

@@ -1558,6 +1558,53 @@ holds the shared state strongly, and that test passes without it; since no
 app menu uses the kit's context menu, a kit update may instead drop it rather
 than carry it forward.
 
+The input-overlay lifetime patch modifies
+`src/input/popovers/completion_menu.rs`,
+`src/input/popovers/code_action_menu.rs` and
+`src/input/popovers/hover_popover.rs`. A code editor's overlay host
+(`src/input/overlay.rs`) builds a completion menu and a code-action menu as
+soon as any of its overlays opens, its search panel included, and drops the
+host when the last one closes. Each menu owns a list whose delegate held the
+menu strongly, a cycle no drop broke: once the host went, both menus and
+their lists, with the items they last showed, stayed alive until the app
+exited. GPUI's leak check cannot see it, since it runs as the app drops and
+releases every entity at once. Each delegate now holds its menu weakly, and a
+confirm that finds the menu gone does nothing. The hover popover held its
+editor state strongly too. The overlay registry keeps a host only while its
+state lives, so a state its owner let go while its hover showed was kept
+alive by its own host's popover, and the host with it, for good. The popover
+now holds the state weakly, as the diagnostic popover already did, and draws
+nothing once the state is gone. Showing, moving through, confirming and
+dismissing the menus and the hover are unchanged. No other popover the host
+builds holds its owner strongly (the search panel, the diagnostic popover and
+both menus already held the editor state weakly), and the kit's one other
+list delegate, the Select and ComboBox adapter in `src/searchable_list/`,
+reaches its state only through weak handles in its callbacks.
+
+The consumers are the kit code editors the app opens (`text::editor` in
+`crates/app/src/text.rs`): a host is built whenever a kit search session
+opens in one, and the app's code-editor Find closes that session as it opens
+its own (`FindBar::new` in `crates/app/src/editor_find.rs`), which drops the
+host, so each such open and close left both menus and their lists behind.
+The app sets no completion, code-action or hover provider, so its menus
+never open and no hover shows; the hover half reaches only kit callers that
+set a hover provider.
+
+`scripts/vendor-crate-test.sh vendor/gpui-component input::overlay` runs
+three tests this part adds to `src/input/overlay.rs`:
+`a_dropped_host_releases_its_open_menus` drops a host with both menus open,
+`closing_the_last_overlay_releases_the_hosts_views` opens and closes an
+editor's kit search, and `a_state_dropped_with_its_hover_shown_is_released`
+lets go of a state whose hover shows and sweeps its host with another
+editor's frame; after each, the search panel, both menus, their lists and
+the hover popover no longer upgrade. The menus' `is_open` and `list_handle`,
+which the tests read, are test-only. With the delegates holding their menus
+strongly again all three fail, each naming both menus and both lists alive,
+and with the hover holding its state strongly again only the third fails, on
+the state. Remove this part of the patch when upstream's list delegates and
+hover popover no longer hold their menus and state strongly, and those tests
+pass without it.
+
 The test-layout part is test-only and changes no built code. The crate's lib
 test target compiles only beside its upstream repository: `src/dock/mod.rs`
 includes gpui-base's `crates/base/src/dock/mod.rs`, `src/text/compat.rs` the
