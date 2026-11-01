@@ -1709,6 +1709,27 @@ passes and the last check fails, naming the dropdown's state and its menu
 alive. Remove this part of the patch when upstream's dismiss callback no
 longer holds the dropdown's state strongly, and that test passes without it.
 
+The menu-bar lifetime patch modifies `src/menu/app_menu_bar.rs`. The
+application menu bar (`AppMenuBar`) holds its menus, and each `AppMenu` held
+the bar strongly, a pair no drop broke: a bar taken away kept itself, every
+menu and each popup menu a menu had opened, for the app's life. Each menu now
+holds the bar weakly; once the bar is gone a menu reads as closed and its
+input does nothing, since there is no bar left to open in. Opening a menu
+with a press, moving between open menus with Left and Right or by moving the
+pointer onto another, and closing with Escape are unchanged, as are the
+menus' look and place. No app view builds an `AppMenuBar`, so this part
+reaches only kit callers.
+
+`scripts/vendor-crate-test.sh vendor/gpui-component menu::app_menu_bar` runs
+`a_dropped_bar_releases_its_menus`, which this part adds. It opens File with a
+press, moves to Edit with Right and back with Left, moves the pointer onto
+Edit and closes it with Escape, then drops the bar and reads the bar, both
+menus and both popup menus released. With upstream's code under it, every
+move and Escape still pass and the last check fails, naming the bar, both
+menus and File's popup menu alive; Escape had let Edit's go. Remove this part
+of the patch when upstream's menus no longer hold their bar strongly, and that
+test passes without it.
+
 The test-layout part is test-only and changes no built code. The crate's lib
 test target compiles only beside its upstream repository: `src/dock/mod.rs`
 includes gpui-base's `crates/base/src/dock/mod.rs`, `src/text/compat.rs` the
