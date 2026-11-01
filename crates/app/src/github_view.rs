@@ -5725,8 +5725,8 @@ mod tests {
     /// row's foot darkens the whole row to the selected surface, as list rows do. The title
     /// Button draws no fill of its own in any of these, so the row lifts and darkens once.
     /// The whole lit row opens the PR as the title does, at 18 pt even 6 px in from its edge
-    /// in the row's foot. Unselected rows once drew nothing at rest, the pointer lifted the
-    /// title's line alone, and a press darkened that line alone.
+    /// in the row's foot. In Midnight and Daylight. Unselected rows once drew nothing at rest,
+    /// the pointer lifted the title's line alone, and a press darkened that line alone.
     #[gpui::test]
     async fn pull_request_rows_rest_and_lift_as_list_rows(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -5734,11 +5734,7 @@ mod tests {
         // The dialog opens at rest, so the pointer lands where the rows were measured: its
         // open animation moved them 10 to 13 px after they were read, which left the pointer
         // above #43 in some runs.
-        cx.update(|_, cx| {
-            appearance::ThemeChoice::Midnight.apply(None, cx);
-            cx.set_reduce_motion(true);
-        });
-        let p = cx.update(|_, cx| palette(cx));
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         let panel = cx.update(|window, cx| {
             let repo = app.read(cx).repository.clone().unwrap();
             let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
@@ -5773,85 +5769,96 @@ mod tests {
             cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
             draw(cx);
         };
-        for number in [42, 43] {
-            let card = painted(cx, format!("github-pr-card-{number}"));
-            assert_eq!(card, [fill(p.panel)], "#{number} rests on the panel");
-            assert!(
-                painted(cx, format!("github-pr-{number}")).is_empty(),
-                "#{number}'s title"
-            );
-        }
-        for line in ["github-pr-43", "github-pr-context-43"] {
-            hover(cx, line);
-            let card = painted(cx, "github-pr-card-43".into());
-            assert_eq!(card, [fill(p.row_hover(false))], "{line} lifts the row");
-            assert!(
-                painted(cx, "github-pr-43".into()).is_empty(),
-                "{line}: the row lifts once"
-            );
-            let other = painted(cx, "github-pr-card-42".into());
-            assert_eq!(other, [fill(p.panel)], "{line} leaves #42 at rest");
-        }
+        // In a dark and a light palette, each pass from no PR open.
+        for theme in [
+            appearance::ThemeChoice::Midnight,
+            appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| theme.apply(None, cx));
+            let p = cx.update(|_, cx| palette(cx));
+            panel.update(cx, |panel, _| panel.pull = None);
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+            for number in [42, 43] {
+                let card = painted(cx, format!("github-pr-card-{number}"));
+                assert_eq!(card, [fill(p.panel)], "#{number} rests on the panel");
+                assert!(
+                    painted(cx, format!("github-pr-{number}")).is_empty(),
+                    "#{number}'s title"
+                );
+            }
+            for line in ["github-pr-43", "github-pr-context-43"] {
+                hover(cx, line);
+                let card = painted(cx, "github-pr-card-43".into());
+                assert_eq!(card, [fill(p.row_hover(false))], "{line} lifts the row");
+                assert!(
+                    painted(cx, "github-pr-43".into()).is_empty(),
+                    "{line}: the row lifts once"
+                );
+                let other = painted(cx, "github-pr-card-42".into());
+                assert_eq!(other, [fill(p.panel)], "{line} leaves #42 at rest");
+            }
 
-        // A press on the title darkens the whole row, the title drawing nothing of its own;
-        // released off the row, on a control it did not press, it opens nothing.
-        let title = cx.debug_bounds("github-pr-43").unwrap();
-        cx.simulate_mouse_down(title.center(), MouseButton::Left, Modifiers::default());
-        draw(cx);
-        let pressed = (
-            painted(cx, "github-pr-card-43".into()),
-            painted(cx, "github-pr-43".into()),
-        );
-        assert_eq!(
-            pressed,
-            (vec![fill(p.selected)], vec![]),
-            "a press on #43's title"
-        );
-        let away = cx.debug_bounds("github-pr-42").unwrap().center();
-        cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
-        cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
-        draw(cx);
-
-        // The whole lit row opens the PR: 6 px in from its left edge, in its foot below the
-        // context line, where the line's margin and the row's own padding took no click.
-        // Pressed there, the whole row darkens.
-        let row = cx.debug_bounds("github-pr-card-42").unwrap();
-        let foot = point(row.left() + px(6.), row.bottom() - px(2.));
-        cx.simulate_mouse_move(foot, None, Modifiers::default());
-        cx.simulate_mouse_down(foot, MouseButton::Left, Modifiers::default());
-        draw(cx);
-        let pressed = (
-            painted(cx, "github-pr-card-42".into()),
-            painted(cx, "github-pr-42".into()),
-        );
-        assert_eq!(
-            pressed,
-            (vec![fill(p.selected)], vec![]),
-            "a press at {foot:?}"
-        );
-        cx.simulate_mouse_up(foot, MouseButton::Left, Modifiers::default());
-        settle_panel(&app, cx).await;
-        draw(cx);
-        assert_eq!(
-            panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
-            Some(42),
-            "a click at {foot:?} in {row:?} opens its PR"
-        );
-        // The open PR's "Pull requests" shows the list above it, #42 selected.
-        crate::copy_feedback::tests::click(cx, "github-back-list");
-        draw(cx);
-        let lifted = fill(p.row_hover(true));
-        for line in ["github-pr-context-42", "github-pr-42"] {
-            hover(cx, line);
-            assert_eq!(painted(cx, "github-pr-card-42".into()), [lifted], "{line}");
-            assert!(
-                painted(cx, "github-pr-42".into()).is_empty(),
-                "{line}: the row lifts once"
+            // A press on the title darkens the whole row, the title drawing nothing of its own;
+            // released off the row, on a control it did not press, it opens nothing.
+            let title = cx.debug_bounds("github-pr-43").unwrap();
+            cx.simulate_mouse_down(title.center(), MouseButton::Left, Modifiers::default());
+            draw(cx);
+            let pressed = (
+                painted(cx, "github-pr-card-43".into()),
+                painted(cx, "github-pr-43".into()),
             );
+            assert_eq!(
+                pressed,
+                (vec![fill(p.selected)], vec![]),
+                "a press on #43's title"
+            );
+            let away = cx.debug_bounds("github-pr-42").unwrap().center();
+            cx.simulate_mouse_move(away, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(away, MouseButton::Left, Modifiers::default());
+            draw(cx);
+
+            // The whole lit row opens the PR: 6 px in from its left edge, in its foot below the
+            // context line, where the line's margin and the row's own padding took no click.
+            // Pressed there, the whole row darkens.
+            let row = cx.debug_bounds("github-pr-card-42").unwrap();
+            let foot = point(row.left() + px(6.), row.bottom() - px(2.));
+            cx.simulate_mouse_move(foot, None, Modifiers::default());
+            cx.simulate_mouse_down(foot, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            let pressed = (
+                painted(cx, "github-pr-card-42".into()),
+                painted(cx, "github-pr-42".into()),
+            );
+            assert_eq!(
+                pressed,
+                (vec![fill(p.selected)], vec![]),
+                "a press at {foot:?}"
+            );
+            cx.simulate_mouse_up(foot, MouseButton::Left, Modifiers::default());
+            settle_panel(&app, cx).await;
+            draw(cx);
+            assert_eq!(
+                panel.read_with(cx, |panel, _| panel.pull.as_ref().map(|pull| pull.number)),
+                Some(42),
+                "a click at {foot:?} in {row:?} opens its PR"
+            );
+            // The open PR's "Pull requests" shows the list above it, #42 selected.
+            crate::copy_feedback::tests::click(cx, "github-back-list");
+            draw(cx);
+            let lifted = fill(p.row_hover(true));
+            for line in ["github-pr-context-42", "github-pr-42"] {
+                hover(cx, line);
+                assert_eq!(painted(cx, "github-pr-card-42".into()), [lifted], "{line}");
+                assert!(
+                    painted(cx, "github-pr-42".into()).is_empty(),
+                    "{line}: the row lifts once"
+                );
+            }
+            hover(cx, "github-pr-context-43");
+            assert_eq!(painted(cx, "github-pr-card-42".into()), [fill(p.selected)]);
+            assert!(painted(cx, "github-pr-42".into()).is_empty(), "{theme:?}");
         }
-        hover(cx, "github-pr-context-43");
-        assert_eq!(painted(cx, "github-pr-card-42".into()), [fill(p.selected)]);
-        assert!(painted(cx, "github-pr-42".into()).is_empty());
         cx.update(|window, cx| {
             window.close_dialog(cx);
             appearance::apply_text_sizes(13, 12, window, cx);
