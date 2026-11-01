@@ -1670,7 +1670,11 @@ impl Panel {
     /// the line rather than lie under it. Text lines taller than half the body's room scroll
     /// within the line, so the body keeps room for the conversation, and the line's scrollbar
     /// cues the rest ([`crate::tags::ScrollCue`]); a long remedy was once cut there with no
-    /// sign of more.
+    /// sign of more. The line's text and busy row keep the body's right inset, the scroll
+    /// gutter its content always keeps ([`crate::tags::ScrollCue::gutter`]), with the line's
+    /// own scrollbar drawn in it, so a line wraps as it did among the content: full width
+    /// above the body, a long notice was 19 px wider pinned and could re-wrap as it moved
+    /// there. Its divider spans the panel, as the body's track does.
     fn pin_top_line(
         &self,
         lines: Vec<AnyElement>,
@@ -1685,6 +1689,7 @@ impl Panel {
         // The text holds no control, so its rows keep no room for rings.
         let text = &self.review.top_line_scroll;
         let cue = crate::tags::ScrollCue::new(text, Pixels::ZERO);
+        let gutter = crate::tags::ScrollCue::gutter();
         let line = (!lines.is_empty() || busy.is_some()).then(|| {
             div()
                 .debug_selector(|| "github-top-line".into())
@@ -1703,6 +1708,9 @@ impl Panel {
                                 .debug_selector(|| "github-top-line-scroll".into())
                                 .track_scroll(text)
                                 .max_h(body_max_height(window) / 2.)
+                                // The gutter, which the cue keeps too while the text
+                                // overflows, its scrollbar in it.
+                                .pr(gutter)
                                 .overflow_y_scroll()
                                 .flex()
                                 .flex_col()
@@ -1712,7 +1720,7 @@ impl Panel {
                         ),
                     )
                 })
-                .children(busy)
+                .children(busy.map(|busy| div().pr(gutter).child(busy)))
         });
         // Prepainted before the body, which reads its scroll after.
         div()
@@ -5213,8 +5221,8 @@ mod tests {
     /// The top line's text, where it is taller than its room above an open conversation, scrolls
     /// within the line, and the line's scrollbar cues the rest, its thumb in a gutter clear of
     /// the text: the fixture's notice with a long failure at 18 pt in a 461 × 490 window. A
-    /// short line keeps no gutter and paints no thumb. The text once scrolled with no sign of
-    /// more, a long remedy cut at the line's edge.
+    /// short line keeps the same gutter, the body's right inset, and paints no thumb. The text
+    /// once scrolled with no sign of more, a long remedy cut at the line's edge.
     #[gpui::test]
     async fn the_top_lines_long_text_cues_its_scrollbar(cx: &mut TestAppContext) {
         use crate::tags::tests::{draw, painted_thumb};
@@ -5259,10 +5267,10 @@ mod tests {
                 .debug_bounds("github-top-line-scroll")
                 .expect("the line's text");
             let notice = cx.debug_bounds("github-notice").expect("the notice");
-            assert_eq!(
-                notice.right() < text.right() - px(0.5),
-                cued,
-                "{at}: the notice {notice:?} keeps a gutter in {text:?} only where cued"
+            let gutter = crate::tags::ScrollCue::gutter();
+            assert!(
+                (text.right() - gutter - notice.right()).abs() < px(0.5),
+                "{at}: the notice {notice:?} keeps the gutter {gutter:?} in {text:?}"
             );
             // The scrollbar's viewport, which its track fills.
             let track = Bounds::new(
@@ -5460,6 +5468,72 @@ mod tests {
         assert_eq!(scroll.offset(), left, "the failure is not shown again");
         escape(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A notice wraps the same above an open conversation as among the content: pinned
+    /// ([`Panel::pin_top_line`]), the line keeps the body's right inset, the scroll gutter its
+    /// content always keeps, so the notice keeps its width and its wrapped lines, at 13 and
+    /// 18 pt in a 461 × 490 window and at 13 pt in a 1,480 × 980 one. Pinned at the panel's
+    /// full width, it was 19 px wider than among the content, and a long notice could
+    /// re-wrap as it moved above the body.
+    #[gpui::test]
+    async fn a_pinned_notice_wraps_as_it_did_among_the_content(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.notice = Some(MOVED.into());
+            })
+        });
+        for sizes in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            let mut drawn = Vec::new();
+            for active in [None, Some(target.clone())] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.close(window, cx);
+                        panel.conversations.active = active.clone();
+                    })
+                });
+                open_notice_panel(&app, &panel, sizes, cx).await;
+                assert_eq!(
+                    cx.debug_bounds("github-top-line").is_some(),
+                    active.is_some(),
+                    "{sizes:?}: the line stands above the body only beside a conversation"
+                );
+                let notice = cx.debug_bounds("github-notice").expect("the notice");
+                let line = cx.update(|window, _| window.line_height());
+                drawn.push((
+                    notice.size.width,
+                    (notice.size.height / line).round(),
+                    notice.size.height,
+                ));
+            }
+            assert!(
+                drawn[0].1 > 1.,
+                "{sizes:?}: the notice wraps among the content: {drawn:?}"
+            );
+            assert_eq!(
+                drawn[1], drawn[0],
+                "{sizes:?}: pinned, the notice keeps its width and wrapped lines \
+                 (width, lines, height)"
+            );
+        }
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.conversations.active = None;
+                panel.close(window, cx);
+            });
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
     }
 
     /// The top line's text, taller than its room above an open conversation and scrolled to
