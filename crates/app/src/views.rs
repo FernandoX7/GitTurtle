@@ -475,10 +475,16 @@ impl GitTurtle {
                             .rounded(appearance::ui_size(7.))
                             .bg(rgb(p.subtle))
                             .child(
-                                compact_control_name(
-                                    button("history-tab", "", "commit", history),
-                                    "history-tab",
-                                    "History",
+                                mark_selected_mode(
+                                    compact_control_name(
+                                        button("history-tab", "", "commit", history),
+                                        "history-tab",
+                                        "History",
+                                    ),
+                                    history,
+                                    crate::ICON_INSET,
+                                    "mode-tab-selected-bar",
+                                    p.accent,
                                 )
                                 .debug_selector(|| "history-tab".into())
                                 .toggled(history)
@@ -494,10 +500,16 @@ impl GitTurtle {
                                     .relative()
                                     .group(CHANGES_TOGGLE)
                                     .child(
-                                        compact_control_label(
-                                            button("changes-tab", "", "changes", !history),
-                                            "changes-tab",
-                                            changes.clone(),
+                                        mark_selected_mode(
+                                            compact_control_label(
+                                                button("changes-tab", "", "changes", !history),
+                                                "changes-tab",
+                                                changes.clone(),
+                                            ),
+                                            !history,
+                                            crate::ICON_INSET,
+                                            "mode-tab-selected-bar",
+                                            p.accent,
                                         )
                                         .debug_selector(|| "changes-tab".into())
                                         .toggled(!history)
@@ -703,11 +715,17 @@ impl GitTurtle {
                             .rounded(appearance::ui_size(9.))
                             .bg(rgb(p.subtle))
                             .child(
-                                button(
-                                    "history-tab",
-                                    "History",
-                                    "",
+                                mark_selected_mode(
+                                    button(
+                                        "history-tab",
+                                        "History",
+                                        "",
+                                        self.mode != WorkspaceMode::Working,
+                                    ),
                                     self.mode != WorkspaceMode::Working,
+                                    crate::LABEL_INSET,
+                                    "mode-tab-selected-bar",
+                                    p.accent,
                                 )
                                 .debug_selector(|| "history-tab".into())
                                 .toggled(self.mode != WorkspaceMode::Working)
@@ -718,11 +736,17 @@ impl GitTurtle {
                                 ),
                             )
                             .child(
-                                button(
-                                    "changes-tab",
-                                    self.changes_label(),
-                                    "",
+                                mark_selected_mode(
+                                    button(
+                                        "changes-tab",
+                                        self.changes_label(),
+                                        "",
+                                        self.mode == WorkspaceMode::Working,
+                                    ),
                                     self.mode == WorkspaceMode::Working,
+                                    crate::LABEL_INSET,
+                                    "mode-tab-selected-bar",
+                                    p.accent,
                                 )
                                 .debug_selector(|| "changes-tab".into())
                                 .toggled(self.mode == WorkspaceMode::Working)
@@ -895,30 +919,26 @@ impl GitTurtle {
                     // becomes its glyph, named, before any wraps.
                     .children(NAV_MODES.map(|(mode, name, symbol, selector)| {
                         let selected = self.nav_mode == mode;
+                        // Labelled or a glyph, the selected mode keeps its
+                        // fill and draws the accent bar under its label or
+                        // glyph (`mark_selected_mode`).
                         let control = if form.labelled_modes {
-                            button(name, name, "", selected)
+                            mark_selected_mode(
+                                button(name, name, "", selected),
+                                selected,
+                                crate::LABEL_INSET,
+                                "nav-mode-selected-bar",
+                                colors.accent,
+                            )
                         } else {
-                            // As glyphs, the selected mode was told apart
-                            // only by its fill, 1.40:1 against the panel in
-                            // Midnight; a 2 px accent bar under its glyph,
-                            // 3:1 or more against that fill in every
-                            // palette, marks it as a row's leading marker
-                            // marks the selected row.
-                            compact_control_name(button(name, "", symbol, selected), selector, name)
-                                .tooltip(name)
-                                .when(selected, |control| {
-                                    control.relative().child(
-                                        div()
-                                            .debug_selector(|| "nav-mode-selected-bar".into())
-                                            .absolute()
-                                            .left(crate::appearance::ui_size(crate::ICON_INSET))
-                                            .right(crate::appearance::ui_size(crate::ICON_INSET))
-                                            .bottom(crate::appearance::ui_size(2.))
-                                            .h(px(2.))
-                                            .rounded(px(1.))
-                                            .bg(rgb(colors.accent)),
-                                    )
-                                })
+                            mark_selected_mode(
+                                compact_control_name(button(name, "", symbol, selected), selector, name)
+                                    .tooltip(name),
+                                selected,
+                                crate::ICON_INSET,
+                                "nav-mode-selected-bar",
+                                colors.accent,
+                            )
                         };
                         control
                             .debug_selector(move || selector.into())
@@ -6525,6 +6545,37 @@ pub(crate) fn note_compact_label(selector: &'static str, name: &SharedString) {
     COMPACT_LABELS.with(|names| names.borrow_mut().insert(selector, name.clone()));
     #[cfg(not(test))]
     let _ = (selector, name);
+}
+
+/// `control`, a mode toggle, marked where `selected` with a 2 px accent bar
+/// along its foot, `inset` in from either side, so under its label (the
+/// label inset) or its glyph (the icon inset), over the `selected` fill it
+/// keeps. That fill alone stood 1.40:1 against the panel in Midnight; the
+/// bar stands 3:1 or more against it in every palette, as a row's leading
+/// marker marks the selected row. Labelled and as glyphs, the navigator's
+/// modes and the header's History and Changes carry the one mark, so a
+/// toggle that becomes its glyph as the room narrows keeps the mark it had.
+/// Laid out absolutely inside the toggle, the bar moves nothing.
+fn mark_selected_mode(
+    control: Button,
+    selected: bool,
+    inset: f32,
+    selector: &'static str,
+    accent: u32,
+) -> Button {
+    control.when(selected, |control| {
+        control.relative().child(
+            div()
+                .debug_selector(move || selector.into())
+                .absolute()
+                .left(appearance::ui_size(inset))
+                .right(appearance::ui_size(inset))
+                .bottom(appearance::ui_size(2.))
+                .h(px(2.))
+                .rounded(px(1.))
+                .bg(rgb(accent)),
+        )
+    })
 }
 
 /// `control` named `name` for assistive technology: a control that a compact
@@ -19182,85 +19233,148 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// As glyphs, the selected navigation mode draws a 2 px accent bar under
-    /// its glyph, inside its toggle, at 3:1 or more against the toggle's
-    /// `selected` fill in Midnight and Daylight; it was told apart only by
-    /// that fill, 1.40:1 against the panel in Midnight. The bar follows the
-    /// selection, and no other mode draws one.
+    /// Checks that the toggle `selector` draws the selected mode's mark, the
+    /// 2 px accent bar `bar` lying inside it under its label or glyph, over
+    /// the `selected` fill it keeps, at 3:1 or more against that fill, and
+    /// that none of `others` draws one.
+    fn assert_selected_mode_mark(
+        cx: &mut VisualTestContext,
+        at: &str,
+        selector: &'static str,
+        bar: &'static str,
+        others: &[&'static str],
+    ) {
+        let toggle = cx.debug_bounds(selector).expect("the toggle is drawn");
+        let mark = cx
+            .debug_bounds(bar)
+            .unwrap_or_else(|| panic!("{at}: the selected toggle draws its bar"));
+        assert!(
+            toggle.contains(&mark.origin) && toggle.contains(&mark.bottom_right()),
+            "{at}: the bar {mark:?} lies inside its toggle {toggle:?}"
+        );
+        assert!(mark.size.height >= px(2.), "{at}: {mark:?} is 2 px tall");
+        let p = cx.update(|_, cx| palette(cx));
+        let (fills, _) = appearance::painted_row(cx, mark);
+        let accent = Background::from(Hsla::from(rgb(p.accent)));
+        assert_eq!(fills, [accent], "{at}: the bar paints the accent");
+        let selected = Background::from(Hsla::from(rgb(p.selected)));
+        assert!(
+            appearance::painted_row(cx, toggle).0.contains(&selected),
+            "{at}: the toggle keeps its selected fill"
+        );
+        let ratio = appearance::custom::contrast(p.accent, p.selected);
+        assert!(
+            ratio >= 3.,
+            "{at}: the bar #{:06x} on the fill #{:06x} reads {ratio:.2}:1",
+            p.accent,
+            p.selected
+        );
+        for other in others.iter().filter(|other| **other != selector) {
+            let other = cx.debug_bounds(other).expect("the toggle is drawn");
+            assert!(
+                !other.intersects(&mark),
+                "{at}: the bar marks only the selected mode"
+            );
+        }
+    }
+
+    /// Labelled and as glyphs, the selected navigation mode draws a 2 px
+    /// accent bar under its label or glyph, inside its toggle, at 3:1 or
+    /// more against the toggle's `selected` fill in Midnight and Daylight; it
+    /// was told apart only by that fill, 1.40:1 against the panel in
+    /// Midnight, and labelled it still was once the glyphs had the bar. The
+    /// bar follows the selection, and no other mode draws one.
     #[gpui::test]
-    async fn the_selected_mode_glyph_draws_an_accent_bar(cx: &mut TestAppContext) {
+    async fn the_selected_mode_draws_an_accent_bar_in_either_form(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window(cx).await;
         cx.simulate_resize(size(px(1480.), px(800.)));
         let panels = app.read_with(cx, |app, _| app.history_panels.clone());
-        cx.update(|window, cx| {
-            appearance::apply_text_sizes(18, 12, window, cx);
-            panels.update(cx, |panels, cx| {
-                panels.resize_panel(0, px(180.), window, cx)
-            });
-        });
-        draw(cx);
-        for (theme, mode, selector) in [
-            (
-                appearance::ThemeChoice::Midnight,
-                NavMode::Local,
-                "nav-mode-local",
-            ),
-            (
-                appearance::ThemeChoice::Daylight,
-                NavMode::Local,
-                "nav-mode-local",
-            ),
-            (
-                appearance::ThemeChoice::Midnight,
-                NavMode::Worktrees,
-                "nav-mode-worktrees",
-            ),
-            (
-                appearance::ThemeChoice::Daylight,
-                NavMode::Remote,
-                "nav-mode-remote",
-            ),
-        ] {
-            let at = format!("{} with {selector} selected", theme.label());
-            cx.update(|window, cx| theme.apply(Some(window), cx));
-            app.update(cx, |app, cx| {
-                app.nav_mode = mode;
-                cx.notify();
+        let modes = NAV_MODES.map(|mode| mode.3);
+        for (text, width, labelled) in [(18, 180., false), (13, 360., true)] {
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(text, 12, window, cx);
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(0, px(width), window, cx)
+                });
             });
             draw(cx);
-            let form = cx.update(|window, cx| app.read(cx).sidebar_form(window, cx));
-            assert!(!form.labelled_modes, "{at}: the modes are glyphs");
-            let toggle = cx.debug_bounds(selector).expect("the toggle is drawn");
-            let bar = cx
-                .debug_bounds("nav-mode-selected-bar")
-                .unwrap_or_else(|| panic!("{at}: the selected glyph draws its bar"));
-            assert!(
-                toggle.contains(&bar.origin) && toggle.contains(&bar.bottom_right()),
-                "{at}: the bar {bar:?} lies inside its toggle {toggle:?}"
+            for (theme, mode, selector) in [
+                (
+                    appearance::ThemeChoice::Midnight,
+                    NavMode::Local,
+                    "nav-mode-local",
+                ),
+                (
+                    appearance::ThemeChoice::Daylight,
+                    NavMode::Local,
+                    "nav-mode-local",
+                ),
+                (
+                    appearance::ThemeChoice::Midnight,
+                    NavMode::Worktrees,
+                    "nav-mode-worktrees",
+                ),
+                (
+                    appearance::ThemeChoice::Daylight,
+                    NavMode::Remote,
+                    "nav-mode-remote",
+                ),
+            ] {
+                let at = format!("{text} pt, {} with {selector} selected", theme.label());
+                cx.update(|window, cx| theme.apply(Some(window), cx));
+                app.update(cx, |app, cx| {
+                    app.nav_mode = mode;
+                    cx.notify();
+                });
+                draw(cx);
+                let form = cx.update(|window, cx| app.read(cx).sidebar_form(window, cx));
+                assert_eq!(form.labelled_modes, labelled, "{at}: {form:?}");
+                assert_selected_mode_mark(cx, &at, selector, "nav-mode-selected-bar", &modes);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The header's History and Changes toggles carry the navigator's mark,
+    /// labelled in the full header and as glyphs in the compact one: the
+    /// selected toggle draws the 2 px accent bar over its fill, which alone
+    /// stood 1.40:1 against the panel in Midnight, and the bar follows the
+    /// mode.
+    #[gpui::test]
+    async fn the_selected_header_mode_draws_an_accent_bar_in_either_form(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let tabs = ["history-tab", "changes-tab"];
+        for (width, height, text, compact) in [(1480., 800., 13, false), (461., 490., 18, true)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert_eq!(
+                matches!(predicted_chrome(&app, cx).1, Chrome::Compact { .. }),
+                compact,
+                "{width} x {height}: the header's form"
             );
-            assert!(bar.size.height >= px(2.), "{at}: {bar:?} is 2 px tall");
-            let p = cx.update(|_, cx| palette(cx));
-            let (fills, _) = appearance::painted_row(cx, bar);
-            let accent = Background::from(Hsla::from(rgb(p.accent)));
-            assert_eq!(fills, [accent], "{at}: the bar paints the accent");
-            let selected = Background::from(Hsla::from(rgb(p.selected)));
-            assert!(
-                appearance::painted_row(cx, toggle).0.contains(&selected),
-                "{at}: the toggle keeps its selected fill"
-            );
-            let ratio = appearance::custom::contrast(p.accent, p.selected);
-            assert!(
-                ratio >= 3.,
-                "{at}: the bar #{:06x} on the fill #{:06x} reads {ratio:.2}:1",
-                p.accent,
-                p.selected
-            );
-            for (_, _, _, other) in NAV_MODES.into_iter().filter(|mode| mode.3 != selector) {
-                let other = cx.debug_bounds(other).expect("the toggle is drawn");
-                assert!(
-                    !other.intersects(&bar),
-                    "{at}: the bar marks only the selected mode"
-                );
+            for theme in [
+                appearance::ThemeChoice::Midnight,
+                appearance::ThemeChoice::Daylight,
+            ] {
+                cx.update(|window, cx| theme.apply(Some(window), cx));
+                for (working, selector) in [(false, "history-tab"), (true, "changes-tab")] {
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            if working {
+                                app.show_working(window, cx)
+                            } else {
+                                app.show_history(window, cx)
+                            }
+                        })
+                    });
+                    draw(cx);
+                    let at = format!(
+                        "{width} x {height} at {text} pt, {} with {selector}",
+                        theme.label()
+                    );
+                    assert_selected_mode_mark(cx, &at, selector, "mode-tab-selected-bar", &tabs);
+                }
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
