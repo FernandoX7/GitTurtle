@@ -17638,11 +17638,11 @@ pub(crate) mod tests {
             probe.pills_above && insets.iter().all(|inset| (1. ..=2.).contains(inset)),
             "{at}: the pill lies inside the cut-out, 1–2 px from its edge all round: {probe:?}"
         );
-        let ring = appearance::ui_size(CHANGES_BADGE_RING);
+        let pill = badge.size.height - px(insets[1] + insets[3]);
         assert!(
-            badge.size.height - ring * 2. >= appearance::ui_size(14.) - px(0.5),
+            pill >= appearance::ui_size(14.) - px(0.5),
             "{at}: the pill keeps its 14 px, to layout's half-pixel snapping, inside the \
-             cut-out: {badge:?}"
+             cut-out: {pill:?} in {badge:?}"
         );
         color
     }
@@ -17729,17 +17729,21 @@ pub(crate) mod tests {
     /// Braden, in Changes, where the toggle is selected, and in History, on
     /// the group's fill, the cut-out is the outermost shape
     /// ([`assert_badge_cut_out`]) wherever the chrome is compact, as at 18
-    /// pt in a 461 × 490 window. The toggle keeps its name with the count,
-    /// "Changes · 3". Where the full header stays, as at the default size in
-    /// 461 × 490 and 640 × 680 windows, its Changes tab reads the count and
-    /// no badge is drawn.
+    /// pt in a 461 × 490 window, at scale factors 1 and 2, where the ring
+    /// and the pill each round to whole device pixels. The toggle keeps its
+    /// name with the count, "Changes · 3". Where the full header stays, as
+    /// at the default size in 461 × 490 and 640 × 680 windows, its Changes
+    /// tab reads the count and no badge is drawn.
     #[gpui::test]
     async fn compact_changes_badge_shows_nothing_past_its_cut_out(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
-        for theme in [
+        for (theme, scale) in [
             crate::appearance::ThemeChoice::Midnight,
             crate::appearance::ThemeChoice::Daylight,
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|theme| [(theme, 1.), (theme, 2.)])
+        {
             cx.update(|_, cx| theme.apply(None, cx));
             let p = cx.update(|_, cx| palette(cx));
             for (text, width, height) in [
@@ -17749,7 +17753,9 @@ pub(crate) mod tests {
                 (18, 640., 680.),
             ] {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                // A resize takes the test window's own factor, 2.
                 cx.simulate_resize(size(px(width), px(height)));
+                cx.update(|window, _| window.set_scale_factor(scale));
                 for history in [false, true] {
                     cx.update(|window, cx| {
                         app.update(cx, |app, cx| {
@@ -17765,7 +17771,7 @@ pub(crate) mod tests {
                     COMPACT_LABELS.with(|names| names.borrow_mut().clear());
                     draw(cx);
                     let at = format!(
-                        "{theme:?} in {} at {text} pt in {width} × {height}",
+                        "{theme:?} in {} at {text} pt in {width} × {height} at {scale}x",
                         if history { "History" } else { "Changes" }
                     );
                     let compact = cx.update(|window, cx| app.read(cx).chrome(window, cx));
@@ -17791,7 +17797,10 @@ pub(crate) mod tests {
                 }
             }
         }
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
     }
 
     /// The Working Changes header's count leaves with its "Changes" label:
