@@ -367,6 +367,9 @@ impl GitTurtle {
     }
 
     fn render_projects_button(&self, cx: &mut Context<Self>) -> Button {
+        /// Projects' shortcut as its tooltip ends with it, formatted once.
+        static SHORTCUT: std::sync::LazyLock<SharedString> =
+            std::sync::LazyLock::new(|| shortcuts::label(shortcuts::ShortcutId::Projects).into());
         button("projects", "", "folder", false)
             .debug_selector(|| "projects".into())
             .accessibility_label("Projects")
@@ -380,7 +383,7 @@ impl GitTurtle {
                     self.projects_refusal().0,
                     |app| crate::workspace::WaitingTooltip {
                         name: "Open Projects".into(),
-                        shortcut: Some(shortcuts::label(shortcuts::ShortcutId::Projects).into()),
+                        shortcut: Some(SHORTCUT.clone()),
                         dimmed: app.projects_refusal().1,
                     },
                     cx,
