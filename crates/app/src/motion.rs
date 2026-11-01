@@ -5093,6 +5093,46 @@ mod tests {
         );
     }
 
+    /// The cursor's file deleted outside the app while focus is in the
+    /// commit title, not the list: nothing is selected in its place, focus
+    /// stays in the title, and no preview is read for a neighbour. The
+    /// neighbour is the person's place in the list, kept only while they
+    /// are in it.
+    #[gpui::test]
+    async fn no_neighbour_is_chosen_while_the_list_lacks_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let position = position_of(&app, cx, "zeta.txt", ChangeArea::Unstaged);
+        let selector: &'static str = format!("working-row-{position}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_selected.is_some()),
+            "zeta is the cursor's row"
+        );
+        let title = app.read_with(cx, |app, cx| app.commit_title.read(cx).focus_handle(cx));
+        cx.update(|window, cx| window.focus(&title, cx));
+        next_frame(cx);
+        let previews = app.read_with(cx, |app, _| app.worker.working_previews());
+        delete_outside(&app, cx, "zeta.txt");
+        next_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            None,
+            "nothing is selected in zeta's place"
+        );
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "focus stays in the commit title"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.worker.working_previews()),
+            previews,
+            "no preview is read for a neighbour"
+        );
+    }
+
     #[gpui::test]
     async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_a_right_click(
         cx: &mut TestAppContext,

@@ -583,6 +583,10 @@ pub struct Worker {
     /// assert that a path submits none.
     #[cfg(test)]
     submissions: AtomicU64,
+    /// Test-only: the Working file previews among them
+    /// ([`Self::working_previews`]).
+    #[cfg(test)]
+    working_previews: AtomicU64,
 }
 
 impl Default for Worker {
@@ -686,6 +690,8 @@ impl Worker {
             latest,
             #[cfg(test)]
             submissions: AtomicU64::new(0),
+            #[cfg(test)]
+            working_previews: AtomicU64::new(0),
         }
     }
 
@@ -694,6 +700,14 @@ impl Worker {
     #[cfg(test)]
     pub fn submissions(&self) -> u64 {
         self.submissions.load(Ordering::Acquire)
+    }
+
+    /// Test-only: the Working file previews (`Job::WorkingPreview`)
+    /// submitted so far, so a test can assert that a path reads none while
+    /// other reads run around it.
+    #[cfg(test)]
+    pub fn working_previews(&self) -> u64 {
+        self.working_previews.load(Ordering::Acquire)
     }
 
     /// Test-only: keeps the reader from taking a request until the
@@ -763,6 +777,10 @@ impl Worker {
     pub fn submit(&self, job: Job) -> oneshot::Receiver<Result<Output>> {
         #[cfg(test)]
         self.submissions.fetch_add(1, Ordering::AcqRel);
+        #[cfg(test)]
+        if matches!(job, Job::WorkingPreview { .. }) {
+            self.working_previews.fetch_add(1, Ordering::AcqRel);
+        }
         let (reply, receiver) = oneshot::channel();
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
