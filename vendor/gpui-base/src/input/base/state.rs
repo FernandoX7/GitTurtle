@@ -1699,11 +1699,14 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// the kit draws in the window.
     ///
     /// GitTurtle patch: upstream said a native OS menu on every platform.
-    /// `on_mouse_up` calls this only for a release over this input of a
-    /// right-press that began on it, and only while this input holds focus,
+    /// `on_mouse_up` calls this only for a right-button release over this
+    /// input that ends a right-press begun on it, with no press outside the
+    /// input's bounds, other left or right release or blur GPUI reported of
+    /// this input between them, and only while this input holds focus,
     /// which that press gave it, as GPUI focuses a focusable element under
     /// any mouse-down; so the menu's actions, which go to the window's
-    /// focus, act on this input, as on macOS.
+    /// focus, act on this input, as on macOS. The press's offset is clipped
+    /// to a character boundary of the text as it now stands.
     pub(crate) fn handle_right_click_menu(
         &mut self,
         position: Point<Pixels>,
@@ -1717,6 +1720,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         if crate::GlobalState::is_in_deferred_context(cx) {
             return;
         }
+        // GitTurtle patch: the offset was found as the press went down, and
+        // the text may have changed since; a caret placed inside a
+        // character split it at the next keystroke.
+        let offset = self.text.clip_offset(offset, Bias::Left);
 
         if !self.selected_range.contains(offset) {
             self.move_to(offset, None, cx);
@@ -1799,15 +1806,20 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // GitTurtle patch: upstream opened the menu for any pending press
+        // a right release found here, and only that release cleared it, so
+        // a press that ended any other way stayed pending, and the menu,
+        // whose actions go to the window's focus, opened at its old point
+        // for a later release of a press begun elsewhere, over whichever
+        // field then held focus. A release of either button ends the
+        // press, as a macOS Control-click whose Control is let go first
+        // ends with a left release, and only a right one, while this input
+        // holds the focus its press gave it, opens the menu. A press
+        // outside, a release outside and a blur end it too
+        // (`drop_pending_context_menu`, `on_blur`).
+        let pending = self.pending_context_menu.take();
         if event.button == MouseButton::Right {
-            // GitTurtle patch: upstream opened the menu for any pending
-            // press. A right-press dragged out and released elsewhere left
-            // it pending (see `drop_pending_context_menu`), and the menu
-            // goes to the window's focus, so a later release here of a
-            // press begun elsewhere opened this input's menu over another
-            // field's focus, whose Paste and Cut it then took. Open it only
-            // while this input holds the focus its press gave it.
-            if let Some((position, offset)) = self.pending_context_menu.take() {
+            if let Some((position, offset)) = pending {
                 if self.focus_handle.is_focused(window) {
                     self.handle_right_click_menu(position, offset, window, cx);
                 }
@@ -1821,13 +1833,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.auto_scroll.stop();
     }
 
-    /// GitTurtle patch: a right-press released outside this input opens no
-    /// menu, so its pending point goes with it; upstream cleared it only on
-    /// a release over the input, which a later release of a press begun
-    /// elsewhere then took for its own.
-    pub(super) fn drop_pending_context_menu(
+    /// GitTurtle patch: a press that begins outside this input, or a left
+    /// or right release outside it, ends a right-press pending here, which
+    /// then opens no menu.
+    pub(super) fn drop_pending_context_menu<E>(
         &mut self,
-        _: &MouseUpEvent,
+        _: &E,
         _: &mut Window,
         _: &mut Context<Self>,
     ) {
@@ -2481,6 +2492,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // GitTurtle patch: a right-press pending here ends once this input
+        // loses focus, as GPUI reports when another element takes it, the
+        // input leaves the drawn frame or the window goes inactive.
+        self.pending_context_menu = None;
         if M::is_context_menu_open(self, cx) {
             return;
         }
@@ -3312,7 +3327,14 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                 window.listener_for(&entity, InputBaseState::on_mouse_up),
             )
             .on_mouse_up_out(
+                MouseButton::Left,
+                window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
+            )
+            .on_mouse_up_out(
                 MouseButton::Right,
+                window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
+            )
+            .on_mouse_down_out(
                 window.listener_for(&entity, InputBaseState::drop_pending_context_menu),
             )
             .on_mouse_move(window.listener_for(&entity, InputBaseState::on_mouse_move))
@@ -3482,20 +3504,23 @@ mod tests {
     }
 
     /// Two single-line inputs, A above B in 200 × 30 slots 10 px apart,
-    /// and blank space beside and below them.
+    /// and blank space beside and below them. A's slot stays, empty, while
+    /// `show_a` is off.
     struct TwoInputs {
         a: Entity<InputBaseState<InputMode>>,
         b: Entity<InputBaseState<InputMode>>,
+        show_a: bool,
     }
 
     impl Render for TwoInputs {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let a = self.show_a.then(|| self.a.clone());
             div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .child(div().flex().w(px(200.)).h(px(30.)).child(self.a.clone()))
+                .child(div().flex().w(px(200.)).h(px(30.)).children(a))
                 .child(div().flex().w(px(200.)).h(px(30.)).child(self.b.clone()))
         }
     }
@@ -3513,6 +3538,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (
         &mut VisualTestContext,
+        Entity<TwoInputs>,
         [Entity<InputBaseState<InputMode>>; 2],
         MenuPoints,
         std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
@@ -3536,7 +3562,7 @@ mod tests {
                 };
                 let a = input("A", cx);
                 let b = input("B", cx);
-                TwoInputs { a, b }
+                TwoInputs { a, b, show_a: true }
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -3551,7 +3577,7 @@ mod tests {
             b: center(&b, cx),
             blank: point(px(320.), px(160.)),
         };
-        (cx, [a, b], points, log)
+        (cx, root, [a, b], points, log)
     }
 
     /// A right-button press at `from`, dragged to `to` and released there.
@@ -3561,6 +3587,21 @@ mod tests {
         cx.simulate_mouse_move(to, MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(to, MouseButton::Right, Modifiers::default());
         // The input shows its menu in a deferred callback.
+        cx.run_until_parked();
+    }
+
+    /// A right-button press at `at` whose release does not follow.
+    fn right_press(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    }
+
+    /// A right-button release at `at` whose press neither input saw, as when
+    /// an element before them stops the press in its capture phase: a menu
+    /// it opens is one an earlier press left pending.
+    fn unseen_right_release(cx: &mut VisualTestContext, at: Point<Pixels>) {
+        cx.simulate_mouse_move(at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
         cx.run_until_parked();
     }
 
@@ -3574,7 +3615,7 @@ mod tests {
     /// in A had asked for.
     #[gpui::test]
     fn a_right_release_opens_no_menu_for_a_press_begun_elsewhere(cx: &mut TestAppContext) {
-        let (cx, [a, b], at, log) = two_inputs(cx);
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
         let focused = |input: &Entity<InputBaseState<InputMode>>, cx: &mut VisualTestContext| {
             let handle = input.read_with(cx, |state, _| state.focus_handle.clone());
             cx.update(|window, _| handle.is_focused(window))
@@ -3619,7 +3660,7 @@ mod tests {
     /// focus, would have acted on the field that took it.
     #[gpui::test]
     fn a_right_release_opens_no_menu_once_focus_has_left_the_input(cx: &mut TestAppContext) {
-        let (cx, [a, b], at, log) = two_inputs(cx);
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
         let (a_focus, b_focus) = cx.update(|_, cx| {
             (
                 a.read(cx).focus_handle.clone(),
@@ -3648,6 +3689,203 @@ mod tests {
 
         right_drag(cx, at.a, at.a);
         assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: a release of either button ends a right-press,
+    /// wherever it lands. A macOS Control-click whose Control is let go
+    /// before the button is a right press and a left release, so neither
+    /// right-button handler ran and the press stayed pending; while A kept
+    /// focus, a later right release over A opened A's menu at the old
+    /// point.
+    #[gpui::test]
+    fn a_release_of_either_button_ends_a_right_press(cx: &mut TestAppContext) {
+        let (cx, _, _, at, log) = two_inputs(cx);
+        let none = || -> Vec<&'static str> { Vec::new() };
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_up(at.a, MouseButton::Left, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left release over A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_move(at.blank, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at.blank, MouseButton::Left, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left release outside A ended it");
+
+        right_drag(cx, at.a, at.blank);
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a right release outside A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_mouse_up(at.a, MouseButton::Left, Modifiers::default());
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            none(),
+            "a right-drag from blank space into A after a Control-click on A"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: a press that begins outside an input ends its
+    /// right-press, and so does a left-click on it. A right press whose
+    /// release the window never received, as when the platform loses one,
+    /// stayed pending, and a right-drag from blank space into A then opened
+    /// A's menu at the old point.
+    #[gpui::test]
+    fn a_press_outside_or_a_left_click_ends_a_right_press(cx: &mut TestAppContext) {
+        let (cx, _, _, at, log) = two_inputs(cx);
+        let none = || -> Vec<&'static str> { Vec::new() };
+
+        right_press(cx, at.a);
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(*log.borrow(), none(), "a press on blank space ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_click(at.a, Modifiers::default());
+        unseen_right_release(cx, at.a);
+        assert_eq!(*log.borrow(), none(), "a left-click on A ended it");
+
+        right_press(cx, at.a);
+        cx.simulate_click(at.a, Modifiers::default());
+        right_drag(cx, at.blank, at.a);
+        assert_eq!(
+            *log.borrow(),
+            none(),
+            "a right-drag from blank space into A after a left-click on A"
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// Activates the test's window: GPUI reports focus changes, a blur
+    /// among them, only in an active window, as a window being clicked in
+    /// is.
+    fn activate(cx: &mut VisualTestContext) {
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "the window is active"
+        );
+    }
+
+    /// Draws the test's window, which reports focus changes.
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// GitTurtle patch: an input that loses focus ends its right-press, so
+    /// focus that moves to another field and back while the button is held
+    /// leaves no menu for the release over it.
+    #[gpui::test]
+    fn an_input_that_loses_focus_ends_its_right_press(cx: &mut TestAppContext) {
+        let (cx, _, [a, b], at, log) = two_inputs(cx);
+        activate(cx);
+        let (a_focus, b_focus) = cx.update(|_, cx| {
+            (
+                a.read(cx).focus_handle.clone(),
+                b.read(cx).focus_handle.clone(),
+            )
+        });
+
+        right_press(cx, at.a);
+        cx.update(|window, cx| window.focus(&b_focus, cx));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&a_focus, cx));
+        draw(cx);
+        cx.simulate_mouse_up(at.a, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            log.borrow().is_empty(),
+            "focus leaving A while the button was held ended it, yet {:?} opened",
+            log.borrow()
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: an input taken out of the drawn frame while its
+    /// right-press is held, as a page change takes it away, runs none of
+    /// its handlers for the release, and GPUI reports its blur instead,
+    /// which ends the press: drawn again, still holding focus, it opens no
+    /// menu for a later right release over it.
+    #[gpui::test]
+    fn an_input_taken_out_of_the_frame_ends_its_right_press(cx: &mut TestAppContext) {
+        let (cx, root, [a, _], at, log) = two_inputs(cx);
+        activate(cx);
+        let a_focus = cx.update(|_, cx| a.read(cx).focus_handle.clone());
+        let show_a = |show: bool, cx: &mut VisualTestContext| {
+            root.update(cx, |root, cx| {
+                root.show_a = show;
+                cx.notify();
+            });
+            draw(cx);
+        };
+
+        right_press(cx, at.a);
+        show_a(false, cx);
+        cx.simulate_mouse_move(at.blank, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(at.blank, MouseButton::Right, Modifiers::default());
+        show_a(true, cx);
+        assert!(
+            cx.update(|window, _| a_focus.is_focused(window)),
+            "A, drawn again, holds focus"
+        );
+        unseen_right_release(cx, at.a);
+        assert!(
+            log.borrow().is_empty(),
+            "A leaving the drawn frame ended it, yet {:?} opened",
+            log.borrow()
+        );
+
+        right_drag(cx, at.a, at.a);
+        assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// GitTurtle patch: the menu places the caret at the press's offset
+    /// clipped to a character boundary of the text as it stands when the
+    /// menu opens. A press past the end of "abcdef" stores offset 6; with
+    /// the text changed to "aéééé" before the release, a caret at 6 lay
+    /// inside the third "é", and typing split it.
+    #[gpui::test]
+    fn a_right_click_places_the_caret_on_a_character_boundary(cx: &mut TestAppContext) {
+        let (cx, _, [a, _], at, log) = two_inputs(cx);
+        cx.update(|window, cx| a.update(cx, |state, cx| state.set_value("abcdef", window, cx)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let end = a.read_with(cx, |state, _| {
+            let bounds = state.last_bounds.expect("A is drawn");
+            point(bounds.right() - px(4.), at.a.y)
+        });
+
+        right_press(cx, end);
+        a.read_with(cx, |state, _| {
+            assert_eq!(
+                (state.selected_range.start, state.selected_range.end),
+                (6, 6),
+                "the press past the text's end put the caret at its end"
+            )
+        });
+        cx.update(|window, cx| a.update(cx, |state, cx| state.set_value("aéééé", window, cx)));
+        cx.simulate_mouse_up(end, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(*log.borrow(), ["A"], "the right-click opens A's menu");
+
+        cx.update(|window, cx| {
+            a.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "x", window, cx);
+            })
+        });
+        assert_eq!(
+            a.read_with(cx, |state, _| state.value().to_string()),
+            "aééxéé",
+            "typing after the menu opened inserts between whole characters"
+        );
     }
 
     #[gpui::test]

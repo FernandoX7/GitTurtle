@@ -255,44 +255,74 @@ only the kit test reaches the move up to a whole pixel. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 
-The input's right-click menu (`on_mouse_up`, the added
+The input's right-click menu (`on_mouse_up`, `on_blur`, the added
 `drop_pending_context_menu` and `handle_right_click_menu` in
-`src/input/base/state.rs`) opens, on every platform, only for a release over
-the input of a right-press that began on it, and only while the input holds
-focus. Upstream a right-press kept its point pending until a release over the
-same input took it, so a press dragged out and released elsewhere left it
-pending, and a later right-release over the input of a press that began
-elsewhere opened its menu at the old point. The menu's actions go to the
-window's focus (the [component's](../gpui-component/GITTURTLE-PATCH.md)
-drawn fallback on Linux), so with another field holding focus after a click
-in it, the menu's Cut and Paste acted on that field. A right-button release
-outside the input (`on_mouse_up_out`) now drops its pending press, and the
-release over it opens the menu only while the input's own focus handle is
-focused, as the press left it, since GPUI focuses a focusable element under
-any mouse-down; that check also keeps the menu closed when Tab or a shortcut
-moves focus while the button is held. An input not drawn in the frame a
-release lands in runs no handler and keeps its press pending, and the focus
-check still holds its menu to a release while it has focus. Decided by the
-owner's rule to keep focus where the person put it: a menu opened over one
-field must not act on another, and a release that began elsewhere is no
-right-click on the field. The doc of `handle_right_click_menu` said it is a
-native OS menu; it now says it is the OS's own on macOS and Windows and drawn
-by the kit on Linux, and that its caller opens it only for that release,
-while the input holds the focus its press gave it, so the menu's actions act
-on it. `scripts/vendor-crate-test.sh vendor/gpui-base a_right_release` runs
-`input::state::tests::a_right_release_opens_no_menu_for_a_press_begun_elsewhere`,
-which renders two inputs, A and B: a right-click in A opens A's menu, and no
-menu opens for a right-press in A released over blank space and then a
-right-press on blank space released over A, with B focused by a click and
-again with A focused, and
-`a_right_release_opens_no_menu_once_focus_has_left_the_input`, which moves
-focus to B between a right-press in A and its release over A. In the app,
+`src/input/base/state.rs`) opens, on every platform, only on a right-button
+release over the input that ends a right-press begun on it, with no press
+outside the input's bounds, other left or right release or reported blur of
+the input between them, and only while the input holds focus; the caret goes to the press's
+offset clipped to a character boundary of the text as it then stands.
+Upstream a right-press kept its point and offset pending until a right
+release over the same input took it, so a press that ended any other way
+stayed pending: one dragged out and released elsewhere, a macOS
+Control-click whose Control is let go before the button (a right press and
+a left release, `vendor/gpui-pre-macos/src/window.rs`), one released while
+the input was not drawn and one whose release never came. A later right
+release over the input of a press begun elsewhere then opened its menu at
+the old point. The menu's actions go to the window's focus (the
+[component's](../gpui-component/GITTURTLE-PATCH.md) drawn fallback on
+Linux), so with another field holding focus after a click in it, the
+menu's Cut and Paste acted on that field; with the input holding focus, the
+menu moved its caret to the old offset, which, once the text had changed,
+could lie inside a character, and typing split it. Now a press beginning
+outside the input's bounds (`on_mouse_down_out`), a left or right release
+outside it
+(`on_mouse_up_out`) or over it, and the input's blur, which GPUI reports as
+it draws a frame where the input no longer holds focus because another
+element took it, the input left the frame or the window went inactive, each
+end a pending press. The release over the input opens the menu only while
+its own focus handle is focused, as the press left it, since GPUI focuses a
+focusable element under any mouse-down; that check also keeps the menu
+closed when Tab or a shortcut moves focus before a frame reports the blur.
+Decided by the owner's rule to keep focus where the person put it: a menu
+opened over one field must not act on another, and a release whose press
+began elsewhere, or ended, is no right-click on the field. The doc of
+`handle_right_click_menu` said it is a native OS menu; it now says it is
+the OS's own on macOS and Windows and drawn by the kit on Linux, which
+release calls it, while the input holds the focus its press gave it, so the
+menu's actions act on it, and that the offset is clipped.
+`scripts/vendor-crate-test.sh vendor/gpui-base right_press a_right_release a_right_click`
+runs the regressions in `input::state::tests`, each in two inputs, A and B,
+with a right-click in A opening A's menu:
+`a_right_release_opens_no_menu_for_a_press_begun_elsewhere`, a right-press
+in A released over blank space and then one on blank space released over
+A, with B focused by a click and again with A focused;
+`a_right_release_opens_no_menu_once_focus_has_left_the_input`, focus moved
+to B between a right-press in A and its release over A;
+`a_release_of_either_button_ends_a_right_press`, a Control-click's left
+release over A and outside it and a right release outside it, each followed
+by a right release over A whose press neither input saw, and a Control-click
+followed by a right-drag from blank space into A;
+`a_press_outside_or_a_left_click_ends_a_right_press`, a right-press in A
+whose release never comes followed by a right-drag from blank space into A,
+or by a left-click on A and then a right release over A or that right-drag;
+`an_input_that_loses_focus_ends_its_right_press`, focus moved to B and back
+to A while the button is held;
+`an_input_taken_out_of_the_frame_ends_its_right_press`, A taken out of the
+drawn frame and back while it is held; and
+`a_right_click_places_the_caret_on_a_character_boundary`, a press past the
+end of "abcdef" released after the text became "aéééé", where the caret
+goes before the third "é" and typing "x" gives "aééxéé". Each of the
+press's other ends (a press outside, a left or right release outside, a
+left release over the input, a blur), the focus check and the clip,
+removed alone, fails at least one of them. In the app,
 `cargo test --locked -p gitturtle an_inputs_menu_opens_only_for_a_right_click_pressed_on_it`
-drags a right-press from the Working Changes filter onto the commit title and
-one from the title into the filter, and neither opens a menu, focus staying
-in the title. Remove this part when upstream drops a pending right-press
-released outside the input and opens its menu only while the input holds
-focus, and those tests pass without it.
+drags a right-press from the Working Changes filter onto the commit title
+and one from the title into the filter, and neither opens a menu, focus
+staying in the title. Remove this part when upstream ends a pending
+right-press at any other press outside the input, any release and the
+input's blur, opens its menu only while the input holds focus and clips its
+offset to a character boundary, and those tests pass without it.
 
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
