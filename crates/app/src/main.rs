@@ -1697,12 +1697,16 @@ impl GitTurtle {
         // went before it moved that row; kept at its place, it passed to
         // whichever branch moved in, as one created above it did.
         let followed = followed.and_then(|id| self.nav_ids.iter().position(|row| *row == id));
+        // Where its row left the tree, as a branch deleted under its menu,
+        // the cursor goes to the row that took its place, or the one before
+        // where it was the last, past a section's heading: it once went to
+        // the top.
         self.nav_cursor = followed
             .or_else(|| {
-                self.nav_cursor.filter(|index| {
-                    *index < self.nav_rows.len()
-                        && !matches!(self.nav_rows[*index], NavRow::Section(..))
-                })
+                let at = self.nav_cursor?.min(self.nav_rows.len().checked_sub(1)?);
+                (0..=at)
+                    .rev()
+                    .find(|index| !matches!(self.nav_rows[*index], NavRow::Section(..)))
             })
             .or(Some(0));
         // A keyboard's menu, opened on the cursor row, is drawn beside that

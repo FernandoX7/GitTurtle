@@ -4238,6 +4238,59 @@ mod tests {
         drop(fixture);
     }
 
+    /// The navigator's last branch, deleted outside the app under its open
+    /// keyboard menu, closes the menu and leaves the cursor on the row
+    /// before it, focus back on the tree. It went to the top.
+    #[gpui::test]
+    async fn the_navigator_cursor_goes_to_the_row_before_as_its_last_branch_goes(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = |arguments: &[&str]| fixture_git(&repository, arguments);
+        git(&["reset", "-q", "--hard"]);
+        git(&["branch", "zz-last"]);
+        refs_quietly_refreshed(&app, cx).await;
+        let last = app.read_with(cx, |app, _| {
+            let last = app.nav_rows.len() - 1;
+            assert!(
+                matches!(app.nav_rows[last], crate::NavRow::Branch(branch, _)
+                    if app.branches[branch].name == "zz-last"),
+                "zz-last is the tree's last row"
+            );
+            last
+        });
+        open_keyed_menu(&app, cx, KeyedRow::Branch(last), "shift-f10").await;
+        git(&["branch", "-D", "zz-last"]);
+        refs_quietly_refreshed(&app, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.nav_menu.is_none()),
+            "the menu closed with its branch"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).nav_focus.is_focused(window)),
+            "focus is back on the tree"
+        );
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.nav_cursor,
+                Some(last - 1),
+                "the cursor on the row before"
+            );
+            assert!(
+                matches!(app.nav_rows[last - 1], crate::NavRow::Branch(..)),
+                "a branch's row"
+            );
+        });
+        drop(fixture);
+    }
+
     /// A commit that arrives above History's top row moves that row down,
     /// and a right-click's menu open on it moves with it: the row is keyed by
     /// its commit, not its index, which the arriving commit takes. Keyed by
@@ -4717,11 +4770,26 @@ mod tests {
             "{opening:?}: no keyboard's menu is open"
         );
         assert!(focused(cx), "{opening:?}: focus is back on the list");
+        // A right-click selects nothing, so the cursor stays on alpha, which
+        // Down leaves for beta. A keyboard's menu opened on epsilon's row,
+        // the cursor's, and the cursor goes to gamma, which took its place,
+        // and Down on to zeta: it once restarted at the top, so Down reached
+        // beta.
+        let next = match opening {
+            Opening::RightClick => beta,
+            Opening::Keyboard => {
+                let zeta = position_of(&app, cx, "zeta.txt", ChangeArea::Unstaged);
+                app.read_with(cx, |app, _| match app.actionable_working_rows()[zeta] {
+                    workspace::WorkingRow::File(index, area) => (index, area),
+                    _ => panic!("zeta's row"),
+                })
+            }
+        };
         cx.simulate_keystrokes("down");
         next_frame(cx);
         assert_eq!(
             app.read_with(cx, |app, _| app.working_selected),
-            Some(beta),
+            Some(next),
             "{opening:?}: Down reached the list"
         );
     }
@@ -4915,6 +4983,76 @@ mod tests {
     #[gpui::test]
     async fn a_keyboard_menu_closes_as_its_row_leaves_the_list(cx: &mut TestAppContext) {
         a_row_menu_closes_as_its_row_leaves_the_list(cx, Opening::Keyboard).await;
+    }
+
+    /// A working row's menu, opened as `opening` opens it on the cursor's
+    /// row, closes as a file deleted outside the app takes that row away,
+    /// and the cursor goes to the row that took its place, or to the one
+    /// before where the row was the last, focus back on the list. It once
+    /// restarted at the top, so Down selected the second row.
+    async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_its_menu(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let selected = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let (index, area) = app.working_selected?;
+                let status = app.work_status.as_ref()?;
+                Some((
+                    status.entries[index].path.to_string_lossy().into_owned(),
+                    area,
+                ))
+            })
+        };
+        // Unstaged: delta, epsilon, gamma, zeta. Zeta is the last row; then
+        // gamma follows epsilon.
+        for (name, neighbour) in [("zeta.txt", "gamma.txt"), ("epsilon.txt", "gamma.txt")] {
+            let row: &'static str = format!(
+                "working-row-{}",
+                position_of(&app, cx, name, ChangeArea::Unstaged)
+            )
+            .leak();
+            let bounds = cx.debug_bounds(row).expect(row);
+            cx.simulate_click(bounds.center(), Modifiers::default());
+            next_frame(cx);
+            let at = format!("{opening:?} on {name}");
+            assert_eq!(
+                selected(cx),
+                Some((name.to_owned(), ChangeArea::Unstaged)),
+                "{at}: the cursor's row"
+            );
+            open_row_menu(&app, cx, name, opening);
+            delete_outside(&app, cx, name);
+            next_frame(cx);
+            assert_eq!(offered(cx, "Ignore…"), None, "{at}: the menu closed");
+            assert_eq!(
+                selected(cx),
+                Some((neighbour.to_owned(), ChangeArea::Unstaged)),
+                "{at}: the cursor on its neighbour, not the top"
+            );
+            assert!(
+                cx.update(|window, _| list.is_focused(window)),
+                "{at}: focus back on the list"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_a_right_click(
+        cx: &mut TestAppContext,
+    ) {
+        the_cursor_goes_to_its_neighbour_as_its_row_goes_under_its_menu(cx, Opening::RightClick)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_a_keyboard_menu(
+        cx: &mut TestAppContext,
+    ) {
+        the_cursor_goes_to_its_neighbour_as_its_row_goes_under_its_menu(cx, Opening::Keyboard)
+            .await;
     }
 
     /// A keyboard's menu on `sub/`, an untracked repository beside `sub`, a

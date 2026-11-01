@@ -377,6 +377,52 @@ impl GitTurtle {
         }
     }
 
+    /// Where the cursor stood among the shown rows' files, as the rows of a
+    /// newer status that no longer lists its file land, while focus is in
+    /// the list or in a menu opened from it: the person's place, which
+    /// [`Self::select_working_neighbour`] keeps. `None` where the cursor's
+    /// file is still listed, the list does not hold focus, or no rows were
+    /// shown.
+    fn vacated_working_place(&self, window: &Window, cx: &App) -> Option<usize> {
+        let (_, Some(cursor)) = self.working_paths.retained.as_ref()? else {
+            return None;
+        };
+        let focused = self.file_focus.contains_focused(window, cx)
+            || self
+                .file_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx));
+        if self.working_selected.is_some() || self.mode != WorkspaceMode::Working || !focused {
+            return None;
+        }
+        self.working_rows
+            .iter()
+            .filter(|row| matches!(row, workspace::WorkingRow::File(..)))
+            .position(|row| matches!(row, workspace::WorkingRow::File(index, area) if (*index, *area) == *cursor))
+    }
+
+    /// The cursor's row left the list while the person was in it, as a file
+    /// deleted outside the app takes away the row a menu is open on: the
+    /// cursor goes to the file row that took its `place`, or to the one
+    /// before where its row was the last, so the keys go on from where they
+    /// were. It once restarted at the top, where Down selected the second
+    /// row.
+    fn select_working_neighbour(
+        &mut self,
+        place: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut files = self.working_rows.iter().filter_map(|row| match row {
+            workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+            _ => None,
+        });
+        let neighbour = files.clone().nth(place).or_else(|| files.next_back());
+        if let Some((index, area)) = neighbour {
+            self.choose_working_selection(index, area, false, false, window, cx);
+        }
+    }
+
     /// No rows to show: the status is gone, or the filter failed and its
     /// error replaces the list.
     fn clear_working_rows(&mut self) {
@@ -659,6 +705,7 @@ impl GitTurtle {
                         this.working_paths.staged_count = staged;
                         this.working_paths.visible_count = visible_count;
                         this.working_paths.conflicted = conflicted;
+                        let vacated = this.vacated_working_place(window, cx);
                         this.working_rows = rows;
                         this.working_paths.retained = None;
                         this.reconcile_working_selection();
@@ -671,6 +718,9 @@ impl GitTurtle {
                                 // back to wait; nothing else here starts it.
                                 this.try_automatic_refresh(window, cx);
                             }
+                        }
+                        if let Some(place) = vacated {
+                            this.select_working_neighbour(place, window, cx);
                         }
                         if let Some(anchor) = anchor {
                             if let Some(next_top) = this.working_rows.iter().position(|row| match row {
