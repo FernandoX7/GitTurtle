@@ -7,7 +7,7 @@ use gitturtle_core::{
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
 use gpui_kit::prelude::FluentBuilder;
 
-const PREPARING: &str = "Reading rebase sequence…";
+pub(crate) const PREPARING: &str = "Reading rebase sequence…";
 
 gpui::actions!(interactive_rebase, [MoveCommitUp, MoveCommitDown]);
 

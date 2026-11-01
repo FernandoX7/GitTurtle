@@ -4,7 +4,7 @@ use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCom
 use gpui_kit::component::WindowExt;
 
 /// The busy state of the comparison Merge… and Rebase… ask for.
-const COMPARING: &str = "Comparing branch tips…";
+pub(crate) const COMPARING: &str = "Comparing branch tips…";
 
 impl GitTurtle {
     pub(super) fn show_operation_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {

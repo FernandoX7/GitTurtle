@@ -10,7 +10,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 
-const PREPARING: &str = "Preparing branch action…";
+pub(crate) const PREPARING: &str = "Preparing branch action…";
 const CHOICE_LIMIT: usize = 40;
 type PreparationFailure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 

@@ -11,7 +11,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 
-const PREPARING: &str = "Reading tags…";
+pub(crate) const PREPARING: &str = "Reading tags…";
 /// The gap the kit's dialog leaves between its body and its footer, its
 /// default 16 px padding. A dialog whose body keeps the focus ring's room
 /// below its last control gives the room back by narrowing this gap.

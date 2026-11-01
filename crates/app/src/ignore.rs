@@ -6,7 +6,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 
-const PREPARING: &str = "Preparing ignore rule…";
+pub(crate) const PREPARING: &str = "Preparing ignore rule…";
 /// Why Ignore… opens no form for a file that is now tracked, in the core's
 /// words for the same refusal from Preview rule (`ignore_plan`).
 const NO_LONGER_UNTRACKED: &str =

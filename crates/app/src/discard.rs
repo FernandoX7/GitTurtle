@@ -5,7 +5,7 @@ use gitturtle_core::{ChangeStatus, DiscardPlan, StatusEntry, WriteCommand};
 
 mod review;
 
-const PREPARING: &str = "Reviewing file changes…";
+pub(crate) const PREPARING: &str = "Reviewing file changes…";
 
 #[derive(Default)]
 pub(super) struct State {

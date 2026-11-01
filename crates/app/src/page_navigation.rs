@@ -302,14 +302,38 @@ impl GitTurtle {
     /// Whether the busy state is only a running wait for a dropped
     /// preparation, under whichever label it shows
     /// ([`DroppedPreparation::holds`]): no write runs, nor any preparation
-    /// still to answer, so Projects, which ends the wait as it opens
-    /// (`show_projects`), stays offered (`GitTurtle::projects_refusal`).
-    pub(crate) fn waits_only_for_dropped_preparation(&self) -> bool {
+    /// still to answer.
+    fn waits_only_for_dropped_preparation(&self) -> bool {
         self.operation_busy.is_some_and(|busy| {
             self.dropped_preparation
                 .as_ref()
                 .is_some_and(|running| running.holds(busy))
         })
+    }
+
+    /// Whether Projects ends the busy state as it opens, so it stays offered
+    /// wherever it is (`GitTurtle::projects_refusal`): the busy state is a
+    /// review being prepared, which Settings and Projects cancel
+    /// ([`Self::end_preparations`], under the labels its cancels end), or a
+    /// running wait for a dropped one, which they end, and no write.
+    /// Refused while a review was prepared, the header's Projects and
+    /// History's Back to Projects looked and were announced unavailable,
+    /// giving the review's label as their reason, while Projects' shortcut
+    /// opened it and cancelled the review.
+    pub(crate) fn projects_ends_busy(&self) -> bool {
+        self.waits_only_for_dropped_preparation()
+            || self.operation_busy.is_some_and(|busy| {
+                [
+                    crate::discard::PREPARING,
+                    crate::tags::PREPARING,
+                    crate::ignore::PREPARING,
+                    crate::recovery::PREPARING,
+                    crate::interactive_rebase::PREPARING,
+                    crate::branch_actions::PREPARING,
+                ]
+                .contains(&busy)
+                    || (busy == crate::integration::COMPARING && self.integration_task.is_some())
+            })
     }
 
     /// The busy label of a running wait for a dropped preparation in the
@@ -3297,24 +3321,6 @@ mod tests {
         cx.simulate_resize(size(px(1600.), px(900.)));
         let back = format!("Back to Projects · {}[", primary_label());
         let open = projects_tooltip(None);
-        /// Whether File ▸ Projects… is disabled.
-        fn file_menu_refuses(cx: &mut VisualTestContext) -> bool {
-            cx.update(|_, cx| cx.get_menus())
-                .unwrap_or_default()
-                .into_iter()
-                .find(|menu| menu.name.as_ref() == "File")
-                .and_then(|file| {
-                    file.items.into_iter().find_map(|item| match item {
-                        gpui::OwnedMenuItem::Action { name, disabled, .. }
-                            if name == "Projects…" =>
-                        {
-                            Some(disabled)
-                        }
-                        _ => None,
-                    })
-                })
-                .expect("File ▸ Projects…")
-        }
         // What each place that offers Projects says once the busy look
         // shows, in the mode `keys` opens: `control`, the header's Projects
         // in Changes or History's Back to Projects, as announced and drawn
@@ -3447,6 +3453,177 @@ mod tests {
             .expect("the write");
         write.await;
         settle(&app, cx).await;
+    }
+
+    /// While a review is being prepared, not yet dropped, Projects stays
+    /// available wherever it is offered, as its shortcut always was: the
+    /// header's Projects over Discard…'s review in Changes and History's
+    /// Back to Projects over Tags' read, each announced and drawn
+    /// available with no reason in its tooltip once the review looks busy,
+    /// the palette and the File menu offering it too, and pressing it opens
+    /// Projects and ends the review as the shortcut does
+    /// (`projects_ends_busy`). Both once looked and were announced
+    /// unavailable, giving the review's label as the reason, while the
+    /// shortcut opened Projects and cancelled the review.
+    #[gpui::test]
+    async fn projects_ends_a_review_being_prepared_wherever_it_is_offered(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, refusals};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        // What `control` says once the review looks busy: as announced and
+        // drawn and in its tooltip, then the palette's reason and whether
+        // the File menu refuses Projects.
+        let offered = |control: &'static str, cx: &mut VisualTestContext| {
+            draw(cx);
+            cx.executor().advance_clock(BUSY_LOOK_DELAY);
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.busy_shown()),
+                "{control}: the review looks busy"
+            );
+            (
+                refusals::get(control).map(|refusal| (refusal.announced, refusal.dimmed)),
+                refusals::tooltip(control).map(|tooltip| tooltip.to_string()),
+                cx.update(|window, cx| {
+                    app.read(cx)
+                        .menu_command_reason(CommandId::Projects, window, cx)
+                }),
+                file_menu_refuses(cx),
+            )
+        };
+        let available = |tooltip: String| (Some((false, false)), Some(tooltip), None, false);
+
+        // Discard…'s review in Changes, held as a slow disk holds it.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, Some(crate::discard::PREPARING));
+            assert!(app.dropped_preparation.is_none(), "not dropped");
+        });
+        assert_eq!(
+            offered("projects", cx),
+            available(projects_tooltip(None)),
+            "the header's Projects over Discard…'s review"
+        );
+        let projects = cx.debug_bounds("projects").expect("the header's Projects");
+        cx.simulate_click(projects.center(), Modifiers::default());
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Projects, "Projects opens");
+            assert_eq!(app.operation_busy, None, "the review ends");
+        });
+        drop(held);
+        preparation_ends(&app, cx).await;
+        assert!(!dialog_open(cx), "the review opens nothing");
+
+        // Tags' read in History, held too.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        cx.simulate_keystrokes(&primary("1"));
+        settle(&app, cx).await;
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(crate::tags::PREPARING)
+        );
+        assert_eq!(
+            offered("page-back", cx),
+            available(format!("Back to Projects · {}[", primary_label())),
+            "History's Back to Projects over Tags' read"
+        );
+        let back = cx.debug_bounds("page-back").expect("Back to Projects");
+        cx.simulate_click(back.center(), Modifiers::default());
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Projects, "Projects opens");
+            assert_eq!(app.operation_busy, None, "the read ends");
+        });
+        drop(held);
+        preparation_ends(&app, cx).await;
+        assert!(!dialog_open(cx), "Tags opens nothing");
+    }
+
+    /// Projects, Back and Refresh pressed again and again while a read that
+    /// never ends holds the operation executor queue one status read for
+    /// the tab, whichever route asks: Projects ends the wait for Discard…'s
+    /// review, so nothing holds the busy state, and each Refresh then asks
+    /// for the working state, which the read already waiting answers
+    /// (`refresh_worktree`). Each once queued a read of its own, keeping its
+    /// slot of the bounded queue though the next dropped its reply, until
+    /// one was refused as busy and Changes lost its rows.
+    #[gpui::test]
+    async fn projects_back_and_refresh_behind_a_read_that_never_ends_queue_one_read(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        quiet_reads_land(&app, cx);
+        let rows = entries(&app, cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        std::fs::write(root.join("later.txt"), "later\n").unwrap();
+        for press in 1..=12 {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Projects),
+                "Projects {press} opens"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw(cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(
+                    app.operation_error, None,
+                    "Refresh {press}: no read was refused as busy"
+                );
+            });
+            assert_eq!(entries(&app, cx), rows, "Refresh {press} keeps the rows");
+        }
+
+        drop(held);
+        preparation_ends(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        let landed = entries(&app, cx).unwrap_or_default();
+        assert!(
+            landed.iter().any(|path| path == "later.txt"),
+            "the waiting read lands the working state, {landed:?}"
+        );
+        assert!(!dialog_open(cx), "the review opens nothing");
+    }
+
+    /// Whether File ▸ Projects… is disabled.
+    fn file_menu_refuses(cx: &mut VisualTestContext) -> bool {
+        cx.update(|_, cx| cx.get_menus())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|menu| menu.name.as_ref() == "File")
+            .and_then(|file| {
+                file.items.into_iter().find_map(|item| match item {
+                    gpui::OwnedMenuItem::Action { name, disabled, .. } if name == "Projects…" => {
+                        Some(disabled)
+                    }
+                    _ => None,
+                })
+            })
+            .expect("File ▸ Projects…")
     }
 
     /// Settings and Projects drop the branch comparison Merge… or Rebase…

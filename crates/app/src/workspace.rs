@@ -1930,6 +1930,16 @@ impl GitTurtle {
     /// (`write_unsettled`): replaced unmarked, the write's read was no longer
     /// counted, and a Working row's open menu was built again from the
     /// status the write had just changed before the new read landed.
+    ///
+    /// Behind a read the window no longer waits for, as Settings and
+    /// Projects end the wait for a review's preparation whose read never
+    /// ends, the read asked for waits in the executor's queue, and one asked
+    /// for again while it waits, by whichever route, takes it over rather
+    /// than queue another
+    /// ([`operations::SerialExecutor::submit_read_once`]), so each
+    /// repository keeps one slot at most: Projects, Back and Refresh pressed
+    /// again and again during such a read once queued a read at each
+    /// Refresh, until one was refused as busy and Changes lost its rows.
     pub(super) fn refresh_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() {
             self.working_read_deferred = self.path.clone();
@@ -1957,9 +1967,11 @@ impl GitTurtle {
         }
         let path = repo.path().to_owned();
         self.status_task = None;
-        let response = self
-            .operations
-            .submit_read(move || worker::WorkingState::read(&repo));
+        let response =
+            self.operations
+                .submit_read_once(&mut self.status_reads, path.clone(), move || {
+                    worker::WorkingState::read(&repo)
+                });
         self.status_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
@@ -2587,14 +2599,16 @@ impl GitTurtle {
     /// Projects…, the palette and the Linux Main Menu. Refused while the
     /// busy spell runs, since each action Projects offers starts another
     /// operation, and dimmed once that spell looks busy, as everywhere else,
-    /// but neither while the window waits only for a dropped preparation's
-    /// read ([`Self::waits_only_for_dropped_preparation`]), which
-    /// `show_projects` ends as it opens: Projects is the way out of a read
-    /// that never ends, so it is never refused for one, as its shortcut
-    /// never was. Through that wait it once looked and was announced
-    /// unavailable, giving the wait's reason, while its shortcut opened it.
+    /// but neither while the window waits only for a review being prepared
+    /// or for a dropped preparation's read ([`Self::projects_ends_busy`]),
+    /// which `show_projects` ends as it opens: the button and its shortcut
+    /// do the same thing, and Projects is the way out of a read that never
+    /// ends, so it is never refused for one, as its shortcut never was.
+    /// Through that wait, and while a review was prepared, it once looked
+    /// and was announced unavailable, giving the wait's reason, while its
+    /// shortcut opened it.
     pub(crate) fn projects_refusal(&self) -> (bool, bool) {
-        let refused = self.operation_busy.is_some() && !self.waits_only_for_dropped_preparation();
+        let refused = self.operation_busy.is_some() && !self.projects_ends_busy();
         (refused, refused && self.operation_shown().is_some())
     }
 

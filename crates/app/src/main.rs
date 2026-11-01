@@ -411,6 +411,10 @@ struct GitTurtle {
     preview_showing: system_preview::Showing,
     operation_task: Option<Task<()>>,
     status_task: Option<Task<()>>,
+    /// The status reads waiting in the operation executor's queue, one for
+    /// each repository at most, whichever tab or route asked
+    /// (`GitTurtle::refresh_worktree`). Window-lived, as the executor is.
+    status_reads: operations::WaitingReads<PathBuf, worker::WorkingState>,
     /// The `work_generation` of the status read a write that changes only
     /// the working state asked for as it ended (Stage, Unstage, Discard,
     /// Ignore, Delete untracked file…, Resolve, a stash's recovery), or of
@@ -804,6 +808,7 @@ impl GitTurtle {
             preview_showing: system_preview::Showing::next(),
             operation_task: None,
             status_task: None,
+            status_reads: Default::default(),
             status_after_write: None,
             working_read_deferred: None,
             work_generation: 0,

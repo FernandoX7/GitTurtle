@@ -13,7 +13,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 
-const PREPARING: &str = "Preparing recovery action…";
+pub(crate) const PREPARING: &str = "Preparing recovery action…";
 /// Why a recovery action refuses while the merge the tests pause is paused
 /// (`gitturtle_core::paused_recovery_refusal`).
 #[cfg(test)]

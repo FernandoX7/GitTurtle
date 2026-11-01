@@ -5,10 +5,36 @@ use futures::channel::oneshot;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, Mutex, PoisonError, mpsc},
 };
 
 type Operation = Box<dyn FnOnce(bool) + Send>;
+
+/// Reads waiting in a [`SerialExecutor`]'s queue, at most one for each key,
+/// which a newer request for the same key takes over while they still wait
+/// ([`SerialExecutor::submit_read_once`]).
+pub(crate) struct WaitingReads<K, T> {
+    waiting: Vec<(K, Arc<Mutex<Reply<T>>>)>,
+}
+
+impl<K, T> Default for WaitingReads<K, T> {
+    fn default() -> Self {
+        Self {
+            waiting: Vec::new(),
+        }
+    }
+}
+
+/// Where a read of [`WaitingReads`] answers: the latest request's reply
+/// while it waits in the queue, and nothing more once it has started.
+enum Reply<T> {
+    Waiting(oneshot::Sender<Result<T>>),
+    Started,
+}
+
+fn lock<T>(reply: &Mutex<Reply<T>>) -> std::sync::MutexGuard<'_, Reply<T>> {
+    reply.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// How long a test waits on a thread of the app's own, an executor answering
 /// ([`SerialExecutor::drain`]) or the repository reader going idle
@@ -215,34 +241,95 @@ impl SerialExecutor {
         Held { _release: release }
     }
 
+    /// [`Self::submit_read`] for a read of `key` that reads what is there
+    /// as it runs, so a request made while one for the same key still
+    /// waits in the queue is answered by that read instead of queued behind
+    /// it, and the earlier request's reply is dropped, as replacing its task
+    /// drops it: however often it is asked for meanwhile, `key` keeps at most
+    /// one slot of the bounded queue. A read that has started, which may
+    /// have read before the request, is not taken over: the request queues
+    /// a read of its own. Changes' status read is one
+    /// (`GitTurtle::refresh_worktree`): each Refresh behind a read that
+    /// never ends once queued another, each keeping its slot though the next
+    /// dropped its reply, until one was refused as busy and Changes lost its
+    /// rows.
+    pub fn submit_read_once<K: PartialEq, T: Send + 'static>(
+        &self,
+        waiting: &mut WaitingReads<K, T>,
+        key: K,
+        operation: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> oneshot::Receiver<Result<T>> {
+        let (reply, response) = oneshot::channel();
+        waiting
+            .waiting
+            .retain(|(_, read)| matches!(*lock(read), Reply::Waiting(_)));
+        if let Some((_, read)) = waiting.waiting.iter().find(|(read, _)| *read == key)
+            && let Reply::Waiting(earlier) = &mut *lock(read)
+        {
+            *earlier = reply;
+            return response;
+        }
+        let read = Arc::new(Mutex::new(Reply::Waiting(reply)));
+        let answers = Arc::clone(&read);
+        waiting.waiting.retain(|(read, _)| *read != key);
+        waiting.waiting.push((key, read));
+        self.send(Box::new(move |accepted| {
+            // Its own statement, so the lock is let go before the read runs:
+            // held through the read, a request for the key while it ran
+            // waited for it on the UI thread.
+            let reply = std::mem::replace(&mut *lock(&answers), Reply::Started);
+            if let Reply::Waiting(reply) = reply {
+                answer(reply, accepted, true, operation);
+            }
+        }));
+        response
+    }
+
     fn submit_impl<T: Send + 'static>(
         &self,
         operation: impl FnOnce() -> Result<T> + Send + 'static,
         skip_cancelled: bool,
     ) -> oneshot::Receiver<Result<T>> {
         let (reply, response) = oneshot::channel();
-        let job: Operation = Box::new(move |accepted| {
-            if skip_cancelled && reply.is_canceled() {
-                return;
-            }
-            let result = if accepted {
-                catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
-                    Err(anyhow!("Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."))
-                })
-            } else {
-                Err(anyhow!(
-                    "Background executor is busy or unavailable. Try again after the current operation finishes."
-                ))
-            };
-            let _ = reply.send(result);
-        });
+        self.send(Box::new(move |accepted| {
+            answer(reply, accepted, skip_cancelled, operation);
+        }));
+        response
+    }
+
+    /// Queues `job`, or runs it refused at once where the bounded queue has
+    /// no room or the thread has stopped.
+    fn send(&self, job: Operation) {
         if let Err(error) = self.sender.try_send(job) {
             match error {
                 mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job(false),
             }
         }
-        response
     }
+}
+
+/// Runs `operation` for `reply` once the executor reaches it, `accepted`,
+/// or answers that the executor is busy; a read (`skip_cancelled`) whose
+/// reply has been dropped is skipped.
+fn answer<T>(
+    reply: oneshot::Sender<Result<T>>,
+    accepted: bool,
+    skip_cancelled: bool,
+    operation: impl FnOnce() -> Result<T>,
+) {
+    if skip_cancelled && reply.is_canceled() {
+        return;
+    }
+    let result = if accepted {
+        catch_unwind(AssertUnwindSafe(operation)).unwrap_or_else(|_| {
+            Err(anyhow!("Operation interrupted unexpectedly. Refresh the repository before retrying; it may have changed."))
+        })
+    } else {
+        Err(anyhow!(
+            "Background executor is busy or unavailable. Try again after the current operation finishes."
+        ))
+    };
+    let _ = reply.send(result);
 }
 
 #[cfg(test)]
@@ -465,6 +552,68 @@ mod tests {
             "write executed"
         );
         assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Requests for one key behind a read that never ends keep one slot of
+    /// the bounded queue, answered by the read that waits, the latest
+    /// request's reply only; another key queues its own, and a read that has
+    /// started is not taken over. Each request once queued a read of its
+    /// own, so the ninth behind a held job was refused as busy.
+    #[test]
+    fn reads_of_one_key_waiting_in_the_queue_keep_one_slot() {
+        let executor = SerialExecutor::new("operation-once-test");
+        let mut waiting = WaitingReads::default();
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let read = |key: &'static str, runs: &Arc<Mutex<Vec<&'static str>>>| {
+            let runs = Arc::clone(runs);
+            move || {
+                runs.lock().unwrap().push(key);
+                Ok(key)
+            }
+        };
+        let held = executor.hold();
+        let mut replies: Vec<_> = (0..12)
+            .map(|_| executor.submit_read_once(&mut waiting, "shown", read("shown", &runs)))
+            .collect();
+        let other = executor.submit_read_once(&mut waiting, "other", read("other", &runs));
+        let latest = replies.pop().unwrap();
+        drop(held);
+        assert_eq!(
+            futures::executor::block_on(latest).unwrap().unwrap(),
+            "shown"
+        );
+        assert_eq!(
+            futures::executor::block_on(other).unwrap().unwrap(),
+            "other"
+        );
+        for earlier in replies {
+            assert!(
+                futures::executor::block_on(earlier).is_err(),
+                "an earlier request's reply is dropped"
+            );
+        }
+        assert_eq!(*runs.lock().unwrap(), ["shown", "other"]);
+
+        // A read that has started may have read before the request, which
+        // then queues its own.
+        let (started, running) = mpsc::channel();
+        let (release, gate) = mpsc::channel::<()>();
+        let first = executor.submit_read_once(&mut waiting, "shown", move || {
+            started.send(()).unwrap();
+            gate.recv()?;
+            Ok("first")
+        });
+        running.recv().unwrap();
+        let second = executor.submit_read_once(&mut waiting, "shown", read("shown", &runs));
+        release.send(()).unwrap();
+        assert_eq!(
+            futures::executor::block_on(first).unwrap().unwrap(),
+            "first"
+        );
+        assert_eq!(
+            futures::executor::block_on(second).unwrap().unwrap(),
+            "shown"
+        );
     }
 
     #[test]
