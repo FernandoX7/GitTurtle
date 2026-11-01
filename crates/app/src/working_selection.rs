@@ -575,16 +575,19 @@ impl GitTurtle {
     }
 
     /// [`Self::working_list_refuses`] for a press on the list, a click on a
-    /// row, Enter, an arrow or Select All: where the busy spell refuses it,
-    /// its look shows at once ([`Self::show_busy_look`]), so the reason comes
-    /// in the frame of the refusal rather than the spell's delay later; the
-    /// filter's error is drawn already.
+    /// row, Enter, an arrow or Select All: where work in flight refuses it, a
+    /// write or the rows being prepared, the busy spell's look shows at once
+    /// ([`Self::show_busy_look`]), so the reason comes in the frame of the
+    /// refusal rather than the spell's delay later. The filter's error says
+    /// why in the list already, and a status read running meanwhile refuses
+    /// no press: one refused for the error alone during such a read once
+    /// showed the read's look at once, dimming what the person had not
+    /// touched for a reason that was not why.
     pub(super) fn refuse_working_press(&mut self, cx: &mut Context<Self>) -> bool {
-        let refused = self.working_list_refuses();
-        if refused {
+        if self.operation_busy.is_some() || self.working_paths.pending {
             self.show_busy_look(cx);
         }
-        refused
+        self.working_list_refuses()
     }
 
     pub(super) fn choose_working_selection(

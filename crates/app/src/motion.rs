@@ -6115,6 +6115,64 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Enter, an arrow or Select All that the Working list refuses only for
+    /// its filter's error, which says why in the list, shows no busy look,
+    /// though a status read runs: the read refuses no press, and its look
+    /// waits its 200 ms as for any spell nobody pressed into. Each once
+    /// showed the read's look at once, dimming what the person had not
+    /// touched. The error leaves no row to click.
+    #[gpui::test]
+    async fn a_press_refused_for_the_filters_error_alone_shows_no_busy_look(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _repository) = narrow_notes(cx).await;
+        let query = "x".repeat(crate::path_filter::MAX_QUERY_BYTES + 1);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value(&query, window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert!(
+            cx.debug_bounds("working-filter-error").is_some(),
+            "the filter's error is drawn"
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        let read = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_some()
+                && app.operation_busy.is_none()
+                && !app.working_paths.pending),
+            "a status read runs alone"
+        );
+        for press in ["enter", "down", "Select All"] {
+            match press {
+                "Select All" => app.update(cx, |app, cx| app.select_all_working(cx)),
+                keys => cx.simulate_keystrokes(keys),
+            }
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.working_list_refuses()),
+                "{press}: refused for the error"
+            );
+            assert!(
+                !app.read_with(cx, |app, _| app.busy_shown()),
+                "{press}: no busy look"
+            );
+        }
+        drop(read);
+        crate::views::tests::settle(&app, cx).await;
+        next_frame(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A click on the selected conflicted file's row, or Enter, while the
     /// Working list refuses a choice, as while a discard review is prepared
     /// (a write in the window's busy spell that leaves the preview open) or
