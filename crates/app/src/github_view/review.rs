@@ -54,7 +54,7 @@ pub(super) struct FocusObservation {
     pub viewport: Bounds<Pixels>,
     pub rem_size: Pixels,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Section {
     Overview,
     Files,
@@ -902,7 +902,12 @@ impl Panel {
             && self.review.comments.is_empty()
             && self.review.composing.is_none();
     }
-    fn change_section(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn change_section(
+        &mut self,
+        section: Section,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.save_draft(window, cx);
         self.review.section = section;
         self.confirm = None;

@@ -2093,7 +2093,10 @@ impl Render for Panel {
         // The body scrolls inside the room its controls' focus rings take, which its sides
         // give back through their margin; above and below, the dialog's clip of its body
         // allows no margin, so the room is the body's own. While the body overflows, its
-        // scrollbar shows the rest is there.
+        // scrollbar shows the rest is there. Its content keeps the scrollbar's gutter whether
+        // or not it overflows, so a section tab, a PR opening or a reply's composer, which
+        // change what it holds, never move its right edge: kept only while the body
+        // overflowed, the gutter moved that edge 19 px between Overview and Files.
         let cue = crate::tags::ScrollCue::new(&scroll, room);
         let body = cue.list(
             div()
@@ -2115,6 +2118,7 @@ impl Render for Panel {
                 .min_h_0()
                 .max_h(body_max_height(window))
                 .p(room)
+                .pr(room + crate::tags::ScrollCue::gutter())
                 .mx(-room)
                 .overflow_y_scroll()
                 .flex()
@@ -6271,13 +6275,13 @@ mod tests {
     /// The panel's body cues what lies below its fold with the shared always-visible
     /// scrollbar (`tags::ScrollCue`) only while it overflows: a PR's Files in a 1000 × 680
     /// window overflow at 13 and 18 pt, and the thumb follows the body's offset in a gutter
-    /// clear of the rings of the controls at its right; there the content narrows by that
-    /// gutter, the track and the ring's room. The PR list with none loaded in a 1480 × 1200
-    /// window fits: the body draws no thumb and its content keeps the body's width less the
-    /// ring's room on either side.
+    /// clear of the rings of the controls at its right. The PR list with none loaded in a
+    /// 1480 × 1200 window fits: the body draws no scrollbar. Either way the content keeps
+    /// that gutter, the track and the ring's room, so nothing it holds moves as it comes to
+    /// overflow or to fit.
     #[gpui::test]
     async fn the_panel_cues_its_fold_only_while_its_body_overflows(cx: &mut TestAppContext) {
-        use crate::tags::tests::{assert_no_scroll_cue, assert_scroll_cue, draw};
+        use crate::tags::tests::{assert_scroll_cue, draw, set_interface_text_size};
         let (_fixture, app, cx) = repository_window(cx);
         // The dialog opens at rest, so the thumb is read where the track was measured.
         cx.update(|_, cx| {
@@ -6299,7 +6303,30 @@ mod tests {
         let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
         cx.simulate_resize(size(px(1480.), px(1200.)));
         draw(cx);
-        assert_no_scroll_cue(cx, &app, "github-panel", room, &["github-panel-content"]);
+        // The content keeps the ring's room on its left and the gutter on its right.
+        let gutter = crate::tags::ScrollCue::gutter();
+        let keeps_gutter = |cx: &mut VisualTestContext| {
+            let (body, content) = (
+                cx.debug_bounds("github-panel").expect("the body"),
+                cx.debug_bounds("github-panel-content")
+                    .expect("its content"),
+            );
+            (body.right() - room - gutter - content.right()).abs() < px(0.01)
+                && (content.left() - (body.left() + room)).abs() < px(0.01)
+        };
+        for interface in [13, 18] {
+            set_interface_text_size(cx, &app, interface);
+            assert!(
+                scroll.max_offset().y == px(0.)
+                    && cx.debug_bounds("github-panel-scrollbar").is_none(),
+                "at {interface} pt the PR list fits the body, which draws no scrollbar"
+            );
+            assert!(
+                keeps_gutter(cx),
+                "at {interface} pt the fitting body's content keeps the gutter"
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
 
         let pull = github::review::fixture_pull(false);
         let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
@@ -6327,17 +6354,9 @@ mod tests {
         ];
         assert_scroll_cue(cx, &app, &scroll, "github-panel", room, &controls);
         // The content gives the gutter up: the track and the ring's room beside it.
-        let gutter = crate::tags::ScrollCue::gutter();
-        let (body, content) = (
-            cx.debug_bounds("github-panel").expect("the body"),
-            cx.debug_bounds("github-panel-content")
-                .expect("its content"),
-        );
         assert!(
-            (body.right() - room - gutter - content.right()).abs() < px(0.01)
-                && (content.left() - (body.left() + room)).abs() < px(0.01),
-            "the content {content:?} keeps the ring's room and the gutter {gutter:?} inside the \
-             body {body:?}"
+            keeps_gutter(cx),
+            "the overflowing body's content keeps the ring's room and the gutter {gutter:?}"
         );
         cx.update(|window, cx| window.close_dialog(cx));
     }
@@ -6844,6 +6863,86 @@ mod tests {
                 escape(cx);
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Switching a PR's section moves nothing already drawn: the body keeps its scrollbar's
+    /// gutter whether or not the section overflows, so the content's right edge, where the
+    /// Buttons and the draft status at the panel's right end, and the tabs stay put. At 13 pt
+    /// in a 1,480 × 980 window Overview fits and Files overflows, and the right edge moved
+    /// 19 px between them, the gutter's track and the ring's room.
+    #[gpui::test]
+    async fn switching_a_prs_section_moves_nothing(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        // Whether some window showed one section overflowing and another fitting.
+        let mut mixed = false;
+        for (interface, width, height) in [
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+            (13, 1000., 680.),
+            (18, 1000., 680.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+        ] {
+            let at = format!("{interface} pt in {width} × {height}");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            let mut drawn = Vec::new();
+            for section in [
+                Section::Overview,
+                Section::Files,
+                Section::Review,
+                Section::Overview,
+            ] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull.clone());
+                        panel.review.files = files.clone();
+                        panel.review.show_list = false;
+                        panel.change_section(section, window, cx);
+                    })
+                });
+                scroll.set_offset(point(px(0.), px(0.)));
+                settle_panel(&app, cx).await;
+                for _ in 0..2 {
+                    crate::width_walk::frame(cx);
+                }
+                let content = cx
+                    .debug_bounds("github-panel-content")
+                    .expect("the content");
+                let tab = cx
+                    .debug_bounds("github-section-0")
+                    .expect("the Overview tab");
+                drawn.push((
+                    section,
+                    content.right(),
+                    tab,
+                    scroll.max_offset().y > px(0.),
+                ));
+            }
+            let overflows = drawn
+                .iter()
+                .filter(|(_, _, _, overflows)| *overflows)
+                .count();
+            mixed |= overflows > 0 && overflows < drawn.len();
+            let (_, right, tab, _) = drawn[0];
+            assert!(
+                drawn
+                    .iter()
+                    .all(|(_, other, place, _)| *other == right && *place == tab),
+                "{at}: switching sections moved the content's right edge or the tabs: {drawn:?}"
+            );
+        }
+        assert!(
+            mixed,
+            "some window shows one section overflowing the body and another fitting it"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
