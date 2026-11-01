@@ -5039,6 +5039,60 @@ mod tests {
         }
     }
 
+    /// Delta, epsilon and zeta selected with Command- or Control-clicks, the
+    /// cursor on zeta, and zeta deleted outside the app: delta and epsilon
+    /// stay selected, so Stage selected acts on them, and only the cursor
+    /// moves, to gamma, the row before. Chosen as a click chooses, gamma
+    /// replaced the selection, and Stage selected acted on a file nobody
+    /// picked.
+    #[gpui::test]
+    async fn a_multiselection_survives_its_cursor_rows_departure(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let click = |cx: &mut VisualTestContext, name: &str, modifiers: Modifiers| {
+            let position = position_of(&app, cx, name, ChangeArea::Unstaged);
+            let selector: &'static str = format!("working-row-{position}").leak();
+            let row = cx.debug_bounds(selector).expect(selector);
+            cx.simulate_click(row.center(), modifiers);
+            cx.executor().run_until_parked();
+            next_frame(cx);
+        };
+        let selection = |cx: &mut VisualTestContext| {
+            let paths = app.read_with(cx, |app, _| app.working_copy_paths());
+            let mut paths: Vec<String> = paths
+                .as_deref()
+                .unwrap_or("")
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            paths.sort_unstable();
+            paths
+        };
+        let cursor = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let (index, _) = app.working_selected?;
+                let status = app.work_status.as_ref()?;
+                Some(status.entries[index].path.to_string_lossy().into_owned())
+            })
+        };
+        click(cx, "delta.txt", Modifiers::default());
+        click(cx, "epsilon.txt", Modifiers::secondary_key());
+        click(cx, "zeta.txt", Modifiers::secondary_key());
+        assert_eq!(selection(cx), ["delta.txt", "epsilon.txt", "zeta.txt"]);
+        assert_eq!(cursor(cx).as_deref(), Some("zeta.txt"));
+        delete_outside(&app, cx, "zeta.txt");
+        next_frame(cx);
+        assert_eq!(
+            selection(cx),
+            ["delta.txt", "epsilon.txt"],
+            "the files picked stay selected"
+        );
+        assert_eq!(
+            cursor(cx).as_deref(),
+            Some("gamma.txt"),
+            "the cursor on zeta's neighbour"
+        );
+    }
+
     #[gpui::test]
     async fn the_cursor_goes_to_its_neighbour_as_its_row_goes_under_a_right_click(
         cx: &mut TestAppContext,

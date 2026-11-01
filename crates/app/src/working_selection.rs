@@ -406,7 +406,14 @@ impl GitTurtle {
     /// cursor goes to the file row that took its `place`, or to the one
     /// before where its row was the last, so the keys go on from where they
     /// were. It once restarted at the top, where Down selected the second
-    /// row.
+    /// row. Where other files stay selected, as after Command- or
+    /// Control-clicks, only the cursor moves: the selection keeps them, with
+    /// the anchor the rows landing left it (`reconcile_working_selection`
+    /// drops an anchor whose row went, as Shift ranges then start afresh),
+    /// so Stage selected acts on the files the person picked. Chosen as a
+    /// click chooses, the neighbour replaced them, and Stage selected acted
+    /// on a file nobody picked. Only a selection that held the vacated file
+    /// alone, now empty, takes the neighbour.
     fn select_working_neighbour(
         &mut self,
         place: usize,
@@ -418,8 +425,13 @@ impl GitTurtle {
             _ => None,
         });
         let neighbour = files.clone().nth(place).or_else(|| files.next_back());
-        if let Some((index, area)) = neighbour {
+        let Some((index, area)) = neighbour else {
+            return;
+        };
+        if self.working_selection.selected.is_empty() {
             self.choose_working_selection(index, area, false, false, window, cx);
+        } else {
+            self.select_working(index, area, window, cx);
         }
     }
 
