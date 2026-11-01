@@ -1982,13 +1982,14 @@ impl GitTurtle {
         // margin so the tabs do not move. The strip is the window's first row,
         // so the room above a tab can only come from the strip itself.
         let ring_room = appearance::button_ring_room(cx);
-        // Menu and Workspaces keep their labels only where every tab's name
-        // stays whole beside them; the menu renders inside this strip, after
-        // this, so it reads the decision in this frame.
+        // Menu and Workspaces each keep their labels only where every tab's
+        // name stays whole beside them, and give way one at a time; the menu
+        // renders inside this strip, after this, so it reads the decision in
+        // this frame.
         let labels = self.tab_strip_labels(window, cx);
         #[cfg(target_os = "linux")]
         self.primary_menu
-            .update(cx, |menu, _| menu.set_labelled(labels));
+            .update(cx, |menu, _| menu.set_labelled(labels.menu));
         div()
             .debug_selector(|| "repository-tab-strip".into())
             .flex()
@@ -2116,7 +2117,7 @@ impl GitTurtle {
                         this.choose_repository(&OpenRepository, window, cx)
                     })),
             )
-            .child(self.repository_tabs_menu(labels, cx))
+            .child(self.repository_tabs_menu(labels.workspaces, cx))
             .children(right_controls)
             .into_any_element()
     }
@@ -4048,19 +4049,23 @@ mod tests {
     /// One responsive order in the tab strip: Menu (on Linux) and Workspaces
     /// keep their labels only where every tab's name is whole beside them,
     /// and become 28 px icons, keeping their names, "Main Menu" and
-    /// "Workspaces and tab actions", before a tab's name is cut. At 13 and 18
-    /// pt in 461 × 490, 640 × 680 and 1480 × 980 windows, with one tab named
-    /// "compact" or "a much longer repository name" and then with "second"
-    /// beside it, the form drawn is the one `tab_strip_labels` decides before
-    /// layout, and the list takes the room `tab_list_room` predicts for it;
-    /// a labelled control is as wide as predicted, and while one shows every
-    /// tab is whole. At 18 pt in the 461 × 490 half tile, where "compact" was
-    /// cut to "com…" beside a 100 px Menu and a 173 px Workspaces, both are
-    /// icons and the name is whole.
+    /// "Workspaces and tab actions", before a tab's name is cut, one at a
+    /// time and only where the tabs need the room. At 13 and 18 pt in 461 ×
+    /// 490, 640 × 680 and 1480 × 980 windows, with one tab named "compact" or
+    /// "a much longer repository name" and then with "second" beside it, the
+    /// form drawn is the one `tab_strip_labels` decides before layout, and
+    /// the list takes the room `tab_list_room` predicts for it; a labelled
+    /// control is as wide as predicted, while one shows every tab is whole,
+    /// and a control drawn as its icon would not fit its label: the room the
+    /// whole tabs leave empty in the list is less than the label takes. At 18
+    /// pt in the 461 × 490 half tile, where "compact" was cut to "com…"
+    /// beside a 100 px Menu and a 173 px Workspaces and then both became
+    /// icons with about 175 px of the list empty, Workspaces keeps its label
+    /// beside Menu's icon and the name is whole.
     #[gpui::test]
     async fn tab_strip_actions_become_icons_before_a_tab_name_is_cut(cx: &mut TestAppContext) {
         use crate::tags::tests::{draw, rendered};
-        use crate::views::COMPACT_NAMES;
+        use crate::views::{COMPACT_NAMES, TabStripLabels};
 
         let (_fixture, app, cx, paths) = strip_window(cx).await;
         let (ring_room, device) = cx.update(|window, cx| {
@@ -4100,46 +4105,50 @@ mod tests {
                     COMPACT_NAMES.with(|names| names.borrow_mut().clear());
                     draw(cx);
                     let names = COMPACT_NAMES.with(|names| names.borrow().clone());
-                    let (labels, room, (menu, workspaces)) = cx.update(|window, cx| {
-                        let app = app.read(cx);
-                        let labels = app.tab_strip_labels(window, cx);
-                        (
-                            labels,
-                            app.tab_list_room(labels, window, cx),
-                            app.tab_strip_labelled_actions(window),
-                        )
-                    });
+                    let (labels, room, (menu, workspaces), whole, icon) =
+                        cx.update(|window, cx| {
+                            let app = app.read(cx);
+                            let labels = app.tab_strip_labels(window, cx);
+                            (
+                                labels,
+                                app.tab_list_room(labels, window, cx),
+                                app.tab_strip_labelled_actions(window),
+                                app.tabs_whole_width(window),
+                                window.pixel_snap(appearance::ui_size(28.)),
+                            )
+                        });
                     forms.insert((interface, width as u32, tabs, name, labels));
-                    // A label is measured rounded up to a whole pixel, as the
-                    // chrome measures its labels, so a labelled control is
-                    // predicted no narrower than it is drawn and less than a
-                    // pixel wider: the labels give way early by less than
-                    // that, never late.
-                    let slack = |labelled: bool| if labelled { px(1.) } else { device };
+                    // A label is measured as layout lays it out, so a
+                    // labelled control is predicted as wide as it is drawn.
                     for &(control, accessible) in controls {
-                        let drawn = rendered(cx, control).size.width;
-                        let predicted = match (labels, control) {
-                            (false, _) => {
-                                cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)))
-                            }
-                            (true, "main-menu") => menu,
-                            (true, _) => workspaces,
+                        let (labelled, wide) = match control {
+                            "main-menu" => (labels.menu, menu),
+                            _ => (labels.workspaces, workspaces),
                         };
+                        let drawn = rendered(cx, control).size.width;
+                        let predicted = if labelled { wide } else { icon };
                         assert!(
-                            drawn <= predicted + px(0.01) && predicted - drawn < slack(labels),
+                            (drawn - predicted).abs() < px(0.01),
                             "{at}: {control} is {drawn:?}, predicted {predicted:?} wide"
                         );
                         assert_eq!(
                             names.get(control).copied(),
-                            (!labels).then_some(accessible),
+                            (!labelled).then_some(accessible),
                             "{at}: {control}'s compact name"
+                        );
+                        // Its label gave way because the tabs need its room.
+                        assert!(
+                            labelled || room - whole < wide - icon,
+                            "{at}: {control} is its icon beside {:?} of empty list, which \
+                             holds the {:?} its label adds",
+                            room - whole,
+                            wide - icon
                         );
                     }
                     // The list's bounds hold the ring's room on either side.
                     let list = rendered(cx, "repository-tabs").size.width - ring_room * 2.;
-                    let labelled = controls.len() as f32 * if labels { 1. } else { 0. };
                     assert!(
-                        list >= room - px(0.01) && list - room < slack(false) + px(labelled),
+                        (list - room).abs() < px(0.01),
                         "{at}: the tab list takes {list:?}, predicted {room:?}"
                     );
                     let names = [name, "second"];
@@ -4148,7 +4157,7 @@ mod tests {
                         let whole = whole.min(appearance::ui_size(220.));
                         let tab = rendered(cx, ["repository-tab-0", "repository-tab-1"][index]);
                         assert!(
-                            !labels || tab.size.width >= whole - device,
+                            !labels.any() || tab.size.width >= whole - device,
                             "{at}: tab {index}, {tab:?}, is cut to less than {whole:?} \
                              beside labelled actions"
                         );
@@ -4156,10 +4165,25 @@ mod tests {
                 }
             }
         }
-        // Both forms are reached: labels where the tabs leave room, icons
-        // where they do not, as at 18 pt in the 461 × 490 half tile.
-        assert!(forms.contains(&(13, 1480, 1, "compact", true)), "{forms:?}");
-        assert!(forms.contains(&(18, 461, 1, "compact", false)), "{forms:?}");
+        // Each form is reached where its room is: both labels where the tabs
+        // leave room, Workspaces' alone beside "compact" at 18 pt in the 461
+        // × 490 half tile, and both icons beside the long name there.
+        let labelled = |menu: bool, workspaces| TabStripLabels {
+            menu: menu && cfg!(target_os = "linux"),
+            workspaces,
+        };
+        assert!(
+            forms.contains(&(13, 1480, 1, "compact", labelled(true, true))),
+            "{forms:?}"
+        );
+        assert!(
+            forms.contains(&(18, 461, 1, "compact", labelled(false, true))),
+            "{forms:?}"
+        );
+        assert!(
+            forms.iter().any(|form| form.4 == TabStripLabels::default()),
+            "{forms:?}"
+        );
         reset_strip_text(cx, &app);
     }
 
