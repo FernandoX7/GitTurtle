@@ -2993,4 +2993,40 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    /// An SVG's copies of literal source, which share the comparison's row
+    /// of captured actions, are drawn and named by their sides through
+    /// [`side_control_name`], as every side's Copy source is: "Before: Copy
+    /// source" and "After: Copy source", and "Copy source" for a side shown
+    /// alone. They read "Copy Before source", the side's prefix spelt apart.
+    #[gpui::test]
+    fn an_svgs_copies_are_named_by_their_sides_first(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let cases = [
+            ("Before", "Before: Copy source"),
+            ("After", "After: Copy source"),
+            (ONE_SIDE, "Copy source"),
+        ];
+        let buttons = cx.update(|_, cx| {
+            cases
+                .iter()
+                .enumerate()
+                .map(|(index, (heading, _))| {
+                    let mark = Mark::new(("copy-image-source", index), "image.svg");
+                    crate::image_compare::literal_source_copy(mark, heading, cx)
+                })
+                .collect::<Vec<_>>()
+        });
+        let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
+            .into_iter()
+            .map(|node| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            cases
+                .iter()
+                .map(|(_, expected)| Some((*expected).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
 }

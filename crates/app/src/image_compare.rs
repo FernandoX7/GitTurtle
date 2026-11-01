@@ -483,7 +483,17 @@ impl GitTurtle {
                 // The control's id names the side; the mark adds its path.
                 let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
                 let copy_mark = mark.clone();
-                copies.push(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
+                copies.push(literal_source_copy(mark, names[index], cx).on_click(
+                    move |_, window, cx| {
+                        copy_feedback::copy(
+                            window,
+                            cx,
+                            Some(copy_mark.clone()),
+                            &format!("{label} source"),
+                            literal.to_string(),
+                        )
+                    },
+                ));
             }
             if let (Some(bytes), Some(offer), false) =
                 (&side.captured, side.system_preview, source && index == 0)
@@ -2502,6 +2512,24 @@ pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Win
                 .map(|line| line.wrap_boundaries().len() + 1)
                 .sum()
         })
+}
+
+/// A side's copy of an SVG's literal source in the comparison's row of
+/// captured actions, for the side `heading` heads: drawn and named by
+/// [`crate::system_preview::side_control_name`], "Before: Copy source" and
+/// "After: Copy source", as the model's and a document's Copy source are
+/// named, and "Copy source" for a side shown alone. The two share one row
+/// rather than each side's caption, so the drawn label says its side too,
+/// and the words drawn are the words named, which speech input says. It was
+/// drawn and named "Copy Before source", a second spelling of the side's
+/// prefix kept apart from the one every other side's control takes.
+pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: &App) -> Button {
+    copy_feedback::copy_button(
+        mark,
+        crate::system_preview::side_control_name(heading, "Copy source"),
+        "Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",
+        cx,
+    )
 }
 
 #[cfg(test)]
