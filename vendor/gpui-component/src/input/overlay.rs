@@ -402,7 +402,7 @@ pub(super) fn render_overlays<M: OverlayMode>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{AppContext as _, Render, SharedString, div};
+    use gpui::{AppContext as _, Render, SharedString, VisualTestContext, div, point, px};
     use gpui_base::input::CodeActionItem;
     use gpui_base::input::DiagnosticEntry;
     use lsp_types::{CodeAction, CompletionItem, Hover, HoverContents, MarkedString};
@@ -421,6 +421,23 @@ mod tests {
         }
     }
 
+    /// Runs `f` inside a draw, where the input's render syncs its overlays.
+    ///
+    /// The overlays a sync returns are elements, each holding its popover's
+    /// view. Outside a draw, GPUI allocates elements in a thread-wide arena
+    /// that nothing clears, so those views outlived the test's app, which
+    /// GPUI's leak check reports when the app drops; a draw allocates them in
+    /// the app's own arena and clears it as it ends. The draw paints nothing.
+    fn in_frame<R>(cx: &mut VisualTestContext, f: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+        let mut result = None;
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.draw(point(px(0.), px(0.)), viewport, |window, cx| {
+            result = Some(f(window, cx));
+            div()
+        });
+        result.expect("the draw ran its body")
+    }
+
     /// A frame that changed nothing must not rebuild the popovers.
     ///
     /// Sync runs every frame, so the change check has to be cheap and stable.
@@ -435,7 +452,7 @@ mod tests {
         });
         let state = probe.read_with(cx, |probe, _| probe.state.clone());
 
-        cx.update(|window, cx| {
+        in_frame(cx, |window, cx| {
             state.update(cx, |state, cx| {
                 state.present_completion_items(
                     0,
@@ -493,7 +510,7 @@ mod tests {
             }),
         });
         let state = probe.read_with(cx, |probe, _| probe.state.clone());
-        cx.update(|window, cx| {
+        in_frame(cx, |window, cx| {
             assert!(render_overlays(&state, window, cx).is_empty());
             assert!(state.read(cx).has_overlay_action_handler());
             state.update(cx, |state, cx| {
@@ -561,7 +578,7 @@ mod tests {
             );
         });
 
-        let dropped_owner = cx.update(|window, cx| {
+        let dropped_owner = in_frame(cx, |window, cx| {
             let ephemeral = cx.new(|cx| {
                 crate::input::EditorState::new(window, cx)
                     .language("sql")

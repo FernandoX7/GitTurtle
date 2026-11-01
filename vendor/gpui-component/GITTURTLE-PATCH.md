@@ -1526,7 +1526,19 @@ now drops the frame before it renders the state. The frame projects into the
 state as it renders, so what the probes read is unchanged. The test module of
 `src/switch.rs` no longer imports `gpui::StatefulInteractiveElement`, which
 none of its tests use, so the lib tests build without an unused-import
-warning; that change goes with the module's tests. Remove
+warning; that change goes with the module's tests. In
+`src/input/overlay.rs`, `unchanged_content_keeps_the_overlay_signature` and
+`facade_materializes_all_base_overlay_sessions` synced the input's overlays in
+`cx.update`, outside any frame. A sync returns each overlay as an element
+holding its popover's or search panel's view, and outside a draw GPUI
+allocates elements in a thread-wide arena that nothing clears, so those views
+outlived the test's app. Once the `gpui-pre-macros` teardown patch let each
+seed's app drop, GPUI's leak check failed both tests on every run, with three
+`CompletionMenu` handles and eleven popover and search-panel handles. Each
+now syncs inside a draw (`in_frame`, through `VisualTestContext::draw`), as
+the input's render does, which allocates the elements in the app's arena and
+clears it as the draw ends; what the tests assert is unchanged. Remove
 `upstream-files/` when a kit update's tests include no file outside its
-package, and drop the probe change with the input patch or when upstream's
-probes compile.
+package, drop the probe change with the input patch or when upstream's
+probes compile, and drop the overlay tests' draw when upstream's tests sync
+inside a frame.
