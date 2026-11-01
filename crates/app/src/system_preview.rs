@@ -672,17 +672,22 @@ impl Target {
 
     /// Its icon in the toolbar of a comparison too narrow to hold it beside
     /// its side's name, where both sides' controls stand together away from
-    /// the names: its tooltip is its accessible name, so it says which side
-    /// it opens ("Open in default app: Before, a read-only copy as a PNG
-    /// image"), and it is placed as [`Self::control`] places it.
+    /// the names, placed as [`Self::control`] places it. On Linux its tooltip
+    /// is its accessible name, so it says which side it opens ("Open in
+    /// default app: Before, a read-only copy as a PNG image"); on macOS it
+    /// keeps the icon's own "Quick Look · …" tooltip, as in its caption.
     pub(crate) fn toolbar_control(&self, cx: &App) -> AnyElement {
         let name = self.name();
+        #[cfg(target_os = "linux")]
+        let tooltip = name.clone();
+        #[cfg(not(target_os = "linux"))]
+        let tooltip: SharedString = self.offer.icon_tooltip().into();
         #[cfg(test)]
         crate::views::note_control_tooltip(
             &ElementId::Name(self.control.to_string().into()),
-            &name,
+            &tooltip,
         );
-        self.placed(self.button_with("", name.clone(), name, cx), cx)
+        self.placed(self.button_with("", tooltip, name, cx), cx)
     }
 
     /// The comparison owning the focus handle its button tracks, so focus
