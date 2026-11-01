@@ -205,9 +205,14 @@ impl SeriesBrowser {
         self.selected_file = None;
     }
     /// Opens captured bytes for this showing's open controls through the
-    /// window's `GitTurtle`.
-    fn opener(&self) -> crate::system_preview::Opener {
-        crate::system_preview::Opener::new(self.owner.clone(), self.showing)
+    /// window's `GitTurtle`, whose keyboard focus ring it draws.
+    fn opener(&self, cx: &App) -> crate::system_preview::Opener {
+        let ring = self
+            .owner
+            .upgrade()
+            .map(|owner| owner.read(cx).focus_ring.clone())
+            .unwrap_or_default();
+        crate::system_preview::Opener::new(self.owner.clone(), self.showing).ringed_by(ring)
     }
     /// CPU bytes the open preview retains: its prepared content, which includes the patch
     /// presentation, with the same reserve for native editors as a repository tab, plus the
@@ -524,7 +529,7 @@ impl SeriesBrowser {
                         rich_preview::render_comparison(
                             preview,
                             false,
-                            self.opener(),
+                            self.opener(cx),
                             width,
                             window,
                             cx,
@@ -547,7 +552,7 @@ impl SeriesBrowser {
                 },
             ),
             Some(Content::Rich(preview)) => {
-                rich_preview::render_comparison(preview, false, self.opener(), width, window, cx)
+                rich_preview::render_comparison(preview, false, self.opener(cx), width, window, cx)
             }
             Some(Content::Images { old, new }) => div()
                 .size_full()

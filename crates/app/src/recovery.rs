@@ -1720,8 +1720,14 @@ impl StashBrowser {
     /// pause has ended leaves one that holds focus where it is
     /// ([`reveal_note`]).
     fn opener(&self, cx: &App) -> crate::system_preview::Opener {
+        let ring = self
+            .owner
+            .upgrade()
+            .map(|owner| owner.read(cx).focus_ring.clone())
+            .unwrap_or_default();
         crate::system_preview::Opener::new(self.owner.clone(), self.showing)
             .revealed_by(self.detail.clone(), appearance::button_ring_room(cx))
+            .ringed_by(ring)
     }
 
     fn clear_preview(&mut self) {

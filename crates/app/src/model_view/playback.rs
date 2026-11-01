@@ -289,6 +289,7 @@ pub(super) fn clip_control<T: 'static>(
 
 pub(super) fn controls<T: 'static>(
     documents: &[Arc<Document>],
+    ring: &crate::focus_ring::FocusRing,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
     if !documents
@@ -387,7 +388,7 @@ pub(super) fn controls<T: 'static>(
                 .child(format!("{seconds:.2} / {total:.2} s")),
         );
     if total > 0. {
-        row = row.child(scrubber(documents, seconds, total, cx));
+        row = row.child(scrubber(documents, seconds, total, ring, cx));
     }
     Some(div().flex().flex_col().gap_1().px_3().py_1().border_b_1().border_color(rgb(colors.border)).child(row)
         .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(colors.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Choose a clip and scrub or step through poses." } else { "Shared seconds · shorter clips hold their last pose · longest clip loops. Clip changes and scrubbing pause both sides." }))
@@ -411,6 +412,7 @@ fn scrubber<T: 'static>(
     documents: &[Arc<Document>],
     seconds: f64,
     total: f64,
+    ring: &crate::focus_ring::FocusRing,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
@@ -434,7 +436,8 @@ fn scrubber<T: 'static>(
     div().id("model-timeline").min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
         .track_focus(&focus).tab_stop(true).role(Role::Slider).aria_label("Model animation time in seconds").aria_description("Left and right seek one thirtieth second; Home and End seek to the beginning and end. Seeking pauses playback.")
         .aria_numeric_value(seconds).aria_min_numeric_value(0.).aria_max_numeric_value(total).aria_numeric_value_step(1. / FPS)
-        .focus_visible(|style| style.border_1().border_color(rgb(colors.accent)))
+        // Kept while the pointer moves, as the canvas's ring is.
+        .when(ring.shows(&focus), |timeline| timeline.border_1().border_color(rgb(colors.accent)))
         .on_a11y_action(gpui::AccessibleAction::Increment, move |_, window, cx| { seek(&increment, position(&increment) + 1. / FPS); window.refresh(); cx.refresh_windows(); })
         .on_a11y_action(gpui::AccessibleAction::Decrement, move |_, window, cx| { seek(&decrement, position(&decrement) - 1. / FPS); window.refresh(); cx.refresh_windows(); })
         .on_mouse_down(MouseButton::Left, cx.listener(move |_, event: &MouseDownEvent, window, cx| { focus_down.focus(window, cx); for document in &down { document.state.lock().unwrap_or_else(|e| e.into_inner()).scrubbing = true; } scrub_at(&down, event.position); window.refresh(); cx.stop_propagation(); cx.notify(); }))

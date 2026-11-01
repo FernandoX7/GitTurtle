@@ -27,6 +27,12 @@ which holds four of its lines at the interface size before it scrolls, so at the
 text size a wide side shows the usual details whole with no scrollbar; at 18 pt they may
 wrap past it and scroll. Where the side gives the footer less room than the toolkit's
 shortest scrollbar thumb and its insets, it still scrolls but draws no scrollbar.
+Keyboard focus on a side's canvas, and on the animation timeline, draws its edge in the
+accent and keeps it while the pointer moves, until the next pointer press, as every focus
+ring in the app does (`crate::focus_ring`); drawn with GPUI's `focus_visible`, the canvas's
+ring went at the first pointer move after a key though the canvas kept focus. The window's
+ring reaches the comparison through its opener (`system_preview::Opener::ringed_by`), in
+Compare, the Stashes detail and the rewrite review alike.
 Updating status overlays the canvas without reserving an empty row. Unsupported
 and missing sides use the same labelled comparison surface; errors are accessible,
 bounded and scrollable, and a usable opposite side keeps its controls. Orientation

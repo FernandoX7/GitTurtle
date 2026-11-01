@@ -365,6 +365,9 @@ pub(crate) struct Opener {
     /// its controls, and the margin it reveals them with
     /// ([`Self::revealed_by`]).
     reveal: Option<(crate::focus_reveal::FocusReveal, Pixels)>,
+    /// The window's keyboard focus ring, which a comparison that draws its
+    /// own focus asks ([`Self::ringed_by`]).
+    ring: crate::focus_ring::FocusRing,
 }
 
 impl Opener {
@@ -373,7 +376,24 @@ impl Opener {
             owner,
             showing,
             reveal: None,
+            ring: Default::default(),
         }
+    }
+
+    /// The opener of a comparison drawn in the window whose keyboard focus
+    /// ring is `ring`, so what it draws its own focus on, a model's canvas
+    /// and animation timeline, keeps its ring while the pointer moves
+    /// ([`crate::focus_ring`]). Without one, nothing it draws shows a ring.
+    /// The ring is passed in rather than read from `owner`, which a frame of
+    /// the `GitTurtle` itself, as Compare's, cannot read.
+    pub(crate) fn ringed_by(mut self, ring: crate::focus_ring::FocusRing) -> Self {
+        self.ring = ring;
+        self
+    }
+
+    /// The window's keyboard focus ring ([`Self::ringed_by`]).
+    pub(crate) fn ring(&self) -> &crate::focus_ring::FocusRing {
+        &self.ring
     }
 
     /// The opener of a comparison drawn inside `reveal`'s scrolling

@@ -675,7 +675,8 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let opener =
-            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
+            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing)
+                .ringed_by(self.focus_ring.clone());
         render_comparison(preview, self.is_quick_source(), opener, width, window, cx)
     }
 

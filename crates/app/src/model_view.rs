@@ -563,7 +563,7 @@ pub(super) fn render_comparison<T: 'static>(
                     .child("Drag to orbit · Shift-drag to pan · Scroll to zoom"),
             )
         })
-        .children(playback::controls(&documents, cx))
+        .children(playback::controls(&documents, opener.ring(), cx))
         .child(
             div().flex_1().min_h_0().min_w_0().flex().children(
                 [
@@ -1103,6 +1103,7 @@ fn render_side<T: 'static>(
         document.clone(),
         partner,
         focus,
+        opener.ring(),
         frame,
         display_camera,
         error.is_some(),
@@ -1278,12 +1279,17 @@ fn model_canvas<T: 'static>(
     document: Arc<Document>,
     partner: Option<Arc<Document>>,
     focus: FocusHandle,
+    ring: &crate::focus_ring::FocusRing,
     frame: Option<Arc<RenderImage>>,
     camera: ModelCamera,
     failed: bool,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
+    // Keyboard focus draws the canvas's edge in the accent, kept while the
+    // pointer moves ([`crate::focus_ring`]): GPUI's `focus_visible` dropped
+    // it at the first pointer move over the model.
+    let ringed = ring.shows(&focus);
     let down = document.clone();
     let click_focus = focus.clone();
     let moved = document.clone();
@@ -1296,8 +1302,8 @@ fn model_canvas<T: 'static>(
     let key_partner = partner;
     let measured = document.clone();
     let has_frame = frame.is_some();
-    div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(colors.border))
-        .focus_visible(|style|style.border_color(rgb(colors.accent))).tab_stop(true).track_focus(&focus).role(Role::Image)
+    div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(if ringed { colors.accent } else { colors.border }))
+        .debug_selector(move || format!("model-canvas-{index}")).tab_stop(true).track_focus(&focus).role(Role::Image)
         .aria_label(format!("{label} interactive 3D model, {}",crate::counted(document.scene.triangle_count(), "triangle", "triangles")))
         .aria_description(format!(
             "{} Orientation: yaw {:.1} degrees, elevation {:.1} degrees. Target X {:.4}, Y {:.4}, Z {:.4}; view span {:.4} {}. Arrows orbit; Shift and arrows pan; plus and minus zoom; F fits; zero resets; W toggles edges. The captured original is available above.",
@@ -1599,6 +1605,79 @@ mod tests {
         assert_eq!(
             selected_standard_view(camera),
             Some(ModelStandardView::Right)
+        );
+    }
+
+    /// Keyboard focus on a model's canvas draws the canvas's edge in the
+    /// accent and keeps it while the pointer moves, as every focus ring in
+    /// the app does ([`crate::focus_ring`]): the canvas drew it with GPUI's
+    /// `focus_visible`, which dropped it at the first pointer move after a
+    /// key, though the canvas kept focus.
+    #[gpui::test]
+    async fn a_focused_models_canvas_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{Modifiers, VisualTestContext};
+        let input = b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline shape.obj\ndata 32\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n\ndone\n";
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, input).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        crate::width_walk::frame(cx);
+        let canvas = cx
+            .debug_bounds("model-canvas-1")
+            .expect("Compare draws After's model");
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        // The colour of the edge the frame paints around the canvas.
+        let edge = |cx: &mut VisualTestContext| -> Option<Hsla> {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let at = |drawn: f32, laid: Pixels| (drawn / scale - f32::from(laid)).abs() < 0.5;
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        at(quad.bounds.origin.x.0, canvas.origin.x)
+                            && at(quad.bounds.origin.y.0, canvas.origin.y)
+                            && at(quad.bounds.size.width.0, canvas.size.width)
+                            && at(quad.bounds.size.height.0, canvas.size.height)
+                            && quad.border_widths.left.0 > 0.
+                    })
+                    .map(|quad| quad.border_color)
+                    .next_back()
+            })
+        };
+        let ringed = |cx: &mut VisualTestContext| {
+            edge(cx).is_some_and(|color| {
+                [
+                    (color.h, accent.h),
+                    (color.s, accent.s),
+                    (color.l, accent.l),
+                ]
+                .iter()
+                .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        assert!(!ringed(cx), "an unfocused canvas draws its plain edge");
+        // A click focuses the canvas without marking it; a key marks it.
+        cx.simulate_click(canvas.center(), Modifiers::none());
+        crate::width_walk::frame(cx);
+        assert!(!ringed(cx), "a click focuses the canvas without its ring");
+        cx.simulate_keystrokes("f");
+        crate::width_walk::frame(cx);
+        assert!(ringed(cx), "a key on the focused canvas draws its ring");
+        cx.simulate_mouse_move(
+            canvas.center() + point(px(9.), px(7.)),
+            None,
+            Modifiers::none(),
+        );
+        crate::width_walk::frame(cx);
+        cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+        crate::width_walk::frame(cx);
+        assert!(
+            ringed(cx),
+            "moving the pointer over the canvas and away keeps its ring: {:?}",
+            edge(cx)
         );
     }
 
