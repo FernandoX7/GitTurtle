@@ -3094,6 +3094,42 @@ mod list_tests {
         close(cx);
     }
 
+    /// The status line's whole text, which the spare hints are fitted
+    /// beside, is kept for each text drawn lately, so two windows under
+    /// Keyboard Shortcuts, each with its own status line, measure their
+    /// lines once each: at 13 pt in a 1480 × 980 window, two lines drawn in
+    /// turn three times are measured twice in all, and each keeps the spare
+    /// hints beside it. One slot, shared by every window, measured each line
+    /// again whenever the other had been drawn.
+    #[gpui::test]
+    async fn two_status_lines_drawn_in_turn_are_measured_once_each(cx: &mut TestAppContext) {
+        use crate::views::STATUS_TEXT_MEASURED;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 980.));
+        let keys = DialogKeys::Shortcuts.key_hints();
+        let before = STATUS_TEXT_MEASURED.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            for line in ["Up to date with origin", "2 commits ahead of origin"] {
+                app.update(cx, |app, cx| {
+                    app.status = line.into();
+                    cx.notify();
+                });
+                draw(cx);
+                let hints =
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)));
+                assert_eq!(hints, Some(keys.whole()), "{line:?}: the spare hints stay");
+            }
+        }
+        assert_eq!(
+            STATUS_TEXT_MEASURED.with(std::cell::Cell::get) - before,
+            2,
+            "each line is measured once"
+        );
+        close(cx);
+    }
+
     /// The search keeps Shift-Home and Shift-End, which select from the
     /// caret to the start and end of its text, while Home and End browse the
     /// list: at 13 pt in a 1200 × 800 window, with "tab" typed and the caret

@@ -6410,8 +6410,13 @@ thread_local! {
     /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`).
     static STATUS_OUTCOME: TextWidth = const { RefCell::new(None) };
     /// The status line's whole text, measured where spare keyboard hints
-    /// ask whether it keeps it (`GitTurtle::fit_status_bar`).
-    static STATUS_TEXT: TextWidth = const { RefCell::new(None) };
+    /// ask whether it keeps it (`GitTurtle::fit_status_bar`), for each
+    /// text, font, size and scale factor drawn lately, so windows drawn in
+    /// turn keep their own, as [`STATUS_WIDTHS`] does. One slot, shared by
+    /// every window, measured each window's line again on the other's
+    /// frames while Keyboard Shortcuts was open in both.
+    static STATUS_TEXT: RefCell<Measured<(LineKey, u32, String), Pixels>> =
+        const { RefCell::new(Measured::new()) };
     /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
     /// drawn lately, so the windows, pages and text sizes drawn in turn keep
     /// their own; its gaps and the warning's controls snap to the window's
@@ -6832,12 +6837,38 @@ impl<K: PartialEq, V> Measured<K, V> {
     /// What was measured for `key`, measured now with `measure` where it is
     /// not kept.
     pub(crate) fn get(&mut self, key: K, measure: impl FnOnce(&K) -> V) -> &V {
-        match self.0.iter().position(|(kept, _)| *kept == key) {
+        let at = self.0.iter().position(|(kept, _)| *kept == key);
+        self.kept(at, || {
+            let value = measure(&key);
+            (key, value)
+        })
+    }
+
+    /// [`Self::get`] for the key `kept` finds, built by `key` only where it
+    /// is not kept, so a lookup that finds an owned key allocates nothing.
+    pub(crate) fn get_where(
+        &mut self,
+        kept: impl Fn(&K) -> bool,
+        key: impl FnOnce() -> K,
+        measure: impl FnOnce(&K) -> V,
+    ) -> &V {
+        let at = self.0.iter().position(|(held, _)| kept(held));
+        self.kept(at, || {
+            let key = key();
+            let value = measure(&key);
+            (key, value)
+        })
+    }
+
+    /// The value kept `at`, moved to the front, or else the one `measured`
+    /// makes, in front of the rest.
+    fn kept(&mut self, at: Option<usize>, measured: impl FnOnce() -> (K, V)) -> &V {
+        match at {
             Some(at) => self.0[..=at].rotate_right(1),
             None => {
-                let value = measure(&key);
+                let entry = measured();
                 self.0.truncate(MEASURED_KEYS - 1);
-                self.0.insert(0, (key, value));
+                self.0.insert(0, entry);
             }
         }
         &self.0[0].1
@@ -6850,6 +6881,10 @@ thread_local! {
     /// for a test.
     static CHROME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STATUS_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the status line's whole text was measured for spare
+    /// hints ([`STATUS_TEXT`]), for a test.
+    pub(crate) static STATUS_TEXT_MEASURED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// `width` for `key`, computed again only when `key` changes, so a steady
@@ -7507,8 +7542,22 @@ impl GitTurtle {
             let spare = widths.spare.as_ref().filter(|(_, width)| {
                 !carried && {
                     let text = self.status_text();
-                    let whole = cached_text_width(&STATUS_TEXT, text, window, || {
-                        line_widths(&[(text, appearance::ui_text(10.))], window)
+                    let (line_key, scale) =
+                        (LineKey::current(window), window.scale_factor().to_bits());
+                    let whole = STATUS_TEXT.with_borrow_mut(|cache| {
+                        *cache.get_where(
+                            |(kept, kept_scale, kept_text)| {
+                                *kept == line_key && *kept_scale == scale && kept_text == text
+                            },
+                            || (line_key.clone(), scale, text.to_owned()),
+                            |_| {
+                                #[cfg(test)]
+                                STATUS_TEXT_MEASURED.with(|measured| {
+                                    measured.set(measured.get() + 1);
+                                });
+                                line_widths(&[(text, appearance::ui_text(10.))], window)
+                            },
+                        )
                     });
                     whole + gap + *width <= room
                 }
