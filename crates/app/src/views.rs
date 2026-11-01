@@ -1046,6 +1046,60 @@ impl GitTurtle {
         }
     }
 
+    /// The navigator's row `index` where it is a folder: a tree item named
+    /// for what activating it does, its name and its branches counted with
+    /// their noun ([`folder_name`]).
+    fn render_nav_folder(&self, index: usize, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let NavRow::Folder {
+            label,
+            depth,
+            count,
+            expanded,
+            ..
+        } = self.nav_rows.get(index)?.clone()
+        else {
+            return None;
+        };
+        let colors = palette(cx);
+        let label = label.as_str();
+        Some(
+            div()
+                .id(self.nav_row_key(index))
+                .role(Role::TreeItem)
+                .aria_level(depth + 1)
+                .when(self.nav_cursor == Some(index), |row| {
+                    row.aria_active_descendant()
+                        .border_l_2()
+                        .border_color(rgb(colors.accent))
+                })
+                .aria_expanded(expanded)
+                .aria_label(folder_name(expanded, label, count))
+                .w_full()
+                .h(crate::appearance::ui_size(30.))
+                .pl(nav_row_inset(depth, self.nav_cursor == Some(index)))
+                .pr_3()
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_size(crate::appearance::ui_text(12.))
+                .text_color(rgb(colors.muted))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(colors.hover)).text_color(rgb(colors.text)))
+                .active(|s| s.bg(rgb(colors.selected)))
+                .child(div().w(px(12.)).child(if expanded { "⌄" } else { "›" }))
+                .child(icon("folder", 14., colors.muted))
+                .child(div().flex_1().truncate().child(label.to_owned()))
+                .child(
+                    div()
+                        .text_size(crate::appearance::ui_text(10.))
+                        .child(count.to_string()),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.activate_navigation(index, window, cx)
+                })),
+        )
+    }
+
     pub(super) fn render_nav_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let row = self.nav_rows[index].clone();
@@ -1067,50 +1121,8 @@ impl GitTurtle {
                 .child(count.to_string())
                 .into_any_element();
         }
-        if let NavRow::Folder {
-            key,
-            label,
-            depth,
-            count,
-            expanded,
-        } = &row
-        {
-            let _ = key;
-            return div()
-                .id(self.nav_row_key(index))
-                .role(Role::TreeItem)
-                .aria_level(depth + 1)
-                .when(self.nav_cursor == Some(index), |row| {
-                    row.aria_active_descendant()
-                        .border_l_2()
-                        .border_color(rgb(colors.accent))
-                })
-                .aria_expanded(*expanded)
-                .aria_label(folder_name(*expanded, label, *count))
-                .w_full()
-                .h(crate::appearance::ui_size(30.))
-                .pl(nav_row_inset(*depth, self.nav_cursor == Some(index)))
-                .pr_3()
-                .flex()
-                .items_center()
-                .gap_1()
-                .text_size(crate::appearance::ui_text(12.))
-                .text_color(rgb(colors.muted))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(colors.hover)).text_color(rgb(colors.text)))
-                .active(|s| s.bg(rgb(colors.selected)))
-                .child(div().w(px(12.)).child(if *expanded { "⌄" } else { "›" }))
-                .child(icon("folder", 14., colors.muted))
-                .child(div().flex_1().truncate().child(label.clone()))
-                .child(
-                    div()
-                        .text_size(crate::appearance::ui_text(10.))
-                        .child(count.to_string()),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.activate_navigation(index, window, cx)
-                }))
-                .into_any_element();
+        if let Some(folder) = self.render_nav_folder(index, cx) {
+            return folder.into_any_element();
         }
         let (name, symbol, active, depth, tooltip) = match &row {
             NavRow::All => (
@@ -27258,34 +27270,43 @@ pub(crate) mod tests {
         );
     }
 
-    /// A navigator folder's name counts its branches with their noun: a
-    /// folder holding one branch reads "Expand feature · 1 branch", where it
-    /// read "1 branches".
+    /// A navigator folder's name counts its branches with their noun, read
+    /// from the row the navigator draws: a folder holding one branch reads
+    /// "Expand feature · 1 branch", where it read "1 branches", and one
+    /// holding two "Expand release · 2 branches".
     #[gpui::test]
     async fn a_folder_counts_one_branch_as_one(cx: &mut TestAppContext) {
+        use gpui::Element as _;
         let (fixture, app, cx) = history_window_from(cx, &history_script(2, 1)).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
-        fixture_git(&repository, &["branch", "feature/one"]);
+        for branch in ["feature/one", "release/one", "release/two"] {
+            fixture_git(&repository, &["branch", branch]);
+        }
         press_refresh(&app, cx).await;
         draw(cx);
-        let said = app
-            .read_with(cx, |app, _| {
-                app.nav_rows.iter().find_map(|row| match row {
-                    NavRow::Folder {
-                        label,
-                        count,
-                        expanded,
-                        ..
-                    } if label == "feature" => Some(folder_name(*expanded, label, *count)),
-                    _ => None,
+        for (folder, expected) in [
+            ("feature", "Expand feature · 1 branch"),
+            ("release", "Expand release · 2 branches"),
+        ] {
+            let index = app
+                .read_with(cx, |app, _| {
+                    app.nav_rows.iter().position(
+                        |row| matches!(row, NavRow::Folder { label, .. } if label == folder),
+                    )
                 })
-            })
-            .expect("the feature folder");
-        assert_eq!(said, "Expand feature · 1 branch");
-        assert_eq!(
-            folder_name(true, "origin", 2),
-            "Collapse origin · 2 branches"
-        );
+                .unwrap_or_else(|| panic!("the {folder} folder"));
+            let drawn = app.clone();
+            let node = view_node(cx, move |_, cx| {
+                let row = drawn
+                    .update(cx, |app, cx| app.render_nav_folder(index, cx))
+                    .expect("a folder row");
+                let mut node = gpui::accesskit::Node::new(row.a11y_role().expect("a role"));
+                row.write_a11y_info(&mut node);
+                node
+            });
+            assert_eq!(node.role(), gpui::accesskit::Role::TreeItem, "{folder}");
+            assert_eq!(node.label(), Some(expected), "{folder}");
+        }
         drop(fixture);
     }
 

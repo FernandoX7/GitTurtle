@@ -22,6 +22,10 @@ use crate::native_accessibility::text as static_text;
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+    /// The form opened last, for a test to choose its rule as the person
+    /// would.
+    #[cfg(test)]
+    form: Option<WeakEntity<IgnoreForm>>,
 }
 
 /// Reads `path`'s status again, as Discard…'s review reads its row's
@@ -139,6 +143,10 @@ impl GitTurtle {
             preparing: None,
             error: None,
         });
+        #[cfg(test)]
+        {
+            self.ignore_actions.form = Some(form.downgrade());
+        }
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
@@ -291,18 +299,83 @@ pub(crate) mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     /// The tracked paths a rule matches are counted with their verb and
-    /// pronoun: one read "1 tracked path remains tracked, and changes to
-    /// them still appear.".
-    #[test]
-    fn the_tracked_note_agrees_with_its_count() {
-        assert_eq!(
-            tracked_note(1),
-            "1 tracked path remains tracked, and changes to it still appear."
-        );
-        assert_eq!(
-            tracked_note(3),
-            "3 tracked paths remain tracked, and changes to them still appear."
-        );
+    /// pronoun, read from the review's drawn consequences: the containing
+    /// directory's rule over one tracked file reads "1 tracked path remains
+    /// tracked, and changes to it still appear.", and over three "3 tracked
+    /// paths remain tracked, and changes to them still appear.". One read
+    /// "1 tracked path remains tracked, and changes to them still appear.".
+    #[gpui::test]
+    async fn the_tracked_note_agrees_with_its_count(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        let root = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository");
+        for (directory, tracked) in [("one", 1), ("three", 3)] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            for index in 0..tracked {
+                std::fs::write(
+                    root.join(directory).join(format!("kept-{index}.txt")),
+                    "kept\n",
+                )
+                .unwrap();
+            }
+        }
+        fixture_git(&root, &["add", "one", "three"]);
+        fixture_git(&root, &["commit", "--quiet", "-m", "Tracked notes"]);
+        for directory in ["one", "three"] {
+            std::fs::write(root.join(directory).join("scratch.txt"), "scratch\n").unwrap();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        for (directory, expected) in [
+            (
+                "one",
+                "1 tracked path remains tracked, and changes to it still appear.",
+            ),
+            (
+                "three",
+                "3 tracked paths remain tracked, and changes to them still appear.",
+            ),
+        ] {
+            let path = PathBuf::from(directory).join("scratch.txt");
+            let entry = app
+                .read_with(cx, |app, _| {
+                    app.work_status
+                        .as_ref()
+                        .and_then(|status| status.entries.iter().find(|entry| entry.path == path))
+                        .cloned()
+                })
+                .unwrap_or_else(|| panic!("{path:?} is listed"));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(entry, window, cx)));
+            ignore_lands(&app, cx);
+            let form = app
+                .read_with(cx, |app, _| app.ignore_actions.form.clone())
+                .and_then(|form| form.upgrade())
+                .expect("the form opens");
+            // The containing directory, as its checkbox chooses it.
+            form.update(cx, |form, cx| {
+                form.directory = true;
+                cx.notify();
+            });
+            draw(cx);
+            preview_rule(cx);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle(&app, cx).await;
+            written::forget();
+            draw(cx);
+            let consequences = written::get("operation-consequences")
+                .and_then(|written| written.node.value().map(str::to_owned))
+                .unwrap_or_else(|| panic!("{directory}: the review is drawn"));
+            assert!(
+                consequences.contains(expected),
+                "{directory}: the review says {expected:?}: {consequences:?}"
+            );
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+        }
     }
 
     /// The ignore form between two tab stops the probe owns.
