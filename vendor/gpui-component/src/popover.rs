@@ -7,7 +7,7 @@ use std::{rc::Rc, time::Duration};
 
 use crate::ThemeStyled as _;
 use crate::{
-    Selectable, StyledExt as _,
+    ClearOfOpener, Opener, Selectable, StyledExt as _,
     animation::ease_out_cubic,
     styled::{popover_ring, popover_shadow},
     v_flex,
@@ -321,12 +321,28 @@ impl RenderOnce for Popover {
             .default_open(self.default_open)
             .overlay_closable(self.overlay_closable)
             .content(move |state, window, cx| {
-                Self::render_popover_content(anchor, appearance, window, cx)
+                // GitTurtle patch: nothing the popover draws, its shadow
+                // included, reaches the trigger on the side its anchor
+                // opens it from ([`ClearOfOpener`]).
+                let opener = match anchor {
+                    Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => {
+                        Some(Opener::Above(crate::popup_offset(window, cx)))
+                    }
+                    Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => {
+                        Some(Opener::Below(crate::popup_offset(window, cx)))
+                    }
+                    Anchor::LeftCenter | Anchor::RightCenter => None,
+                };
+                let content = Self::render_popover_content(anchor, appearance, window, cx)
                     .when_some(content, |this, content| {
                         this.child((content)(state, window, cx))
                     })
                     .children(children)
-                    .refine_style(&style)
+                    .refine_style(&style);
+                match opener {
+                    Some(opener) => ClearOfOpener::new(content, opener).into_any_element(),
+                    None => content.into_any_element(),
+                }
             })
             .when_some(self.trigger, |this, trigger| this.trigger_with(trigger))
             .when_some(self.open, |this, open| this.open(open))

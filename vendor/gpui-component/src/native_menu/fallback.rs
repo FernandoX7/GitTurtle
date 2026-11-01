@@ -222,7 +222,19 @@ impl Render for FallbackMenuOverlay {
                     // `anchored` snap kept it only inside the window, so it
                     // could end over a status bar, and a clamp that moved it
                     // up covered the point it was opened at.
-                    placement(active.position, window, cx).child(active.menu.clone()),
+                    //
+                    // GitTurtle patch: and drawn only on its side of the pixel
+                    // row the pointer lies in, so its shadow never darkens
+                    // the row clicked ([`crate::ClearOfOpener`]): the ring
+                    // keeps that row clear by its own width, and a menu
+                    // above the pointer cast 4 px of blurred shadow over it.
+                    placement(active.position, window, cx).child(crate::ClearOfOpener::new(
+                        active.menu.clone(),
+                        crate::Opener::At {
+                            y: active.position.y,
+                            gap: crate::POPOVER_EDGE_WIDTH,
+                        },
+                    )),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),
             );

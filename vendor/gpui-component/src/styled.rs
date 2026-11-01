@@ -1,8 +1,9 @@
 pub use crate::component_traits::{Collapsible, Disableable, Selectable};
 pub use crate::sizing::{Sizable, Size, StyleSized};
 use gpui::{
-    App, BoxShadow, Corners, Edges, FontWeight, Hsla, ParentElement, Pixels, StyleRefinement,
-    Styled, Window, div, hsla, px, rems,
+    AnyElement, App, Bounds, BoxShadow, ContentMask, Corners, Edges, Element, ElementId,
+    FontWeight, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, ParentElement,
+    Pixels, StyleRefinement, Styled, Window, div, hsla, point, px, rems,
 };
 pub use gpui_base::{FocusableExt, RoleOverride, StyledExt, box_shadow, h_flex, v_flex};
 
@@ -156,6 +157,134 @@ pub fn popup_offset(window: &Window, cx: &App) -> Pixels {
         || rems(0.25).to_pixels(window.rem_size()),
         |gap| gap + POPOVER_EDGE_WIDTH,
     )
+}
+
+/// GitTurtle patch: where what a popup opened from lies beside it, for
+/// [`ClearOfOpener`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Opener {
+    /// Above the popup, ending this far above its fill: a dropdown's
+    /// button, the dropdown open below it.
+    Above(Pixels),
+    /// Below the popup, starting this far below its fill: a dropdown's
+    /// button, the dropdown open above it.
+    Below(Pixels),
+    /// About `y`, a pointer's place or a row's edge: above the popup where
+    /// the popup's fill starts at or below `y`, below it where the fill ends
+    /// at or above `y`, `gap` past the fill either way. A popup whose fill
+    /// spans `y`, clamped over what it opened from, is not clipped.
+    At {
+        /// The place the popup opened at.
+        y: Pixels,
+        /// How far past the fill what it opened from begins.
+        gap: Pixels,
+    },
+}
+
+/// GitTurtle patch: a popup drawn only on its own side of what it opened
+/// from, a trigger, a row or the pixel row a pointer lies in, so that its
+/// shadow never darkens it.
+///
+/// A popup's shadow ([`popover_shadow`]) falls 4 px with a 3 px blur, so its
+/// ink reaches 9 px below the fill, at 1 % at 7 px, past any gap a menu keeps
+/// from what it opened from: a menu opened above its button or row, or above
+/// a pointer, shaded the control it was opened from. The child is drawn
+/// within a content mask that ends at the line where that opener begins,
+/// past the gap; its fill and drawn edge lie inside the mask, and only the
+/// shadow's tail on that side is cut. The wrapper adds no layout node of its
+/// own: the host measures and places the child as it would without it.
+pub struct ClearOfOpener {
+    child: AnyElement,
+    opener: Opener,
+}
+
+impl ClearOfOpener {
+    /// `child`, opened from `opener`.
+    pub fn new(child: impl IntoElement, opener: Opener) -> Self {
+        Self {
+            child: child.into_any_element(),
+            opener,
+        }
+    }
+
+    /// The content mask that keeps what a popup with its fill at `fill`
+    /// draws on its own side of `opener`, or `None` where the fill spans the
+    /// opener's place.
+    pub fn mask(fill: Bounds<Pixels>, opener: Opener) -> Option<ContentMask<Pixels>> {
+        // Past any window: the mask is a band across the whole window.
+        const FAR: Pixels = px(1.0e6);
+        let (top, bottom) = match opener {
+            Opener::Above(gap) => (fill.top() - gap, FAR),
+            Opener::Below(gap) => (-FAR, fill.bottom() + gap),
+            Opener::At { y, gap } if fill.top() >= y => (fill.top() - gap, FAR),
+            Opener::At { y, gap } if fill.bottom() <= y => (-FAR, fill.bottom() + gap),
+            Opener::At { .. } => return None,
+        };
+        Some(ContentMask {
+            bounds: Bounds::from_corners(point(-FAR, top), point(FAR, bottom)),
+        })
+    }
+}
+
+impl IntoElement for ClearOfOpener {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for ClearOfOpener {
+    type RequestLayoutState = ();
+    /// The mask the child is drawn in.
+    type PrepaintState = Option<ContentMask<Pixels>>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // The child's own node, as GPUI's `deferred` does: the host measures
+        // the child itself.
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<ContentMask<Pixels>> {
+        let mask = Self::mask(bounds, self.opener);
+        window.with_content_mask(mask, |window| self.child.prepaint(window, cx));
+        mask
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        mask: &mut Option<ContentMask<Pixels>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_content_mask(*mask, |window| self.child.paint(window, cx));
+    }
 }
 
 /// shadcn/ui's `shadow-lg`, the elevation it lifts a toast to, at `strength` of

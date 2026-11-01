@@ -709,6 +709,32 @@ and 18 pt, and `a_keyboard_row_menu_keeps_the_menu_gap_below_its_row` below
 a keyboard's row. Remove this part when upstream lets an application set the
 gap a popover keeps from its trigger, and those tests pass without it.
 
+The opener-clip patch modifies `src/styled.rs`, `src/popover.rs` and
+`src/native_menu/fallback.rs`. A popup's shadow (`popover_shadow`) falls
+4 px with a 3 px blur, the blur's sigma in GPUI's shader, so its ink reaches
+about 9 px below the fill: a menu opened above its trigger, a row, or the
+pointer of an input's right-click laid it over what it was opened from,
+about 9 % black on the first pixels of a row 1 px below the fill and 2 %
+still at a 4 px gap. `ClearOfOpener` wraps a popup so that it is drawn
+within a content mask ending at the line where its opener begins, given by
+`Opener`: above or below the fill by the popover's offset, or about a point,
+the side taken from where the fill lies; the fill and its drawn edge lie
+inside the mask, and only the shadow's tail on the opener's side is cut. It
+adds no layout node, as GPUI's `deferred` adds none, so the popup host
+measures and places the popup as before. The popover wraps its content on
+its anchor's side, and the fallback menu wraps its menu about the pointer,
+`POPOVER_EDGE_WIDTH` past the fill, the far edge of the pixel row the
+pointer lies in. The consumers are the app's dropdowns (`AppDropdown`), its
+row menus, which mask themselves through `ClearOfOpener::mask` at their row
+(`RowMenu`), and the drawn menu of every input on Linux.
+`cargo test --locked -p gitturtle menus_draw_nothing_over_their_button_or_row`
+reads the content mask of a dropdown's surface below and above its button
+and of a right-click menu above its row, and
+`an_inputs_menu_draws_nothing_on_the_pointers_row` that of a code editor's
+menu below and above the pointer's pixel row; each fails without the mask.
+Remove this part when upstream keeps a popup's shadow off what it opened
+from, and those tests pass without it.
+
 The input-menu patch also modifies `src/native_menu/fallback.rs`. The
 fallback menu gives the base `Positioner::point` a gap of
 `POPOVER_EDGE_WIDTH` ([base patch](../gpui-base/GITTURTLE-PATCH.md)), so its

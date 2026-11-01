@@ -20711,6 +20711,107 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The content mask the open menu that holds `item` is drawn in, in
+    /// logical pixels: the clip on its surface's fill, which its shadow is
+    /// painted in too.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    fn menu_mask(cx: &mut VisualTestContext, item: Bounds<Pixels>) -> Bounds<Pixels> {
+        cx.update(|window, cx| {
+            let fill = Background::from(gpui_kit::component::Theme::global(cx).popover);
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+            let corners = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+                Bounds::from_corners(
+                    point(logical(bounds.left()), logical(bounds.top())),
+                    point(logical(bounds.right()), logical(bounds.bottom())),
+                )
+            };
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == fill)
+                .filter(|quad| corners(quad.bounds).contains(&item.center()))
+                .max_by_key(|quad| quad.order)
+                .map(|quad| corners(quad.content_mask.bounds))
+                .expect("the menu's surface")
+        })
+    }
+
+    /// A text field's menu draws nothing on the pixel row the pointer lies
+    /// in, its soft shadow included: opened above the pointer, low in a code
+    /// editor, all it draws ends where that row begins, and opened below it,
+    /// high in the editor, all it draws begins where the row ends, its fill
+    /// and its drawn edge, the ring outside the fill, whole either way. Its
+    /// shadow, which falls 4 px with a 3 px blur, darkened the row clicked
+    /// below a menu above the pointer.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_menu_draws_nothing_on_the_pointers_row(cx: &mut TestAppContext) {
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+        });
+        let editor = std::rc::Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let editor = editor.clone();
+            move |window, cx| {
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx).default_value("one\ntwo\nthree\nfour\nfive")
+                });
+                *editor.borrow_mut() = Some(state.clone());
+                let probe = cx.new(|_| CodeEditorProbe {
+                    editor: state,
+                    top: px(90.),
+                });
+                gpui_kit::component::Root::new(probe, window, cx)
+            }
+        });
+        let editor = editor.borrow().clone().expect("the editor");
+        cx.update(|window, cx| appearance::ThemeChoice::Daylight.apply(Some(window), cx));
+        cx.simulate_resize(size(px(461.), px(330.)));
+        draw(cx);
+        let field = cx.debug_bounds("code-editor-probe").expect("the editor");
+        let scale = cx.update(|window, _| window.scale_factor());
+        for (y, above) in [
+            (field.top() + px(10.3), false),
+            (field.bottom() - px(9.7), true),
+        ] {
+            let at = format!("13 pt in 461 × 330, the pointer at {y:?}");
+            let pointer = point(field.center().x, y);
+            cx.update(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx));
+            let surface = right_click_field(cx, pointer, "Go to Definition", &at);
+            let item = menu_rows(cx, &["Go to Definition"])[0].1;
+            let mask = menu_mask(cx, item);
+            let drawn = surface.dilate(edge);
+            // The device pixel row the pointer lies in.
+            let device = (f32::from(pointer.y) * scale).floor();
+            let (row_top, row_bottom) = (px(device / scale), px((device + 1.) / scale));
+            if above {
+                assert!(
+                    drawn.bottom() <= row_top + px(0.01),
+                    "{at}: the menu {surface:?} opens above the pointer"
+                );
+                assert!(
+                    mask.bottom() <= row_top + px(0.01)
+                        && mask.bottom() >= drawn.bottom() - px(0.01),
+                    "{at}: the menu {surface:?} draws within {mask:?}, ending where the pointer's row {row_top:?} begins, its edge whole"
+                );
+            } else {
+                assert!(
+                    drawn.top() >= row_bottom - px(0.01),
+                    "{at}: the menu {surface:?} opens below the pointer"
+                );
+                assert!(
+                    mask.top() >= row_bottom - px(0.01) && mask.top() <= drawn.top() + px(0.01),
+                    "{at}: the menu {surface:?} draws within {mask:?}, beginning where the pointer's row {row_bottom:?} ends, its edge whole"
+                );
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+    }
+
     /// As on macOS, a right-click in a text field acts on that field, not
     /// on whatever held focus before: with focus and a selected file in the
     /// Working Changes list, a right-click's press in its filter focuses the

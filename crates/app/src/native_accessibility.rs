@@ -729,8 +729,8 @@ impl IntoElement for RowMenu {
 impl Element for RowMenu {
     /// The menu's layout.
     type RequestLayoutState = LayoutId;
-    /// Whether the menu is drawn in this frame, or closes.
-    type PrepaintState = bool;
+    /// The clip the menu is drawn in this frame, or `None` where it closes.
+    type PrepaintState = Option<Option<gpui_kit::ContentMask<Pixels>>>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -766,16 +766,32 @@ impl Element for RowMenu {
         menu: &mut LayoutId,
         window: &mut Window,
         cx: &mut App,
-    ) -> bool {
+    ) -> Option<Option<gpui_kit::ContentMask<Pixels>>> {
         let laid = window.layout_bounds(*menu);
         let row = self.row.anchor();
         if leaves_its_row(self.opened, (row, self.row.drawn()), laid.size, self.room) {
             (self.close)(window, cx);
-            return false;
+            return None;
         }
-        let offset = self.origin(row, laid.size) - laid.origin;
-        window.with_element_offset(offset, |window| self.menu.prepaint(window, cx));
-        true
+        let origin = self.origin(row, laid.size);
+        // Nothing the menu draws, its shadow included, reaches its row: a
+        // menu wholly above the row ends where the row begins, and one below
+        // it begins where the row ends, or the pointer for a right-click's,
+        // which starts there (`gpui_kit::component::ClearOfOpener`). Above its row, its shadow
+        // fell over the row's top.
+        let mask = gpui_kit::component::ClearOfOpener::mask(
+            Bounds::new(origin, laid.size),
+            gpui_kit::component::Opener::At {
+                y: row.top,
+                gap: menu_offset(),
+            },
+        );
+        window.with_content_mask(mask, |window| {
+            window.with_element_offset(origin - laid.origin, |window| {
+                self.menu.prepaint(window, cx)
+            })
+        });
+        Some(mask)
     }
 
     fn paint(
@@ -784,12 +800,12 @@ impl Element for RowMenu {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut LayoutId,
-        shown: &mut bool,
+        shown: &mut Option<Option<gpui_kit::ContentMask<Pixels>>>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        if *shown {
-            self.menu.paint(window, cx);
+        if let Some(mask) = shown {
+            window.with_content_mask(*mask, |window| self.menu.paint(window, cx));
         }
     }
 }

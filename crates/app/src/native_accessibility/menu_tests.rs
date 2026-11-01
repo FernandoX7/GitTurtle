@@ -1012,3 +1012,103 @@ fn menus_keep_one_gap_from_their_button_or_row(cx: &mut TestAppContext) {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }
+
+/// The content mask the open menu's surface, read as [`open_menu_surface`]
+/// reads it, is drawn in, in logical pixels: the clip its shadow is painted
+/// in too.
+fn open_menu_mask(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+    let item = cx
+        .debug_bounds("menu-item: One · MenuItem")
+        .expect("the menu's first item");
+    cx.update(|window, cx| {
+        let fill = Background::from(Theme::global(cx).popover);
+        let scale = window.scale_factor();
+        let logical = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+            Bounds::from_corners(
+                point(
+                    px(bounds.left().as_f32() / scale),
+                    px(bounds.top().as_f32() / scale),
+                ),
+                point(
+                    px(bounds.right().as_f32() / scale),
+                    px(bounds.bottom().as_f32() / scale),
+                ),
+            )
+        };
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == fill)
+            .filter(|quad| logical(quad.bounds).contains(&item.center()))
+            .max_by_key(|quad| quad.order)
+            .map(|quad| logical(quad.content_mask.bounds))
+            .expect("the menu's surface")
+    })
+}
+
+/// Nothing a menu draws reaches the button or row it opened from, its soft
+/// shadow included, which falls 4 px with a 3 px blur, further than the
+/// gap: a button's menu below its button begins where the button ends, one
+/// above it ends where the button begins, and a row's right-click menu
+/// moved wholly above its row ends where the row begins, each with its
+/// fill and drawn edge whole. A menu above its button or row shaded it.
+#[gpui::test]
+fn menus_draw_nothing_over_their_button_or_row(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+    for (lead, above) in [(40., false), (380., true)] {
+        let at = format!("a button {lead} px down");
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let probe = cx.new(|_| AppDropdownProbe {
+                lead: px(lead),
+                chosen: Chosen::default(),
+            });
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| appearance::ThemeChoice::Daylight.apply(Some(window), cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+        cx.simulate_click(button.center(), Modifiers::default());
+        draw(cx);
+        draw(cx);
+        let drawn = open_menu_surface(cx).dilate(edge);
+        let mask = open_menu_mask(cx);
+        if above {
+            assert!(
+                mask.bottom() <= button.top() + px(0.01)
+                    && mask.bottom() >= drawn.bottom() - px(0.01),
+                "{at}: the menu {drawn:?} above its button {button:?} draws within {mask:?}"
+            );
+        } else {
+            assert!(
+                mask.top() >= button.bottom() - px(0.01) && mask.top() <= drawn.top() + px(0.01),
+                "{at}: the menu {drawn:?} below its button {button:?} draws within {mask:?}"
+            );
+        }
+    }
+
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let probe = cx.new(|_| GapRowProbe { lead: px(400.) });
+        Root::new(probe, window, cx)
+    });
+    cx.update(|window, cx| appearance::ThemeChoice::Daylight.apply(Some(window), cx));
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx);
+    let row = cx.debug_bounds("gap-row").expect("the row");
+    cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let drawn = open_menu_surface(cx).dilate(edge);
+    let mask = open_menu_mask(cx);
+    assert!(
+        drawn.bottom() <= row.top()
+            && mask.bottom() <= row.top() + px(0.01)
+            && mask.bottom() >= drawn.bottom() - px(0.01),
+        "the menu {drawn:?} above its row {row:?} draws within {mask:?}"
+    );
+}
