@@ -3,7 +3,6 @@
 use super::*;
 use gitturtle_core::StatusEntry;
 use gpui_kit::component::{
-    button::ButtonVariant,
     dialog::{Cancel, Confirm},
     scroll::{Scrollbar, ScrollbarMode},
 };
@@ -271,7 +270,6 @@ impl GitTurtle {
                                 .child(Scrollbar::vertical(&scroll).id("worktree-force-scrollbar").mode(ScrollbarMode::Always)),
                         ),
                 )
-                .button_props(DialogButtonProps::default().ok_text("Force remove worktree").ok_variant(ButtonVariant::Danger).show_cancel(true))
                 .footer(
                     div()
                         .flex()

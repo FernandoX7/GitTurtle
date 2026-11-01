@@ -1,8 +1,7 @@
 //! Bounded destructive review with a persistent warning and explicit acceptance.
 use super::*;
 use gpui_kit::component::{
-    button::ButtonVariant,
-    dialog::{Cancel, Confirm, DialogButtonProps},
+    dialog::{Cancel, Confirm},
     scroll::{Scrollbar, ScrollbarMode},
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -170,7 +169,6 @@ impl GitTurtle {
                                 .child(Scrollbar::vertical(&scroll).id("discard-scrollbar").mode(ScrollbarMode::Always)),
                         ),
                 )
-                .button_props(DialogButtonProps::default().ok_text(action).ok_variant(ButtonVariant::Danger).show_cancel(true))
                 .footer(
                     div()
                         .flex()

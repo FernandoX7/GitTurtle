@@ -4,10 +4,7 @@ use crate::*;
 use gitturtle_core::{CreateWorktreePlan, WorktreeCommand, WorktreeDetails, WriteCommand};
 
 mod removal_review;
-use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
-    prelude::FluentBuilder,
-};
+use gpui_kit::{component::WindowExt, prelude::FluentBuilder};
 
 #[derive(Default)]
 pub(super) struct State {
