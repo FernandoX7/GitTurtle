@@ -78,6 +78,21 @@ pub enum RowKey {
     Project(PathBuf),
 }
 
+impl RowKey {
+    /// The row's element ID, from its group or project: the state GPUI keeps
+    /// for the row, its open right-click and actions menus and its tooltip
+    /// among it, stays with that group or project as rows come or go around
+    /// it, and goes with the row when it leaves the list. Keyed by its place,
+    /// a menu open on a project passed to the row that moved into that
+    /// place, as a project added above it or a renamed one sorted elsewhere.
+    fn element_id(&self) -> ElementId {
+        match self {
+            Self::Group(id) => ElementId::NamedInteger("project-group".into(), u64::from(*id)),
+            Self::Project(path) => ElementId::Path(std::sync::Arc::from(path.as_path())),
+        }
+    }
+}
+
 /// One choice in a "Move to" menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Destination {
@@ -217,7 +232,8 @@ pub struct State {
     /// The newest pane save answered with a failure: the list on screen is
     /// unsaved until Retry, which the user starts.
     pane_save_failed: bool,
-    menu_open: Option<usize>,
+    /// The row whose actions button's menu is open, by its group or project.
+    menu_open: Option<RowKey>,
     keyboard_menu: Option<native_accessibility::KeyboardMenu>,
 }
 
@@ -255,11 +271,13 @@ impl GitTurtle {
             .and_then(|index| self.project_pane.rows.get(index))
             .map(PaneRow::key);
         let rows = present_rows(&self.project_library, |path| self.project_name(path));
-        self.project_pane.cursor = match followed {
-            Some(key) => rows.iter().position(|row| row.key() == key),
-            None => None,
+        let found = followed.and_then(|key| rows.iter().position(|row| row.key() == key));
+        // A keyboard's menu, opened on the cursor row, is drawn beside that
+        // row where it now stands.
+        if let (Some(row), Some(menu)) = (found, self.project_pane.keyboard_menu.as_mut()) {
+            menu.follow_row(row);
         }
-        .or_else(|| {
+        self.project_pane.cursor = found.or_else(|| {
             self.project_pane
                 .cursor
                 .filter(|_| !rows.is_empty())
@@ -594,21 +612,22 @@ impl GitTurtle {
         let key = row.key();
         let indent = px(24. + row.depth() as f32 * 12.);
         // Rows are uniform, so the cursor row's bottom edge follows from the
-        // list's origin, its scroll offset and the row height.
-        let anchor = native_accessibility::KeyboardMenu::cursor_row(
+        // list's origin, its scroll offset and the row height, in each frame,
+        // where `rebuild_project_rows` moves it as rows come or go above it.
+        let anchor = native_accessibility::ListRow::new(
             &self.project_pane.scroll,
             index,
             crate::appearance::ui_size(30.),
             indent,
         );
         let owner = cx.entity().downgrade();
-        // Its row still holds the group or project, at the place the menu
-        // opened beside.
+        // The cursor row still holds the group or project, wherever rows
+        // that came or went above it moved that row (`rebuild_project_rows`).
         let held = key.clone();
         let holds = move |app: &GitTurtle| {
             app.project_pane
-                .rows
-                .get(index)
+                .cursor
+                .and_then(|index| app.project_pane.rows.get(index))
                 .is_some_and(|row| row.key() == held)
         };
         self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::following(
@@ -1097,8 +1116,9 @@ impl GitTurtle {
         } else {
             colors.panel
         };
+        let open = self.project_pane.menu_open.as_ref() == Some(&key);
         div()
-            .id(("project-pane-row", index))
+            .id(key.element_id())
             .debug_selector(move || format!("project-pane-row-{index}"))
             .role(Role::TreeItem)
             .aria_level(depth + 1)
@@ -1111,7 +1131,7 @@ impl GitTurtle {
             .when(cursor, |row| row.aria_active_descendant())
             .when_some(expanded, |row, expanded| row.aria_expanded(expanded))
             .when(!is_group, |row| row.aria_selected(active))
-            .when(self.project_pane.menu_open != Some(index), |row| {
+            .when(!open, |row| {
                 row.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             })
             .group("project-pane-row")
@@ -1143,7 +1163,7 @@ impl GitTurtle {
                 }),
             )
             .child(body)
-            .child(self.render_row_actions(index, menu_key, cursor, cx))
+            .child(self.render_row_actions(index, menu_key, cursor || open, cx))
             .app_context_menu({
                 let owner = owner.clone();
                 move |menu, _, cx| {
@@ -1156,24 +1176,26 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// The row menu button appears on hover and on the keyboard cursor row.
-    /// It stays out of the Tab order: the tree is one stop, and Shift-F10 or
-    /// a right-click opens the same menu.
+    /// The row menu button appears on hover, on the keyboard cursor row and
+    /// while its menu is open (`reveal`). It stays out of the Tab order: the
+    /// tree is one stop, and Shift-F10 or a right-click opens the same menu.
+    /// Its ID lies inside its row's, which is keyed by the row's group or
+    /// project, so its open menu stays with them.
     fn render_row_actions(
         &self,
         index: usize,
         key: RowKey,
-        cursor: bool,
+        reveal: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let owner = cx.entity().downgrade();
-        let reveal = cursor || self.project_pane.menu_open == Some(index);
         let label = match &key {
             RowKey::Group(_) => "Group actions",
             RowKey::Project(_) => "Project actions",
         };
         let toggled = cx.entity().downgrade();
-        Button::new(("project-row-menu", index))
+        let opened = key.clone();
+        Button::new("project-row-menu")
             .ghost()
             .tab_stop(false)
             .flex_shrink_0()
@@ -1198,7 +1220,7 @@ impl GitTurtle {
             .on_open_change(move |open, _, cx| {
                 let open = *open;
                 let _ = toggled.update(cx, |this, cx| {
-                    let next = open.then_some(index);
+                    let next = open.then(|| opened.clone());
                     if this.project_pane.menu_open != next {
                         this.project_pane.menu_open = next;
                         cx.notify();

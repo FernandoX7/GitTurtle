@@ -4144,6 +4144,149 @@ mod tests {
         drop(fixture);
     }
 
+    /// A branch created above the navigator's cursor row, outside the app,
+    /// leaves the cursor on its branch as the quiet refresh moves that row
+    /// down, and with it the menus open on the row: Shift-F10's stays open,
+    /// drawn below the branch's row where it now stands, and a right-click's
+    /// moves with that row. Keyed by their place, the cursor passed to the
+    /// branch that moved into it, the keyboard's menu closed and a
+    /// right-click's stayed beside the place.
+    #[gpui::test]
+    async fn the_navigator_keeps_its_cursor_and_menus_on_their_branch_as_one_arrives_above(
+        cx: &mut TestAppContext,
+    ) {
+        const ACTIONS: &str = "menu-item: Branch actions… · MenuItem";
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = |arguments: &[&str]| fixture_git(&repository, arguments);
+        git(&["reset", "-q", "--hard"]);
+        git(&["branch", "topic"]);
+        refs_quietly_refreshed(&app, cx).await;
+        let row_of = |cx: &mut VisualTestContext, name: &str| {
+            app.read_with(cx, |app, _| {
+                app.nav_rows.iter().position(|row| {
+                    matches!(row, crate::NavRow::Branch(branch, _)
+                        if app.branches[*branch].name == name)
+                })
+            })
+        };
+        let cursor = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.nav_cursor);
+        let arrivals = ["aardvark", "abacus"];
+
+        // The keyboard's menu, on the cursor row.
+        let topic = row_of(cx, "topic").expect("topic in the navigator");
+        open_keyed_menu(&app, cx, KeyedRow::Branch(topic), "shift-f10").await;
+        git(&["branch", arrivals[0]]);
+        refs_quietly_refreshed(&app, cx).await;
+        let moved = row_of(cx, "topic").expect("topic stays");
+        let arrived = row_of(cx, arrivals[0]).expect("the new branch in the navigator");
+        assert!(
+            arrived < moved && moved > topic,
+            "a row arrived above topic's"
+        );
+        assert_eq!(cursor(cx), Some(moved), "the cursor stays on topic");
+        assert!(
+            app.read_with(cx, |app, _| app.nav_menu.is_some()),
+            "the menu stays open on topic"
+        );
+        next_frame(cx);
+        let row = cx
+            .debug_bounds(format!("nav-row-{moved}").leak())
+            .expect("topic's row");
+        let item = cx.debug_bounds(ACTIONS).expect("the menu's item");
+        assert!(
+            item.top() >= row.bottom(),
+            "the menu {item:?} lies below topic's row {row:?} where it now stands"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        assert!(
+            cx.update(|window, cx| app.read(cx).nav_focus.is_focused(window)),
+            "Escape returns focus to the tree"
+        );
+        assert_eq!(cursor(cx), Some(moved), "on topic");
+
+        // A right-click's menu, on topic's row.
+        let before = cx
+            .debug_bounds(format!("nav-row-{moved}").leak())
+            .expect("topic's row");
+        right_click(cx, format!("nav-row-{moved}").leak());
+        let opened = cx.debug_bounds(ACTIONS).expect("the right-click's menu");
+        git(&["branch", arrivals[1]]);
+        refs_quietly_refreshed(&app, cx).await;
+        next_frame(cx);
+        let now = row_of(cx, "topic").expect("topic stays");
+        assert!(now > moved, "another row arrived above topic's");
+        let after = cx
+            .debug_bounds(format!("nav-row-{now}").leak())
+            .expect("topic's row");
+        let item = cx
+            .debug_bounds(ACTIONS)
+            .expect("the right-click's menu stays open");
+        let (row_moved, menu_moved) = (after.top() - before.top(), item.top() - opened.top());
+        assert!(
+            (row_moved - menu_moved).abs() < px(0.5),
+            "the menu moved {menu_moved:?} with topic's row, which moved {row_moved:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
+    /// A commit that arrives above History's top row moves that row down,
+    /// and a right-click's menu open on it moves with it: the row is keyed by
+    /// its commit, not its index, which the arriving commit takes. Keyed by
+    /// the index, the menu stayed beside the place, over the commit that
+    /// arrived, whose own frame then built it.
+    #[gpui::test]
+    async fn a_history_rows_menu_stays_with_its_commit_as_one_arrives_above(
+        cx: &mut TestAppContext,
+    ) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        next_frame(cx);
+        let before = cx.debug_bounds("history-row-0").expect("the top row");
+        right_click(cx, "history-row-0");
+        let opened = cx.debug_bounds(REVERT).expect("the row's menu");
+        app.update(cx, |app, cx| {
+            let top = app.commits[0].clone();
+            app.commits.insert(
+                0,
+                gitturtle_core::Commit {
+                    oid: "f".repeat(40),
+                    parents: vec![top.oid.clone()],
+                    subject: "Arrived above".into(),
+                    ..top
+                },
+            );
+            app.graph.insert(0, crate::graph::GraphRow::default());
+            app.selected_commit = app.selected_commit.map(|index| index + 1);
+            app.filter_history_retaining_scroll(cx);
+            cx.notify();
+        });
+        next_frame(cx);
+        next_frame(cx);
+        let after = cx
+            .debug_bounds("history-row-1")
+            .expect("the first commit's row");
+        let item = cx.debug_bounds(REVERT).expect("the menu stays open");
+        let (row_moved, menu_moved) = (after.top() - before.top(), item.top() - opened.top());
+        assert!(row_moved > px(0.), "the first commit's row moved down");
+        assert!(
+            (row_moved - menu_moved).abs() < px(0.5),
+            "the menu moved {menu_moved:?} with its commit's row, which moved {row_moved:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
     /// A changed file's keyboard menu, whose File history… reads nothing a
     /// write or a pause changes, is built once: a write's start and end leave
     /// it as it was, and its keyboard's cursor with it. Following writes, it

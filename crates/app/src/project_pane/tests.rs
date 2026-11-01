@@ -711,8 +711,8 @@ fn a_project_rows_actions_button_menu_follows_writes(cx: &mut TestAppContext) {
     };
     assert!(open(cx, false), "the button opened Open project at rest");
     assert_eq!(
-        app.read_with(cx, |app, _| app.project_pane.menu_open),
-        Some(beta),
+        app.read_with(cx, |app, _| app.project_pane.menu_open.clone()),
+        app.read_with(cx, |app, _| Some(app.project_pane.rows[beta].key())),
         "beta's menu is open"
     );
     busy(cx, Some("Testing"));
@@ -724,12 +724,14 @@ fn a_project_rows_actions_button_menu_follows_writes(cx: &mut TestAppContext) {
     settle(cx);
 }
 
-/// A project row's keyboard menu closes, with focus back on the tree, once
-/// its row no longer holds its project, as one removed above it moves the
-/// rows up: built again for the place it opened beside, it would have acted
-/// on a project that is no longer there.
+/// A project row's keyboard menu stays with its project as a project removed
+/// above it moves the rows up, drawn below the project's row where it now
+/// stands, and closes, with focus back on the tree, once its own project
+/// leaves the list. It once closed as its row moved, and before that, built
+/// again for the place it opened beside, it would have acted on a project
+/// that was no longer there.
 #[gpui::test]
-async fn a_project_rows_keyboard_menu_closes_once_its_row_moves(cx: &mut TestAppContext) {
+async fn a_project_rows_keyboard_menu_follows_its_row_and_closes_with_it(cx: &mut TestAppContext) {
     let (library, _, paths) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
     cx.update(|_, cx| native_accessibility::bind_keys(cx));
@@ -748,23 +750,41 @@ async fn a_project_rows_keyboard_menu_closes_once_its_row_moves(cx: &mut TestApp
             .is_some(),
         "beta's menu opened"
     );
-    let alpha = paths[0].clone();
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| {
-            app.edit_project_library(
-                |library| {
-                    library.forget_project(&alpha);
-                    Ok(())
-                },
-                window,
-                cx,
-            )
-        })
-    });
-    settle(cx);
+    let forget = |cx: &mut VisualTestContext, path: PathBuf| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.edit_project_library(
+                    |library| {
+                        library.forget_project(&path);
+                        Ok(())
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        settle(cx);
+    };
+    forget(cx, paths[0].clone());
+    assert!(
+        app.read_with(cx, |app, _| app.project_pane.keyboard_menu.is_some()),
+        "the menu stays open on beta as a row above it goes"
+    );
+    let beta = app.read_with(cx, |app, _| app.project_pane.cursor.expect("on beta"));
+    let row = cx
+        .debug_bounds(format!("project-pane-row-{beta}").leak())
+        .expect("beta's row");
+    let item = cx
+        .debug_bounds("menu-item: Open project · MenuItem")
+        .expect("the menu's item");
+    assert!(
+        item.top() >= row.bottom(),
+        "the menu {item:?} lies below beta's row {row:?} where it now stands"
+    );
+    forget(cx, paths[1].clone());
     assert!(
         app.read_with(cx, |app, _| app.project_pane.keyboard_menu.is_none()),
-        "the menu closed once its row moved"
+        "the menu closed with its project"
     );
     assert!(
         cx.update(|window, cx| app.read(cx).project_pane.focus.is_focused(window)),
@@ -1364,4 +1384,113 @@ async fn a_write_refuses_a_project_row_before_it_moves_anything(cx: &mut TestApp
         cx.notify();
     });
     assert_eq!(row(cx), state(false, false), "once the write ends");
+}
+
+/// A project added above the tree's cursor row leaves the cursor on its
+/// project, and with it the menus open on its row: Shift-F10's stays open,
+/// drawn below the project's row where it now stands, and the actions
+/// button's stays open beside the project's row as it moves. Keyed by their
+/// place, Shift-F10's menu closed and the button's stayed beside the place,
+/// on the project that moved into it.
+#[gpui::test]
+fn a_project_rows_menus_stay_with_it_as_a_row_arrives_above(cx: &mut TestAppContext) {
+    const NAME: &str = "menu-item: beta · Label";
+    let (library, _, paths) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    let beta = RowKey::Project(paths[1].clone());
+    let row_of = |cx: &mut VisualTestContext| {
+        app.read_with(cx, |app, _| {
+            app.project_pane
+                .rows
+                .iter()
+                .position(|row| row.key() == beta)
+                .expect("beta in the tree")
+        })
+    };
+    let arrive = |cx: &mut VisualTestContext, name: &str| {
+        app.update(cx, |app, cx| {
+            let mut library = app.project_library.clone();
+            assert!(library.remember(&Path::new("/projects").join(name)));
+            app.set_project_library(library);
+            cx.notify();
+        });
+        settle(cx);
+    };
+    let focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| app.read(cx).project_pane.focus.is_focused(window))
+    };
+
+    // Shift-F10's menu, on the cursor row.
+    let at = row_of(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.project_pane.cursor = Some(at);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert!(
+        cx.debug_bounds(NAME).is_some(),
+        "Shift-F10 opened beta's menu"
+    );
+    arrive(cx, "aaa");
+    let moved = row_of(cx);
+    assert!(moved > at, "a row arrived above beta's");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.project_pane.cursor),
+        Some(moved),
+        "the cursor stays on beta"
+    );
+    assert!(
+        app.read_with(cx, |app, _| app.project_pane.keyboard_menu.is_some()),
+        "the menu stays open on beta"
+    );
+    let row = cx
+        .debug_bounds(format!("project-pane-row-{moved}").leak())
+        .expect("beta's row");
+    let name = cx.debug_bounds(NAME).expect("the menu names beta");
+    assert!(
+        name.top() >= row.bottom(),
+        "the menu {name:?} lies below beta's row {row:?} where it now stands"
+    );
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(focused(cx), "Escape returns focus to the tree");
+
+    // The actions button's menu, on beta's row.
+    let before = cx
+        .debug_bounds(format!("project-pane-row-{moved}").leak())
+        .expect("beta's row");
+    let button = cx
+        .debug_bounds(format!("project-row-menu-{moved}").leak())
+        .expect("beta's actions button");
+    cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+    settle(cx);
+    cx.simulate_click(button.center(), Modifiers::default());
+    settle(cx);
+    let opened = cx
+        .debug_bounds(NAME)
+        .expect("the button opened beta's menu");
+    arrive(cx, "aab");
+    let now = row_of(cx);
+    assert!(now > moved, "another row arrived above beta's");
+    let after = cx
+        .debug_bounds(format!("project-pane-row-{now}").leak())
+        .expect("beta's row");
+    let name = cx.debug_bounds(NAME).expect("the button's menu stays open");
+    let (row_moved, menu_moved) = (after.top() - before.top(), name.top() - opened.top());
+    assert!(
+        (row_moved - menu_moved).abs() < px(0.5),
+        "the menu moved {menu_moved:?} with beta's row, which moved {row_moved:?}"
+    );
+    assert_eq!(
+        app.read_with(cx, |app, _| app.project_pane.menu_open.clone()),
+        Some(beta.clone()),
+        "beta's menu is the one open"
+    );
+    cx.simulate_keystrokes("escape");
+    settle(cx);
 }

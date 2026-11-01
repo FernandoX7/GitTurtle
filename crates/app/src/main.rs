@@ -487,6 +487,9 @@ struct GitTurtle {
     branches: Vec<Branch>,
     worktrees: Vec<Worktree>,
     nav_rows: Vec<NavRow>,
+    /// Each of `nav_rows`' element IDs, from what the row shows
+    /// ([`GitTurtle::nav_row_id`]), made as the rows are built.
+    nav_ids: Vec<ElementId>,
     nav_cursor: Option<usize>,
     nav_focus: FocusHandle,
     nav_mode: NavMode,
@@ -852,6 +855,7 @@ impl GitTurtle {
             branches: vec![],
             worktrees: vec![],
             nav_rows: vec![],
+            nav_ids: vec![],
             nav_cursor: Some(0),
             nav_focus: cx.focus_handle(),
             nav_mode: NavMode::Local,
@@ -1221,6 +1225,7 @@ impl GitTurtle {
             self.branches.clear();
             self.worktrees.clear();
             self.nav_rows.clear();
+            self.nav_ids.clear();
             self.expanded_folders.clear();
             self.seed_folders = true;
             self.preferred_file = None;
@@ -1620,6 +1625,11 @@ impl GitTurtle {
             .collect();
     }
     fn rebuild_navigation(&mut self, cx: &App) {
+        // What the cursor row showed, from the rows as they were built: the
+        // branches they index may already be the new ones.
+        let followed = self
+            .nav_cursor
+            .and_then(|index| self.nav_ids.get(index).cloned());
         let query = self.nav_search.read(cx).value().trim().to_lowercase();
         self.nav_rows = vec![NavRow::All];
         if self.nav_mode != NavMode::Worktrees {
@@ -1678,13 +1688,60 @@ impl GitTurtle {
                 .push(NavRow::Section("WORKTREES", matching.len()));
             self.nav_rows.extend(matching);
         }
-        self.nav_cursor = self
-            .nav_cursor
-            .filter(|index| {
-                *index < self.nav_rows.len()
-                    && !matches!(self.nav_rows[*index], NavRow::Section(..))
+        self.nav_ids = self
+            .nav_rows
+            .iter()
+            .map(|row| self.nav_row_id(row))
+            .collect();
+        // The cursor stays on what its row showed, wherever rows that came or
+        // went before it moved that row; kept at its place, it passed to
+        // whichever branch moved in, as one created above it did.
+        let followed = followed.and_then(|id| self.nav_ids.iter().position(|row| *row == id));
+        self.nav_cursor = followed
+            .or_else(|| {
+                self.nav_cursor.filter(|index| {
+                    *index < self.nav_rows.len()
+                        && !matches!(self.nav_rows[*index], NavRow::Section(..))
+                })
             })
             .or(Some(0));
+        // A keyboard's menu, opened on the cursor row, is drawn beside that
+        // row where it now stands.
+        if let (Some(row), Some(menu)) = (followed, self.nav_menu.as_mut()) {
+            menu.follow_row(row);
+        }
+    }
+
+    /// A navigator row's element ID, from what it shows: its branch's name
+    /// and whether it is remote, its worktree's path or its folder's key. The
+    /// state GPUI keeps for the row, its open right-click menu and tooltip
+    /// among it, stays with that branch, worktree or folder as rows come or
+    /// go around it, and goes with the row when it leaves the tree; keyed by
+    /// its place, a menu open on a branch passed to the branch that moved
+    /// into that place. Made as the rows are built (`nav_ids`), so a frame
+    /// clones each rather than formatting it.
+    fn nav_row_id(&self, row: &NavRow) -> ElementId {
+        match row {
+            NavRow::Section(label, _) => ElementId::Name((*label).into()),
+            NavRow::All => ElementId::Name("nav-all".into()),
+            NavRow::Folder { key, .. } => ElementId::Name(format!("nav-folder:{key}").into()),
+            NavRow::Branch(branch, _) => {
+                let branch = &self.branches[*branch];
+                let side = if branch.remote { "remote" } else { "local" };
+                ElementId::Name(format!("nav-{side}:{}", branch.name).into())
+            }
+            NavRow::Worktree(tree) => {
+                ElementId::Path(Arc::from(self.worktrees[*tree].path.as_path()))
+            }
+        }
+    }
+
+    /// The element ID of the navigator's `index`th row (`nav_ids`).
+    fn nav_row_key(&self, index: usize) -> ElementId {
+        self.nav_ids
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| ElementId::named_usize("nav", index))
     }
 
     fn trace_frame(&mut self, metric: &'static str, window: &mut Window, cx: &mut Context<Self>) {

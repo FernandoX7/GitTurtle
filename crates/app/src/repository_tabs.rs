@@ -574,6 +574,7 @@ struct WarmTab {
     branches: Vec<Branch>,
     worktrees: Vec<Worktree>,
     nav_rows: Vec<NavRow>,
+    nav_ids: Vec<ElementId>,
     nav_mode: NavMode,
     nav_cursor: Option<usize>,
     expanded: HashSet<String>,
@@ -864,6 +865,7 @@ impl GitTurtle {
             branches: std::mem::take(&mut self.branches),
             worktrees: std::mem::take(&mut self.worktrees),
             nav_rows: std::mem::take(&mut self.nav_rows),
+            nav_ids: std::mem::take(&mut self.nav_ids),
             nav_mode: self.nav_mode,
             nav_cursor: self.nav_cursor,
             expanded: std::mem::take(&mut self.expanded_folders),
@@ -928,6 +930,7 @@ impl GitTurtle {
         self.branches = warm.branches;
         self.worktrees = warm.worktrees;
         self.nav_rows = warm.nav_rows;
+        self.nav_ids = warm.nav_ids;
         self.nav_mode = warm.nav_mode;
         self.nav_cursor = warm.nav_cursor;
         self.expanded_folders = warm.expanded;

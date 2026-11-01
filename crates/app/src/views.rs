@@ -1078,7 +1078,7 @@ impl GitTurtle {
         {
             let _ = key;
             return div()
-                .id(("nav-folder", index))
+                .id(self.nav_row_key(index))
                 .role(Role::TreeItem)
                 .aria_level(depth + 1)
                 .when(self.nav_cursor == Some(index), |row| {
@@ -1173,7 +1173,7 @@ impl GitTurtle {
             _ => None,
         };
         let element = div()
-            .id(("nav", index))
+            .id(self.nav_row_key(index))
             .debug_selector(move || format!("nav-row-{index}"))
             .role(Role::TreeItem)
             .aria_level(depth + 1)
@@ -1256,9 +1256,11 @@ impl GitTurtle {
     /// Shift-F10, or on Linux the Menu key, in the navigator: opens the
     /// cursor row's menu below it, the one a right-click on a branch or a
     /// worktree opens, its actions unavailable while a write runs and
-    /// built again in place as one starts or ends. It closes once the row
-    /// it opened beside no longer holds its branch or worktree, as one
-    /// deleted or renamed, or added above it, leaves the tree.
+    /// built again in place as one starts or ends. It stays with its branch
+    /// or worktree as rows come or go above it, drawn beside its row where
+    /// that row now stands, as the cursor stays on it
+    /// (`rebuild_navigation`), and closes once its branch or worktree leaves
+    /// the tree, deleted or renamed.
     pub(super) fn manage_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.nav_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -1267,13 +1269,19 @@ impl GitTurtle {
             return;
         };
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        // The cursor row still shows the branch or worktree the menu opened
+        // on, wherever rows that came or went above it moved that row.
+        let held = self.nav_row_key(index);
+        let shown = repository.clone();
+        let holds = move |app: &GitTurtle| {
+            app.path == shown
+                && app.nav_cursor.and_then(|index| app.nav_ids.get(index)) == Some(&held)
+        };
         type Build = Box<dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu>;
-        type Holds = Box<dyn Fn(&GitTurtle) -> bool>;
-        let (depth, build, holds): (usize, Build, Holds) = match self.nav_rows.get(index) {
+        let (depth, build): (usize, Build) = match self.nav_rows.get(index) {
             Some(NavRow::Branch(branch, depth)) => {
                 let branch = &self.branches[*branch];
                 let (name, remote) = (branch.name.clone(), branch.remote);
-                let (held, shown) = (name.clone(), repository.clone());
                 (
                     *depth,
                     Box::new(move |menu, app: &GitTurtle| {
@@ -1286,18 +1294,10 @@ impl GitTurtle {
                             (false, app.menu_wait()),
                         )
                     }),
-                    Box::new(move |app: &GitTurtle| {
-                        app.path == shown
-                            && matches!(app.nav_rows.get(index), Some(NavRow::Branch(branch, _))
-                            if app.branches.get(*branch).is_some_and(|branch| {
-                                branch.name == held && branch.remote == remote
-                            }))
-                    }),
                 )
             }
             Some(NavRow::Worktree(tree)) => {
                 let tree = self.worktrees[*tree].clone();
-                let (held, shown) = (tree.path.clone(), repository.clone());
                 (
                     0,
                     Box::new(move |menu, app: &GitTurtle| {
@@ -1310,16 +1310,13 @@ impl GitTurtle {
                             (elsewhere, app.menu_wait()),
                         )
                     }),
-                    Box::new(move |app: &GitTurtle| {
-                        app.path == shown
-                            && matches!(app.nav_rows.get(index), Some(NavRow::Worktree(tree))
-                                if app.worktrees.get(*tree).is_some_and(|tree| tree.path == held))
-                    }),
                 )
             }
             _ => return,
         };
-        let anchor = native_accessibility::KeyboardMenu::cursor_row(
+        // Drawn beside the row where the list lays it out, which
+        // `rebuild_navigation` moves as rows come or go above it.
+        let anchor = native_accessibility::ListRow::new(
             &self.nav_scroll,
             index,
             crate::appearance::ui_size(30.),
@@ -2186,8 +2183,9 @@ impl GitTurtle {
             // The chip's own tooltip lists every reference, so reading the
             // subject beside it brings up no tooltip.
             let title = refs.lines.clone();
+            // Inside its row's ID, which its commit keys.
             let chip = div()
-                .id(("refs", index))
+                .id("refs")
                 .debug_selector(move || format!("history-ref-pill-{index}"))
                 .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                 .min_w_0()
@@ -2307,7 +2305,7 @@ impl GitTurtle {
                 .insert(index, (name.clone(), pill_tooltip))
         });
         let row = div()
-            .id(("commit", index))
+            .id(commit_row_id(&commit.oid))
             .debug_selector(move || format!("history-row-{index}"))
             .role(Role::ListBoxOption)
             .aria_label(name)
@@ -6545,6 +6543,33 @@ pub(crate) fn note_compact_label(selector: &'static str, name: &SharedString) {
     COMPACT_LABELS.with(|names| names.borrow_mut().insert(selector, name.clone()));
     #[cfg(not(test))]
     let _ = (selector, name);
+}
+
+/// A History commit row's element ID: its commit's object ID, its first 160
+/// bits as bytes, so a frame formats nothing for it. The state GPUI keeps
+/// for the row, its open right-click menu and its references' tooltip among
+/// it, stays with that commit as commits arrive above it, as Latest or a
+/// commit's reload brings them, and goes with the row when the commit leaves
+/// the list. Keyed by the commit's index, a menu open on a commit passed to
+/// whichever commit took that index, and acted on it. An ID that is not
+/// hexadecimal keeps its text.
+fn commit_row_id(oid: &str) -> ElementId {
+    fn nibble(digit: u8) -> u8 {
+        match digit {
+            b'0'..=b'9' => digit - b'0',
+            b'a'..=b'f' => digit - b'a' + 10,
+            _ => digit - b'A' + 10,
+        }
+    }
+    let hex = oid.as_bytes();
+    if hex.len() < 40 || !hex.iter().all(u8::is_ascii_hexdigit) {
+        return ElementId::Name(oid.to_owned().into());
+    }
+    let mut id = [0u8; 20];
+    for (byte, pair) in id.iter_mut().zip(hex.chunks_exact(2)) {
+        *byte = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    ElementId::OpaqueId(id)
 }
 
 /// `control`, a mode toggle, marked where `selected` with a 2 px accent bar
