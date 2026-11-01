@@ -184,6 +184,15 @@ pub struct Theme {
     /// caller gives it, and the page's `border` is fitted against the page.
     #[serde(skip)]
     pub secondary_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px edge a disabled Button that keeps a fill
+    /// draws (a primary or secondary Button, or a custom variant that sets
+    /// its own disabled fill), or `None` for none, as upstream draws none.
+    ///
+    /// Set in code, not read from theme files, so an application can fit the
+    /// edge against the surfaces such a Button lies on: the disabled fill
+    /// can nearly equal them, and the Button then drew only its dim label.
+    #[serde(skip)]
+    pub disabled_edge: Option<Hsla>,
     /// The label of a control that cannot be used, which
     /// [`Self::disabled_foreground`] resolves, or `None` for
     /// `muted_foreground` at half strength.
@@ -727,6 +736,7 @@ impl From<&ThemeColor> for Theme {
             popover_edge: None,
             dialog_edge: None,
             secondary_edge: None,
+            disabled_edge: None,
             disabled_label: None,
             menu_label_size: None,
             scrollbar_mode: ScrollbarMode::default(),

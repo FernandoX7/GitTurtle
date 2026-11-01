@@ -870,17 +870,30 @@ impl Palette {
         toward_extreme_in(256, edge, extreme, clears)
     }
 
-    /// The edge of a disabled Button resting on the neutral `subtle` fill (a
-    /// primary action or a selected shared helper) on `surface`: none where
-    /// the fill stands off the surface, and [`Self::raised_edge`], 1.4:1 or
-    /// more on every page surface, where it nearly equals it, below
-    /// [`NEUTRAL_FILL_STEP`]. The commit action's disabled fill is the
-    /// composer's own `subtle`, so without an edge it drew only its dim label,
-    /// and the raised surface of most Omarchy dark palettes is `subtle` too.
-    /// A neutral fill one step off its surface would read about 1.08:1 at
-    /// best and pull the disabled label below 3:1 in most palettes.
-    pub fn disabled_edge(self, surface: u32) -> Option<u32> {
-        (custom::contrast(self.subtle, surface) < NEUTRAL_FILL_STEP).then(|| self.raised_edge())
+    /// The 1 px edge of a disabled Button that rests on the neutral `subtle`
+    /// fill, a primary action, a secondary control or a selected shared
+    /// helper (the kit's `Theme::disabled_edge`): `border`, unless it misses
+    /// [`DISABLED_EDGE`] against a surface such a Button rests on, the page's
+    /// surfaces and the raised menu surface, the fill itself among them. Then
+    /// it takes the first of 256 even steps toward black in a light palette or
+    /// white in a dark one, the text's side as for the popup edge, that clears
+    /// it on all of them. The fill stands no more than 1.34:1 off any of them,
+    /// and 1.03 to 1.05:1 off a dialog in Rosé Pine, Graphite, Midnight,
+    /// Braden and Ember, where a disabled default action drew only its dim
+    /// label. A fill 1.5:1 off its surface would read stronger than an
+    /// enabled secondary control and pull the disabled label below 3:1.
+    pub fn disabled_edge(self) -> u32 {
+        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let clears = |edge| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(edge, surface) >= DISABLED_EDGE)
+        };
+        if clears(self.border) {
+            return self.border;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, self.border, extreme, clears)
     }
 
     /// The label of a control that cannot be used, the one dim disabled
@@ -1025,34 +1038,12 @@ const DISABLED_LABEL_MARGIN: f64 = 0.05;
 /// surface, so disabled stays clearly fainter than enabled text.
 const DISABLED_SHARE: f64 = 0.6;
 
-/// The contrast below which a disabled Button's neutral fill reads as part of
-/// the surface beneath it rather than as a shape ([`Palette::disabled_edge`]).
-const NEUTRAL_FILL_STEP: f64 = 1.05;
-
-/// `button`, a Button that rests on the neutral `subtle` fill while disabled,
-/// drawn on `surface`: while `disabled` and where that fill nearly equals
-/// `surface`, it keeps its shape with a 1 px edge ([`Palette::disabled_edge`]).
-/// A Button as wide as its content, or a fixed square its content fills, as
-/// the compact toolbar's icon actions are, passes the horizontal padding it set
-/// as `inset`, and the edge takes its pixel from that padding, so the Button
-/// keeps its bounds and its content its place; a wider Button of fixed width,
-/// its content centred, passes `None`.
-pub fn keep_disabled_shape(
-    button: gpui_kit::component::button::Button,
-    disabled: bool,
-    surface: u32,
-    inset: Option<Pixels>,
-    cx: &App,
-) -> gpui_kit::component::button::Button {
-    use gpui_kit::prelude::FluentBuilder as _;
-    match palette(cx).disabled_edge(surface).filter(|_| disabled) {
-        Some(edge) => button
-            .border_1()
-            .border_color(rgb(edge))
-            .when_some(inset, |button, inset| button.px(inset - px(1.))),
-        None => button,
-    }
-}
+/// The contrast a disabled Button's edge keeps against every surface it
+/// rests on and its own fill ([`Palette::disabled_edge`]): enough that it
+/// reads as a control's shape, and well under the 3:1 of the bordered Cancel
+/// beside a dialog's default action, so with its dim label it still reads as
+/// one that cannot act.
+const DISABLED_EDGE: f64 = 1.5;
 
 /// The keyboard's cursor on a picker's highlighted row (the command palette,
 /// Quick Open and Keyboard Shortcuts), marked as the kit's menus mark theirs
@@ -2125,6 +2116,7 @@ impl Palette {
         // dialog's surface, so it draws the dialog's edge in every state.
         theme.secondary_edge = Some(dialog_edge);
         theme.disabled_label = Some(palette.disabled_label().into());
+        theme.disabled_edge = Some(rgb(palette.disabled_edge()).into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
         theme.colors.sidebar_foreground = rgb(palette.text).into();
@@ -5090,6 +5082,61 @@ mod tests {
                         failures.push(format!("{name} {kind} on the {surface}: {fills:?}"));
                     }
                 }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A disabled Button that keeps a fill, the kit's secondary (Fetch, a
+    /// disabled Cancel) and primary (Push, a dialog's default action) and
+    /// the shared helper's selected look (Open command), keeps its shape with
+    /// the kit's disabled edge on each page surface and the menu's, a
+    /// dialog's canvas among them, in every palette: its neutral `subtle`
+    /// fill stood 1.03 to 1.05:1 off the dialog in Rosé Pine, Graphite,
+    /// Midnight, Braden and Ember, and no more than 1.34:1 off any surface,
+    /// so it drew only its dim label. The edge holds 1.5:1 against each
+    /// surface and the fill, and stays fainter than the dialog Cancel's
+    /// edge; the Buttons that turn transparent, the shared helper at rest and
+    /// the ghost, draw none.
+    #[gpui::test]
+    fn every_disabled_button_that_keeps_a_fill_keeps_its_shape_with_an_edge(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| DisabledControls);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let edge = palette.disabled_edge();
+            for (surface, color) in disabled_label_surfaces(palette) {
+                for kind in DISABLED_BUTTONS {
+                    let expected = match kind {
+                        "secondary" | "primary" | "control-selected" => {
+                            vec![Hsla::from(rgb(edge))]
+                        }
+                        // The kit's default Button keeps a border of its own.
+                        "default" => continue,
+                        _ => Vec::new(),
+                    };
+                    let edges =
+                        crate::views::tests::painted_edges(cx, disabled_selector(kind, surface));
+                    if edges != expected {
+                        failures.push(format!("{name} {kind} on the {surface}: {edges:?}"));
+                    }
+                }
+                let ratio = contrast(edge, color);
+                if ratio < DISABLED_EDGE {
+                    failures.push(format!("{name}: #{edge:06x} {ratio:.3}:1 on the {surface}"));
+                }
+            }
+            let on_fill = contrast(edge, palette.subtle);
+            if on_fill < DISABLED_EDGE {
+                failures.push(format!("{name}: #{edge:06x} {on_fill:.3}:1 on its fill"));
+            }
+            let cancel = contrast(palette.dialog_edge(), palette.canvas);
+            if contrast(edge, palette.canvas) >= cancel {
+                failures.push(format!("{name}: #{edge:06x} no fainter than Cancel's edge"));
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));

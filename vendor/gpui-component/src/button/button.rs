@@ -10,10 +10,10 @@ use crate::{
     tooltip::{ManagedTooltipExt as _, Tooltip},
 };
 use gpui::{
-    AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId, FocusHandle, Hsla,
-    InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement, Pixels, RenderOnce,
-    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, relative, transparent_white,
+    AbsoluteLength, AnyElement, App, Background, ClickEvent, Corners, Edges, ElementId,
+    FocusHandle, Hsla, InteractiveElement, Interactivity, IntoElement, MouseButton, ParentElement,
+    Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled, Window, div, prelude::FluentBuilder as _, relative, transparent_white,
 };
 
 #[derive(Default, Clone, Copy)]
@@ -659,6 +659,48 @@ impl Button {
             ButtonRounded::Size(px) => px,
             ButtonRounded::None => Pixels::ZERO,
         };
+        // GitTurtle patch: a disabled Button that keeps a fill draws the
+        // theme's disabled edge, so it keeps its shape where that fill nearly
+        // equals the surface beneath. A Button with a border of its own draws
+        // the edge as that border (its disabled border colour); one without
+        // takes it from a layer laid over its bounds, which moves nothing.
+        let own_border = self.variant.is_default() || self.outline || {
+            let widths = &instance_style.border_widths;
+            [widths.top, widths.right, widths.bottom, widths.left]
+                .into_iter()
+                .any(|width| width.is_some_and(|width| !width.is_zero()))
+        };
+        let disabled_edge = cx
+            .theme()
+            .disabled_edge
+            .filter(|_| disabled && !own_border && style.keeps_a_disabled_fill());
+        // The layer follows the Button's corners, its caller's where it
+        // rounds them itself.
+        let edge_corner = |own: Option<AbsoluteLength>, rounded: bool| {
+            own.unwrap_or(AbsoluteLength::Pixels(if rounded {
+                rounding
+            } else {
+                Pixels::ZERO
+            }))
+        };
+        let edge_corners = Corners {
+            top_left: edge_corner(
+                instance_style.corner_radii.top_left,
+                self.border_corners.top_left,
+            ),
+            top_right: edge_corner(
+                instance_style.corner_radii.top_right,
+                self.border_corners.top_right,
+            ),
+            bottom_left: edge_corner(
+                instance_style.corner_radii.bottom_left,
+                self.border_corners.bottom_left,
+            ),
+            bottom_right: edge_corner(
+                instance_style.corner_radii.bottom_right,
+                self.border_corners.bottom_right,
+            ),
+        };
 
         let root = base
             .cursor_default()
@@ -860,6 +902,22 @@ impl Button {
             )
         })
         .child(content)
+        .when_some(disabled_edge, |this, edge| {
+            this.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .bottom_0()
+                    .right_0()
+                    .border_1()
+                    .border_color(edge)
+                    .rounded_tl(edge_corners.top_left)
+                    .rounded_tr(edge_corners.top_right)
+                    .rounded_bl(edge_corners.bottom_left)
+                    .rounded_br(edge_corners.bottom_right),
+            )
+        })
         // Fade the whole button while loading, so every variant is dimmed by
         // the same amount. Fading `bg`, `border` and `fg` one by one instead
         // only shows up on variants that have a background to begin with:
@@ -1369,6 +1427,18 @@ impl ButtonVariant {
         }
     }
 
+    /// GitTurtle patch: whether a disabled Button of this variant keeps a
+    /// fill: a primary or secondary one rests on the neutral secondary fill,
+    /// and a custom variant on the disabled fill it sets. The others turn
+    /// transparent or keep a tint, and draw no disabled edge.
+    fn keeps_a_disabled_fill(&self) -> bool {
+        match self {
+            Self::Primary | Self::Secondary => true,
+            Self::Custom(style) => style.disabled.is_some(),
+            _ => false,
+        }
+    }
+
     fn disabled(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
         let bg = match self {
             Self::Default | Self::Link | Self::Ghost | Self::Text => cx.theme().transparent.into(),
@@ -1397,13 +1467,21 @@ impl ButtonVariant {
                 cx.theme().input.opacity(0.5),
             )
         } else {
+            // GitTurtle patch: a Button that keeps a fill and draws a border
+            // of its own draws the theme's disabled edge there.
+            let edge = cx.theme().disabled_edge;
             let border = match self {
-                Self::Primary | Self::Secondary => cx.theme().button_secondary.opacity(1.5),
+                Self::Primary | Self::Secondary => {
+                    edge.unwrap_or(cx.theme().button_secondary.opacity(1.5))
+                }
                 Self::Danger => cx.theme().button_danger.opacity(0.15),
                 Self::Warning => cx.theme().button_warning.opacity(0.15),
                 Self::Success => cx.theme().button_success.opacity(0.15),
                 Self::Info => cx.theme().button_info.opacity(0.15),
-                Self::Custom(style) => style.disabled.unwrap_or(style.color.opacity(0.15)),
+                Self::Custom(style) => match style.disabled {
+                    Some(fill) => edge.unwrap_or(fill),
+                    None => style.color.opacity(0.15),
+                },
                 Self::Default | Self::Link | Self::Ghost | Self::Text => cx.theme().transparent,
             };
             (bg, border)
@@ -1995,5 +2073,77 @@ mod tests {
             crate::Theme::global_mut(cx).secondary_edge = Some(edge);
             assert_eq!(edges(cx), [edge; 4], "set: the secondary edge");
         });
+    }
+
+    /// GitTurtle patch: a disabled Button that keeps a fill, a primary one
+    /// here, draws the theme's `disabled_edge` as a 1 px edge over its bounds
+    /// where the theme sets one, and none otherwise, as upstream draws none;
+    /// enabled, or a disabled ghost, which keeps no fill, it draws none. The
+    /// edge moves nothing.
+    #[gpui::test]
+    fn a_disabled_filled_button_draws_the_themes_disabled_edge(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Render, VisualTestContext};
+
+        struct DisabledEdgeHarness;
+
+        impl Render for DisabledEdgeHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let button = |id: &'static str| {
+                    Button::new(id)
+                        .debug_selector(move || id.into())
+                        .label("Push")
+                };
+                div()
+                    .flex()
+                    .gap_2()
+                    .p_2()
+                    .child(button("disabled-primary").primary().disabled(true))
+                    .child(button("enabled-primary").primary())
+                    .child(button("disabled-ghost").ghost().disabled(true))
+            }
+        }
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| DisabledEdgeHarness);
+        // The border colours of the quads painted at `selector`'s bounds with
+        // a border on every side, each colour once.
+        let edges = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+                };
+                let mut edges = Vec::new();
+                for quad in window.painted_quads() {
+                    let widths = quad.border_widths;
+                    if [widths.top, widths.right, widths.bottom, widths.left]
+                        .into_iter()
+                        .all(|width| width.as_f32() > 0.)
+                        && near(quad.bounds.left(), bounds.left())
+                        && near(quad.bounds.top(), bounds.top())
+                        && near(quad.bounds.right(), bounds.right())
+                        && near(quad.bounds.bottom(), bounds.bottom())
+                        && !edges.contains(&quad.border_color)
+                    {
+                        edges.push(quad.border_color);
+                    }
+                }
+                edges
+            })
+        };
+        assert_eq!(edges(cx, "disabled-primary"), vec![], "unset: none");
+        let place = cx.debug_bounds("disabled-primary");
+        let edge = gpui::hsla(0.75, 0.4, 0.4, 1.);
+        cx.update(|_, cx| crate::Theme::global_mut(cx).disabled_edge = Some(edge));
+        assert_eq!(edges(cx, "disabled-primary"), vec![edge], "set: the edge");
+        assert_eq!(
+            cx.debug_bounds("disabled-primary"),
+            place,
+            "it moves nothing"
+        );
+        assert_eq!(edges(cx, "enabled-primary"), vec![], "enabled: none");
+        assert_eq!(edges(cx, "disabled-ghost"), vec![], "no fill: none");
     }
 }

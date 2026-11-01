@@ -561,6 +561,36 @@ palette and reads its painted edge at rest, hovered and pressed. Remove this
 part of the patch when upstream lets a theme set a secondary Button's border
 apart from `border`, and those tests pass without it.
 
+The disabled-edge patch modifies `src/theme/mod.rs` and
+`src/button/button.rs`, with the disabled-primary patch above. A disabled
+primary or secondary Button, and a custom variant that sets its own disabled
+fill, rests on that fill with no edge, and where the fill nearly equals the
+surface beneath, the Button draws only its dim label: GitTurtle's neutral
+`subtle` stood 1.03 to 1.05:1 off its dialogs in five palettes, so a dialog's
+disabled default action read as stray text. `Theme::disabled_edge`, `None` by
+default, set in code and skipped by theme files, is a 1 px edge such a
+disabled Button draws where an application sets one: a Button with a border of
+its own (the default variant, an outline, a caller's `border_1`) draws it as
+that border's disabled colour, and one without takes it from a child laid over
+its bounds with the Button's corners, absolutely placed and without a role, so
+it moves nothing and adds no accessibility node. Unset, nothing changes.
+Enabled Buttons and the ghost, link, text, default, danger, warning, success
+and info variants' disabled looks are unchanged. The consumers are every app
+Button of those variants while disabled: dialogs' default actions, the
+toolbar's Fetch, Pull and Push, the composer's Commit and the command
+palette's Open command; the app sets the edge to `Palette::disabled_edge`
+(`crates/app/src/appearance.rs`), fitted to 1.5:1 against every page surface,
+the raised one and the fill, and drops the bordered copy it had drawn at those
+four places only where the fill fell below 1.05:1. The kit's own
+`a_disabled_filled_button_draws_the_themes_disabled_edge` reads a disabled
+primary's painted edge with the theme's unset and set and that it keeps its
+bounds, and that an enabled primary and a disabled ghost draw none;
+`cargo test --locked -p gitturtle every_disabled_button_that_keeps_a_fill_keeps_its_shape_with_an_edge`
+reads the edge of each disabled kind on each page surface in every built-in
+and embedded Omarchy palette, and the toolbar, composer and palette tests read
+it on the real controls. Remove this part of the patch when upstream lets a
+theme give a disabled filled Button an edge, and those tests pass without it.
+
 The popup-inset patch modifies `src/menu/context_menu.rs`,
 `src/native_menu/fallback.rs`, `src/popover.rs` and `src/styled.rs`, with the
 base patch's `set_popup_bottom_inset`

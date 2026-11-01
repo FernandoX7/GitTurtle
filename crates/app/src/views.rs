@@ -22636,9 +22636,9 @@ pub(crate) mod tests {
     /// composer's own `subtle` (#edf1f7 on #edf1f7 in Braden, #131a25 on
     /// #131a25 in Midnight, 1.000:1), so it drew only its dim label, "Set
     /// your commit identity" under a heading of the same words. In every
-    /// palette it keeps its shape: its fill, or else a 1 px edge 1.4:1 or more
-    /// off the composer, stands off the surface beneath it, and it keeps the
-    /// composer's width and its 36 px height.
+    /// palette it keeps its shape with the toolkit's disabled edge, 1.5:1 or
+    /// more off the composer and its own fill, and it keeps the composer's
+    /// width and its 36 px height.
     #[gpui::test]
     async fn the_disabled_commit_stands_off_the_composer(cx: &mut TestAppContext) {
         use crate::appearance::custom::contrast;
@@ -22657,7 +22657,6 @@ pub(crate) mod tests {
             (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
         };
         let mut failures = Vec::new();
-        let mut edged = 0;
         for (name, palette) in crate::appearance::test_palettes() {
             cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
             draw(cx);
@@ -22669,14 +22668,15 @@ pub(crate) mod tests {
                 panic!("{name}: the commit action paints one fill");
             };
             let fill = solid(fill);
-            if contrast(fill, surface) < 1.05 {
-                edged += 1;
-                match painted_edges(cx, "commit-staged")[..] {
-                    [edge] if contrast(solid(edge.into()), surface) >= 1.4 => {}
-                    ref edges => failures.push(format!(
-                        "{name}: fill {fill:06x} on {surface:06x} with edges {edges:?}"
-                    )),
-                }
+            let edge = palette.disabled_edge();
+            let edges = painted_edges(cx, "commit-staged");
+            if edges != [gpui_kit::Hsla::from(gpui_kit::rgb(edge))]
+                || contrast(edge, surface) < 1.5
+                || contrast(edge, fill) < 1.5
+            {
+                failures.push(format!(
+                    "{name}: fill {fill:06x} on {surface:06x} with edges {edges:?}"
+                ));
             }
             let (commit, composer) = (
                 cx.debug_bounds("commit-staged").unwrap(),
@@ -22693,20 +22693,16 @@ pub(crate) mod tests {
                 "{name}: {commit:?} spans {composer:?}"
             );
         }
-        assert!(
-            edged > 0,
-            "some palette rests the commit on its own surface"
-        );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// Disabled, the toolbar's Fetch, Pull and Push rest on the neutral
     /// `subtle`, which stands only 1.046:1 off Midnight's toolbar (#131a25 on
     /// #171e2b), so there they drew only their dim labels. In every palette,
-    /// full and compact, a disabled action's fill, or else a 1 px edge 1.4:1
-    /// or more off the toolbar, stands off it; an available one draws no
-    /// edge, and none moves between the two, the edge taking its pixel from
-    /// its padding.
+    /// full and compact, a disabled action keeps its shape with the toolkit's
+    /// disabled edge, 1.5:1 or more off the toolbar and its own fill; an
+    /// available one draws no edge, and none moves between the two, the edge
+    /// laid over its bounds.
     #[gpui::test]
     async fn disabled_git_actions_keep_their_shape_on_the_toolbar(cx: &mut TestAppContext) {
         use crate::appearance::custom::contrast;
@@ -22737,7 +22733,6 @@ pub(crate) mod tests {
             ACTIONS.map(|action| cx.debug_bounds(action).expect(action))
         };
         let mut failures = Vec::new();
-        let (mut edged, mut plain) = (0, 0);
         for (window, compact) in [
             (size(px(1480.), px(980.)), false),
             (size(px(461.), px(400.)), true),
@@ -22767,26 +22762,19 @@ pub(crate) mod tests {
                         panic!("{at}: disabled {action} paints one fill");
                     };
                     let fill = solid(fill);
+                    let edge = palette.disabled_edge();
                     let edges = painted_edges(cx, action);
-                    if contrast(fill, surface) < 1.05 {
-                        edged += 1;
-                        match edges[..] {
-                            [edge] if contrast(solid(edge.into()), surface) >= 1.4 => {}
-                            _ => failures.push(format!(
-                                "{at}: {action} {fill:06x} on {surface:06x} with edges {edges:?}"
-                            )),
-                        }
-                    } else {
-                        plain += 1;
-                        if !edges.is_empty() {
-                            failures
-                                .push(format!("{at}: {action} needs no edge but draws {edges:?}"));
-                        }
+                    if edges != [gpui_kit::Hsla::from(gpui_kit::rgb(edge))]
+                        || contrast(edge, surface) < 1.5
+                        || contrast(edge, fill) < 1.5
+                    {
+                        failures.push(format!(
+                            "{at}: {action} {fill:06x} on {surface:06x} with edges {edges:?}"
+                        ));
                     }
                 }
             }
         }
-        assert!(edged > 0 && plain > 0, "edged {edged}, plain {plain}");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 

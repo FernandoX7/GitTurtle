@@ -4069,20 +4069,17 @@ impl GitTurtle {
                                 .pb_3()
                                 .when(short, |el| el.pb_2())
                                 .child({
-                                    // Disabled, it rests on the composer's own `subtle`, so it
-                                    // keeps its shape with an edge; it is as wide as the composer.
-                                    let commit = crate::appearance::keep_disabled_shape(
-                                        Button::new("commit-staged")
-                                            .debug_selector(|| "commit-staged".into())
-                                            .primary()
-                                            .w_full()
-                                            .h(crate::appearance::ui_size(36.)),
-                                        commit_disabled,
-                                        p.subtle,
-                                        None,
-                                        cx,
-                                    )
-                                    .icon(Icon::default().path("icons/commit.svg").size(px(16.)));
+                                    // Disabled, it rests on the composer's own `subtle` and
+                                    // keeps its shape with the toolkit's disabled edge; it is
+                                    // as wide as the composer.
+                                    let commit = Button::new("commit-staged")
+                                        .debug_selector(|| "commit-staged".into())
+                                        .primary()
+                                        .w_full()
+                                        .h(crate::appearance::ui_size(36.))
+                                        .icon(
+                                            Icon::default().path("icons/commit.svg").size(px(16.)),
+                                        );
                                     let label = self.commit_action_label(cx);
                                     let detail = format!(
                                         "Commit staged changes to {branch}{}",
@@ -4824,13 +4821,6 @@ impl GitTurtle {
                     )
                     .tooltip(action.label)
                 };
-                let inset = appearance::ui_size(if labelled {
-                    crate::LABEL_INSET
-                } else {
-                    crate::ICON_INSET
-                });
-                let control =
-                    appearance::keep_disabled_shape(control, looks_busy, p.panel, Some(inset), cx);
                 refusing(control, move || action.id.into(), busy, looks_busy)
                     .debug_selector(move || action.id.into())
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -5015,15 +5005,8 @@ impl GitTurtle {
                     .when(id == "push", |button| button.primary())
                 };
                 // Disabled, each rests on the neutral `subtle`, 1.046:1 off
-                // Midnight's toolbar, so there it keeps its shape with an edge
-                // that takes its pixel from the padding.
-                let inset = if compact {
-                    appearance::ui_size(crate::ICON_INSET)
-                } else {
-                    action_inset()
-                };
-                let control =
-                    appearance::keep_disabled_shape(control, unavailable, p.panel, Some(inset), cx);
+                // Midnight's toolbar, and keeps its shape with the toolkit's
+                // disabled edge, laid over its bounds.
                 refusing(control, move || id.into(), busy || missing, unavailable)
                     .debug_selector(move || id.into())
                     .accessibility_label(name)

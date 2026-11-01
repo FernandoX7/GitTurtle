@@ -640,20 +640,15 @@ impl GitTurtle {
                         )
                         .child({
                             // Disabled, it rests on `subtle`, which is the raised
-                            // surface itself in most Omarchy dark palettes.
+                            // surface itself in most Omarchy dark palettes, and
+                            // keeps its shape with the toolkit's disabled edge.
                             let disabled = !form.read(cx).can_activate();
-                            appearance::keep_disabled_shape(
-                                button("run-palette-command", "Open command", "", true)
-                                    .debug_selector(|| "run-palette-command".into()),
-                                disabled,
-                                surface.raised(),
-                                Some(appearance::ui_size(crate::LABEL_INSET)),
-                                cx,
-                            )
-                            .disabled(disabled)
-                            .on_click(move |_, window, cx| {
-                                activate.update(cx, |form, cx| form.activate(window, cx))
-                            })
+                            button("run-palette-command", "Open command", "", true)
+                                .debug_selector(|| "run-palette-command".into())
+                                .disabled(disabled)
+                                .on_click(move |_, window, cx| {
+                                    activate.update(cx, |form, cx| form.activate(window, cx))
+                                })
                         }),
                 )
                 .on_ok(move |_, window, cx| {
@@ -2042,11 +2037,9 @@ mod render_tests {
 
     /// Disabled, Open command rests on the neutral `subtle`, which is the
     /// palette's raised surface itself in most Omarchy dark palettes
-    /// (1.000:1), so it drew only its dim label. Where its fill stands off the
-    /// raised surface by less than 1.05:1 it keeps its shape with a 1 px edge
-    /// 1.4:1 or more off that surface, and elsewhere it draws none; either way
-    /// it keeps the bounds it has in every palette, the edge taking its pixel
-    /// from the button's padding.
+    /// (1.000:1), so it drew only its dim label. In every palette it keeps
+    /// its shape with the toolkit's disabled edge, 1.5:1 or more off that
+    /// surface, and keeps the bounds it has, the edge laid over them.
     #[gpui::test]
     fn a_disabled_open_command_keeps_its_shape_on_the_raised_surface(cx: &mut TestAppContext) {
         use appearance::custom::contrast;
@@ -2057,7 +2050,6 @@ mod render_tests {
         cx.simulate_keystrokes("up");
         crate::tags::tests::draw(cx);
         let mut failures = Vec::new();
-        let (mut edged, mut plain) = (0, 0);
         let mut place = None;
         for (name, palette) in appearance::test_palettes() {
             cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
@@ -2071,26 +2063,13 @@ mod render_tests {
                 "{name} moves Open command"
             );
             let edges = crate::views::tests::painted_edges(cx, "run-palette-command");
-            if contrast(palette.subtle, palette.raised()) < 1.05 {
-                edged += 1;
-                let edge = edges.first().map(|edge| {
-                    let color = edge.to_rgb();
-                    let channel = |value: f32| (value * 255.).round() as u32;
-                    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
-                });
-                if edges.len() != 1
-                    || edge.is_none_or(|edge| contrast(edge, palette.raised()) < 1.4)
-                {
-                    failures.push(format!("{name}: edges {edges:?}"));
-                }
-            } else {
-                plain += 1;
-                if !edges.is_empty() {
-                    failures.push(format!("{name}: an edge it does not need, {edges:?}"));
-                }
+            let edge = palette.disabled_edge();
+            if edges != [gpui_kit::Hsla::from(gpui_kit::rgb(edge))]
+                || contrast(edge, palette.raised()) < 1.5
+            {
+                failures.push(format!("{name}: edges {edges:?}, not #{edge:06x}"));
             }
         }
-        assert!(edged > 0 && plain > 0, "edged {edged}, plain {plain}");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
