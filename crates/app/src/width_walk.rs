@@ -1407,6 +1407,102 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
 
+/// History's changed-file rows fit each line whole or end it in an ellipsis
+/// inside the row, as a Working row's do (`views::ellipsis_end`). GPUI ends a
+/// line in an ellipsis only once its width, rounded down, exceeds the room,
+/// so with `truncate` alone a name or directory less than a pixel wider than
+/// its box was drawn whole and cut by the box's side. At 18 pt the window is
+/// sized so each line's box is its width rounded down, which a narrow
+/// window's inspector, following the window's width, gives.
+#[gpui::test]
+async fn a_changed_file_row_ends_a_line_it_cannot_hold_inside_its_room(cx: &mut TestAppContext) {
+    const PATH: &str = "src/components/navigation/Navigation.tsx";
+    let script = format!(
+        "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nrows\nM 100644 inline {PATH}\ndata 5\ntext\n\ndone\n"
+    );
+    let (_fixture, app, cx) =
+        styled_history_window(cx, script.as_bytes(), |root| root.text_bg(text_mark())).await;
+    cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+    cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+    let index = app.read_with(cx, |app, _| {
+        app.files
+            .iter()
+            .position(|file| file.path() == std::path::Path::new(PATH))
+            .expect("the commit's file")
+    });
+    let lines: [(&'static str, &str, f32); 2] = [
+        (
+            format!("changed-file-name-{index}").leak(),
+            "Navigation.tsx",
+            12.,
+        ),
+        (
+            format!("changed-file-directory-{index}").leak(),
+            "src/components/navigation",
+            10.,
+        ),
+    ];
+    for (selector, text, text_size) in lines {
+        let whole = cx.update(|window, _| {
+            shaped_width(
+                text,
+                appearance::ui_text(text_size),
+                FontWeight::NORMAL,
+                window,
+            )
+        });
+        let room = px(f32::from(whole).floor());
+        assert!(
+            whole > room,
+            "{text:?} is {whole:?} wide, not a whole pixel"
+        );
+        // The inspector, and the row's box with it, follows the window's
+        // width here.
+        let mut width = px(461.);
+        let mut line = None;
+        for _ in 0..8 {
+            cx.simulate_resize(size(width, px(980.)));
+            frame(cx);
+            app.update(cx, |_, cx| cx.notify());
+            frame(cx);
+            let drawn = cx.debug_bounds(selector).expect("the row's line");
+            if drawn.size.width == room {
+                line = Some(drawn);
+                break;
+            }
+            width += room - drawn.size.width;
+        }
+        let line = line.unwrap_or_else(|| panic!("no window gives {text:?} a {room:?} box"));
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let logical = |value: ScaledPixels| px(value.0 / scale);
+        let mark = gpui_kit::Background::from(text_mark());
+        let runs: Vec<(Pixels, Pixels)> = quads
+            .iter()
+            .filter(|quad| quad.background == mark)
+            .filter(|quad| {
+                (logical(quad.bounds.left()) - line.left()).abs() < px(0.5)
+                    && logical(quad.bounds.top()) >= line.top()
+                    && logical(quad.bounds.top()) < line.bottom()
+            })
+            .map(|quad| {
+                (
+                    logical(quad.bounds.right()),
+                    logical(quad.content_mask.bounds.right()),
+                )
+            })
+            .collect();
+        let [(right, clip)] = runs.as_slice() else {
+            panic!("one run for {text:?}, not {runs:?}");
+        };
+        assert!(
+            *right <= *clip && *right <= line.right(),
+            "{text:?} ends at {right:?} beside a clip at {clip:?}, its box at {:?} in a {width:?} window",
+            line.right()
+        );
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}
+
 /// The dialogs the narrow walk opens: every one with a width of its own.
 #[derive(Clone, Copy, Debug)]
 enum Dialog {

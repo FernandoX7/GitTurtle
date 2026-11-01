@@ -1034,10 +1034,14 @@ impl GitTurtle {
             }
             .into(),
         ]);
+        // Inset as the commit's metadata is (`render_commit_metadata`), and
+        // ending at its last row, so details that fit draw no scrollbar.
         div()
             .id("file-revision-details")
+            .debug_selector(|| "file-revision-details".into())
             .min_w_0()
-            .p_3()
+            .px_3()
+            .pt_3()
             .flex()
             .flex_col()
             .gap_2()
@@ -1046,7 +1050,12 @@ impl GitTurtle {
             .child(author)
             .child(revision)
             .child(parent)
-            .child(div().text_color(rgb(p.text)).child(paths))
+            .child(
+                div()
+                    .debug_selector(|| "file-revision-paths".into())
+                    .text_color(rgb(p.text))
+                    .child(paths),
+            )
             .into_any_element()
     }
 
@@ -1483,5 +1492,55 @@ mod tests {
                 && app.content.is_some()),
             "back through its tab, File history loads its selected revision"
         );
+    }
+
+    /// A revision's details keep the commit metadata's inset, the scaled
+    /// 12 px beside them, and end at their last row, as the Inspector's do,
+    /// at 18 pt in a 1,000 × 680 window and at the default size in a
+    /// 1,480 × 980 one: their padding below the last row was scrolled as
+    /// content, so details that fit drew a scrollbar for it.
+    #[gpui::test]
+    async fn file_history_details_end_at_their_last_row(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_script, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+        // The page is read on the window's reader, a thread
+        // `run_until_parked` cannot wait for.
+        for _ in 0..8 {
+            let landed = app.read_with(cx, |app, _| {
+                app.file_history
+                    .lineage
+                    .as_ref()
+                    .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
+            });
+            if landed {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        settle(&app, cx).await;
+        for (text, width, height) in [(18, 1000., 680.), (13, 1480., 980.)] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let details = cx
+                .debug_bounds("file-revision-details")
+                .unwrap_or_else(|| panic!("{at}: the revision's details"));
+            let last = cx.debug_bounds("file-revision-paths").unwrap();
+            let inset = cx.update(|window, _| window.rem_size() * 0.75);
+            assert!(
+                (details.bottom() - last.bottom()).abs() <= gpui_kit::px(0.5),
+                "{at}: {details:?} ends at its last row {last:?}"
+            );
+            assert!(
+                (last.left() - details.left() - inset).abs() <= gpui_kit::px(0.5),
+                "{at}: {last:?} inset {inset:?} in {details:?}"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 }

@@ -2973,28 +2973,32 @@ impl GitTurtle {
                     .flex()
                     .flex_col()
                     .gap_1()
+                    // Each line fits whole or ends in an ellipsis inside the
+                    // row, never cut by its side, as a Working row's do.
                     .child(
-                        div()
-                            .truncate()
-                            .text_size(crate::appearance::ui_text(12.))
-                            .child(
-                                path.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned(),
-                            ),
+                        ellipsis_end(
+                            div().debug_selector(move || format!("changed-file-name-{index}")),
+                        )
+                        .text_size(crate::appearance::ui_text(12.))
+                        .child(
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                        ),
                     )
                     .child(
-                        div()
-                            .truncate()
-                            .text_size(crate::appearance::ui_text(10.))
-                            .text_color(rgb(colors.muted))
-                            .child(
-                                path.parent()
-                                    .filter(|p| !p.as_os_str().is_empty())
-                                    .map(|p| p.to_string_lossy().into_owned())
-                                    .unwrap_or("Repository root".into()),
-                            ),
+                        ellipsis_end(
+                            div().debug_selector(move || format!("changed-file-directory-{index}")),
+                        )
+                        .text_size(crate::appearance::ui_text(10.))
+                        .text_color(rgb(colors.muted))
+                        .child(
+                            path.parent()
+                                .filter(|p| !p.as_os_str().is_empty())
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or("Repository root".into()),
+                        ),
                     ),
             )
             .when(status, |row| {
