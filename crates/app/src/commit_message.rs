@@ -17,6 +17,9 @@ use std::cell::{Cell, RefCell};
 use unicode_segmentation::UnicodeSegmentation;
 
 const PIECE_BYTES: usize = 1024;
+/// The most of the inspector's height History's and Compare's message panel
+/// takes.
+const MESSAGE_SHARE: f32 = 0.45;
 const PIECE_LINES: usize = 16;
 
 struct Piece {
@@ -76,6 +79,10 @@ pub(super) struct Toolbar {
     /// The width inside the inspector's left border: the message's viewport
     /// and the width its pieces and metadata are laid out at.
     viewport: Pixels,
+    /// The most the message panel takes, its share of the inspector's
+    /// height, past which its message and metadata are not measured
+    /// (`GitTurtle::message_extent`).
+    cap: Pixels,
 }
 
 /// One layout of the toolbar's controls (DESIGN.md, "One responsive order":
@@ -116,9 +123,9 @@ impl Toolbar {
     /// either side of its label, its 6 px gap and the caret, 0.875 rem
     /// square; otherwise a 28 px square. The controls wrap as the toolbar's
     /// `flex_wrap` wraps them, in rows a quarter rem apart inside its `py_1`,
-    /// and the panel's 1 px bottom border is reserved with them. `pinned`: the
-    /// window pins the inspector.
-    pub(super) fn within(width: Pixels, pinned: bool, window: &Window) -> Self {
+    /// and the panel's 1 px bottom border is reserved with them. `tall`: the
+    /// inspector's. `pinned`: the window pins the inspector.
+    pub(super) fn within(width: Pixels, tall: Pixels, pinned: bool, window: &Window) -> Self {
         let key = LineKey::current(window);
         let label = |cache, text| {
             cached_width(cache, &key, || {
@@ -196,6 +203,7 @@ impl Toolbar {
             reserve: pinned,
             room,
             viewport: width - px(1.),
+            cap: tall * MESSAGE_SHARE,
         }
     }
 
@@ -279,6 +287,14 @@ impl State {
         if let Some(selection) = selection {
             selection.detach(cx);
         }
+    }
+
+    /// The presented message and metadata's height as last measured
+    /// (`GitTurtle::message_extent`).
+    #[cfg(test)]
+    pub(crate) fn measured(&self) -> Option<Pixels> {
+        let state = self.0.borrow();
+        state.as_ref()?.extent.as_ref().map(|extent| extent.height)
     }
 
     /// How far the presented message and metadata run past their viewport,
@@ -507,17 +523,17 @@ impl GitTurtle {
     /// takes where they fit, so Changed files follows the last parent at the
     /// inspector's rhythm rather than below the rest of a fixed 45%, which
     /// left about 60 px blank under P1 at 13 pt. Measured once for each
-    /// commit, width and font, and only as far as the window's height, past
-    /// which the panel's cap holds them anyway. `None` where no window lays
-    /// the inspector out.
+    /// commit, width and font, and only as far as the panel's cap, past which
+    /// nothing more shows, so a long message shapes only what can be drawn.
+    /// `None` where no window lays the inspector out.
     pub(super) fn message_extent(
         &self,
         commit: &Commit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Pixels> {
-        let width = self.inspector_message.1.get()?.viewport;
-        let bound = window.viewport_size().height;
+        let toolbar = self.inspector_message.1.get()?;
+        let (width, bound) = (toolbar.viewport, toolbar.cap);
         let key = LineKey::current(window);
         let (pieces, _, _, selection) = self.inspector_message.presentation(commit, cx);
         if let Some(height) = self.inspector_message.extent(width, bound, &key) {
@@ -618,8 +634,8 @@ impl GitTurtle {
             .min_w_0()
             // As tall as the message and metadata where they fit, at most
             // 45% of the inspector; their viewport gives way below.
-            .when(extent.is_none(), |panel| panel.h(relative(0.45)))
-            .max_h(relative(0.45))
+            .when(extent.is_none(), |panel| panel.h(relative(MESSAGE_SHARE)))
+            .max_h(relative(MESSAGE_SHARE))
             .flex_shrink_0()
             .flex()
             .flex_col()

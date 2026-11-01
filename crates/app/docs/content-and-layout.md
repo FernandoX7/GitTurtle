@@ -84,7 +84,7 @@ variable-height `ListState`, and keyboard focus. History/Compare allocate at mos
 45% of the inspector to this message region and shrink it to the message and
 metadata where they fit: `GitTurtle::message_extent` lays the pieces and the
 metadata out at the inspector's drawn width, as the list does, while the frame
-builds the inspector, stops at the window's height, and keeps the result with
+builds the inspector, stops at the panel's 45% cap, and keeps the result with
 the presentation per width, bound and font, so a commit is measured once. Its
 copy toolbar remains outside the scroll viewport. File History shares the presentation inside the remaining
 height between its bounded header and footer, leaving revision rows usable.

@@ -7099,10 +7099,12 @@ impl GitTurtle {
     /// builds them once the group fits their width
     /// ([`Self::render_repository`]).
     /// `working_layout` is the Working inspector's layout state, kept where
-    /// the window renders ([`Self::working_inspector_layout`]).
+    /// the window renders ([`Self::working_inspector_layout`]). `height` is
+    /// the group's, which the inspector takes whole.
     fn render_content_columns(
         &self,
         working_layout: Option<Entity<crate::workspace::WorkingInspectorLayout>>,
+        height: Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -7125,6 +7127,7 @@ impl GitTurtle {
         self.inspector_message
             .lay_out_toolbar(Some(commit_message::Toolbar::within(
                 inspector_width,
+                height,
                 columns.pinned,
                 window,
             )));
@@ -7307,7 +7310,7 @@ impl GitTurtle {
             panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
             owner
                 .update(cx, |this, cx| {
-                    this.render_content_columns(working_layout, window, cx)
+                    this.render_content_columns(working_layout, bounds.size.height, window, cx)
                 })
                 .unwrap_or_else(|_| div().into_any_element())
         });
@@ -19441,6 +19444,15 @@ pub(crate) mod tests {
         assert!(
             (panel.size.height - inspector.size.height * 0.45).abs() <= px(1.),
             "{panel:?} keeps 45% of {inspector:?}"
+        );
+        // Measured only as far as the panel's share: the pieces past it,
+        // which never show, are not laid out.
+        let measured = cx
+            .read(|cx| app.read(cx).inspector_message.measured())
+            .expect("the message measured");
+        assert!(
+            measured < panel.size.height * 2.,
+            "{measured:?} measured for a {panel:?} panel"
         );
         assert!(
             cx.read(|cx| app.read(cx).inspector_message.overflow())
