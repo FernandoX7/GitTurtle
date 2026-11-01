@@ -626,7 +626,11 @@ impl Panel {
                 }
             })
             .id("github-thread-section").debug_selector(||"github-thread-section".into()).min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
-            .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().p_3()
+            .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().py_3()
+            // Its border and side padding together are the panel's text inset, so its heading
+            // and conversations start at the panel's text edge with its frame at the frames'
+            // column; 0.75 rem inside the border, they started 0.65 px past it at 18 pt.
+            .px(super::text_inset() - px(1.))
             .child(self.part("conversations-header", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(super::phrases("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).min_w_0().font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
