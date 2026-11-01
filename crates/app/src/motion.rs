@@ -6027,6 +6027,94 @@ mod tests {
         })
     }
 
+    /// A click on a row, Enter, an arrow or Select All that the Working
+    /// list refuses before its busy look has shown, as a review's
+    /// preparation starts or while a quiet refresh's rows are prepared,
+    /// shows that look in the frame of the refusal (`show_busy_look`): the
+    /// progress label names the preparation, and the rows' wait looks it.
+    /// The look otherwise waits its 200 ms, so nothing the person did not
+    /// touch dims for a quick spell. A refused press once changed nothing
+    /// and showed nothing until that delay had passed.
+    #[gpui::test]
+    async fn a_press_the_working_list_refuses_shows_why_at_once(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _repository) = narrow_notes(cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let notes = position_of(&app, cx, "notes.txt", ChangeArea::Unstaged);
+        let row: &'static str = format!("working-row-{notes}").leak();
+        let press = |cx: &mut VisualTestContext, press: &str| match press {
+            "click" => {
+                let bounds = cx.debug_bounds(row).expect(row);
+                cx.simulate_click(bounds.center(), Modifiers::default());
+            }
+            "Select All" => app.update(cx, |app, cx| app.select_all_working(cx)),
+            keys => cx.simulate_keystrokes(keys),
+        };
+        let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+        for kind in ["click", "enter", "down", "Select All"] {
+            cx.update(|window, cx| list.focus(window, cx));
+            next_frame(cx);
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let entry = app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| {
+                        status
+                            .entries
+                            .iter()
+                            .find(|entry| entry.path == Path::new("notes.txt"))
+                    })
+                    .cloned()
+                    .expect("notes.txt's entry")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(entry, window, cx)));
+            next_frame(cx);
+            assert!(!looks_busy(cx), "{kind}: the preparation's look waits");
+            let before = working_choice(&app, cx);
+            press(cx, kind);
+            next_frame(cx);
+            assert!(looks_busy(cx), "{kind}: the refusal shows the look at once");
+            assert!(
+                cx.debug_bounds("operation-progress").is_some(),
+                "{kind}: the progress label names the preparation"
+            );
+            assert_eq!(working_choice(&app, cx), before, "{kind}: nothing chosen");
+            app.update(cx, |app, _| app.cancel_discard_action());
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(!looks_busy(cx), "{kind}: the look ends with the spell");
+        }
+
+        // A quiet refresh's rows, held on the filter's thread.
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.schedule_working_filter(
+                    None,
+                    false,
+                    crate::working_selection::Preparation::Status,
+                    window,
+                    cx,
+                )
+            })
+        });
+        next_frame(cx);
+        assert!(!looks_busy(cx), "the rows' look waits");
+        press(cx, "click");
+        next_frame(cx);
+        assert!(
+            looks_busy(cx),
+            "a click refused while the rows are prepared shows it"
+        );
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A click on the selected conflicted file's row, or Enter, while the
     /// Working list refuses a choice, as while a discard review is prepared
     /// (a write in the window's busy spell that leaves the preview open) or

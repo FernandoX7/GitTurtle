@@ -574,6 +574,19 @@ impl GitTurtle {
             || self.working_paths.error.is_some()
     }
 
+    /// [`Self::working_list_refuses`] for a press on the list, a click on a
+    /// row, Enter, an arrow or Select All: where the busy spell refuses it,
+    /// its look shows at once ([`Self::show_busy_look`]), so the reason comes
+    /// in the frame of the refusal rather than the spell's delay later; the
+    /// filter's error is drawn already.
+    pub(super) fn refuse_working_press(&mut self, cx: &mut Context<Self>) -> bool {
+        let refused = self.working_list_refuses();
+        if refused {
+            self.show_busy_look(cx);
+        }
+        refused
+    }
+
     pub(super) fn choose_working_selection(
         &mut self,
         index: usize,
@@ -595,7 +608,7 @@ impl GitTurtle {
         self.select_working(index, area, window, cx);
     }
     pub(super) fn select_all_working(&mut self, cx: &mut Context<Self>) {
-        if self.mode != WorkspaceMode::Working || self.working_list_refuses() {
+        if self.mode != WorkspaceMode::Working || self.refuse_working_press(cx) {
             return;
         }
         self.working_selection.selected = self.visible_working_keys().into_iter().collect();

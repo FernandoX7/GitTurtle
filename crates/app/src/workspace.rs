@@ -2501,6 +2501,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Refused, the arrow still selects nothing (`choose_working_selection`),
+        // and the busy look says why at once.
+        self.refuse_working_press(cx);
         let files: Vec<_> = self
             .actionable_working_rows()
             .iter()
@@ -2595,7 +2598,25 @@ impl GitTurtle {
         }));
     }
 
-    /// Whether the busy spell has lasted [`BUSY_LOOK_DELAY`], so what it
+    /// Shows the busy spell's look at once, before [`BUSY_LOOK_DELAY`], as a
+    /// press the spell refuses asks: a click, Enter, an arrow or Select All
+    /// on the Working list while it refuses a choice
+    /// ([`Self::refuse_working_press`]). The delay keeps a quick write from
+    /// dimming controls the person did not touch; a refused press touched
+    /// one, and the refusal and the look that says why then come in the
+    /// same frame. A press refused in the delay once changed nothing and
+    /// showed nothing, at the start of a write and while a quiet refresh's
+    /// rows were prepared.
+    pub(super) fn show_busy_look(&mut self, cx: &mut Context<Self>) {
+        if self.busy_spell() && !self.busy_look.shown {
+            self.busy_look.shown = true;
+            self.busy_look.reveal = None;
+            cx.notify();
+        }
+    }
+
+    /// Whether the busy spell has lasted [`BUSY_LOOK_DELAY`], or a press it
+    /// refused has shown its look ([`Self::show_busy_look`]), so what it
     /// makes unavailable looks unavailable.
     pub(super) fn busy_shown(&self) -> bool {
         self.busy_look.shown && self.busy_spell()
@@ -3470,7 +3491,10 @@ impl GitTurtle {
             // a control inside the list it goes on to that control
             // (`working_control_focused`).
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                // One the list refuses chooses nothing, its busy look saying
+                // why at once (`refuse_working_press`).
                 if this.working_control_focused(window, cx)
+                    || this.refuse_working_press(cx)
                     || !this.activate_working_preview(window, cx)
                 {
                     cx.propagate();
@@ -4591,6 +4615,10 @@ impl GitTurtle {
                         // draft took focus from the list being selected in.
                         let modifiers = event.modifiers();
                         let (toggle, range) = (modifiers.secondary(), modifiers.shift);
+                        // One the list refuses chooses and selects nothing,
+                        // its busy look saying why at once
+                        // (`refuse_working_press`).
+                        this.refuse_working_press(cx);
                         this.choose_working_selection(index, area, toggle, range, window, cx);
                         // A plain click on the row chooses its file; one the
                         // list refuses chooses nothing
