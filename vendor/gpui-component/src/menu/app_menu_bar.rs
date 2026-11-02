@@ -10,7 +10,7 @@ use gpui::{
     App, AppContext as _, ClickEvent, Context, DismissEvent, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyBinding, MouseButton, OwnedMenu, ParentElement,
     Render, Role, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
-    Window, anchored, deferred, div, prelude::FluentBuilder, px,
+    Window, anchored, deferred, div, prelude::FluentBuilder,
 };
 
 const CONTEXT: &str = "AppMenuBar";
@@ -321,7 +321,7 @@ mod tests {
     use super::*;
 
     use gpui::{
-        Action, AnyWeakEntity, OwnedMenuItem, TestAppContext, VisualTestContext, actions, point,
+        Action, AnyWeakEntity, OwnedMenuItem, TestAppContext, VisualTestContext, actions, point, px,
     };
 
     actions!(app_menu_bar_test, [NewFile, OpenFile, CopyText]);

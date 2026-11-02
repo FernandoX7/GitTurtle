@@ -1282,6 +1282,13 @@ and the foot; the old placement fails each at scale 1.5 and 2. The app's
 edge 8 px from its side, a dropdown beside a button half a pixel in among
 them. Remove this part with the window-margin patch.
 
+The window-margin patch replaced the last use of `px` in
+`src/menu/app_menu_bar.rs` outside its tests, the menu's 8 px snap
+margin, and left the module importing it for its tests alone, through
+`use super::*`: every build of the library on Linux and macOS warned
+`unused import: px`. The test module imports `px` itself; the menu bar is
+unchanged. Remove this with the window-margin patch.
+
 The capped-menu patch modifies `src/menu/popup_menu.rs`. Upstream caps a
 scrollable menu's items column (`max_h` with `scrollable`) but leaves its rows
 free to shrink, as flex items are, so a menu shorter than its rows squeezed
