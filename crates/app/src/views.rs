@@ -12633,6 +12633,208 @@ pub(crate) mod tests {
         drop(held);
     }
 
+    /// A tab as it is left: what holds focus, where its history is scrolled,
+    /// the commit selected and the first lane History's graph shows.
+    type TabState = (Option<FocusHandle>, Point<Pixels>, Option<usize>, usize);
+
+    fn tab_state(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> TabState {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            (
+                window.focused(cx),
+                app.history_scroll.0.borrow().base_handle.offset(),
+                app.selected_commit,
+                app.graph_offset,
+            )
+        })
+    }
+
+    /// Scrolls History's list `rows` rows down from its top.
+    fn scroll_history_rows(app: &Entity<GitTurtle>, rows: usize, cx: &mut VisualTestContext) {
+        app.update(cx, |app, _| {
+            let height = app.settings.density.history_row_height();
+            app.history_scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(point(px(0.), px(-(rows as f32) * height)));
+        });
+    }
+
+    /// Two tabs on History in a 461 × 490 half tile, the second shown, and
+    /// each tab's state as it was left with the row of its selected commit.
+    /// The first: the side commit, on the second of narrow History's lanes,
+    /// which shows one, selected and its lane shown, the list a row down and
+    /// History's list focused. The second, a clone of the first: a commit
+    /// twenty rows down selected, the list scrolled to it and the commit's
+    /// changed files focused. Neither tab is left in a field, whose caret
+    /// starts to blink in a frame of the field's own as it takes focus.
+    async fn two_history_tabs(
+        cx: &mut TestAppContext,
+    ) -> (
+        [tempfile::TempDir; 2],
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        [(TabState, usize); 2],
+    ) {
+        let (fixture, app, cx) = history_window_from(cx, &references_script(40)).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(side, window, cx)));
+        settle(&app, cx).await;
+        scroll_history_rows(&app, 1, cx);
+        cx.update(|window, cx| app.read(cx).focus.clone().focus(window, cx));
+        draw(cx);
+        assert_lane_shown(&app, side, cx, "the first tab as it is left");
+        let first = tab_state(&app, cx);
+        assert_eq!(first.3, 1, "the first tab shows the side commit's lane");
+        let other = tempfile::tempdir().unwrap();
+        let origin = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(
+            other.path(),
+            &["clone", "--quiet", origin.to_str().unwrap(), "second"],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().join("second"), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        let linear = commit_index(&app, cx, "Linear 20");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(linear, window, cx)));
+        settle(&app, cx).await;
+        scroll_history_rows(&app, linear - 1, cx);
+        cx.update(|window, cx| app.read(cx).file_focus.clone().focus(window, cx));
+        draw(cx);
+        assert_lane_shown(&app, linear, cx, "the second tab as it is left");
+        assert!(
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                app.app_focus.contains(&app.file_focus, window)
+            }),
+            "the second tab draws its changed files"
+        );
+        let second = tab_state(&app, cx);
+        assert_ne!(first.0, second.0, "each tab is left with focus of its own");
+        assert_ne!(
+            first.1, second.1,
+            "each tab is left scrolled to its own place"
+        );
+        ([fixture, other], app, cx, [(first, side), (second, linear)])
+    }
+
+    /// What [`switch_warm_tab`] counted and timed, holding the window's reader
+    /// and executors until it drops.
+    struct WarmSwitch {
+        /// Frames drawn as the switch's update flushed.
+        frames: usize,
+        /// Frames the switch's frame callbacks drew after.
+        next_frame_frames: usize,
+        /// The switch's update, its frames included.
+        handler_ms: f64,
+        /// Delivering the frame callbacks the switch left, three times.
+        next_frame_ms: f64,
+        _held: (crate::worker::ReaderHeld, [crate::operations::Held; 3]),
+    }
+
+    /// Shows tab `index` again with the window's reader and the executors it
+    /// saves, watches and filters through held, once every earlier reply has
+    /// landed, so none lands among the frames counted or the time taken: a
+    /// reply draws what it brings, not the switch.
+    async fn switch_warm_tab(
+        app: &Entity<GitTurtle>,
+        index: usize,
+        cx: &mut VisualTestContext,
+    ) -> WarmSwitch {
+        let reader = quiet_reader(app, cx).await;
+        let (operations, preferences) = app.update(cx, |app, _| {
+            app.file_paths.drain();
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        operations.await.unwrap().unwrap();
+        preferences.await.unwrap().unwrap();
+        cx.run_until_parked();
+        draw(cx);
+        let executors = app.update(cx, |app, _| {
+            [
+                app.operations.hold(),
+                app.preferences_writer.hold(),
+                app.file_paths.executor().hold(),
+            ]
+        });
+        repository_frames();
+        let started = std::time::Instant::now();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.switch_repository_tab(index, window, cx))
+        });
+        let handler_ms = started.elapsed().as_secs_f64() * 1000.;
+        cx.run_until_parked();
+        let frames = repository_frames();
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+        }
+        WarmSwitch {
+            frames,
+            next_frame_frames: repository_frames(),
+            handler_ms,
+            next_frame_ms: started.elapsed().as_secs_f64() * 1000.,
+            _held: (reader, executors),
+        }
+    }
+
+    /// Showing a warm tab again draws one frame, each way between the two
+    /// tabs of [`two_history_tabs`]: the frame that draws the tab as it was
+    /// left, focus where the person left it, its history scrolled where it
+    /// was and its selected commit's lane shown, and it asks for no other. A
+    /// switch once drew two more, which changed nothing anyone could see but
+    /// focus: the page's repaint drew the tab again at the next frame, and
+    /// focus, left on the window's root for the frame that drew the tab, came
+    /// back from a frame callback two frames later, with a frame of its own
+    /// (`GitTurtle::return_tab_focus`). Each tab is left with focus on a list
+    /// of its own, so a switch that gave the other tab's focus, or the shown
+    /// mode's list, fails here.
+    #[gpui::test]
+    async fn a_warm_tab_switch_draws_one_frame_each_way(cx: &mut TestAppContext) {
+        let (_fixtures, app, cx, tabs) = two_history_tabs(cx).await;
+        crate::in_frame::probe::watch();
+        for (index, (state, row), at) in [
+            (0, &tabs[0], "the first tab shown again"),
+            (1, &tabs[1], "the second tab shown again"),
+        ] {
+            let switch = switch_warm_tab(&app, index, cx).await;
+            assert_eq!(switch.frames, 1, "{at}: the switch draws one frame");
+            assert_eq!(
+                switch.next_frame_frames, 0,
+                "{at}: the switch asks for no further frame"
+            );
+            assert_eq!(
+                &tab_state(&app, cx),
+                state,
+                "{at}: focus, scroll, selection and lane as the tab was left"
+            );
+            assert!(
+                cx.update(|window, cx| {
+                    let app = app.read(cx);
+                    window
+                        .focused(cx)
+                        .is_some_and(|focus| app.app_focus.contains(&focus, window))
+                }),
+                "{at}: the frame drew the focused list"
+            );
+            assert_lane_shown(&app, *row, cx, at);
+            drop(switch);
+        }
+        crate::in_frame::probe::stop();
+    }
+
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
     /// one frame where it settles, the changed files' filter shortened to
     /// "Filter" in it at 18 pt.
