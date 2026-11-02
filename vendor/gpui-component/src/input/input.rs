@@ -528,7 +528,10 @@ impl RenderOnce for Input {
         let has_suffix =
             suffix.is_some() || presentation.is_loading() || self.mask_toggle || show_clear_button;
 
-        let placeholder = Some(presentation.placeholder().clone()).filter(|p| !p.is_empty());
+        // GitTurtle patch: the accessible placeholder, which a field that
+        // fits its placeholder to its width reports whole at every width.
+        let placeholder =
+            Some(presentation.accessible_placeholder().clone()).filter(|p| !p.is_empty());
 
         // Don't use a mask-derived placeholder ("(___)___-___") as an aria_label fallback.
         let placeholder_is_mask = presentation.mask_placeholder() == placeholder.as_deref();

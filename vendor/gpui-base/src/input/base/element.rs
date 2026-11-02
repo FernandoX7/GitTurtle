@@ -1714,7 +1714,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // (`InputBaseState::set_placeholder_fit`).
         let placeholder = match self.state.read(cx).placeholder_fit.clone() {
             Some(fit) => {
-                let fitted = fit(bounds.size.width, window);
+                let fitted = (fit.fit)(bounds.size.width, window);
                 self.state.update(cx, |state, _| {
                     if state.placeholder != fitted {
                         state.placeholder = fitted.clone();

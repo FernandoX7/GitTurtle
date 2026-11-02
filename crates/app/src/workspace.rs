@@ -1595,8 +1595,12 @@ fn whole_form(forms: &[&str], room: Pixels, size: Pixels, window: &Window) -> Sh
 /// drew each such step twice. What this returns hands the field its choice
 /// as it is laid out, before the field is prepainted; its parent is
 /// positioned and it takes no room. The placeholder is no name: the field
-/// keeps its whole accessible name (`aria_label`) whichever form shows.
-/// `text` is the size the field draws its text at, at the default interface
+/// keeps its whole accessible name (`aria_label`) whichever form shows, and
+/// reports the first, whole form as its accessible placeholder at every
+/// width (`InputPresentation::accessible_placeholder`). The field's
+/// accessible metadata is given as it is built, before the frame lays it out:
+/// following the drawn form, it kept the earlier width's form after a step
+/// until something else redrew. `text` is the size the field draws its text at, at the default interface
 /// size: 12 pt for most fields, 11 pt for the navigation's filter.
 pub(super) fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     field: Entity<gpui_kit::base::input::InputBaseState<M>>,
@@ -1631,9 +1635,12 @@ impl<M: gpui_kit::base::input::InputModeKind + 'static> RenderOnce for FittedPla
             text,
         } = self;
         field.update(cx, |state, _| {
-            state.set_placeholder_fit(Some(std::rc::Rc::new(move |room, window| {
-                fitted_placeholder(cache, forms, room, text, window)
-            })));
+            state.set_placeholder_fit(Some(gpui_kit::base::input::PlaceholderFit {
+                whole: forms.first().copied().unwrap_or_default().into(),
+                fit: std::rc::Rc::new(move |room, window| {
+                    fitted_placeholder(cache, forms, room, text, window)
+                }),
+            }));
         });
         div().absolute().size_0()
     }

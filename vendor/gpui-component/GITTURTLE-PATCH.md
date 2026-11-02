@@ -1788,3 +1788,12 @@ clears it as the draw ends; what the tests assert is unchanged. Remove
 package, drop the probe change with the input patch or when upstream's
 probes compile, and drop the overlay tests' draw when upstream's tests sync
 inside a frame.
+
+The placeholder-fit patch, paired with the [base patch](../gpui-base/GITTURTLE-PATCH.md)
+of the same name, modifies `src/input/input.rs`: the styled `Input` reports
+its field's accessible placeholder (`InputPresentation::accessible_placeholder`)
+rather than the placeholder it draws, and falls back to it for a missing
+`aria_label`. Where the field fits its placeholder to its width that is the
+whole form at every width; otherwise the two are the same, as upstream.
+GitTurtle's width-step regressions compare it with a window opened at each
+width (`cargo test --locked -p gitturtle draws_one_frame_where_it_settles`).

@@ -421,14 +421,23 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) auto_scroll: AutoScroll,
 }
 
+/// GitTurtle patch: how a field fits its placeholder to the width its text
+/// is laid out at ([`InputBaseState::set_placeholder_fit`]).
+#[derive(Clone)]
+pub struct PlaceholderFit {
+    /// The placeholder whole, which the field reports as its accessible
+    /// placeholder at every width: no width bounds what a screen reader
+    /// reads, and a choice from the width a frame lays the text out at is
+    /// made after the frame has given the field its accessible metadata.
+    pub whole: SharedString,
+    /// The placeholder the field shows with its text laid out this wide.
+    pub fit: Rc<dyn Fn(Pixels, &Window) -> SharedString>,
+}
+
 /// Read-only styling data exposed to presentation facades.
 ///
 /// The fields are private and read through the methods below, so that a new
 /// one can be added without breaking the facades.
-/// GitTurtle patch: the placeholder a field shows with its text laid out
-/// this wide ([`InputBaseState::set_placeholder_fit`]).
-pub type PlaceholderFit = Rc<dyn Fn(Pixels, &Window) -> SharedString>;
-
 #[derive(Clone)]
 pub struct InputPresentation {
     focus_handle: FocusHandle,
@@ -440,6 +449,9 @@ pub struct InputPresentation {
     code_editor: bool,
     text_align: TextAlign,
     placeholder: SharedString,
+    /// GitTurtle patch: the placeholder the field reports to assistive
+    /// technology ([`Self::accessible_placeholder`]).
+    accessible_placeholder: SharedString,
     mask_placeholder: Option<String>,
 }
 
@@ -487,6 +499,14 @@ impl InputPresentation {
         &self.placeholder
     }
 
+    /// GitTurtle patch: the placeholder the field reports to assistive
+    /// technology: its placeholder, or where it fits one to its width
+    /// ([`InputBaseState::set_placeholder_fit`]), the fit's whole form, the
+    /// same at every width.
+    pub fn accessible_placeholder(&self) -> &SharedString {
+        &self.accessible_placeholder
+    }
+
     /// The placeholder derived from the mask pattern, e.g.: `(___) ___-____`.
     pub fn mask_placeholder(&self) -> Option<&str> {
         self.mask_placeholder.as_deref()
@@ -525,6 +545,10 @@ impl<M: InputModeKind> InputBaseState<M> {
             code_editor: self.is_code_editor(),
             text_align: self.text_align,
             placeholder: self.placeholder.clone(),
+            accessible_placeholder: self
+                .placeholder_fit
+                .as_ref()
+                .map_or_else(|| self.placeholder.clone(), |fit| fit.whole.clone()),
             mask_placeholder: self.mask_pattern.placeholder(),
         }
     }
@@ -833,7 +857,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// lays it out at that width. A placeholder chosen from that width once
     /// the field had been painted showed the earlier width's choice in the
     /// first frame at a new width and asked for another. The choice is kept
-    /// as the field's placeholder; `None` leaves the placeholder as set.
+    /// as the field's placeholder; the field's accessible placeholder is the
+    /// fit's whole form ([`InputPresentation::accessible_placeholder`]).
+    /// `None` leaves the placeholder as set.
     pub fn set_placeholder_fit(&mut self, fit: Option<PlaceholderFit>) {
         self.placeholder_fit = fit;
     }

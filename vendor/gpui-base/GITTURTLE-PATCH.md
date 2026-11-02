@@ -416,12 +416,18 @@ placeholder to the width the field gives its text, as GitTurtle shortens a
 search field's and a filter's in a narrow window, could only read that width
 once the field had been painted (`text_bounds`), so a new width drew the
 earlier width's placeholder and the application's new one only in a second
-frame. `InputBaseState::set_placeholder_fit` gives the field a function from
-the width its text is laid out at to its placeholder (`PlaceholderFit`); the
-text element calls it as it is prepainted, with its bounds in that frame,
-before it shapes the placeholder, and keeps the result as the field's own
-placeholder without a notify. Without one the field shows the placeholder
-it was given, as upstream. GitTurtle sets it through
+frame. `InputBaseState::set_placeholder_fit` gives the field a `PlaceholderFit`:
+a function from the width its text is laid out at to its placeholder, and
+the placeholder whole. The text element calls the function as it is
+prepainted, with its bounds in that frame, before it shapes the placeholder,
+and keeps the result as the field's own placeholder without a notify. The
+field's accessible placeholder is the whole form at every width
+(`InputPresentation::accessible_placeholder`, which the component patch's
+`Input` reports): a field's accessible metadata is given as it is built,
+before the frame lays it out, so one that followed the drawn form kept the
+earlier width's form after a width step until something else redrew, and
+no width bounds what a screen reader reads. Without a fit the field shows
+and reports the placeholder it was given, as upstream. GitTurtle sets it through
 `workspace::placeholder_fit`, as the field is laid out; its History search
 field, changed files' filter and navigation filter are covered by
 `cargo test --locked -p gitturtle draws_one_frame_where_it_settles` and by

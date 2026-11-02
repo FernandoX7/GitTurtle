@@ -12007,14 +12007,40 @@ pub(crate) mod tests {
 
     /// What a width step is checked against, as its frame left it: History's
     /// columns and the width it took, where the regions History and Compare
-    /// lay out are drawn, and the placeholders the changed files' filter and
-    /// History's search field show, the last two in History only.
+    /// lay out are drawn, and the placeholder the changed files' filter and,
+    /// in History, the search field show and the one each reports to
+    /// assistive technology.
     type StepLayout = (
         Option<(f32, Vec<(Pixels, Pixels)>)>,
         Vec<(&'static str, Option<Bounds<Pixels>>)>,
-        SharedString,
-        Option<SharedString>,
+        Vec<(SharedString, Option<String>)>,
     );
+
+    /// The placeholder `field` reports to assistive technology, as its
+    /// editing element writes it from the accessible metadata the field was
+    /// given as the last frame built it. The element is built in a test
+    /// frame of its own, which then draws the window again.
+    fn accessible_placeholder(
+        field: &Entity<InputState>,
+        cx: &mut VisualTestContext,
+    ) -> Option<String> {
+        let written = std::rc::Rc::new(RefCell::new(None));
+        let (placeholder, field) = (written.clone(), field.clone());
+        cx.draw(point(px(0.), px(0.)), size(px(1.), px(1.)), move |window, cx| {
+            *placeholder.borrow_mut() = field.update(cx, |state, cx| {
+                let element = Render::render(state, window, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(
+                    element
+                        .a11y_role()
+                        .expect("the editing focus owner has a role"),
+                );
+                element.write_a11y_info(&mut node);
+                node.placeholder().map(str::to_owned)
+            });
+            div()
+        });
+        written.borrow_mut().take()
+    }
 
     /// The layout [`StepLayout`] reads, as the last frame drew it.
     fn step_layout(
@@ -12037,25 +12063,22 @@ pub(crate) mod tests {
             "compare-footer-text",
             "text-review-menu",
         ];
-        (
-            history.then(|| history_columns(app, cx)),
-            REGIONS
-                .into_iter()
-                .map(|region| (region, cx.debug_bounds(region)))
-                .collect(),
-            app.read_with(cx, |app, cx| {
-                app.file_filter
-                    .read(cx)
-                    .presentation()
-                    .placeholder()
-                    .clone()
-            }),
-            history.then(|| {
-                app.read_with(cx, |app, cx| {
-                    app.search.read(cx).presentation().placeholder().clone()
-                })
-            }),
-        )
+        let columns = history.then(|| history_columns(app, cx));
+        let regions = REGIONS
+            .into_iter()
+            .map(|region| (region, cx.debug_bounds(region)))
+            .collect();
+        let (filter, search) =
+            app.read_with(cx, |app, _| (app.file_filter.clone(), app.search.clone()));
+        let fields = std::iter::once(filter)
+            .chain(history.then_some(search))
+            .map(|field| {
+                let drawn =
+                    field.read_with(cx, |field, _| field.presentation().placeholder().clone());
+                (drawn, accessible_placeholder(&field, cx))
+            })
+            .collect();
+        (columns, regions, fields)
     }
 
     /// Steps a window from `from` to `to` at 13 and 18 pt, in History or,
