@@ -12274,6 +12274,140 @@ pub(crate) mod tests {
         assert_a_width_step_draws_one_frame(cx, Some("image.png"), tile, wide).await;
     }
 
+    /// The UI thread's handling of a real resize sequence, for a release
+    /// build: forty width steps from a 461 px half tile to 1,480 px and forty
+    /// back, 980 px tall, in History and comparing text and an image, at 13
+    /// and 18 pt, after one untimed pass of the same steps. Each step times
+    /// one `simulate_resize`, from before the call to its return: the
+    /// window's new bounds, its bounds observers and every frame drawn as the
+    /// update's effects flush, layout, prepaint and paint included, on the
+    /// test platform, with no GPU, compositor or display link. Its frames are
+    /// counted by the repository columns' `InFrame` record, and the frame
+    /// callbacks the step leaves are delivered afterwards, untimed in
+    /// `handler_ms` and timed apart in `next_frame_ms`, with any frame they
+    /// draw counted in `next_frame_frames`. The per-window width caches the
+    /// header and status bar keep are warm after the first pass.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_WIDTH_STEPS_BENCH_OUTPUT and run with --release --ignored"]
+    async fn width_steps_release_benchmark(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        use crate::system_preview::tests::png;
+        const STEPS: usize = 40;
+        const HEIGHT: f32 = 980.;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_WIDTH_STEPS_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let paths: Vec<String> = (0..40).map(|index| format!("f-{index:02}.txt")).collect();
+        let mut added: Vec<(&str, &[u8])> =
+            vec![("image.png", &before), ("notes.txt", b"one\ntwo\n")];
+        added.extend(paths.iter().map(|path| (path.as_str(), &b"first\n"[..])));
+        let mut changed: Vec<(&str, &[u8])> =
+            vec![("image.png", &after), ("notes.txt", b"one\nthree\n")];
+        changed.extend(paths.iter().map(|path| (path.as_str(), &b"second\n"[..])));
+        let input = file_commits(&[("add", added.as_slice()), ("change", changed.as_slice())]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        // 461 px to 1,480 px in forty steps, and back.
+        let widths: Vec<f32> = (0..=STEPS)
+            .map(|step| (461. + (1480. - 461.) * step as f32 / STEPS as f32).round())
+            .collect();
+        let sequence: Vec<f32> = widths[1..]
+            .iter()
+            .chain(widths.iter().rev().skip(1))
+            .copied()
+            .collect();
+        let frames = || {
+            probe::take()
+                .iter()
+                .filter(|frame| frame.region == "repository-columns")
+                .count()
+        };
+        probe::watch();
+        let mut series = Vec::new();
+        for text in [13, 18] {
+            for (surface, path) in [
+                ("history", None),
+                ("text_compare", Some("notes.txt")),
+                ("image_compare", Some("image.png")),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(widths[0]), px(HEIGHT)));
+                draw(cx);
+                match path {
+                    None => cx.update(|window, cx| {
+                        app.update(cx, |app, cx| app.back_to_history(window, cx))
+                    }),
+                    Some(path) => {
+                        let index = app.read_with(cx, |app, _| {
+                            app.files
+                                .iter()
+                                .position(|file| {
+                                    file.new_path.as_deref() == Some(std::path::Path::new(path))
+                                })
+                                .expect("the file changed")
+                        });
+                        cx.update(|window, cx| {
+                            app.update(cx, |app, cx| app.select_file(index, window, cx))
+                        });
+                    }
+                }
+                settle(&app, cx).await;
+                draw(cx);
+                let mut handler_ms = Vec::new();
+                let mut next_frame_ms = Vec::new();
+                let mut step_frames = Vec::new();
+                let mut next_frame_frames = Vec::new();
+                for pass in 0..2 {
+                    for &width in &sequence {
+                        frames();
+                        let started = std::time::Instant::now();
+                        cx.simulate_resize(size(px(width), px(HEIGHT)));
+                        let handled = started.elapsed().as_secs_f64() * 1000.;
+                        cx.run_until_parked();
+                        let drawn = frames();
+                        let started = std::time::Instant::now();
+                        cx.update(|window, cx| {
+                            window.simulate_next_frame(cx);
+                        });
+                        cx.run_until_parked();
+                        let delivered = started.elapsed().as_secs_f64() * 1000.;
+                        if pass == 1 {
+                            handler_ms.push(handled);
+                            next_frame_ms.push(delivered);
+                            step_frames.push(drawn);
+                            next_frame_frames.push(frames());
+                        } else {
+                            frames();
+                        }
+                    }
+                }
+                series.push(serde_json::json!({
+                    "surface": surface,
+                    "text_pt": text,
+                    "widths": sequence,
+                    "handler_ms": handler_ms,
+                    "next_frame_ms": next_frame_ms,
+                    "frames": step_frames,
+                    "next_frame_frames": next_frame_frames,
+                }));
+            }
+        }
+        probe::stop();
+        let result = serde_json::json!({
+            "schema": 1,
+            "steps_each_way": STEPS,
+            "height": HEIGHT,
+            "warmup_passes": 1,
+            "boundary": "One `simulate_resize` on the UI thread, from before the call to its return: the window's new bounds, its bounds observers and every frame drawn as its effects flush (layout, prepaint and paint on the test platform; no GPU, compositor or display link). `next_frame_ms` times delivering the frame callbacks the step left, and any frame they draw, separately.",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Every choice the repository page's width makes reads one width: the
     /// window's less the project pane as its group draws it. The page drew
     /// its rail from its width in the frame, while Toggle Sidebar, the
