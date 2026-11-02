@@ -14,8 +14,9 @@
 //! confined, and the time from a kill to the reap are measured apart. The
 //! JSON goes to the file named by `GITTURTLE_PDF_BENCH_OUT`. It names each
 //! fixture by its file name in that directory and the executable by its file
-//! name and the commit built into it, never by an absolute path, and no
-//! helper's reply is read past the largest the client accepts.
+//! name, the commit built into it (looked for in its first 256 MiB) and
+//! whether the source tree it was built from was clean, never by an absolute
+//! path, and no helper's reply is read past the largest the client accepts.
 //!
 //! The app crate has no library target, so this test compiles
 //! `src/pdf_helper.rs` as its own module, as `tests/pdf_helper.rs` does.
@@ -49,6 +50,13 @@ const BINARY: &str = env!("CARGO_BIN_EXE_gitturtle");
 /// The commit the build script embeds in this package's targets, the
 /// executable's among them.
 const REVISION: &str = env!("GITTURTLE_BUILD_REVISION");
+/// Whether the source tree the build script saw was "clean", "modified" or
+/// "unknown", as `--build-info` reports it as `source_tree`: one script run
+/// builds this test and the executable.
+const TREE: &str = env!("GITTURTLE_BUILD_TREE");
+/// The most of the executable read to find its commit: a release build is
+/// about 100 MB.
+const MAX_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
 
 /// Bytes to the largest any reader here takes: `limit`, and one more, which
 /// tells a source past it from one that ends there.
@@ -561,20 +569,30 @@ fn measure_pdf_pages_through_the_helper() {
     eprintln!("wrote {}", out.display());
 }
 
-/// The executable measured: its file name, size and the commit its build
-/// embeds, with whether its bytes hold that commit, never its path.
+/// The executable measured: its file name, size, the commit its build
+/// embeds, with whether its bytes hold that commit, and whether the source
+/// tree it was built from was clean, never its path.
 fn executable() -> Value {
-    let path = Path::new(BINARY);
-    let bytes = fs::read(path).unwrap_or_default();
-    let embedded = !REVISION.is_empty()
+    executable_at(Path::new(BINARY), MAX_EXECUTABLE_BYTES)
+}
+
+/// The record of the executable at `path`, of which the first `limit` bytes
+/// alone are read for the commit: whether they hold it is `null` where it
+/// is not among them and the file runs past them.
+fn executable_at(path: &Path, limit: usize) -> Value {
+    let bytes = fs::File::open(path)
+        .and_then(|file| read_bounded(file, limit))
+        .unwrap_or_default();
+    let found = !REVISION.is_empty()
         && bytes
             .windows(REVISION.len())
             .any(|window| window == REVISION.as_bytes());
     json!({
         "name": path.file_name().map(|name| name.to_string_lossy().into_owned()),
-        "bytes": bytes.len(),
+        "bytes": fs::metadata(path).map(|metadata| metadata.len()).ok(),
         "revision": REVISION,
-        "revision_embedded": embedded,
+        "revision_embedded": (found || bytes.len() <= limit).then_some(found),
+        "source_tree": TREE,
     })
 }
 
@@ -650,4 +668,25 @@ fn fixtures_and_replies_are_read_within_their_limits() {
             .len(),
         MAX_REPLY_BYTES + 1
     );
+}
+
+/// The executable is read for its commit no further than the limit: one past
+/// it is not looked for, so whether it is embedded is left open, and one
+/// within it is found. The record gives the file's whole size and the
+/// state of the source tree the build saw.
+#[test]
+fn the_executable_is_read_within_its_limit() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let path = directory.path().join("gitturtle");
+    let mut bytes = vec![0; 4096];
+    bytes.extend_from_slice(REVISION.as_bytes());
+    fs::write(&path, &bytes).expect("an executable");
+    let past = executable_at(&path, 4096);
+    assert_eq!(past["revision_embedded"], Value::Null, "{past}");
+    assert_eq!(past["bytes"], json!(bytes.len()), "{past}");
+    let within = executable_at(&path, bytes.len());
+    assert_eq!(within["revision_embedded"], json!(true), "{within}");
+    assert_eq!(within["name"], json!("gitturtle"), "{within}");
+    assert_eq!(within["source_tree"], json!(TREE), "{within}");
+    assert!(["clean", "modified", "unknown"].contains(&TREE), "{TREE}");
 }
