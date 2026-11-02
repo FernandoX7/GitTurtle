@@ -86,7 +86,7 @@ pub(super) struct RowAnchor {
 impl RowAnchor {
     /// Whether the row lies elsewhere than `other` did, by more than
     /// rounding: judged from where its menu was asked to start, not from
-    /// `below`, which a pointer's menu rounds out to a whole pixel past the
+    /// `below`, which a pointer's menu rounds out to a device pixel past the
     /// pointer's device row, so that a row moved a tenth of a pixel across
     /// a pixel's edge moved its menu's place by a whole one, and closed a
     /// menu that fits on neither side.
@@ -97,17 +97,23 @@ impl RowAnchor {
 
     /// The row painted at `row` that a pointer pressed at `pointer`, on a
     /// display of `scale`: its menu starts at the pointer, below it, its
-    /// drawn edge, [`MENU_EDGE`] outside its fill, on the device pixel row
-    /// below the pointer's, as a text field's drawn menu starts
-    /// (`gpui_kit::base::point_row_clear_by`), or lies wholly above the row.
-    /// With its fill at the pointer, its edge lay on the pixel row above the
-    /// pointer's, over the row clicked.
+    /// drawn edge, [`MENU_EDGE`] outside its fill, from the device pixel row
+    /// just below the pointer's (`gpui_kit::base::point_device_row`), its
+    /// fill on the first device pixel at or after that row's foot and the
+    /// edge (`gpui_kit::base::device_pixel_at_or_after`), at any scale, or
+    /// it lies wholly above the row. With its fill at the pointer, its edge
+    /// lay on the pixel row above the pointer's, over the row clicked; with
+    /// its fill rounded out to a whole logical pixel
+    /// (`gpui_kit::base::point_row_clear_by`), at 1.2 and 1.25 it started
+    /// part way into a device pixel, which GPUI rounds back towards the
+    /// pointer, and its edge covered the pointer's own device row.
     pub(super) fn pointer(pointer: Point<Pixels>, row: Bounds<Pixels>, scale: f32) -> Self {
         let y = pointer.y.clamp(row.top(), row.bottom());
+        let (_, foot) = gpui_kit::base::point_device_row(y, scale);
         Self {
             x: pointer.x,
             top: row.top(),
-            below: gpui_kit::base::point_row_clear_by(y, MENU_EDGE, scale).1,
+            below: gpui_kit::base::device_pixel_at_or_after(foot + MENU_EDGE, scale),
             asked: y,
             trailing: None,
         }
@@ -791,30 +797,35 @@ impl Element for RowMenu {
         }
         let origin = self.origin(row, laid.size);
         // A menu clamped to a side or the top of its room lies on the room's
-        // device pixel there. GPUI lays the menu out at its place plus the
-        // whole element offset on the device pixel, halves toward zero, and
-        // `laid` holds the offset this overlay inherits already rounded. The
-        // overlay's anchor moves it by whole pixels, half a device pixel off
-        // one at scale 1.25 or 1.5, so moving the menu by
-        // `origin - laid.origin` left the sum half a device pixel short and
-        // put a fill clamped to the left side a device pixel nearer it, its
-        // edge 7.2 px from it at 1.25. A menu at its row or pointer keeps
-        // the place that rounding gives it.
+        // device pixel there, and one below a right-click's pointer on the
+        // device pixel its place names, past the pointer's device row and
+        // the menu's edge ([`RowAnchor::pointer`]). GPUI lays the menu out at
+        // its place plus the whole element offset on the device pixel,
+        // halves toward zero, and `laid` holds the offset this overlay
+        // inherits already rounded. The overlay's anchor moves it by whole
+        // pixels, half a device pixel off one at scale 1.25 or 1.5, so moving
+        // the menu by `origin - laid.origin` left the sum half a device pixel
+        // short and put a fill clamped to the left side a device pixel nearer
+        // it, its edge 7.2 px from it at 1.25, and a fill below the pointer a
+        // device pixel above its place, its edge on the pointer's own device
+        // row, at 1.25 with the row 42 px down. A menu beside its row keeps
+        // the place that rounding gives it, as the row does.
         let inherited = window.element_offset();
         let room = self.room;
-        let unrounded = |value: Pixels, clamped: bool| {
-            if clamped {
+        let unrounded = |value: Pixels, on_device_pixel: bool| {
+            if on_device_pixel {
                 value - window.pixel_snap(value)
             } else {
                 px(0.)
             }
         };
+        let below_pointer = matches!(self.row, RowPlace::Pointer(_)) && origin.y == row.below;
         let unrounded = point(
             unrounded(
                 inherited.x,
                 origin.x <= room.left() || origin.x + laid.size.width >= room.right() - px(0.01),
             ),
-            unrounded(inherited.y, origin.y <= room.top()),
+            unrounded(inherited.y, origin.y <= room.top() || below_pointer),
         );
         // Nothing the menu draws, its shadow included, reaches its row: a
         // menu wholly above the row ends where the row begins, and one below

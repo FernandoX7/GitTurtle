@@ -1360,47 +1360,85 @@ fn a_rows_menu_keeps_its_drawn_edge_8_px_from_the_sides_at_fractional_scales(
     }
 }
 
+/// The open menu's fill, which holds its item One, as painted, in device
+/// pixels: the last fill of the popover colour around that item.
+fn open_menu_fill_in_device_pixels(cx: &mut VisualTestContext) -> Bounds<gpui_kit::ScaledPixels> {
+    let item = cx
+        .debug_bounds("menu-item: One · MenuItem")
+        .expect("the menu");
+    cx.update(|window, cx| {
+        let popover = Background::from(Theme::global(cx).popover);
+        let scale = window.scale_factor();
+        let center = point(
+            gpui_kit::ScaledPixels(f32::from(item.center().x) * scale),
+            gpui_kit::ScaledPixels(f32::from(item.center().y) * scale),
+        );
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == popover && quad.bounds.contains(&center))
+            .max_by_key(|quad| quad.order)
+            .map(|quad| quad.bounds)
+            .expect("the menu's fill")
+    })
+}
+
 /// A row's right-click menu opened below the pointer draws its edge, the
-/// ring outside its fill, from the device pixel row below the pointer's,
-/// never on it or above it, as a text field's drawn menu does, at scale 1
-/// and 1.5, for a pointer on a whole pixel, as X11 reports one, and part
-/// way into one, as Wayland does. With its fill at the pointer, its edge
-/// lay on the pixel row above the pointer's, over the row clicked.
+/// ring outside its fill, from the device pixel row just below the
+/// pointer's, never on it or above it, as a text field's drawn menu does:
+/// read in device pixels as painted, its fill where GPUI places it and its
+/// ring over every device pixel the band outside the fill touches, at
+/// scales 1, 1.2 (as Hyprland gives a panel whose one mode it cannot set
+/// to 1.25), 1.25 (as Omarchy sets), 1.5 and 2, for rows 40, 41 and 42 px
+/// down and a pointer on a whole pixel, as X11 reports one, and part way
+/// into one, as Wayland does. With its fill at the pointer, its edge lay on
+/// the pixel row above the pointer's, over the row clicked; with its fill
+/// rounded out to a whole logical pixel, at 1.2 and 1.25 the fill started
+/// part way into a device pixel, which GPUI rounds back towards the
+/// pointer, and the edge covered the pointer's own device row.
 #[gpui::test]
 fn a_rows_menu_below_the_pointer_draws_its_edge_below_the_pointers_row(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         super::keep_popups_above_the_status_bar(cx);
     });
-    let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
-    for scale in [1., 1.5] {
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let probe = cx.new(|_| GapRowProbe { lead: px(40.) });
-            Root::new(probe, window, cx)
-        });
-        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
-        cx.simulate_resize(size(px(461.), px(490.)));
-        cx.update(|window, _| window.set_scale_factor(scale));
-        draw(cx);
-        let row = cx.debug_bounds("gap-row").expect("the row");
-        for into in [0., 0.4, 0.7] {
-            let at = format!("scale {scale}, {into} px into a pixel");
-            let pointer = point(row.left() + px(40.), row.top().floor() + px(8. + into));
-            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
-            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+    let edge = f32::from(gpui_kit::component::POPOVER_EDGE_WIDTH);
+    let mut failures = Vec::new();
+    for scale in [1., 1.2, 1.25, 1.5, 2.] {
+        for lead in [40., 41., 42.] {
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let probe = cx.new(|_| GapRowProbe { lead: px(lead) });
+                Root::new(probe, window, cx)
+            });
+            cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, _| window.set_scale_factor(scale));
             draw(cx);
-            draw(cx);
-            let drawn = open_menu_surface(cx).dilate(edge);
-            // The lower edge of the device pixel row the pointer lies in.
-            let below = px(((f32::from(pointer.y) * scale).floor() + 1.) / scale);
-            assert!(
-                drawn.top() >= below - px(0.01) && drawn.top() < below + px(1.),
-                "{at}: the menu {drawn:?} draws its edge from the device row below the pointer {pointer:?}, at {below:?}"
-            );
-            cx.simulate_keystrokes("escape");
-            draw(cx);
+            let row = cx.debug_bounds("gap-row").expect("the row");
+            for into in [0., 0.4, 0.7] {
+                let at = format!("scale {scale}, a row {lead} px down, {into} px into a pixel");
+                let pointer = point(row.left() + px(40.), row.top().floor() + px(8. + into));
+                cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+                cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+                draw(cx);
+                draw(cx);
+                let fill = open_menu_fill_in_device_pixels(cx);
+                // The device pixel row the pointer lies in, and the first
+                // the menu's ring touches.
+                let pointer_row = (f32::from(pointer.y) * scale + 1e-3).floor();
+                let ring_row = (fill.top().as_f32() - edge * scale + 1e-3).floor();
+                if ring_row != pointer_row + 1. {
+                    failures.push(format!(
+                        "{at}: the fill {fill:?} draws its edge from device row {ring_row}, \
+                         the pointer {pointer:?} lying in row {pointer_row}"
+                    ));
+                }
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+            }
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// A right-click's row that moves a fraction of a pixel, as a refresh can
