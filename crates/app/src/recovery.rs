@@ -2570,12 +2570,15 @@ impl StashBrowser {
     /// revealed_by`), so the keyboard reveals it there with its ring, and
     /// beneath its caption the short line says why its last click opened
     /// nothing, its whole answer in its tooltip and name. Both controls take
-    /// one form, from the narrower room a side's name leaves: labelled
-    /// where the label fits beside the name, otherwise the icon, on the
-    /// name's line where the icon fits there, otherwise both on a line
-    /// beneath the names; a side without one keeps that line, and each
-    /// side's line saying why takes the taller answer's lines, at most two,
-    /// so the sides' names and images stay level.
+    /// one form and one place by Compare's rule
+    /// ([`crate::image_compare::open_place`]), from the narrower room either
+    /// side's name leaves, whether or not that side offers one, so an added
+    /// or deleted image's one control stands where a changed image's two
+    /// do: labelled where the label fits beside the name, otherwise the
+    /// icon, on the name's line where the icon fits there, otherwise both on
+    /// a line beneath the names; a side without one keeps that line, and
+    /// each side's line saying why takes the taller answer's lines, at most
+    /// two, so the sides' names and images stay level.
     fn render_images(
         &self,
         sides: [&crate::worker::ImageSide; 2],
@@ -2622,18 +2625,22 @@ impl StashBrowser {
         let text = appearance::ui_text(11.);
         // A side's half, less its padding either side.
         let inner = ((width - rem * 0.5) / 2. - rem).max(Pixels::ZERO);
-        let room = [0, 1]
-            .into_iter()
-            .filter(|index| targets[*index].is_some())
-            .map(|index| {
+        // Every caption's room counts, as in Compare: chosen from the
+        // offering sides' alone, an added image's After control could stay
+        // beside its shorter name where a changed image's two went beneath
+        // the names.
+        let open = crate::image_compare::open_place(
+            targets.iter().any(Option::is_some),
+            (0..2).map(|index| {
                 inner
                     - rem * 0.5
                     - crate::views::line_widths(&[(captions[index].as_str(), text)], window)
-            })
-            .reduce(|narrower, room| narrower.min(room));
+            }),
+            window,
+        );
         let square = appearance::ui_size(28.);
-        let inline = room.is_none_or(|room| room >= square);
-        let offered = room.is_some();
+        let inline = open.is_none_or(|open| open.inline);
+        let offered = open.is_some();
         let answers = targets
             .each_ref()
             .map(|target| target.as_ref().and_then(|(target, _)| target.answered(cx)));
@@ -2647,7 +2654,10 @@ impl StashBrowser {
         let line = crate::image_compare::text_line(text, window);
         let mut controls = targets.map(|target| {
             target.map(|(target, offer)| {
-                target.control(offer.form(room.unwrap_or_default(), window), cx)
+                target.control(
+                    offer.form(open.map_or(Pixels::ZERO, |open| open.room), window),
+                    cx,
+                )
             })
         });
         let mut answers = answers;
@@ -2681,6 +2691,7 @@ impl StashBrowser {
                             .when(offered && inline, |caption| caption.min_h(square))
                             .child(
                                 div()
+                                    .debug_selector(move || format!("stash-image-name-{index}"))
                                     .min_w_0()
                                     .truncate()
                                     .text_size(text)
@@ -2706,6 +2717,7 @@ impl StashBrowser {
                     }))
                     .child(
                         div()
+                            .debug_selector(move || format!("stash-image-{index}"))
                             .flex_1()
                             .min_h_0()
                             .flex()
@@ -4006,6 +4018,179 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Where a stashed image's comparison draws each side's open control,
+    /// its name and its image, from the comparison's top left corner.
+    #[cfg(target_os = "linux")]
+    struct StashedImage {
+        opens: [Option<Bounds<Pixels>>; 2],
+        names: [Bounds<Pixels>; 2],
+        images: [Bounds<Pixels>; 2],
+    }
+
+    /// A stash of `picture.png` with `sides` in Stashes, once `present`, an
+    /// open control's selector, is drawn.
+    #[cfg(target_os = "linux")]
+    fn stashed_image<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        fixture: &std::path::Path,
+        sides: (Option<Vec<u8>>, Option<Vec<u8>>),
+        present: &'static str,
+    ) -> &'a mut VisualTestContext {
+        stashed_sides(
+            cx,
+            fixture,
+            &[("picture.png", sides.0, sides.1)],
+            (461., 490., 13),
+            (0, present),
+        )
+        .1
+    }
+
+    /// The stashed image's comparison as drawn at `text` pt in a `width` ×
+    /// `height` window.
+    #[cfg(target_os = "linux")]
+    fn stashed_image_at(
+        cx: &mut VisualTestContext,
+        (text, width, height): (u8, f32, f32),
+    ) -> StashedImage {
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        crate::tags::tests::draw(cx);
+        let corner = cx
+            .debug_bounds("stash-comparison")
+            .expect("the comparison")
+            .origin;
+        let mut drawn = |selector: &'static str| {
+            cx.debug_bounds(selector).map(|bounds| Bounds {
+                origin: point(bounds.left() - corner.x, bounds.top() - corner.y),
+                size: bounds.size,
+            })
+        };
+        StashedImage {
+            opens: ["image-system-preview-0", "image-system-preview-1"].map(&mut drawn),
+            names: ["stash-image-name-0", "stash-image-name-1"]
+                .map(|selector| drawn(selector).expect(selector)),
+            images: ["stash-image-0", "stash-image-1"]
+                .map(|selector| drawn(selector).expect(selector)),
+        }
+    }
+
+    /// A stashed image's open controls take one form and one place by
+    /// Compare's rule (`image_compare::open_place`), every caption counted
+    /// whether or not its side offers one, so an added or a deleted image's
+    /// one control stands where a changed image's control of its side
+    /// does. At 13 and 18 pt in 461 × 490 and 1000 × 680 windows, and at
+    /// each pair of widths a pixel apart, found between 461 and 1,480 px,
+    /// where a changed image's controls leave the names' line or become
+    /// their icons, the present side's control has the changed image's
+    /// bounds for its side, the absent side offers none, and each side's
+    /// image starts where the changed image's does, no shorter. Chosen from
+    /// the offering sides' captions alone, an added image's After control,
+    /// beside the shorter name, kept the form and the line a changed
+    /// image's two had left within a few pixels of each change.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_added_or_deleted_image_s_open_control_stands_where_a_changed_one_s_do(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::system_preview::tests::png;
+        let (first, second) = (png(Some(b"first")), png(Some(b"second")));
+        let slack = px(0.5);
+        let fixture = tempfile::tempdir().unwrap();
+        let mut sizes = vec![
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1000., 680.),
+            (18, 1000., 680.),
+        ];
+        let changed = {
+            let cx = stashed_image(
+                cx,
+                fixture.path(),
+                (Some(first.clone()), Some(second.clone())),
+                "image-system-preview-1",
+            );
+            // Where the controls leave the names' line, and where they
+            // become their icons, as the window narrows.
+            let inline = |drawn: &StashedImage| {
+                drawn
+                    .opens
+                    .iter()
+                    .flatten()
+                    .all(|open| open.top() < drawn.names[0].bottom())
+            };
+            let labelled = |drawn: &StashedImage| {
+                drawn
+                    .opens
+                    .iter()
+                    .flatten()
+                    .all(|open| open.size.width > open.size.height + slack)
+            };
+            for text in [13, 18] {
+                for form in [&inline as &dyn Fn(&StashedImage) -> bool, &labelled] {
+                    let mut at = |width: f32| form(&stashed_image_at(cx, (text, width, 680.)));
+                    let (mut narrow, mut wide) = (461., 1480.);
+                    let narrowest = at(narrow);
+                    if narrowest == at(wide) {
+                        continue;
+                    }
+                    while wide - narrow > 1. {
+                        let middle = ((narrow + wide) / 2.).floor();
+                        if at(middle) == narrowest {
+                            narrow = middle;
+                        } else {
+                            wide = middle;
+                        }
+                    }
+                    sizes.extend([(text, narrow, 680.), (text, wide, 680.)]);
+                }
+            }
+            sizes
+                .iter()
+                .map(|&size| stashed_image_at(cx, size))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            sizes.len() > 4,
+            "between 461 and 1,480 px a changed image's controls change form or line"
+        );
+        for (what, present, sides, selector) in [
+            ("added", 1, (None, Some(second)), "image-system-preview-1"),
+            ("deleted", 0, (Some(first), None), "image-system-preview-0"),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let cx = stashed_image(cx, fixture.path(), sides, selector);
+            for ((text, width, height), changed) in sizes.iter().zip(&changed) {
+                let one = stashed_image_at(cx, (*text, *width, *height));
+                let at = format!("{what} at {text} pt in {width} × {height}");
+                let control = one.opens[present]
+                    .unwrap_or_else(|| panic!("{at}: the present side offers its control"));
+                assert!(
+                    one.opens[1 - present].is_none(),
+                    "{at}: the absent side offers none"
+                );
+                let theirs = changed.opens[present].expect("a changed image offers both");
+                assert!(
+                    (control.left() - theirs.left()).abs() <= slack
+                        && (control.top() - theirs.top()).abs() <= slack
+                        && (control.size.width - theirs.size.width).abs() <= slack,
+                    "{at}: the control {control:?} stands where the changed image's {theirs:?} \
+                     does, in its form"
+                );
+                for side in 0..2 {
+                    let (image, theirs) = (one.images[side], changed.images[side]);
+                    assert!(
+                        (image.top() - theirs.top()).abs() <= slack
+                            && image.size.height >= theirs.size.height - slack,
+                        "{at}: side {side}'s image {image:?} starts where the changed image's \
+                         {theirs:?} does, no shorter"
+                    );
+                }
+            }
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        }
+    }
+
     /// A stashed document's comparison takes its open controls' form from
     /// its box's width in the frame it is drawn ([`crate::in_frame`]): every
     /// frame drawn as the window narrows and widens between 461 and 1,481 px
@@ -4183,18 +4368,56 @@ mod tests {
         cx: &'a mut gpui_kit::TestAppContext,
         fixture: &std::path::Path,
         files: &[(&str, Vec<u8>, Vec<u8>)],
+        at: (f32, f32, u8),
+        chosen: (usize, &'static str),
+    ) -> (Entity<StashBrowser>, &'a mut VisualTestContext) {
+        let files: Vec<_> = files
+            .iter()
+            .map(|(name, first, second)| (*name, Some(first.clone()), Some(second.clone())))
+            .collect();
+        stashed_sides(cx, fixture, &files, at, chosen)
+    }
+
+    /// A stashed file's name with its committed and its stashed bytes, each
+    /// absent where the file is not there ([`stashed_sides`]).
+    #[cfg(target_os = "linux")]
+    type StashedFile<'a> = (&'a str, Option<Vec<u8>>, Option<Vec<u8>>);
+
+    /// [`stashed`] for `files` that may be absent on either side: one
+    /// without first bytes is added to the index after the commit, so the
+    /// stash saves it added, and one without second bytes is deleted
+    /// from the working tree, so the stash saves it deleted.
+    #[cfg(target_os = "linux")]
+    fn stashed_sides<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        fixture: &std::path::Path,
+        files: &[StashedFile<'_>],
         (width, height, text): (f32, f32, u8),
         (chosen, drawn): (usize, &'static str),
     ) -> (Entity<StashBrowser>, &'a mut VisualTestContext) {
         use crate::tags::tests::{draw, git, tagged_repository, window};
         let repo = tagged_repository(fixture);
         for (name, first, _) in files {
-            std::fs::write(repo.path().join(name), first).unwrap();
-            git(repo.path(), &["add", name]);
+            if let Some(first) = first {
+                std::fs::write(repo.path().join(name), first).unwrap();
+                git(repo.path(), &["add", name]);
+            }
         }
-        git(repo.path(), &["commit", "--quiet", "-m", "Add them"]);
-        for (name, _, second) in files {
-            std::fs::write(repo.path().join(name), second).unwrap();
+        git(
+            repo.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "Add them"],
+        );
+        for (name, first, second) in files {
+            let path = repo.path().join(name);
+            match second {
+                Some(second) => {
+                    std::fs::write(&path, second).unwrap();
+                    if first.is_none() {
+                        git(repo.path(), &["add", name]);
+                    }
+                }
+                None => std::fs::remove_file(&path).unwrap(),
+            }
         }
         git(repo.path(), &["stash", "push", "-m", "kept for later"]);
         let (app, cx) = window(cx, &repo);

@@ -512,30 +512,26 @@ impl GitTurtle {
                 offers[index] = Some((target, offer));
             }
         }
-        // Where both sides' open controls stand, chosen from the narrower
-        // room a side's name leaves its control in the captions, which share
-        // the column equally: on the names' line, labelled where the label
-        // fits beside the name and otherwise as its icon, wherever the
-        // scaled 28 px icon fits there; otherwise both as their icons in the
-        // toolbar's row, never over the image nor on a line of their own
-        // beneath the names, which took the image 48 px at 18 pt in a
-        // 461 × 490 window. The room is every drawn caption's, whether or
-        // not its side offers a control, so an added or deleted image's one
-        // control takes the place and form a changed image's two do: chosen
-        // from After's room alone, an added image's stayed beside its name
-        // at 18 pt in a 461 × 490 window while the zoom menu stood alone on
-        // a toolbar row beneath the modes.
+        // Where both sides' open controls stand ([`open_place`]), from the
+        // room each drawn caption's name leaves in the captions, which share
+        // the column equally: where the icon does not fit beside the names,
+        // both stand as their icons in the toolbar's row, never over the
+        // image nor on a line of their own beneath the names, which took the
+        // image 48 px at 18 pt in a 461 × 490 window. Chosen from After's
+        // room alone, an added image's control stayed beside its name there
+        // while the zoom menu stood alone on a toolbar row beneath the modes.
         let caption_width = width / if source { 1. } else { 2. };
-        let open_room = offers.iter().any(Option::is_some).then(|| {
+        let open = open_place(
+            offers.iter().any(Option::is_some),
             (0..2)
                 .filter(|&index| !source || index == 1)
-                .map(|index| caption_room(index, caption_width, names[index], window))
-                .fold(px(f32::MAX), Pixels::min)
-        });
-        // The icon as layout draws it, snapped to the device's pixels, in
-        // both the captions' choice and the toolbar's count.
-        let open_icon = window.pixel_snap(crate::appearance::ui_size(28.));
-        let in_toolbar = open_room.is_some_and(|room| room < open_icon);
+                .map(|index| caption_room(index, caption_width, names[index], window)),
+            window,
+        );
+        // The icon as layout draws it, in the toolbar's count as in the
+        // captions' choice.
+        let open_icon = open_icon(window);
+        let in_toolbar = open.is_some_and(|open| !open.inline);
         // Each side's control keeps one focus handle wherever it stands, so
         // focus stays on it when a resize moves it.
         let focus = state
@@ -938,7 +934,7 @@ impl GitTurtle {
         });
         let controls = offers.map(|offered| {
             offered.filter(|_| !in_toolbar).map(|(target, offer)| {
-                let form = offer.form(open_room.unwrap_or_default(), window);
+                let form = offer.form(open.map_or(Pixels::ZERO, |open| open.room), window);
                 (target, form)
             })
         });
@@ -1775,6 +1771,48 @@ thread_local! {
     /// The scale notice and the guidance, each laid out as one line.
     static SCALE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static GUIDANCE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// Where a comparison's open controls stand ([`open_place`]): the room they
+/// take their one form from, and whether that is on the sides' names' line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OpenPlace {
+    /// The narrower room a drawn caption's name leaves its control.
+    pub(crate) room: Pixels,
+    /// Whether both stand on the names' line, after each side's name.
+    pub(crate) inline: bool,
+}
+
+/// Where both sides' open controls stand, in one form and one place, or
+/// `None` where no side `offered` one, from the `rooms` each drawn caption's
+/// name leaves its control: the narrower, every drawn caption counted
+/// whether or not its side offers one, so an added or deleted image's one
+/// control takes the place and form a changed image's two do. They stand on
+/// the names' line, labelled where the label fits beside the name and
+/// otherwise as the icon, wherever the icon ([`open_icon`]) fits there;
+/// elsewhere the comparison places both together, Compare in its toolbar's
+/// row and Stashes on a line beneath the names. Compare's images and
+/// Stashes' take it alike. Chosen from the offering sides' captions alone,
+/// an added image's one control kept a form and a place a changed image's
+/// two had left, beside its shorter name.
+pub(crate) fn open_place(
+    offered: bool,
+    rooms: impl IntoIterator<Item = Pixels>,
+    window: &Window,
+) -> Option<OpenPlace> {
+    offered.then(|| {
+        let room = rooms.into_iter().fold(px(f32::MAX), Pixels::min);
+        OpenPlace {
+            room,
+            inline: room >= open_icon(window),
+        }
+    })
+}
+
+/// The open control's scaled 28 px icon as layout draws it, snapped to the
+/// device's pixels.
+pub(crate) fn open_icon(window: &Window) -> Pixels {
+    window.pixel_snap(crate::appearance::ui_size(28.))
 }
 
 /// The room side `index`'s caption leaves its open control on its first line
