@@ -84,7 +84,7 @@ runs:
       if: inputs.phase == 'setup'
       id: restore
       continue-on-error: true
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
@@ -132,7 +132,7 @@ runs:
     - name: Register successful main cache save
       if: inputs.phase == 'finish' && steps.bounded.outputs.save == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'FernandoX7/GitTurtle'
       continue-on-error: true
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
         prefix-key: gitturtle-rust-v2
         shared-key: ${{ env.CI_RUST_CACHE_KEY }}
