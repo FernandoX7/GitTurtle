@@ -387,54 +387,54 @@ The graph and file list must scroll the selected row into view during keyboard n
 
 A scrolling list of tab-stop rows shows the always-visible scrollbar that cues overflow in the review dialogs (Reflog's content and changed files, the discard and forced worktree removal reviews) and in the commit inspector's message. The branch chooser, the remote manager, Tags, the tag inspector's Push to… list, the Reflog's entries, the worktree manager's worktree list and branch choices and the Stashes dialog's saved files each keep, while their rows overflow, a gutter of the 16 px track plus the focus ring's 3 px of room at the right of their rows. The track runs in that gutter inside the list, clear of the room the list keeps around its rows and of the dialog's side padding, where the dialog's own scrollbar runs, so its thumb follows the list's offset and covers no row and no focus ring. A list whose rows fit draws no track, and its rows keep their full width. The GitHub panel's scrolling body cues its fold the same way: while what it holds runs below the fold, the track runs in that gutter at its content's right, inside the room the body keeps for its controls' rings (at 18 pt the body once hid what lay below its fold with no cue). Its content keeps the gutter whether or not it overflows, as a stable scrollbar gutter does, and a body that fits draws no track there: a PR's section tabs, opening a PR and a reply's composer change how much the body holds, and nothing already drawn moves when they do (kept only while the body overflowed, the gutter moved the content's right edge, its Buttons and the draft status 19 px between Overview and Files at 13 pt in a 1,480 × 980 window). The gutter is a column of the body, as a macOS view with always-shown scrollbars keeps one, so the dialog's footer, which aligns to the panel's edge, ends 19 px past the content's right (coordinator's decision, 2026-11-01). The top line that stands above the body beside an open conversation keeps the same right inset, its own scrollbar drawn in it, and its divider spans the panel, so a notice keeps its width and its wrapped lines as it moves there from among the content (at the panel's full width it was 19 px wider pinned and could re-wrap). Every such list, a document side's header controls and a model's details among them, draws no scrollbar where its track is shorter than the toolkit's shortest thumb and its insets, an unscaled 56 px, measured along the track the scrollbar lies on, the list less the room it keeps around its rows: there the thumb ran out of its track against the scroll or moved a few pixels at most, as in a side header's controls at their 36–44 px floor, where the 48 px thumb filled its track. It keeps the cue as a soft fade at each edge its rows continue past, the bottom's at its top, both part way down and the top's alone at its end, none where its rows fit: as macOS lets content dissolve beneath a window's edge, the rows there fade into the surface rather than end at a cut. Its rows keep the gutter while they overflow, as beside a scrollbar, so nothing it holds moves as the list grows or shrinks past that length: without it, a document header's controls wrapped wider and moved up a line when a click's answer shortened the header past it. Each fade is a band as wide as the list, opaque at the edge in the theme's background colour, the canvas that panes and dialogs are drawn on, and clear inward, a scaled 8 px tall, about the room a 28 px control keeps above and below its label with its ring's, so a control at the edge keeps its label clear in light and dark palettes alike, and never more than a quarter of the list, so its middle half reads unfaded (8 px at 13 pt and 10 px at 18 pt in a 40 px list). It is drawn over the rows and catches no pointer, so a wheel over it scrolls the list and a row under it keeps its hover and click. It is decided as the frame is painted, so it comes and goes in the frame that scrolls the list, resizes it or brings rows that overflow it, one frame per input, with no motion of its own; decided as the list rendered, rows that arrived drew no fade until something else drew the list again. The length is judged then too: a list grown long enough for a thumb draws no fade in the frame before its scrollbar comes (Tags, the branch chooser, the GitHub panel's body and the Reflog's entries once showed one for a frame as they opened), and one shrunk below it fades in the frame that shrinks it and draws no scrollbar there, for the eye or the pointer (its bar from the frame before once painted over the new fade for that frame, still catching a click). A fade never obscures a focus indicator: where the ring of the control holding focus, the ring's room outside its edge, reaches into a fade's band, as a control Tab reveals at an edge does, the fade at that edge ends where the ring begins, its gradient kept over the height left, or draws none where the ring reaches the edge, so the ring and the label inside it stay whole at 13 and 18 pt in light and dark palettes, and the fade returns whole in the frame focus leaves. The reveal keeps its ring's room alone rather than also a fade's height: at a side header's floor a 28 px control (about 39 px at 18 pt) cannot keep a fade's height clear of both edges, as in the model header's 40 px region at 13 pt, and a reveal that kept the fade clear at the edge it brought the control to left it within the other edge's fade, where the reveal's second pass in that frame scrolled it back, 3 px from the edge; the fade once lay over that control's ring. Focus is what the person is acting on, so its indicator wins over the cue for as long as it is there. A list whose track holds a thumb that moves draws its scrollbar as before and no fade, so nothing already drawn moves. A list too short for a thumb still scrolls under a wheel and as Tab reveals a control, and an assistive technology still finds the scroll view that clips its rows, with no scrollbar element left behind. `tags::ScrollCue` is the shared implementation.
 
-Every scrollbar's thumb, the only cue that more content lies past a list's or a body's edge (`tags::ScrollCue`'s lists, the dialogs' and pickers' bodies and every other scrollbar the toolkit draws, one app-wide token, the toolkit's `scrollbar_thumb`), holds at least 2:1 against each surface a track lies on, the canvas, the panel, `subtle` and the raised surface, in every shipped palette, light and dark: the palette's `border` where that already holds, and otherwise the least step toward the text side that holds it (`Palette::scrollbar_thumb`). It stays well under secondary text's 4.5:1, which its hovered state takes, and keeps its place and size, so it still never covers a focus ring (decision, 2026-11-01: in `border` it stood 1.52:1 off Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's canvas, too faint for the one cue of more content). Before and after, against the canvas and the panel:
+Every scrollbar's thumb, the only cue that more content lies past a list's or a body's edge (`tags::ScrollCue`'s lists, the dialogs' and pickers' bodies and every other scrollbar the toolkit draws, one app-wide token, the toolkit's `scrollbar_thumb`), holds at least 2:1 against each surface a track lies on, the canvas, the panel, `subtle` and the raised surface the pickers' tracks rest on, in every shipped palette, light and dark, both as fitted and as drawn a channel step nearer that surface, the rounding a colour can take on its way to the screen: the palette's `border` where that already holds, and otherwise the least step toward the text side that holds it (`Palette::scrollbar_thumb`; decision, 2026-11-02: fitted to the token alone, Midnight's #444f5f held 2.01:1 on its raised panel and drew #434e5e, 1.98:1, on Keyboard Shortcuts' track). It stays well under secondary text's 4.5:1, which its hovered state takes, and keeps its place and size, so it still never covers a focus ring (decision, 2026-11-01: in `border` it stood 1.52:1 off Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's canvas, too faint for the one cue of more content). Before and after, against the canvas and the panel:
 
 | Palette | Mode | Before (`border`): canvas / panel | After: canvas / panel |
 | --- | --- | --- | --- |
-| Midnight | dark | `#2B3749` 1.52 / 1.39 | `#444F5F` 2.20 / 2.01 |
-| Braden | light | `#D2DCE8` 1.28 / 1.39 | `#A5ADB7` 2.10 / 2.27 |
-| Graphite | dark | `#3B3D47` 1.63 / 1.49 | `#4E5059` 2.19 / 2.00 |
-| Tokyo Night | dark | `#373E59` 1.62 / 1.50 | `#4B5169` 2.18 / 2.01 |
-| Catppuccin Mocha | dark | `#45475A` 1.80 / 1.67 | `#515364` 2.16 / 2.01 |
-| Nord | dark | `#4C566A` 1.69 / 1.50 | `#60697A` 2.26 / 2.01 |
-| Porcelain | light | `#CBD3E4` 1.40 / 1.50 | `#A5ACBA` 2.13 / 2.28 |
-| Sandstone | light | `#D4C6B5` 1.51 / 1.64 | `#B1A597` 2.18 / 2.36 |
-| Deep Sea | dark | `#365366` 2.13 / 1.89 | `#3A5769` 2.27 / 2.01 |
-| Ember | dark | `#514052` 1.79 / 1.62 | `#5E4E5F` 2.22 / 2.00 |
+| Midnight | dark | `#2B3749` 1.52 / 1.39 | `#45505F` 2.23 / 2.04 |
+| Braden | light | `#D2DCE8` 1.28 / 1.39 | `#A4ACB6` 2.12 / 2.29 |
+| Graphite | dark | `#3B3D47` 1.63 / 1.49 | `#4F515A` 2.22 / 2.03 |
+| Tokyo Night | dark | `#373E59` 1.62 / 1.50 | `#4C526A` 2.22 / 2.04 |
+| Catppuccin Mocha | dark | `#45475A` 1.80 / 1.67 | `#525466` 2.20 / 2.04 |
+| Nord | dark | `#4C566A` 1.69 / 1.50 | `#616A7C` 2.30 / 2.04 |
+| Porcelain | light | `#CBD3E4` 1.40 / 1.50 | `#A4ABB9` 2.16 / 2.31 |
+| Sandstone | light | `#D4C6B5` 1.51 / 1.63 | `#B0A496` 2.21 / 2.39 |
+| Deep Sea | dark | `#365366` 2.13 / 1.89 | `#3C586A` 2.31 / 2.04 |
+| Ember | dark | `#514052` 1.79 / 1.62 | `#5F4F60` 2.25 / 2.03 |
 | Solarized Dark | dark | `#586E75` 2.79 / 2.42 | unchanged |
 | Solarized Light | light | `#93A1A1` 2.48 / 2.18 | unchanged |
-| One Dark | dark | `#4B5263` 1.79 / 1.62 | `#59606F` 2.22 / 2.01 |
-| One Light | light | `#D3D3D6` 1.43 / 1.49 | `#ABABAD` 2.20 / 2.29 |
-| Rosé Pine | dark | `#403D52` 1.69 / 1.58 | `#504D60` 2.16 / 2.02 |
-| Rosé Pine Dawn | light | `#DFDAD9` 1.27 / 1.33 | `#ADA9A8` 2.13 / 2.24 |
-| Dracula | dark | `#4A4D62` 1.72 / 1.57 | `#5A5D70` 2.19 / 2.01 |
-| Alucard | light | `#D9D4BF` 1.43 / 1.46 | `#B0AC9B` 2.20 / 2.24 |
-| Kanagawa Wave | dark | `#54546D` 2.23 / 1.93 | `#57576F` 2.33 / 2.02 |
-| Kanagawa Lotus | light | `#D5CEA3` 1.33 / 1.42 | `#A29C7C` 2.31 / 2.47 |
-| Omarchy catppuccin | dark | `#47495C` 1.85 / 2.03 | `#525466` 2.20 / 2.40 |
-| Omarchy catppuccin-latte | light | `#C0C4CF` 1.54 / 1.37 | `#989BA4` 2.46 / 2.19 |
+| One Dark | dark | `#4B5263` 1.79 / 1.62 | `#5B6171` 2.26 / 2.05 |
+| One Light | light | `#D3D3D6` 1.43 / 1.49 | `#AAAAAD` 2.22 / 2.32 |
+| Rosé Pine | dark | `#403D52` 1.69 / 1.58 | `#514E61` 2.20 / 2.05 |
+| Rosé Pine Dawn | light | `#DFDAD9` 1.27 / 1.33 | `#ACA8A7` 2.16 / 2.27 |
+| Dracula | dark | `#4A4D62` 1.72 / 1.57 | `#5B5E71` 2.23 / 2.04 |
+| Alucard | light | `#D9D4BF` 1.43 / 1.46 | `#AFAB9A` 2.22 / 2.26 |
+| Kanagawa Wave | dark | `#54546D` 2.23 / 1.93 | `#585870` 2.37 / 2.05 |
+| Kanagawa Lotus | light | `#D5CEA3` 1.33 / 1.42 | `#A19C7B` 2.32 / 2.47 |
+| Omarchy catppuccin | dark | `#47495C` 1.86 / 2.03 | `#535567` 2.24 / 2.44 |
+| Omarchy catppuccin-latte | light | `#C0C4CF` 1.54 / 1.37 | `#979AA3` 2.49 / 2.21 |
 | Omarchy ethereal | dark | `#4E5B88` 2.96 / 3.02 | unchanged |
-| Omarchy everforest | dark | `#3F494F` 1.35 / 1.64 | `#61696E` 2.23 / 2.70 |
-| Omarchy flexoki-light | light | `#CDCAC0` 1.60 / 1.43 | `#A4A29A` 2.49 / 2.22 |
-| Omarchy gruvbox | dark | `#534C47` 1.75 / 1.98 | `#625C57` 2.24 / 2.53 |
-| Omarchy hackerman | dark | `#23283F` 1.34 / 1.37 | `#464A5D` 2.22 / 2.27 |
-| Omarchy kanagawa | dark | `#444458` 1.72 / 1.88 | `#545466` 2.21 / 2.41 |
-| Omarchy last-horizon | dark | `#413A3C` 1.77 / 1.80 | `#504A4B` 2.27 / 2.31 |
-| Omarchy lumon | dark | `#283D51` 1.42 / 1.56 | `#485A6B` 2.23 / 2.46 |
-| Omarchy lupine | light | `#BABABA` 1.86 / 1.64 | `#A0A0A0` 2.50 / 2.21 |
-| Omarchy matte-black | dark | `#292929` 1.29 / 1.34 | `#4D4D4D` 2.22 / 2.30 |
-| Omarchy miasma | dark | `#525252` 2.04 / 2.25 | `#585858` 2.24 / 2.47 |
-| Omarchy nord | dark | `#434C5D` 1.45 / 1.74 | `#616977` 2.26 / 2.71 |
-| Omarchy osaka-jade | dark | `#3F5147` 2.06 / 2.19 | `#45564C` 2.23 / 2.38 |
-| Omarchy retro-82 | dark | `#1F5262` 2.08 / 2.19 | `#235565` 2.17 / 2.30 |
-| Omarchy ristretto | dark | `#5D5555` 2.07 / 2.34 | `#625A5A` 2.24 / 2.53 |
-| Omarchy rose-pine | light | `#CFCACA` 1.48 / 1.32 | `#A09C9C` 2.49 / 2.21 |
-| Omarchy solitude | dark | `#393C42` 1.69 / 1.75 | `#4B4E53` 2.23 / 2.31 |
-| Omarchy tokyo-night | dark | `#353B54` 1.55 / 1.66 | `#4E5369` 2.25 / 2.42 |
+| Omarchy everforest | dark | `#3F494F` 1.35 / 1.64 | `#626A6F` 2.26 / 2.74 |
+| Omarchy flexoki-light | light | `#CDCAC0` 1.60 / 1.42 | `#A4A199` 2.51 / 2.24 |
+| Omarchy gruvbox | dark | `#534C47` 1.75 / 1.98 | `#635D58` 2.27 / 2.57 |
+| Omarchy hackerman | dark | `#23283F` 1.34 / 1.37 | `#474B5E` 2.26 / 2.30 |
+| Omarchy kanagawa | dark | `#444458` 1.72 / 1.88 | `#555567` 2.24 / 2.45 |
+| Omarchy last-horizon | dark | `#413A3C` 1.77 / 1.80 | `#524B4D` 2.31 / 2.35 |
+| Omarchy lumon | dark | `#283D51` 1.42 / 1.56 | `#495B6C` 2.26 / 2.50 |
+| Omarchy lupine | light | `#BABABA` 1.86 / 1.64 | `#9F9F9F` 2.54 / 2.24 |
+| Omarchy matte-black | dark | `#292929` 1.29 / 1.34 | `#4E4E4E` 2.25 / 2.34 |
+| Omarchy miasma | dark | `#525252` 2.04 / 2.25 | `#595959` 2.27 / 2.51 |
+| Omarchy nord | dark | `#434C5D` 1.45 / 1.73 | `#626A78` 2.29 / 2.75 |
+| Omarchy osaka-jade | dark | `#3F5147` 2.06 / 2.19 | `#45574D` 2.26 / 2.41 |
+| Omarchy retro-82 | dark | `#1F5262` 2.08 / 2.19 | `#245665` 2.20 / 2.33 |
+| Omarchy ristretto | dark | `#5D5555` 2.07 / 2.34 | `#635B5B` 2.27 / 2.57 |
+| Omarchy rose-pine | light | `#CFCACA` 1.48 / 1.32 | `#9F9B9B` 2.52 / 2.24 |
+| Omarchy solitude | dark | `#393C42` 1.69 / 1.75 | `#4C4F54` 2.27 / 2.35 |
+| Omarchy tokyo-night | dark | `#353B54` 1.55 / 1.66 | `#4F546A` 2.29 / 2.45 |
 | Omarchy vantablack | dark | `#555555` 2.82 / 2.67 | unchanged |
 | Omarchy white | light | `#A6A6A6` 2.43 / 2.23 | unchanged |
-| Omarchy alacritty-dark | dark | `#494D5A` 1.95 / 2.12 | `#525662` 2.24 / 2.44 |
-| Omarchy alacritty-light | light | `#AAA79D` 2.17 / 1.64 | `#99968D` 2.67 / 2.02 |
+| Omarchy alacritty-dark | dark | `#494D5A` 1.95 / 2.12 | `#535763` 2.28 / 2.48 |
+| Omarchy alacritty-light | light | `#AAA79D` 2.17 / 1.64 | `#98958C` 2.70 / 2.04 |
 
 ## Review checklist
 

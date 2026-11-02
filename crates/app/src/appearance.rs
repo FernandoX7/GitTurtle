@@ -872,18 +872,23 @@ impl Palette {
     /// pickers' bodies and every other scrollbar the kit draws. It is `border`,
     /// unless that misses [`SCROLL_THUMB`] against a surface a track lies
     /// on, the canvas, the panel, `subtle` and the raised surface the
-    /// pickers' tracks rest on. Then it takes the first of 256 even steps
-    /// toward black in a light palette or white in a dark one, the text's
-    /// side, that clears it on all of them. A thumb is the only cue that
-    /// more content lies past a list's edge, and in `border` it stood 1.52:1
-    /// off Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's
-    /// canvas. Hovered, it takes `muted`, secondary text, which reads 4.5:1.
+    /// pickers' tracks rest on, either as fitted or as drawn a channel step
+    /// nearer that surface ([`drawn_nearer`]). Then it takes the first of 256
+    /// even steps toward black in a light palette or white in a dark one, the
+    /// text's side, that clears it on all of them. A thumb is the only cue
+    /// that more content lies past a list's edge, and in `border` it stood
+    /// 1.52:1 off Midnight's canvas, 1.39:1 off its panel and 1.28:1 off
+    /// Braden's canvas. Fitted without the step, Midnight's #444f5f held
+    /// 2.01:1 on its raised panel and drew #434e5e, 1.98:1, on Keyboard
+    /// Shortcuts' track. Hovered, it takes `muted`, secondary text, which
+    /// reads 4.5:1.
     pub fn scrollbar_thumb(self) -> u32 {
         let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
         let clears = |thumb| {
-            surfaces
-                .iter()
-                .all(|&surface| custom::contrast(thumb, surface) >= SCROLL_THUMB)
+            surfaces.iter().all(|&surface| {
+                custom::contrast(thumb, surface) >= SCROLL_THUMB
+                    && custom::contrast(drawn_nearer(thumb, surface), surface) >= SCROLL_THUMB
+            })
         };
         if clears(self.border) {
             return self.border;
@@ -1156,6 +1161,22 @@ fn toward_extreme(from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32
 
 /// The first of `steps` even steps from `from` to `extreme`, `from` included,
 /// that `accepts`, or `extreme`.
+/// `color` as the renderer may draw it over `surface`: each 8-bit channel
+/// one step nearer the surface's, where they differ. A colour passes through
+/// the toolkit's floating-point HSLA and the GPU's rounding on its way to the
+/// screen, and Midnight's scrollbar thumb, #444f5f, drew #434e5e.
+fn drawn_nearer(color: u32, surface: u32) -> u32 {
+    [16, 8, 0].into_iter().fold(0, |drawn, shift| {
+        let (channel, toward) = ((color >> shift) & 0xff, (surface >> shift) & 0xff);
+        let channel = match channel.cmp(&toward) {
+            std::cmp::Ordering::Greater => channel - 1,
+            std::cmp::Ordering::Less => channel + 1,
+            std::cmp::Ordering::Equal => channel,
+        };
+        drawn | (channel << shift)
+    })
+}
+
 fn toward_extreme_in(steps: u32, from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32 {
     (0..=steps)
         .map(|step| {
@@ -3312,18 +3333,27 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// In every palette a scrollbar's thumb holds 2:1 against each surface
-    /// its track lies on, the canvas, the panel, `subtle` and the raised
-    /// surface, keeping `border` where that already does and otherwise
-    /// taking the least step toward the text side that does, and stays
-    /// quieter than secondary text there. In `border` it stood 1.52:1 off
-    /// Midnight's canvas, 1.39:1 off its panel and 1.28:1 off Braden's
-    /// canvas.
+    /// In every palette, light and dark, a scrollbar's thumb holds 2:1
+    /// against each surface its track lies on, the canvas, the panel,
+    /// `subtle` and the raised surface the pickers' tracks rest on, as fitted
+    /// and as drawn a channel step nearer that surface, keeping `border`
+    /// where that already does and otherwise taking the least step toward
+    /// the text side that does, and stays quieter than secondary text there.
+    /// In `border` it stood 1.52:1 off Midnight's canvas, 1.39:1 off its
+    /// panel and 1.28:1 off Braden's canvas; fitted without the drawn step,
+    /// Midnight's #444f5f drew #434e5e on Keyboard Shortcuts' raised track,
+    /// 1.98:1.
     #[test]
     fn every_scrollbar_thumb_reads_two_to_one_and_quieter_than_secondary_text() {
         let mut failures = Vec::new();
         let mut moved = 0;
+        let (mut light, mut dark) = (0, 0);
         for (name, palette) in test_palettes() {
+            if palette.is_light() {
+                light += 1;
+            } else {
+                dark += 1;
+            }
             let thumb = palette.scrollbar_thumb();
             let surfaces = [
                 ("canvas", palette.canvas),
@@ -3331,18 +3361,25 @@ mod tests {
                 ("subtle", palette.subtle),
                 ("raised", palette.raised()),
             ];
+            // The least of the colour's contrasts, as fitted and as drawn a
+            // channel step nearer each surface.
             let least = |color: u32| {
                 surfaces
                     .iter()
-                    .map(|&(_, surface)| contrast(color, surface))
+                    .map(|&(_, surface)| {
+                        contrast(color, surface)
+                            .min(contrast(drawn_nearer(color, surface), surface))
+                    })
                     .fold(f64::INFINITY, f64::min)
             };
             for (surface, color) in surfaces {
                 let ratio = contrast(thumb, color);
+                let drawn = contrast(drawn_nearer(thumb, color), color);
                 let text = contrast(palette.muted, color);
-                if ratio < SCROLL_THUMB || ratio >= text {
+                if ratio < SCROLL_THUMB || drawn < SCROLL_THUMB || ratio >= text {
                     failures.push(format!(
-                        "{name}: #{thumb:06x} {ratio:.3}:1 on the {surface}, secondary text {text:.3}:1"
+                        "{name}: #{thumb:06x} {ratio:.3}:1 ({drawn:.3}:1 drawn) on the {surface}, \
+                         secondary text {text:.3}:1"
                     ));
                 }
             }
@@ -3373,6 +3410,20 @@ mod tests {
             }
         }
         assert!(moved > 0, "some palette's thumb moves off its border");
+        assert!(
+            light > 0 && dark > 0,
+            "light and dark palettes: {light}, {dark}"
+        );
+        let midnight = test_palettes()
+            .into_iter()
+            .find(|(name, _)| name == "Midnight")
+            .expect("Midnight")
+            .1;
+        let thumb = midnight.scrollbar_thumb();
+        assert!(
+            contrast(drawn_nearer(thumb, midnight.raised()), midnight.raised()) >= SCROLL_THUMB,
+            "Midnight's #{thumb:06x} holds 2:1 drawn on Keyboard Shortcuts' raised track"
+        );
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
