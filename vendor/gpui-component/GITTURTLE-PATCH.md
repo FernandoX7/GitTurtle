@@ -1280,7 +1280,9 @@ a submenu one and two device pixels past a whole pixel beyond either side
 and the foot; the old placement fails each at scale 1.5 and 2. The app's
 `menus_keep_their_drawn_edge_8_px_from_the_window_sides` reads each drawn
 edge 8 px from its side, a dropdown beside a button half a pixel in among
-them. Remove this part with the window-margin patch.
+them, and `a_rows_menu_keeps_its_drawn_edge_8_px_from_the_sides_at_fractional_scales`
+reads a row's menu, which the app places itself in the same device-pixel
+room, at 1.25 and 1.5. Remove this part with the window-margin patch.
 
 The window-margin patch replaced the last use of `px` in
 `src/menu/app_menu_bar.rs` outside its tests, the menu's 8 px snap

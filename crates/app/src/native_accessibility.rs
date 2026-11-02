@@ -790,6 +790,32 @@ impl Element for RowMenu {
             return None;
         }
         let origin = self.origin(row, laid.size);
+        // A menu clamped to a side or the top of its room lies on the room's
+        // device pixel there. GPUI lays the menu out at its place plus the
+        // whole element offset on the device pixel, halves toward zero, and
+        // `laid` holds the offset this overlay inherits already rounded. The
+        // overlay's anchor moves it by whole pixels, half a device pixel off
+        // one at scale 1.25 or 1.5, so moving the menu by
+        // `origin - laid.origin` left the sum half a device pixel short and
+        // put a fill clamped to the left side a device pixel nearer it, its
+        // edge 7.2 px from it at 1.25. A menu at its row or pointer keeps
+        // the place that rounding gives it.
+        let inherited = window.element_offset();
+        let room = self.room;
+        let unrounded = |value: Pixels, clamped: bool| {
+            if clamped {
+                value - window.pixel_snap(value)
+            } else {
+                px(0.)
+            }
+        };
+        let unrounded = point(
+            unrounded(
+                inherited.x,
+                origin.x <= room.left() || origin.x + laid.size.width >= room.right() - px(0.01),
+            ),
+            unrounded(inherited.y, origin.y <= room.top()),
+        );
         // Nothing the menu draws, its shadow included, reaches its row: a
         // menu wholly above the row ends where the row begins, and one below
         // it begins where the row ends, or the pointer for a right-click's,
@@ -804,7 +830,7 @@ impl Element for RowMenu {
             window.viewport_size(),
         );
         window.with_content_mask(mask, |window| {
-            window.with_element_offset(origin - laid.origin, |window| {
+            window.with_element_offset(origin - laid.origin - unrounded, |window| {
                 self.menu.prepaint(window, cx)
             })
         });
@@ -856,16 +882,28 @@ const MENU_FLOOR: f32 = 120.;
 /// [`MENU_MARGIN`] inside the window's sides and top and above the status
 /// bar, all inside the client inset, as the kit's popup hosts keep a
 /// dropdown's and the Main Menu's. Its fill stood 8 px inside the sides,
-/// so a menu moved in from one drew its edge 7 px from it.
+/// so a menu moved in from one drew its edge 7 px from it. Each side lies on
+/// the device pixel at or inside that margin, as the kit's hosts place a
+/// fill moved in from a side
+/// (`gpui_kit::base::device_pixel_at_or_after`), so a menu clamped to a
+/// side, which [`RowMenu`] places on the device pixel it names, draws its
+/// edge 8 px from it at fractional scales too. Clamped 9 px in, between
+/// device pixels at scale 1.25, a right-click's menu lay on the one nearer
+/// the side, its edge 7.2 px from it.
 fn menu_bounds(window: &Window) -> Bounds<Pixels> {
+    use gpui_kit::base::{device_pixel_at_or_after, device_pixel_at_or_before};
     let inset = window.client_inset().unwrap_or_default();
     let viewport = window.viewport_size();
     let edge = MENU_MARGIN + MENU_EDGE;
+    let scale = window.scale_factor();
     Bounds::from_corners(
-        point(inset + edge, inset + edge),
         point(
-            viewport.width - inset - edge,
-            crate::theme_editor::status_bar_top(window) - edge,
+            device_pixel_at_or_after(inset + edge, scale),
+            device_pixel_at_or_after(inset + edge, scale),
+        ),
+        point(
+            device_pixel_at_or_before(viewport.width - inset - edge, scale),
+            device_pixel_at_or_before(crate::theme_editor::status_bar_top(window) - edge, scale),
         ),
     )
 }

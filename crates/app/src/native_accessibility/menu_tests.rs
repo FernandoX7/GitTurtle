@@ -1288,6 +1288,78 @@ fn menus_keep_their_drawn_edge_8_px_from_the_window_sides(cx: &mut TestAppContex
     }
 }
 
+/// A row's right-click menu opened 3 px from either side of a 460 px
+/// window draws its edge, the ring outside its fill, 8 px from that side to
+/// the device pixel at the fractional scales 1.25, as Omarchy sets, and 1.5:
+/// 10 and 12 device pixels. Its fill, painted on the device pixels GPUI
+/// places it on, and its ring over every device pixel the band outside the
+/// fill touches (`paint_drop_shadows`) are read in device pixels. Clamped 9
+/// px in, between device pixels at 1.25, and moved there inside an overlay
+/// GPUI's anchor leaves half a device pixel off one, the fill lay on the
+/// device pixel nearer the left side, its edge drawn from device pixel 9,
+/// 7.2 px from the side.
+#[gpui::test]
+fn a_rows_menu_keeps_its_drawn_edge_8_px_from_the_sides_at_fractional_scales(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    let edge = f32::from(gpui_kit::component::POPOVER_EDGE_WIDTH);
+    // A whole number of device pixels at each scale.
+    let (width, height) = (px(460.), px(488.));
+    for scale in [1.25, 1.5] {
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| SideMenusProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        cx.simulate_resize(size(width, height));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        draw(cx);
+        let expected = f32::from(super::MENU_MARGIN) * scale;
+        let row = cx.debug_bounds("side-row").expect("the row");
+        for (x, left) in [(px(3.), true), (width - px(3.), false)] {
+            let at = format!("scale {scale}, the row's menu {x:?} across");
+            let pointer = point(x, row.center().y);
+            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+            draw(cx);
+            draw(cx);
+            let item = cx
+                .debug_bounds("menu-item: One · MenuItem")
+                .expect("the menu");
+            let fill = cx.update(|window, cx| {
+                let popover = Background::from(Theme::global(cx).popover);
+                let center = point(
+                    gpui_kit::ScaledPixels(f32::from(item.center().x) * scale),
+                    gpui_kit::ScaledPixels(f32::from(item.center().y) * scale),
+                );
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover && quad.bounds.contains(&center))
+                    .max_by_key(|quad| quad.order)
+                    .map(|quad| quad.bounds)
+                    .unwrap_or_else(|| panic!("{at}: the menu's fill"))
+            });
+            let from_side = if left {
+                (fill.left().as_f32() - edge * scale).floor()
+            } else {
+                f32::from(width) * scale - (fill.right().as_f32() + edge * scale).ceil()
+            };
+            assert_eq!(
+                from_side, expected,
+                "{at}: the fill {fill:?} draws its edge {from_side} device pixels from the side, \
+                 not {expected}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+    }
+}
+
 /// A row's right-click menu opened below the pointer draws its edge, the
 /// ring outside its fill, from the device pixel row below the pointer's,
 /// never on it or above it, as a text field's drawn menu does, at scale 1
