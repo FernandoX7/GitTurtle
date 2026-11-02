@@ -947,7 +947,7 @@ pub(crate) fn count_line(count: usize) -> String {
 const SHORTCUT_LIST_HEIGHT: f32 = 430.;
 /// The least the list gives up its height to, at the default interface size:
 /// one 42 px row inside its 1 px border, as at 18 pt in a 461 × 490 window,
-/// where the hint below it wraps to three lines.
+/// where the hint below it wraps to three lines ([`list_floor`]).
 const SHORTCUT_LIST_FLOOR: f32 = 44.;
 /// An entry's row, at the default interface size.
 const SHORTCUT_ROW: f32 = 42.;
@@ -969,6 +969,15 @@ pub(crate) fn list_height() -> Pixels {
     appearance::ui_size(SHORTCUT_LIST_HEIGHT)
 }
 
+/// The least the list gives up its height to: exactly one entry's row at
+/// the interface size inside the list's 1 px border, which does not grow
+/// with the text. Scaled whole from [`SHORTCUT_LIST_FLOOR`], the border grew
+/// too, and at 18 pt the floor held the 58.15 px entry and 0.77 px of the
+/// row above it.
+fn list_floor() -> Pixels {
+    appearance::ui_size(SHORTCUT_LIST_FLOOR - 2.) + px(2.)
+}
+
 /// The height of `row` in the shortcut list, at the interface size.
 fn row_height(row: &HelpRow) -> Pixels {
     appearance::ui_size(match row {
@@ -982,8 +991,9 @@ fn row_height(row: &HelpRow) -> Pixels {
 struct RowLayout {
     sizes: std::rc::Rc<Vec<Size<Pixels>>>,
     /// Each row's top in the list, summed in the order the virtual list sums
-    /// them, and then the list's whole height.
-    tops: Vec<Pixels>,
+    /// them, and then the list's whole height; shared with the list's
+    /// prepaint, which scrolls by whole rows at the floor ([`Span::reveal`]).
+    tops: std::rc::Rc<Vec<Pixels>>,
     /// The interface size they were measured at, `appearance::ui_scale`.
     scale: f32,
 }
@@ -1007,14 +1017,9 @@ impl RowLayout {
         tops.push(top);
         Self {
             sizes: std::rc::Rc::new(sizes),
-            tops,
+            tops: std::rc::Rc::new(tops),
             scale: appearance::ui_scale(),
         }
-    }
-
-    /// The list's whole height.
-    fn content(&self) -> Pixels {
-        self.tops[self.tops.len() - 1]
     }
 
     /// What the list brings into view with the entry at `index` among `rows`.
@@ -1146,15 +1151,31 @@ impl Span {
     }
 
     /// The scroll, from the list's top, that brings the span whole into a
-    /// list `view` tall that holds `content` and is scrolled by `scrolled`,
-    /// or `None` where it lies whole there already.
+    /// list `view` tall whose rows start at `tops` (the last being the whole
+    /// list's height) and which is scrolled by `scrolled`, or `None` where it
+    /// lies whole there already.
+    ///
+    /// Where the list holds fewer than two entries, as at its floor, it
+    /// scrolls by whole rows: the scroll it sets starts the list at a row's
+    /// top, so no row is cut at the list's top, and where the list holds the
+    /// entry but not its heading with it, the heading leaves the list whole
+    /// and the row after the entry shows at its foot, as a list cut at its
+    /// foot does. At 18 pt in a 461 × 490 window, whose list is about 72 px
+    /// tall, the General heading stood as a 13 px sliver above the first
+    /// entry, which ended at the list's foot, and Up and Down centred an
+    /// entry between two slivers. Only the scroll changes, so nothing the
+    /// dialog draws moves; a floor sized to hold the heading with its entry
+    /// would need about 16 px more than the dialog's cap leaves there and
+    /// scroll the dialog's body. Past the list's last row the scroll stops
+    /// short of a row's top: the list's end holds it.
     fn reveal(
         self,
         scrolled: Pixels,
         view: Pixels,
-        content: Pixels,
+        tops: &[Pixels],
         how: Reveal,
     ) -> Option<Pixels> {
+        let content = tops.last().copied().unwrap_or_default();
         if view <= px(0.) {
             return None;
         }
@@ -1169,6 +1190,17 @@ impl Span {
             Reveal::Centre => (top + self.bottom) / 2. - view / 2.,
             Reveal::Nearest if above => top,
             Reveal::Nearest => self.bottom - view,
+        };
+        let to = if view < (self.bottom - self.top) * 2. {
+            // The first row's top at or below the scroll, and never past the
+            // span's own top, so the span stays whole.
+            tops.iter()
+                .copied()
+                .find(|&row| row >= to - Self::ROUNDING)
+                .unwrap_or(to)
+                .min(top)
+        } else {
+            to
         };
         Some(to.min(content - view).max(px(0.)))
     }
@@ -1271,7 +1303,7 @@ impl ShortcutHelpView {
         };
         // How far the list is scrolled, and its height, as last laid out.
         let (offset, view) = (self.scroll.offset(), self.scroll.bounds().size.height);
-        if let Some(to) = span.reveal(-offset.y, view, self.layout.content(), how) {
+        if let Some(to) = span.reveal(-offset.y, view, &self.layout.tops, how) {
             self.scroll.set_offset(point(offset.x, -to));
         }
     }
@@ -1402,6 +1434,13 @@ impl Render for ShortcutHelpView {
                                             format!("shortcut-help-key-{index}")
                                         })
                                         .flex_shrink_0()
+                                        // The row's trailing inset is kept
+                                        // from the scrollbar's gutter, whose
+                                        // track rests over the rows' end:
+                                        // measured from the list's side, the
+                                        // chip's edge and padding lay under
+                                        // the track.
+                                        .mr(gpui_kit::base::Scrollbar::width())
                                         .rounded(px(4.))
                                         .px_2()
                                         .py_1()
@@ -1466,7 +1505,7 @@ impl Render for ShortcutHelpView {
                     .text_color(rgb(p.muted)).child(line)
             })
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
-                .aria_label("Keyboard shortcuts by group").h(height).min_h(appearance::ui_size(SHORTCUT_LIST_FLOOR)).overflow_hidden()
+                .aria_label("Keyboard shortcuts by group").h(height).min_h(list_floor()).overflow_hidden()
                 // Prepainted before the rows, so the scroll lands in the
                 // frame whose height changed: a list given up to its floor,
                 // as at 18 pt in a 461 × 490 window, shows the selected entry
@@ -1487,7 +1526,7 @@ impl Render for ShortcutHelpView {
                 // height under the scroll, the selection comes into view.
                 .on_prepaint({
                     let (seen, scroll) = (self.list_height.clone(), self.scroll.clone());
-                    let (span, content, scale) = (self.layout.span(&self.rows, self.selected), self.layout.content(), self.layout.scale);
+                    let (span, tops, scale) = (self.layout.span(&self.rows, self.selected), self.layout.tops.clone(), self.layout.scale);
                     move |bounds, _, _| {
                         // The canvas fills the list inside its 1 px border,
                         // as the rows' list does, so its height is the
@@ -1499,7 +1538,7 @@ impl Render for ShortcutHelpView {
                         let offset = scroll.offset();
                         if let Some(span) = span
                             && span.follows(was, now, -offset.y)
-                            && let Some(to) = span.reveal(-offset.y, now.view, content, Reveal::Nearest)
+                            && let Some(to) = span.reveal(-offset.y, now.view, &tops, Reveal::Nearest)
                         {
                             scroll.set_offset(point(offset.x, -to));
                         }
@@ -2457,11 +2496,13 @@ mod list_tests {
     /// first entry, selected, whole below it, a window whose list is a pixel
     /// taller than the heading and the entry keeps both whole where they
     /// were, and one whose list is a pixel shorter, which would cut the
-    /// entry's foot, brings the entry whole to its foot, the heading cut a
-    /// pixel above its top. Judged 2 px short, the taller list counted the
-    /// entry cut and moved it, its heading above the list; judged 2 px long,
-    /// the shorter one left the entry cut at its foot. No other list test's
-    /// list lies within 2 px of both.
+    /// entry's foot and holds fewer than two entries, brings the entry whole
+    /// to its top, scrolled by whole rows, the heading wholly above it.
+    /// Judged 2 px short, the taller list counted the entry cut and moved
+    /// it, its heading above the list; judged 2 px long, the shorter one left
+    /// the entry cut at its foot. No other list test's list lies within 2 px
+    /// of both. (The shorter list once ended the entry at its foot with a
+    /// pixel of the heading above it.)
     #[gpui::test]
     async fn a_list_a_pixel_past_a_heading_and_an_entry_keeps_both_and_one_a_pixel_short_the_entry(
         cx: &mut TestAppContext,
@@ -2497,14 +2538,14 @@ mod list_tests {
                     shown.view()
                 );
                 // Where the list holds both, the heading stays at its top;
-                // else the entry comes whole to its foot.
+                // else the entry comes whole to its top, by whole rows.
                 let holds = view > both;
                 let (row, edge, off) = if holds {
                     let off = shown.drawn(cx, heading).map(|row| row.top() - shown.top);
                     (heading, "top", off)
                 } else {
-                    let off = shown.drawn(cx, first).map(|row| row.bottom() - shown.foot);
-                    (first, "foot", off)
+                    let off = shown.drawn(cx, first).map(|row| row.top() - shown.top);
+                    (first, "top", off)
                 };
                 assert!(
                     off.is_some_and(|off| off.abs() <= EDGE)
@@ -2518,6 +2559,90 @@ mod list_tests {
                 );
                 close(cx);
             }
+        }
+    }
+
+    /// A list that holds an entry but not its heading with it, as at 18 pt
+    /// in a 461 × 490 window, where it is about 72 px tall, scrolls by whole
+    /// rows: at 13 and 18 pt, opened in a window whose list is an entry and
+    /// half a heading tall, it starts with the first entry whole at its top
+    /// and no heading cut there, and Down brings the next entry to its top
+    /// the same way. It ended the first entry at its foot, the General
+    /// heading a 13 px sliver above it, and Down centred an entry between
+    /// two slivers.
+    #[gpui::test]
+    async fn a_list_shorter_than_two_entries_scrolls_by_whole_rows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let view = shown.entry + shown.heading / 2.;
+            let height = shown.size_to(cx, view);
+            close(cx);
+            open(&app, cx, text, (1200., height));
+            shown.relist(cx);
+            assert!(
+                shown.view() > shown.entry + EDGE && shown.view() < shown.heading + shown.entry,
+                "{text} pt: a {height} px tall window's list, {:?}, holds an entry but not \
+                 its heading with it",
+                shown.view()
+            );
+            let entries = shown.entries();
+            for (step, entry) in [(None, entries[0]), (Some("down"), entries[1])] {
+                if let Some(key) = step {
+                    press(cx, key);
+                }
+                let drawn = shown.at(cx, entry);
+                assert!(
+                    (drawn.top() - shown.top).abs() <= EDGE && shown.whole(cx, entry),
+                    "{text} pt, after {step:?}: entry {entry} starts whole at the list's top, \
+                     {:?}: {drawn:?}",
+                    shown.top
+                );
+                for heading in shown.headings() {
+                    if let Some(row) = shown.drawn(cx, heading) {
+                        assert!(
+                            row.bottom() <= shown.top + EDGE || row.top() >= shown.top - EDGE,
+                            "{text} pt, after {step:?}: heading {heading} is cut at the \
+                             list's top, {:?}: {row:?}",
+                            shown.top
+                        );
+                    }
+                }
+            }
+            close(cx);
+        }
+    }
+
+    /// Each key chip ends at the row's trailing inset measured from the
+    /// scrollbar's gutter, whose track rests over the rows' end: at 18 pt in
+    /// a 461 × 490 window and at 13 pt in a 1200 × 800 one, the selected
+    /// entry's chip ends 0.75 rem before the track. Measured from the list's
+    /// side, its right edge and padding lay under the track, cut where the
+    /// row's selected fill ends.
+    #[gpui::test]
+    async fn key_chips_end_at_the_rows_inset_before_the_scrollbar(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for (text, size) in [(18, (461., 490.)), (13, (1200., 800.))] {
+            open(&app, cx, text, size);
+            draw(cx);
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            let chip = cx
+                .debug_bounds("shortcut-help-key-1")
+                .expect("the key chip");
+            // Inside the list's 1 px edge.
+            let track = list.right() - px(1.) - gpui_kit::base::Scrollbar::width();
+            let inset = cx.update(|window, _| window.rem_size() * 0.75);
+            assert!(
+                (chip.right() - (track - inset)).abs() <= EDGE,
+                "{text} pt in {size:?}: the chip ends {inset:?} before the track at \
+                 {track:?}: {chip:?}"
+            );
+            close(cx);
         }
     }
 
@@ -2572,7 +2697,7 @@ mod list_tests {
             }
             // The list is at its floor, which holds an entry but not a
             // heading with it.
-            let floor = appearance::ui_size(SHORTCUT_LIST_FLOOR) - px(2.);
+            let floor = list_floor() - px(2.);
             assert!(
                 (shown.view() - floor).abs() <= EDGE
                     && shown.entry <= shown.view()
