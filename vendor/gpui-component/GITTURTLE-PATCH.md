@@ -729,8 +729,7 @@ measures and places the popup as before. The popover wraps its content on
 its anchor's side, and the fallback menu wraps its menu at the device pixel
 row the pointer lies in (`Opener::Row`, its edges from the base
 `point_device_row`), so the mask ends exactly where that row begins, above
-the menu or below it, wherever the menu's whole-pixel placement put its
-fill. Cut at the ring instead, `POPOVER_EDGE_WIDTH` past the fill, the
+the menu or below it, wherever the menu's placement put its fill. Cut at the ring instead, `POPOVER_EDGE_WIDTH` past the fill, the
 shadow stopped up to two device pixels short of the row above a pointer at
 scale 2, where a menu half a pixel taller than a whole one moves up to a
 whole pixel, while below a pointer at 1.5 GPUI's outward rounding of the

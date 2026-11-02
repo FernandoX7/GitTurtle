@@ -60,12 +60,13 @@ impl Strategy {
     /// below the device pixel row the point lies in and `gap` past it, its
     /// leading edge at the point, or above that row and its gap where the
     /// popup fits only there, or where it fits on neither side and there is
-    /// more room above. The gap's far edges are rounded out to whole pixels,
-    /// so a popup placed there by whole pixels keeps the whole gap. At scale
-    /// 1 or 2 the row is one whole pixel or within it; at a fractional
-    /// scale, where GPUI paints a popup's ring over the device pixels it
-    /// touches, the ring a gap of its width holds still ends clear of the
-    /// device row under the pointer.
+    /// more room above. The gap's far edges are rounded out to the device
+    /// pixels at or past them ([`point_row_clear_by`]), where the popup is
+    /// placed as it is prepainted, so it keeps the whole gap. At scale 1 or
+    /// 2 the row is one whole pixel or within it; at a fractional scale,
+    /// where GPUI paints a popup's ring over the device pixels it touches,
+    /// the ring a gap of its width holds still ends clear of the device row
+    /// under the pointer.
     fn as_side(self) -> Self {
         match self {
             Self::Point {
@@ -102,19 +103,39 @@ impl Strategy {
         let above = trigger_bounds.top() - margin;
         Some(below.max(above).max(px(0.)))
     }
+
+    /// GitTurtle patch: for a [`Strategy::Point`], whether `bounds`, where
+    /// [`resolve`] placed the popup, lie wholly below or wholly above the
+    /// point's pixel row and gap, not clamped over them. `false` for the
+    /// other placements.
+    fn clear_of_point(self, bounds: Bounds<Pixels>) -> bool {
+        let (Self::Point { .. }, Self::Side { trigger_bounds, .. }) = (self, self.as_side()) else {
+            return false;
+        };
+        bounds.top() >= trigger_bounds.bottom() - SIDE_TOLERANCE
+            || bounds.bottom() <= trigger_bounds.top() + SIDE_TOLERANCE
+    }
 }
 
 /// GitTurtle patch: where a popup opened at a pointer's place, `y`, may end
 /// above it and begin below it on a display of `scale_factor`: `gap` clear
 /// of the device pixel row the point lies in, the far edges rounded out to
-/// whole pixels, as [`Positioner::point`] places a popup. A popup that
-/// draws a ring of `gap` outside its fill and starts at the second edge
-/// draws it from the device row below the pointer's, never on it, at a
-/// fractional scale too, where GPUI paints the ring over the device pixels
-/// it touches.
+/// the device pixels at or past them, as [`Positioner::point`] places a
+/// popup. A popup that draws a ring of `gap` outside its fill and starts at
+/// the second edge draws it from the device row below the pointer's, never
+/// on it, and one that ends at the first edge ends its ring on the device
+/// row above the pointer's, at a fractional scale too, where GPUI paints
+/// the ring over the device pixels it touches. Rounded out to whole logical
+/// pixels instead, at 1.2 and 1.25 the edges lay part way into a device
+/// pixel, which GPUI rounds an element's place to, halves toward zero, and
+/// the ring reached the pointer's own device row; at 2 they left an empty
+/// device row beside it.
 pub fn point_row_clear_by(y: Pixels, gap: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
     let (top, bottom) = point_device_row(y, scale_factor);
-    ((top - gap).floor(), (bottom + gap).ceil())
+    (
+        device_pixel_at_or_before(top - gap, scale_factor),
+        device_pixel_at_or_after(bottom + gap, scale_factor),
+    )
 }
 
 /// GitTurtle patch: the device pixel row a pointer's place, `y`, lies in on
@@ -133,8 +154,9 @@ pub fn point_device_row(y: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
 }
 
 /// GitTurtle patch: how near a popup's trailing edge lies to the window's
-/// right margin to stand on it: the clamp that moves it there subtracts, and
-/// can leave it a rounding error short.
+/// right margin, or a popup's edge to a point's gap, to stand on it: the
+/// clamp or placement that moves it there subtracts, and can leave it a
+/// rounding error short.
 const SIDE_TOLERANCE: Pixels = px(0.01);
 
 /// GitTurtle patch: the first device pixel boundary at or after `x` on a
@@ -243,8 +265,8 @@ impl Positioner {
     /// its height fits below it, otherwise its bottom-left corner there
     /// where it fits above it, and where it fits on neither side, on the
     /// side with more room. It moves in from the window's sides as a corner
-    /// does, and by whole pixels away from the point, never onto it. It
-    /// lies beside the pixel row the point lies in, never on it, with
+    /// does, and lies on the device pixel its gap ends on, never nearer the
+    /// point. It lies beside the pixel row the point lies in, never on it, with
     /// [`Positioner::offset`]'s gap between them, the room a caller keeps
     /// for a ring the popup draws outside its fill, so that nothing it
     /// draws covers the point. With no gap its top lies on the row's lower
@@ -565,35 +587,38 @@ impl Element for Positioner {
         }
 
         let offset = position.bounds.origin - bounds.origin;
+        let scale_factor = window.scale_factor();
         // GitTurtle patch: a popup that ends inside the room above the
         // viewport's foot is moved by whole pixels without crossing it:
         // rounding to the nearest pixel put a popup ending 8 px above a
         // status bar another half pixel lower.
         let bottom = viewport.height - margin;
-        // GitTurtle patch: a popup above a point moves up to a whole pixel,
-        // never down toward the point: its height can end in half a pixel,
-        // as on a display of scale 2, and rounding to the nearest pixel then
-        // carried its bottom half a pixel into the gap kept above the
-        // point's pixel row, and its ring onto that row. One below the point
-        // starts at a whole pixel already, its gap rounded out to one
-        // ([`Strategy::as_side`]).
-        let y = match (self.strategy, position.placement) {
-            (Strategy::Point { .. }, Some(Placement::Top)) => offset.y.floor(),
-            _ => match offset.y.round() {
+        let y = if self.strategy_in(window).clear_of_point(position.bounds) {
+            // GitTurtle patch: a popup wholly below or above a point lies on
+            // the device pixel its gap ends on ([`Strategy::as_side`]), its
+            // drawn height a whole number of device pixels, as GPUI laid it
+            // out. Moved by whole pixels, below the point it started part
+            // way into a device pixel at 1.2, 1.25 and 1.5, which GPUI
+            // rounds an element's place to, halves toward zero, back towards
+            // the point, and its ring covered the pointer's device row, and
+            // at 2 it left a device row empty; above it, moved up to a whole
+            // pixel, it ended a device row short of its gap at 2.
+            offset.y
+        } else {
+            match offset.y.round() {
                 y if position.bounds.bottom() <= bottom
                     && position.bounds.bottom() + (y - offset.y) > bottom =>
                 {
                     offset.y.floor()
                 }
                 y => y,
-            },
+            }
         };
         // GitTurtle patch: a popup inside the window's side margins is moved
         // by whole pixels without crossing either: rounding to the nearest
         // pixel put a popup moved in from a side up to half a pixel past its
         // margin, and a ring drawn outside its fill nearer the side.
         let right = viewport.width - margin;
-        let scale_factor = window.scale_factor();
         let x = if position.bounds.left() <= margin {
             // GitTurtle patch: a popup on a side margin, moved in from that
             // side or placed at it, lies on the device pixel at or inside the
@@ -940,12 +965,12 @@ mod tests {
     }
 
     /// GitTurtle patch: a popup above a point whose height ends in half a
-    /// pixel, as on a display of scale 2, moves up to a whole pixel as it
-    /// is prepainted, never down toward the point: moved to the nearest
-    /// pixel, it went half a pixel down, and the ring in its gap reached the
-    /// row of a pointer early in its pixel.
+    /// pixel, as on a display of scale 2, ends on the device pixel its gap
+    /// ends on as it is prepainted, never further down toward the point:
+    /// moved to the nearest pixel, it went half a pixel down, and the ring
+    /// in its gap reached the row of a pointer early in its pixel.
     #[gpui::test]
-    fn a_popup_above_a_point_moves_up_to_a_whole_pixel(cx: &mut gpui::TestAppContext) {
+    fn a_popup_above_a_point_ends_where_its_gap_does(cx: &mut gpui::TestAppContext) {
         use gpui::{InteractiveElement as _, Styled as _};
 
         struct Harness;
@@ -972,11 +997,12 @@ mod tests {
         });
         let popup = cx.debug_bounds("point-popup").expect("the popup");
         // The point's device row, at the test window's scale of 2, is 350 to
-        // 350.5; its 1 px gap ends at 349, a whole pixel. The popup, 100.5 px
-        // tall, ends half a pixel higher still, so its top is whole, and its
-        // ring ends at 349.5, clear of the point's row.
-        assert_eq!(popup.bottom(), px(348.5), "{popup:?}");
-        assert_eq!(popup.top(), px(248.), "{popup:?}");
+        // 350.5; its 1 px gap ends at 349, a device pixel. The popup, 100.5
+        // px tall, ends there, its top on a device pixel too, and its ring
+        // ends at 350, where the point's row begins. Moved up to a whole
+        // pixel, it ended half a pixel higher, a device row short of it.
+        assert_eq!(popup.bottom(), px(349.), "{popup:?}");
+        assert_eq!(popup.top(), px(248.5), "{popup:?}");
     }
 
     /// GitTurtle patch: in a window of scale 1.25, as Omarchy sets, a popup
@@ -1122,6 +1148,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// GitTurtle patch: the failures a test across scales gathered, one line
+    /// per scale with its count and its first, so that a placement wrong at
+    /// several scales names each.
+    fn failures_by_scale(failures: &[(f32, String)]) -> String {
+        let mut lines: Vec<(f32, usize, &str)> = Vec::new();
+        for (scale, failure) in failures {
+            match lines.iter_mut().find(|(at, ..)| at == scale) {
+                Some((_, count, _)) => *count += 1,
+                None => lines.push((*scale, 1, failure)),
+            }
+        }
+        lines
+            .iter()
+            .map(|(scale, count, first)| format!("scale {scale}: {count}, first: {first}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// GitTurtle patch: a popup at a pointer, as an input's drawn menu is,
+    /// starts its fill on the device pixel at or after the pointer's device
+    /// row and its 1 px gap below it, or ends it on the one at or before
+    /// them above it, so its ring, painted over every device pixel it
+    /// touches, starts on the device row below the pointer's or ends on the
+    /// row above it, at scales 1, 1.2, 1.25, 1.5 and 2, for a pointer on
+    /// and part way into each of twenty device rows. Rounded out to a whole
+    /// pixel, below the pointer at 1.2 and 1.25 the fill started part way
+    /// into a device pixel that GPUI rounds back towards the pointer, and
+    /// the ring covered the pointer's own device row; at 2 it left a device
+    /// row empty.
+    #[gpui::test]
+    fn a_popup_at_a_point_lies_on_the_device_pixel_past_its_gap(cx: &mut gpui::TestAppContext) {
+        use gpui::{InteractiveElement as _, Styled as _};
+        const GAP: f32 = 1.;
+
+        struct Harness {
+            y: f32,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().child(
+                    Positioner::point(point(px(100.), px(self.y)))
+                        .offset(px(GAP))
+                        .margin(px(9.))
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "point-popup".into())
+                                .w(px(40.))
+                                .h(px(100.)),
+                        ),
+                )
+            }
+        }
+
+        let mut failures = Vec::new();
+        for scale in [1., 1.2, 1.25, 1.5, 2.] {
+            let (view, cx) = cx.add_window_view(|_, _| Harness { y: 150. });
+            cx.simulate_resize(Size::new(px(500.), px(400.)));
+            cx.update(|window, cx| {
+                window.set_scale_factor(scale);
+                window.draw(cx).clear(cx);
+            });
+            let device = |value: Pixels| f32::from(value) * scale;
+            let gap = GAP * scale;
+            // Rows with room below at about 150 px, and near the foot at
+            // about 350 px, where the popup goes above.
+            for (first, side) in [(150., Placement::Bottom), (350., Placement::Top)] {
+                let first_row = (first * scale).floor();
+                for step in 0..20 {
+                    let row = first_row + step as f32;
+                    for into in [0., 0.5] {
+                        let y = (row + into) / scale;
+                        view.update(cx, |harness, cx| {
+                            harness.y = y;
+                            cx.notify();
+                        });
+                        cx.update(|window, cx| window.draw(cx).clear(cx));
+                        let popup = cx.debug_bounds("point-popup").expect("the popup");
+                        let at = format!("{into} into device row {row}, {popup:?}");
+                        let (edge, fill, ring_clear) = if side == Placement::Bottom {
+                            let edge = device(popup.top());
+                            let ring = (edge - gap).floor();
+                            (edge, (row + 1. + gap - 1e-3).ceil(), ring > row)
+                        } else {
+                            let edge = device(popup.bottom());
+                            let ring = (edge + gap).ceil();
+                            (edge, (row - gap + 1e-3).floor(), ring <= row)
+                        };
+                        if !ring_clear {
+                            failures.push((scale, format!("{at}: its ring is on the row")));
+                        } else if (edge - fill).abs() >= 1e-3 {
+                            failures.push((scale, format!("{at}: edge {edge}, not {fill}")));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures_by_scale(&failures));
     }
 
     // Migrated from the tooltip module when its private positioning logic was

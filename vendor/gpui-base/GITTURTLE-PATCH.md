@@ -256,14 +256,22 @@ slid up over the point it was opened at. `Positioner::point` places it as a
 side placement on the device pixel row the point lies in at the window's
 scale (`Strategy::Point`, resolved as `Strategy::Side` with a bottom
 preference and leading alignment), with a gap past that row that
-`Positioner::offset` sets, its far edges rounded out to whole pixels: its
+`Positioner::offset` sets, its far edges rounded out to the device pixels
+at or past them at the window's scale: its
 top-left corner just below the point where its height fits below,
 otherwise its bottom-left corner just above it where it fits above,
 otherwise on the side with more room, moving in from the window's sides as a
-corner does. One below the point starts at a whole pixel; one above it moves
-up to a whole pixel rather than to the nearest, since a height that ends in
-half a pixel, as on a display of scale 2, would otherwise carry its bottom
-half a pixel into the gap, and a ring drawn there onto the point's row. The
+corner does. A popup wholly on one side of the point lies on that device
+pixel as it is prepainted, its drawn height a whole number of device
+pixels as GPUI lays it out, rather than moved by whole pixels from where
+the positioner was laid out (2026-11-02): with the edges rounded out to
+whole logical pixels, below the pointer at 1.2, 1.25 and 1.5 its fill started
+part way into a device pixel that GPUI rounds an element's place to,
+halves toward zero, back towards the pointer, and its ring covered the
+pointer's own device row, and at 2 it left a device row empty between
+them; above it, moved up to a whole pixel so that a height ending in half a
+pixel kept its bottom out of the gap, it ended a device row short of the
+gap at 2. The
 gap is the room a caller keeps for the ring a popup draws outside its fill:
 at the point, the ring lay on the row clicked. The row's lower edge, not the
 point, bounds the room below, so a pointer on a whole pixel, as X11 reports
@@ -289,12 +297,12 @@ and took the row above
 (`positioner::tests::a_pointer_on_a_whole_device_pixel_lies_in_that_pixels_row`
 reads rows 0 to 3,999 at seven scales). `point_row_clear_by` gives the two
 edges that gap places a popup from, above and below the device row a point
-lies in, so a popup the positioner does not place starts where
-`Positioner::point` would
-start it: the app's right-click row menus (`RowAnchor::pointer` in
-`crates/app/src/native_accessibility.rs`) start below the pointer there,
-with the same gap for their ring. With their fill at the pointer, their ring
-lay on the pixel row above the pointer's;
+lies in, so a popup the positioner does not place can start where
+`Positioner::point` starts it: the app's right-click row menus
+(`RowAnchor::pointer` in `crates/app/src/native_accessibility.rs`) start
+below the pointer on the same device pixel, through `point_device_row` and
+`device_pixel_at_or_after`, with the same gap for their ring. With their
+fill at the pointer, their ring lay on the pixel row above the pointer's;
 `cargo test --locked -p gitturtle a_rows_menu_below_the_pointer_draws_its_edge_below_the_pointers_row`
 reads it on the row below the pointer's at scales 1 and 1.5, for a pointer
 on a whole pixel and part way into one.
@@ -302,8 +310,13 @@ on a whole pixel and part way into one.
 covers the side it takes,
 `point_positioning_keeps_its_ring_off_the_pointers_device_row` the gap at
 scales 1, 2, 1.25 and 1.5, `point_room_is_the_room_on_the_side_with_more`
-the room, `a_popup_above_a_point_moves_up_to_a_whole_pixel` a popup
-100.5 px tall prepainted above a point at scale 2, and
+the room, `a_popup_above_a_point_ends_where_its_gap_does` a popup
+100.5 px tall prepainted above a point at scale 2,
+`a_popup_at_a_point_lies_on_the_device_pixel_past_its_gap` a popup
+prepainted below and above a pointer on and part way into each of twenty
+device rows at scales 1, 1.2, 1.25, 1.5 and 2, its fill on the device pixel
+past its gap and its ring off the pointer's row (the whole-pixel placement
+fails it at 1.2, 1.25 and 1.5, its ring on the pointer's row, and at 2), and
 `a_popup_at_a_point_keeps_its_ring_off_the_pointers_row_at_scale_1_25` a
 popup prepainted below and above a pointer late in its pixel in a window of
 scale 1.25, which the window's scale places, through
@@ -314,8 +327,7 @@ filter's pointer and on the row above the commit title's, and
 `an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` covers
 the room, capping a code editor's menu beside the point in a 461 × 330
 window on the side with more room, above a pointer low in the editor, and
-taller than the room below. The app's input menus are whole pixels tall, so
-only the kit test reaches the move up to a whole pixel. Remove this part
+taller than the room below. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 
