@@ -1524,9 +1524,10 @@ mod render_tests {
     /// the list less than its full height, a search that leaves one shortcut
     /// ("command palette") shows that entry whole below its group's heading,
     /// its key chip too, and the count above the list reads "1 shortcut",
-    /// drawn and named alike. The list kept room for one row, which the
-    /// heading took: the selected entry's chip was cut at the list's foot,
-    /// and the count read "1 shortcuts".
+    /// the status, followed by the modifier legend exactly where the line,
+    /// measured from the text drawn, fits the view drawn. The list kept room for
+    /// one row, which the heading took: the selected entry's chip was cut at
+    /// the list's foot, and the count read "1 shortcuts".
     #[gpui::test]
     async fn a_search_for_one_shortcut_shows_it_whole_and_counts_one(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -1541,8 +1542,9 @@ mod render_tests {
         draw(cx);
         cx.simulate_input("command palette");
         // The list's height lands in its first frame; the scroll that keeps
-        // the entry in view, in the next.
+        // the entry in view, in the next, whose nodes are read.
         draw(cx);
+        written::forget();
         draw(cx);
         let list = cx.debug_bounds("shortcut-help-results").expect("the list");
         let full = crate::shortcuts::list_height();
@@ -1559,35 +1561,71 @@ mod render_tests {
                 "{part} {bounds:?} whole in the list's {top:?}..{bottom:?}"
             );
         }
-        // The whole line, or the count alone where its modifier legend would
-        // wrap (`shortcuts::fitted_count_line`), as the macOS legend does at
-        // 18 pt here.
         let count = written::get("shortcut-help-count").expect("the count is written");
-        let label = count.node.label().expect("the count is named");
-        assert!(
-            label == crate::shortcuts::count_line(1) || label == "1 shortcut",
-            "{label}"
+        assert_eq!(count.node.label(), Some("1 shortcut"), "the status");
+        // The legend follows the count exactly where the line, as the
+        // interface font lays out the text drawn, fits the view drawn.
+        let view = cx
+            .debug_bounds("keyboard-shortcuts-view")
+            .expect("the view");
+        let legend_text = format!(
+            "{}{}",
+            crate::shortcuts::LEGEND_SEPARATOR,
+            crate::shortcuts::modifier_legend()
         );
-        assert!(
-            crate::shortcuts::count_line(1).starts_with("1 shortcut · "),
-            "{}",
-            crate::shortcuts::count_line(1)
-        );
+        let line = cx.update(|window, _| {
+            let laid_out = |text: &str| {
+                crate::views::laid_out_text_width(
+                    crate::views::shaped_width(
+                        text,
+                        appearance::ui_text(12.),
+                        window.text_style().font_weight,
+                        window,
+                    ),
+                    window,
+                )
+            };
+            laid_out("1 shortcut") + laid_out(&legend_text)
+        });
+        match written::get("shortcut-help-legend") {
+            Some(legend) => {
+                assert_eq!(
+                    legend.node.value(),
+                    Some(crate::shortcuts::modifier_legend()),
+                    "the legend reads the modifier keys"
+                );
+                let (count, legend) = (
+                    count.layout.expect("the count's layout"),
+                    legend.layout.expect("the legend's layout"),
+                );
+                let drawn = px(((legend.x1 - count.x0) / 2.) as f32);
+                assert!(
+                    line <= view.size.width && drawn <= view.size.width + px(0.5),
+                    "the line, {line:?} measured and {drawn:?} drawn, fits the view {view:?}"
+                );
+            }
+            None => assert!(
+                line > view.size.width,
+                "the count stands alone only where its {line:?} line does not fit the view {view:?}"
+            ),
+        }
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The count above the shortcut list keeps one line, at 13 and 18 pt in
-    /// 400, 461 and 640 px wide windows: the whole line with the platform's
-    /// modifier legend where the interface font lays it out on one line in
-    /// the view, and otherwise the count alone, its legend giving way first
-    /// as words beside a count do, drawn and named alike. The view is as wide
-    /// as the line was measured for (`shortcuts::help_width`). The macOS
-    /// legend once wrapped to a second line at 18 pt in a 461 px window,
-    /// where the list was already at its floor, and the hint below the list
-    /// ran 21 px under Close; Linux's shorter legend would wrap the same way at
-    /// 18 pt in a 400 px window.
+    /// 400, 461 and 640 px wide windows, at the test window's scale factor,
+    /// 2, and at 1.5: the count, which is the status and named by what it
+    /// draws, and after it on its line the platform's modifier legend where
+    /// the interface font lays the whole line out on one line in the view,
+    /// the count and the legend each as its text lays it out; otherwise the
+    /// count alone, its legend giving way first as words beside a count do.
+    /// The view is as wide as the line was measured for
+    /// (`shortcuts::help_width`). The macOS legend once wrapped to a second
+    /// line at 18 pt in a 461 px window, where the list was already at its
+    /// floor, and the hint below the list ran 21 px under Close; Linux's
+    /// shorter legend would wrap the same way at 18 pt in a 400 px window.
     #[gpui::test]
     async fn the_shortcut_count_keeps_one_line(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -1595,73 +1633,283 @@ mod render_tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let (app, cx) = window(cx, &repo);
-        let (count, whole) = (
-            crate::shortcuts::listed_shortcuts(),
-            crate::shortcuts::count_line(crate::shortcuts::listed_shortcuts()),
+        let count = crate::shortcuts::listed_shortcuts();
+        let (counted, legend) = (
+            format!("{count} shortcuts"),
+            format!(" · {}", crate::shortcuts::modifier_legend()),
         );
-        let mut alone = 0;
-        for text in [13, 18] {
-            for width in [400., 461., 640.] {
-                let at = format!("{text} pt in {width} × 490");
+        let (mut alone, mut whole) = (0, 0);
+        for scale in [2., 1.5] {
+            for text in [13, 18] {
+                for width in [400., 461., 640.] {
+                    let at = format!("{text} pt in {width} × 490 at scale {scale}");
+                    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                    cx.simulate_resize(size(px(width), px(490.)));
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+                    draw(cx);
+                    written::forget();
+                    draw(cx);
+                    let view = cx
+                        .debug_bounds("keyboard-shortcuts-view")
+                        .unwrap_or_else(|| panic!("{at}: the view"));
+                    let (predicted, line, fits) = cx.update(|window, _| {
+                        let mut style = window.text_style();
+                        style.font_size = appearance::ui_text(12.).into();
+                        let laid_out = |text: &str| {
+                            crate::views::laid_out_text_width(
+                                crate::views::shaped_width(
+                                    text,
+                                    appearance::ui_text(12.),
+                                    style.font_weight,
+                                    window,
+                                ),
+                                window,
+                            )
+                        };
+                        (
+                            crate::shortcuts::help_width(window),
+                            style.line_height_in_pixels(window.rem_size()),
+                            laid_out(&counted) + laid_out(&legend) <= view.size.width,
+                        )
+                    });
+                    assert!(
+                        (view.size.width - predicted).abs() < px(0.01),
+                        "{at}: the view is {:?} wide, measured for {predicted:?}",
+                        view.size.width
+                    );
+                    // One line, in logical pixels.
+                    let one_line = |drawn: gpui::accesskit::Rect| {
+                        let height = px(((drawn.y1 - drawn.y0) / f64::from(scale)) as f32);
+                        assert!(
+                            height < line * 1.5,
+                            "{at}: {drawn:?} is {height:?} tall, one line {line:?}"
+                        );
+                    };
+                    let status = written::get("shortcut-help-count")
+                        .unwrap_or_else(|| panic!("{at}: the count is written"));
+                    assert_eq!(
+                        status.node.label(),
+                        Some(counted.as_str()),
+                        "{at}: the count reads what it draws"
+                    );
+                    let drawn = status.layout.expect("the count's layout");
+                    one_line(drawn);
+                    match (fits, written::get("shortcut-help-legend")) {
+                        (true, Some(shown)) => {
+                            whole += 1;
+                            let after = shown.layout.expect("the legend's layout");
+                            one_line(after);
+                            let view_right = f64::from(f32::from(view.right()) * scale);
+                            assert!(
+                                (after.y0 - drawn.y0).abs() < 0.5
+                                    && (after.x0 - drawn.x1).abs() < 0.5
+                                    && after.x1 <= view_right + 0.5,
+                                "{at}: the legend {after:?} follows the count {drawn:?} on its \
+                                 line, inside the view {view:?}"
+                            );
+                        }
+                        (false, None) => alone += 1,
+                        (fits, shown) => panic!(
+                            "{at}: the legend drawn where it fits ({fits}), not {:?}",
+                            shown.map(|shown| shown.layout)
+                        ),
+                    }
+                    cx.simulate_keystrokes("escape");
+                    draw(cx);
+                }
+            }
+        }
+        assert!(
+            alone > 0 && whole > 0,
+            "the walk meets the count with its legend ({whole}) and alone ({alone})"
+        );
+        cx.update(|window, _| window.set_scale_factor(2.));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The count above the shortcut list, a polite status, is announced only
+    /// as the count changes: at 18 pt, resizing the window between 640 and
+    /// 400 px wide brings and takes the modifier legend after the count and
+    /// leaves the status's name as it was, "61 shortcuts", while a search
+    /// changes it. Drawn and named as one line, the status's name changed as
+    /// a resize crossed the width where the legend fits, and AT-SPI
+    /// announces a live region whose name changes.
+    #[gpui::test]
+    async fn the_shortcut_count_is_announced_only_as_it_changes(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(640.), px(490.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        let read = |cx: &mut VisualTestContext| {
+            written::forget();
+            draw(cx);
+            let status = written::get("shortcut-help-count").expect("the count is written");
+            assert_eq!(
+                written::announced("shortcut-help-count").map(|live| live.live),
+                Some(gpui::accesskit::Live::Polite),
+                "the count is a polite status"
+            );
+            (
+                status.node.label().map(str::to_owned),
+                written::get("shortcut-help-legend").is_some(),
+            )
+        };
+        let counted = format!("{} shortcuts", crate::shortcuts::listed_shortcuts());
+        let mut legends = Vec::new();
+        for width in [640., 400., 640.] {
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            let (name, legend) = read(cx);
+            assert_eq!(
+                name.as_deref(),
+                Some(counted.as_str()),
+                "in a {width} px window the status keeps its name"
+            );
+            legends.push(legend);
+        }
+        assert_eq!(
+            legends,
+            [true, false, true],
+            "the resize brings and takes the legend"
+        );
+        cx.simulate_input("command palette");
+        draw(cx);
+        assert_eq!(
+            read(cx).0.as_deref(),
+            Some("1 shortcut"),
+            "a search changes the count"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Keyboard Shortcuts' hint below the list lies whole inside the dialog,
+    /// its last line drawn: at 13 and 18 pt in a 461 × 490 window, at the
+    /// test window's scale factor, 2, and at 1.5, the part of the hint the
+    /// dialog's clip leaves drawn is its layout, and it ends above Close;
+    /// at 18 pt the window is then shortened in 1/8 px steps until the list
+    /// reaches its floor, one entry, where the hint is whole too. At 18 pt,
+    /// the list at its floor, the hint was laid out 270 to 368 px down
+    /// against the clip at 358, its last line cut: the selected entry's
+    /// status, which draws nothing, took a gap of its own between the list
+    /// and the hint. Compared with Close alone, the hint passed.
+    ///
+    /// That status, the selected entry's name, is drawn whole wherever the
+    /// dialog is, so an assistive technology finds it showing: in those
+    /// windows, and in a 461 × 400 one, too short for the dialog's content,
+    /// where the clip cuts the hint. Along the view's foot, it lay past the
+    /// clip there, and the AT-SPI adapter reported it not showing.
+    #[gpui::test]
+    async fn the_shortcut_hint_lies_whole_inside_the_dialog(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let close = format!(
+            "dialog-dismiss: {}",
+            crate::shortcuts::DialogKeys::Shortcuts.dismiss()
+        )
+        .leak();
+        // What the window draws of the written node `id`, against its layout.
+        let drawn = |id: &str, at: &str| {
+            let node = written::get(id).unwrap_or_else(|| panic!("{at}: {id} is written"));
+            let laid = node.layout.expect("its layout");
+            let shown = node
+                .node
+                .bounds()
+                .unwrap_or_else(|| panic!("{at}: {id} is drawn"));
+            (node, laid, shown)
+        };
+        let whole = |laid: gpui::accesskit::Rect, shown: gpui::accesskit::Rect| {
+            laid.y1 > laid.y0
+                && (shown.y0 - laid.y0).abs() < 0.5
+                && (shown.y1 - laid.y1).abs() < 0.5
+        };
+        let status_is_drawn = |at: &str| {
+            let (status, laid, shown) = drawn("shortcut-help-selected", at);
+            // A node the window draws none of reports where it lies, so the
+            // status is held within the column's drawn part too: above the
+            // drawn foot of the hint, its last part.
+            let (_, _, hint) = drawn("shortcut-help-keys", at);
+            assert!(
+                whole(laid, shown) && laid.y1 <= hint.y1 + 0.5,
+                "{at}: the selected entry's status laid out {laid:?} is drawn, not {shown:?}, \
+                 within the column drawn to {}",
+                hint.y1
+            );
+            assert!(
+                status.node.label().is_some_and(|name| name.contains(": ")),
+                "{at}: the status names the selected entry, not {:?}",
+                status.node.label()
+            );
+            assert_eq!(
+                written::announced("shortcut-help-selected").map(|live| live.live),
+                Some(gpui::accesskit::Live::Polite),
+                "{at}: the status is a polite live region"
+            );
+        };
+        let mut floor = false;
+        for scale in [2., 1.5] {
+            for text in [13, 18] {
+                let at = format!("{text} pt at scale {scale}");
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-                cx.simulate_resize(size(px(width), px(490.)));
+                cx.simulate_resize(size(px(461.), px(490.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
                 cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
                 draw(cx);
                 draw(cx);
-                let view = cx
-                    .debug_bounds("keyboard-shortcuts-view")
-                    .unwrap_or_else(|| panic!("{at}: the view"));
-                let (predicted, line, fits, scale) = cx.update(|window, _| {
-                    let mut style = window.text_style();
-                    style.font_size = appearance::ui_text(12.).into();
-                    let laid_out = crate::views::laid_out_text_width(
-                        crate::views::shaped_width(
-                            &whole,
-                            appearance::ui_text(12.),
-                            style.font_weight,
-                            window,
-                        ),
-                        window,
+                let mut height = 490.;
+                loop {
+                    let at = format!("{at} in 461 × {height}");
+                    written::forget();
+                    draw(cx);
+                    let (_, laid, shown) = drawn("shortcut-help-keys", &at);
+                    assert!(
+                        whole(laid, shown),
+                        "{at}: the hint laid out {laid:?} is drawn whole, not {shown:?}"
                     );
-                    (
-                        crate::shortcuts::help_width(window),
-                        style.line_height_in_pixels(window.rem_size()),
-                        laid_out <= view.size.width,
-                        window.scale_factor(),
-                    )
-                });
-                assert!(
-                    (view.size.width - predicted).abs() < px(0.01),
-                    "{at}: the view is {:?} wide, measured for {predicted:?}",
-                    view.size.width
-                );
-                let written = written::get("shortcut-help-count")
-                    .unwrap_or_else(|| panic!("{at}: the count is written"));
-                let drawn = written.layout.expect("the count's layout");
-                let height = px(((drawn.y1 - drawn.y0) / f64::from(scale)) as f32);
-                assert!(
-                    height < line * 1.5,
-                    "{at}: the count is {height:?} tall, one line {line:?}"
-                );
-                let expected = if fits {
-                    whole.clone()
-                } else {
-                    alone += 1;
-                    format!("{count} shortcuts")
-                };
-                assert_eq!(
-                    written.node.label(),
-                    Some(expected.as_str()),
-                    "{at}: the count reads the line it draws"
-                );
+                    let close = cx.debug_bounds(close).expect("Close");
+                    assert!(
+                        laid.y1 <= f64::from(f32::from(close.top()) * scale) + 0.5,
+                        "{at}: the hint {laid:?} ends above Close {close:?}"
+                    );
+                    status_is_drawn(&at);
+                    let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+                    if text == 13 || list.size.height <= crate::shortcuts::list_floor() + px(0.01) {
+                        floor |= text == 18;
+                        break;
+                    }
+                    height -= 0.125;
+                    assert!(height > 440., "{at}: the list reaches its floor");
+                    // A resize sets the test window's scale again.
+                    cx.simulate_resize(size(px(461.), px(height)));
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    draw(cx);
+                }
+                // Too short for the dialog's content, the clip cuts the hint,
+                // and the status is still drawn.
+                cx.simulate_resize(size(px(461.), px(400.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                written::forget();
+                draw(cx);
+                status_is_drawn(&format!("{at} in 461 × 400"));
                 cx.simulate_keystrokes("escape");
                 draw(cx);
             }
         }
-        assert!(alone > 0, "a window walked is too narrow for {whole:?}");
+        assert!(floor, "the walk meets the list at its floor");
+        cx.update(|window, _| window.set_scale_factor(2.));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
-
     /// A group's heading row is its name's line and the group gap rather
     /// than an entry's height, so after a search that leaves one shortcut
     /// ("command palette") in a 461 × 490 window the General heading and its

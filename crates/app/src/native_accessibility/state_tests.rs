@@ -586,8 +586,39 @@ async fn dialog_hints_and_the_projects_page_are_read_by_their_lines(cx: &mut Tes
     assert_eq!(count.node.role(), Role::Status);
     assert_eq!(
         count.node.label(),
-        Some(crate::shortcuts::count_line(crate::shortcuts::listed_shortcuts()).as_str()),
-        "the count is named by the line it draws"
+        Some(format!("{} shortcuts", crate::shortcuts::listed_shortcuts()).as_str()),
+        "the count is named by the count it draws"
+    );
+    // The legend follows the count where the line, as the interface font
+    // lays out the text drawn, fits the view drawn, and is named by its keys.
+    let view = cx
+        .debug_bounds("keyboard-shortcuts-view")
+        .expect("the view");
+    let fits = cx.update(|window, _| {
+        let laid_out = |text: &str| {
+            crate::views::laid_out_text_width(
+                crate::views::shaped_width(
+                    text,
+                    crate::appearance::ui_text(12.),
+                    window.text_style().font_weight,
+                    window,
+                ),
+                window,
+            )
+        };
+        laid_out(&format!(
+            "{} shortcuts",
+            crate::shortcuts::listed_shortcuts()
+        )) + laid_out(&format!(
+            "{}{}",
+            crate::shortcuts::LEGEND_SEPARATOR,
+            crate::shortcuts::modifier_legend()
+        )) <= view.size.width
+    });
+    assert_eq!(
+        written::get("shortcut-help-legend").map(|legend| legend.node.value().map(str::to_owned)),
+        fits.then(|| Some(crate::shortcuts::modifier_legend().to_owned())),
+        "the legend is drawn after the count where the line fits the view {view:?}"
     );
     cx.update(|window, cx| window.close_all_dialogs(cx));
     draw(cx);

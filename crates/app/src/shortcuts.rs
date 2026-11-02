@@ -932,52 +932,60 @@ fn help_dialog_width(window: &Window) -> Pixels {
     appearance::dialog_width(appearance::ui_size(650.), window)
 }
 
-/// The kit dialog's 16 px padding and 1 px border on either side of what it
-/// holds, which do not grow with the text.
-const HELP_DIALOG_INSET: Pixels = px(17.);
+/// The kit dialog's 16 px padding on either side of what it holds, inside
+/// its 1 px border, neither growing with the text.
+const HELP_DIALOG_PADDING: Pixels = px(16.);
 
 /// The width Keyboard Shortcuts lays its view out in, the dialog's width
-/// ([`help_dialog_width`]) inside the kit's padding and border.
+/// ([`help_dialog_width`]) inside the kit's padding and border, each as
+/// layout draws it on this display's device pixels: the width and the
+/// padding on whole device pixels, halves toward zero
+/// (`Window::pixel_snap`), and the border at least one, as GPUI rounds a
+/// stroke. Summed unrounded, it measured the view 318 px wide at scale 1.5
+/// in a 400 px window, where the border is one device pixel, 0.67 px, and
+/// the view 318.67 px.
 pub(crate) fn help_width(window: &Window) -> Pixels {
-    help_dialog_width(window) - HELP_DIALOG_INSET * 2.
+    let scale = window.scale_factor();
+    let border = px(((scale - 0.5).ceil()).max(1.) / scale);
+    window.pixel_snap(help_dialog_width(window))
+        - (window.pixel_snap(HELP_DIALOG_PADDING) + border) * 2.
 }
 
-/// The line above the shortcut list: how many shortcuts it holds, the count
-/// agreeing with its noun ("1 shortcuts" once read for a search that left
-/// one), and the platform's modifier keys. The list's status draws it, as
-/// [`fitted_count_line`] fits it to the dialog, and is named by it.
-pub(crate) fn count_line(count: usize) -> String {
-    format!(
-        "{} · {}",
-        crate::counted(count, "shortcut", "shortcuts"),
-        if cfg!(target_os = "macos") {
-            "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift"
-        } else {
-            "Ctrl, Alt and Shift"
-        }
-    )
-}
-
-/// [`count_line`] as Keyboard Shortcuts draws it `width` wide: whole where
-/// the interface font lays it out on one line there, and otherwise the count
-/// alone ("61 shortcuts"), the modifier legend giving way as words beside a
-/// count do (DESIGN.md, "One responsive order"). Decided from the font
-/// before layout, so the line is one line in the frame that draws it. The
-/// macOS legend, wrapped to a second line at 18 pt in a 461 px window, took
-/// the 27 px the hint needed below a list already at its floor, and the
-/// hint ran under Close.
-pub(crate) fn fitted_count_line(count: usize, width: Pixels, window: &Window) -> String {
-    let line = count_line(count);
-    let weight = window.text_style().font_weight;
-    let laid_out = crate::views::laid_out_text_width(
-        crate::views::shaped_width(&line, appearance::ui_text(12.), weight, window),
-        window,
-    );
-    if laid_out <= width {
-        line
+/// The platform's modifier keys, which the line above the shortcut list
+/// names after the count where the line fits ([`legend_fits`]).
+pub(crate) fn modifier_legend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift"
     } else {
-        crate::counted(count, "shortcut", "shortcuts")
+        "Ctrl, Alt and Shift"
     }
+}
+
+/// What the line above the shortcut list draws between the count and
+/// [`modifier_legend`].
+pub(crate) const LEGEND_SEPARATOR: &str = " · ";
+
+/// Whether Keyboard Shortcuts draws [`modifier_legend`] after `count`'s
+/// count, which agrees with its noun ("1 shortcuts" once read for a search
+/// that left one), `width` wide: only where the interface font lays the
+/// whole line out on one line there, the count and the legend each as its
+/// own text lays it out. Otherwise the count stands alone ("61 shortcuts"),
+/// the legend giving way as words beside a count do (DESIGN.md, "One
+/// responsive order"). Decided from the font before layout, so the line is
+/// one line in the frame that draws it. The macOS legend, wrapped to a
+/// second line at 18 pt in a 461 px window, took the 27 px the hint needed
+/// below a list already at its floor, and the hint ran under Close.
+pub(crate) fn legend_fits(count: usize, width: Pixels, window: &Window) -> bool {
+    let weight = window.text_style().font_weight;
+    let laid_out = |text: &str| {
+        crate::views::laid_out_text_width(
+            crate::views::shaped_width(text, appearance::ui_text(12.), weight, window),
+            window,
+        )
+    };
+    let counted = crate::counted(count, "shortcut", "shortcuts");
+    let legend = format!("{LEGEND_SEPARATOR}{}", modifier_legend());
+    laid_out(&counted) + laid_out(&legend) <= width
 }
 
 /// The shortcut list's height at the default interface size, where the
@@ -1012,7 +1020,7 @@ pub(crate) fn list_height() -> Pixels {
 /// with the text. Scaled whole from [`SHORTCUT_LIST_FLOOR`], the border grew
 /// too, and at 18 pt the floor held the 58.15 px entry and 0.77 px of the
 /// row above it.
-fn list_floor() -> Pixels {
+pub(crate) fn list_floor() -> Pixels {
     appearance::ui_size(SHORTCUT_LIST_FLOOR - 2.) + px(2.)
 }
 
@@ -1513,7 +1521,7 @@ impl Render for ShortcutHelpView {
         .track_scroll(&self.scroll)
         .size_full();
         div().id("keyboard-shortcuts-view").debug_selector(|| "keyboard-shortcuts-view".into()).key_context("GitTurtleShortcuts")
-            .flex().flex_col().min_h_0().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
+            .relative().flex().flex_col().min_h_0().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
                 this.close(window, cx); cx.stop_propagation();
             }))
@@ -1534,13 +1542,24 @@ impl Render for ShortcutHelpView {
             .on_action(cx.listener(|this, _: &PreviousShortcutPage, _, cx| this.step(Step::PageUp, cx)))
             .on_action(cx.listener(|this, _: &NextShortcutPage, _, cx| this.step(Step::PageDown, cx)))
             .child(Input::new(&self.query).aria_label("Search keyboard shortcuts").cleanable(true))
-            // A status read by the line it draws: it was named "61 matching
-            // shortcuts" while it drew "61 shortcuts · Ctrl, Alt and Shift".
+            // The count is the status, read by what it draws: it was named
+            // "61 matching shortcuts" while it drew "61 shortcuts". The
+            // modifier legend after it, where the line fits, is text of its
+            // own, so a resize that brings or takes the legend leaves the
+            // status as it was and announces nothing; drawn and named as one
+            // line, the polite status was announced again ("61 shortcuts")
+            // as a resize crossed the width where the legend fits. Only a
+            // changed count is announced.
             .child({
-                let line = fitted_count_line(count, help_width(window), window);
-                native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
-                    .polite(), line.clone())
-                    .text_color(rgb(p.muted)).child(line)
+                let counted = crate::counted(count, "shortcut", "shortcuts");
+                let legend = legend_fits(count, help_width(window), window).then(|| {
+                    native_accessibility::static_text(div().id("shortcut-help-legend"), modifier_legend())
+                        .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
+                });
+                div().flex().text_color(rgb(p.muted))
+                    .child(native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
+                        .polite(), counted.clone()).child(counted))
+                    .children(legend)
             })
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
                 .aria_label("Keyboard shortcuts by group").h(height).min_h(list_floor()).overflow_hidden()
@@ -1604,12 +1623,23 @@ impl Render for ShortcutHelpView {
                 .when(count == 0, |view| view.child(native_accessibility::text("shortcut-help-empty",
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
                     else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }).p_4().text_color(rgb(p.muted))))))
-            .child(div().id("shortcut-help-selected").role(Role::Status)
-                .polite()
-                .aria_label(match self.rows.get(self.selected) {
+            // The selected entry's status draws nothing, so it takes no place
+            // in the column: laid out between the list and the hint, its
+            // 1 px took a gap of its own, which stood the hint two gaps
+            // below the list (about 20 px at 13 pt) where the column's other
+            // parts stand one apart, and at 18 pt in a 461 × 490 window,
+            // the list at its floor, took the 10 px the hint's last line
+            // needed above the dialog's clip. It lies along the view's top
+            // instead, which the dialog always draws: along its foot, it lay
+            // past the clip wherever the dialog cut its foot, and the AT-SPI
+            // adapter reported it not showing.
+            .child(native_accessibility::static_text(
+                div().id("shortcut-help-selected").role(Role::Status).polite()
+                    .absolute().left_0().top_0().w_full().h(px(1.)).overflow_hidden(),
+                match self.rows.get(self.selected) {
                     Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key),
                     _ => String::new(),
-                }).h(px(1.)).overflow_hidden())
+                }))
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
                 // Every key the list takes: it named Up and Down alone. The
                 // search keeps its other editing keys, Shift-Home and
