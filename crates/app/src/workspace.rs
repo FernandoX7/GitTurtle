@@ -4282,7 +4282,9 @@ impl GitTurtle {
                     .map_or("Repository root".into(), |path| path.display().to_string());
                 div()
                     .h(px(self.settings.density.file_row_height()))
-                    .px_3()
+                    // At the header's edge, inside the list's 2 px.
+                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
+                    .pr_3()
                     .flex()
                     .items_center()
                     .text_size(crate::appearance::ui_text(11.))
@@ -4358,7 +4360,9 @@ impl GitTurtle {
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
-                    .px_3()
+                    // Its icon in the header's icon column, inside the list's 2 px.
+                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
+                    .pr_3()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -4509,7 +4513,11 @@ impl GitTurtle {
                     })
                     .h(px(self.settings.density.file_row_height()))
                     .w_full()
-                    .pl(px(10.))
+                    // Its tile or glyph in the header's icon column, at the pane's
+                    // inset: the list's 2 px and the row's 2 px marker come out of
+                    // it (DESIGN.md, "One left edge"). A fixed 10 px stood the tile
+                    // 4.25 px past the header's icon at 13 pt.
+                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(4.))
                     .pr_3()
                     .flex()
                     .items_center()

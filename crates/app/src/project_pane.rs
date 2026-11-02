@@ -1149,7 +1149,14 @@ impl GitTurtle {
             // cursor arrives.
             .border_l_2()
             .border_color(rgb(if cursor { colors.accent } else { surface }))
-            .pl(px(10. + depth as f32 * 12.))
+            // Its icon at the heading's edge, the marker's 2 px out of the
+            // pane's inset, and 12 px further for each tree level, as History's
+            // navigation rows are; a fixed 10 px stood it 2.25 px past the
+            // heading at 13 pt and 1.5 px before it at 18.
+            .pl(
+                crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.)
+                    + px(depth as f32 * 12.),
+            )
             .pr_1()
             .flex()
             .items_center()

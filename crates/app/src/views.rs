@@ -1821,9 +1821,16 @@ impl GitTurtle {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .pl(px(10.))
-                    .pr_3()
-                    .when(title, |cell| cell.child(div().truncate().child(id.label())))
+                    // A title's insets, where it has one: narrow History's
+                    // untitled compact graph, 20 px wide, has no room for them,
+                    // and at 18 pt their 23.5 px widened the header's cell
+                    // past the rows', so the subject's title stood 3.5 px
+                    // right of its rows.
+                    .when(title, |cell| {
+                        cell.pl(px(10.))
+                            .pr_3()
+                            .child(div().truncate().child(id.label()))
+                    })
                     .when(id == columns::ColumnId::Graph && !narrow, |cell| {
                         let capacity = self.layout_lane_capacity(&columns);
                         let offset = self.graph_lane_offset();
@@ -3019,7 +3026,12 @@ impl GitTurtle {
             .flex()
             .items_center()
             .gap_2()
-            .px_3()
+            // Its tile stands at the inspector's edge, where the header's
+            // icon and the toolbar's frames do: the list's 1 px edge and the
+            // row's 2 px marker come out of the pane's inset (DESIGN.md, "One
+            // left edge"). It stood 3 px past them.
+            .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(3.))
+            .pr_3()
             .bg(rgb(if active {
                 colors.selected
             } else {

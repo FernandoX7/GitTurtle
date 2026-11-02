@@ -574,6 +574,7 @@ impl ProjectHub {
                 )))
             .child(
                 div()
+                    .debug_selector(|| "project-hub-recent-list".into())
                     .flex_1()
                     .min_h_0()
                     .rounded(px(16.))

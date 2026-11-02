@@ -39,6 +39,10 @@ enum Surface {
     Working,
     /// The GitHub panel on its offline fixture.
     GitHub,
+    /// The GitHub panel on its offline fixture's Overview with its bordered
+    /// panes: the connection pane open and a reply open and reviewed, its
+    /// confirmation showing, read at the body's top and its end.
+    GitHubPanes,
     ProjectHub,
     /// History beside the project pane.
     ProjectPane,
@@ -76,6 +80,11 @@ struct Panel {
     /// (DESIGN.md, "One left edge"), so the grid measures it by its box, as
     /// if its text started this far in from it.
     boxes: Option<fn() -> Pixels>,
+    /// Where the panel's edge stands in from its area's left, for a panel
+    /// every line of which leads with an icon or tile at that edge, so no
+    /// text starts there: its lines start at one of its offsets from it.
+    /// Without it, a panel's edge is its leftmost line start.
+    edge: Option<fn() -> Pixels>,
 }
 
 const fn panel(name: &'static str, area: Area) -> Panel {
@@ -83,6 +92,7 @@ const fn panel(name: &'static str, area: Area) -> Panel {
         name,
         area,
         boxes: None,
+        edge: None,
     }
 }
 
@@ -92,6 +102,18 @@ const fn boxed_panel(name: &'static str, area: Area, inset: fn() -> Pixels) -> P
         name,
         area,
         boxes: Some(inset),
+        edge: None,
+    }
+}
+
+/// A [`panel`] whose edge stands `edge` in from its area's left, where its
+/// lines' leading icons and tiles stand.
+const fn icon_panel(name: &'static str, area: Area, edge: fn() -> Pixels) -> Panel {
+    Panel {
+        name,
+        area,
+        boxes: None,
+        edge: Some(edge),
     }
 }
 
@@ -130,7 +152,11 @@ fn panels(surface: Surface) -> &'static [Panel] {
     ];
     const COMPARE: &[Panel] = &[panel("inspector", Selector("commit-inspector"))];
     const WORKING: &[Panel] = &[
-        panel("working files", Union(&["working-header", "working-pane"])),
+        icon_panel(
+            "working files",
+            Union(&["working-header", "working-pane"]),
+            || appearance::ui_size(appearance::PANE_INSET),
+        ),
         panel("composer", Selector("commit-composer")),
     ];
     const GITHUB: &[Panel] = &[boxed_panel(
@@ -138,7 +164,17 @@ fn panels(surface: Surface) -> &'static [Panel] {
         Selector("github-panel"),
         || appearance::ui_size(crate::LABEL_INSET),
     )];
+    // The conversations are cards inside the Conversations pane, each
+    // bordered and padded inside the pane's text edge: a nested group.
+    const GITHUB_PANES: &[Panel] = &[
+        panel("conversation cards", Selector("github-threads")),
+        boxed_panel("GitHub panel", Selector("github-panel"), || {
+            appearance::ui_size(crate::LABEL_INSET)
+        }),
+    ];
     const PROJECT_HUB: &[Panel] = &[
+        // A bordered box inside the recent list, its rows a group of their own.
+        panel("recent project rows", Selector("project-hub-recent-list")),
         panel("recent projects", Selector("project-hub-recent")),
         panel("project action", Selector("project-hub-action")),
     ];
@@ -152,6 +188,7 @@ fn panels(surface: Surface) -> &'static [Panel] {
         Surface::Compare => COMPARE,
         Surface::Working => WORKING,
         Surface::GitHub => GITHUB,
+        Surface::GitHubPanes => GITHUB_PANES,
         Surface::ProjectHub => PROJECT_HUB,
         Surface::ProjectPane => PROJECT_PANE,
         Surface::Reflog => REFLOG,
@@ -163,13 +200,17 @@ fn panels(surface: Surface) -> &'static [Panel] {
 
 /// A deliberate offset from a panel's edge: a line of the panel may start
 /// `by` past it, at the interface size, for `reason`. An offset for no
-/// panel in particular holds in every panel.
+/// panel in particular holds in every panel; one for a panel holds in that
+/// panel of each of the surfaces it names.
 struct Offset {
-    panel: Option<(Surface, &'static str)>,
+    panel: Option<(&'static [Surface], &'static str)>,
     by: fn() -> Pixels,
     #[allow(dead_code, reason = "read by people, as a follow-up is")]
     reason: &'static str,
 }
+
+/// The inspector's surfaces.
+const INSPECTORS: &[Surface] = &[Surface::History, Surface::Compare];
 
 const OFFSETS: &[Offset] = &[
     Offset {
@@ -183,17 +224,62 @@ const OFFSETS: &[Offset] = &[
         reason: "a field at the edge starts its text and placeholder past its border and padding",
     },
     Offset {
-        panel: Some((Surface::History, "navigation")),
-        by: || px(15.) + appearance::ui_size(6.5),
-        reason: "a branch or worktree row's 15 px icon stands at the edge, its name after the gap",
+        panel: None,
+        by: || appearance::ui_size(crate::LABEL_INSET + 16. + 6.),
+        reason: "a compact Button at the edge whose 16 px icon leads its label, as the \
+                 inspector's Copy message does, starts its label past its label inset, the \
+                 icon and the 6 px gap",
     },
     Offset {
-        panel: Some((Surface::History, "References column")),
+        panel: None,
+        by: || px(15.) + appearance::ui_size(6.5),
+        reason: "a row's or header's 15 px icon stands at the edge, its text after the 0.5 \
+                 rem gap: History's branch and worktree rows, the inspector's Changed files \
+                 header, the project pane's projects",
+    },
+    Offset {
+        panel: None,
+        by: || px(26.) + appearance::ui_size(6.5),
+        reason: "a changed file's 26 px status tile stands at the edge, its name and folder \
+                 after the 0.5 rem gap, in the inspector and in Working Changes",
+    },
+    Offset {
+        panel: Some((&[Surface::History], "References column")),
         by: || appearance::ui_size(3.25),
         reason: "a reference's pill stands at the column's edge and pads its name 0.25 rem in",
     },
     Offset {
-        panel: Some((Surface::GitHub, "GitHub panel")),
+        panel: Some((INSPECTORS, "inspector")),
+        by: || px(15.) + appearance::ui_size(6.5 + 4.875),
+        reason: "where the Changed files label has left a narrow inspector, the count stands \
+                 in its place after the header's 15 px icon and pads its figure 0.375 rem in",
+    },
+    Offset {
+        panel: Some((&[Surface::Working], "working files")),
+        by: || px(17.) + appearance::ui_size(6.5),
+        reason: "the Changes header's 17 px commit icon stands at the pane's edge, in the \
+                 file rows' tile column, its label after the 0.5 rem gap",
+    },
+    Offset {
+        panel: Some((&[Surface::Working], "composer")),
+        by: || px(13.) + appearance::ui_size(4.875),
+        reason: "the branch line's 13 px branch glyph stands at the edge, its name after \
+                 the 0.375 rem gap",
+    },
+    Offset {
+        panel: Some((&[Surface::ProjectHub], "project action")),
+        by: || px(42.) + appearance::ui_size(9.75),
+        reason: "the action's 42 px tile stands at the card's edge, its heading after the \
+                 0.75 rem gap",
+    },
+    Offset {
+        panel: Some((&[Surface::ProjectHub], "project action")),
+        by: || px(16.) + appearance::ui_size(9.75),
+        reason: "a feature's 16 px icon stands at the card's edge, its title and detail \
+                 after the 0.75 rem gap",
+    },
+    Offset {
+        panel: Some((&[Surface::GitHub, Surface::GitHubPanes], "GitHub panel")),
         by: || appearance::ui_size(16. + 6.),
         reason: "a Button whose icon leads its label, as Pull requests, Refresh PRs and New \
                  pull request do, stands its 16 px icon at the text's edge, where its frame's \
@@ -213,68 +299,22 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    // The commit details start 10.5 px in (14.5 at 18 pt), the changed-files
-    // header's icon at the pane's 9.75 (13.5), the inspector's heading 42.5
-    // px in (59) and the file rows' names 46 (52.5): no single edge with a
-    // leading icon or status tile at it.
+    // The conversation cards inside the Conversations pane, bordered and
+    // padded 0.75 rem, start their author line at their padding, a line 10.5
+    // px further and their Buttons' labels 20.5 px in, at 13 pt.
     Known {
-        surface: Surface::History,
-        panel: "inspector",
-        sizes: &[13, 18],
-        follow_up: "the inspector's details, heading, files header and file rows share one edge",
+        surface: Surface::GitHubPanes,
+        panel: "conversation cards",
+        sizes: &[13],
+        follow_up: "the conversation cards start their lines and Buttons' labels at one edge",
     },
+    // With the panes open at 18 pt in a 1,480 px window, a line 12 px down
+    // the body starts 433 px into the panel.
     Known {
-        surface: Surface::Compare,
-        panel: "inspector",
-        sizes: &[13, 18],
-        follow_up: "the inspector's details, heading, files header and file rows share one edge",
-    },
-    // At 18 pt in a 461 px window, narrow History's subject rows start 6.5
-    // px into the column, its title 10 px.
-    Known {
-        surface: Surface::History,
-        panel: "Subject column",
+        surface: Surface::GitHubPanes,
+        panel: "GitHub panel",
         sizes: &[18],
-        follow_up: "narrow History's subject cell starts at the column's 10 px inset",
-    },
-    // The search field's text 11 px in, the project rows' names 72 (83.5).
-    Known {
-        surface: Surface::ProjectHub,
-        panel: "recent projects",
-        sizes: &[13, 18],
-        follow_up: "the hub's project rows start at the recent list's edge, after their icon",
-    },
-    // The action card's text 17 px in (23.5 at 18 pt), its fields' labels
-    // 42.5 (53) and its tab labels 68.5.
-    Known {
-        surface: Surface::ProjectHub,
-        panel: "project action",
-        sizes: &[13, 18],
-        follow_up: "the hub's action card starts its title, tabs and field labels at one edge",
-    },
-    // The pane's heading 9.5 px in (13.5 at 18 pt), a project row's name
-    // 33.5 (36), its icon not at the heading's edge.
-    Known {
-        surface: Surface::ProjectPane,
-        panel: "project pane",
-        sizes: &[13, 18],
-        follow_up: "the project pane's rows put their icon at its heading's edge",
-    },
-    // The Staged and Unstaged headings 33 px in (39.5 at 18 pt), the file
-    // rows' names 46.5 (49): their leading glyph and status tile differ.
-    Known {
-        surface: Surface::Working,
-        panel: "working files",
-        sizes: &[13, 18],
-        follow_up: "the Working headings and file rows put their glyph and tile at one edge",
-    },
-    // The composer's labels 9.5 px in (13.5 at 18 pt), the line below its
-    // heading 27.5, a note under the description 22.5 (26.5).
-    Known {
-        surface: Surface::Working,
-        panel: "composer",
-        sizes: &[13, 18],
-        follow_up: "the composer starts its staged summary and notes at its labels' edge",
+        follow_up: "the line 433 px into the panel at 18 pt starts at its text edge",
     },
 ];
 
@@ -511,18 +551,23 @@ fn inspect(
     let mut findings = Vec::new();
     for ((panel, area), runs) in areas.iter().zip(owned) {
         let starts = line_starts(runs, *area);
-        let Some(edge) = starts.iter().map(|(x, _)| *x).reduce(Pixels::min) else {
+        let Some(leftmost) = starts.iter().map(|(x, _)| *x).reduce(Pixels::min) else {
             continue;
         };
+        let edge = panel.edge.map_or(leftmost, |edge| area.left() + edge());
         measured.insert(panel.name);
         let offsets: Vec<Pixels> = OFFSETS
             .iter()
-            .filter(|offset| offset.panel.is_none_or(|own| own == (surface, panel.name)))
+            .filter(|offset| {
+                offset.panel.is_none_or(|(surfaces, name)| {
+                    surfaces.contains(&surface) && name == panel.name
+                })
+            })
             .map(|offset| (offset.by)())
             .collect();
         let stray = starts.iter().any(|(x, _)| {
             let past = *x - edge;
-            past > tolerance
+            past.abs() > tolerance
                 && !offsets
                     .iter()
                     .any(|offset| (past - *offset).abs() <= tolerance)
@@ -625,6 +670,23 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
         })
     });
     views::tests::settle(&app, cx).await;
+    // The panes' panel's body, which the grid reads at its top and its end.
+    let body = if surface == Surface::GitHubPanes {
+        let body = cx
+            .update(|window, cx| crate::github_view::open_offline_fixture_panes(&app, window, cx));
+        let (operations, preferences) = app.read_with(cx, |app, _| {
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        operations.await.unwrap().unwrap();
+        preferences.await.unwrap().unwrap();
+        views::tests::settle(&app, cx).await;
+        Some(body)
+    } else {
+        None
+    };
     let name = format!("{surface:?}");
     match surface {
         Surface::Reflog => {
@@ -665,6 +727,15 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
             frame(cx);
             layouts += 1;
             findings.extend(inspect(surface, text, width, &mut measured, cx));
+            if let Some(body) = &body {
+                body.set_offset(point(px(0.), -body.max_offset().y));
+                frame(cx);
+                app.update(cx, |_, cx| cx.notify());
+                frame(cx);
+                layouts += 1;
+                findings.extend(inspect(surface, text, width, &mut measured, cx));
+                body.set_offset(point(px(0.), px(0.)));
+            }
         }
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -689,6 +760,14 @@ async fn working_changes_and_the_composer_start_each_panel_at_one_edge(cx: &mut 
 #[gpui::test]
 async fn the_github_panel_starts_its_text_at_one_edge(cx: &mut TestAppContext) {
     grid(Surface::GitHub, cx).await;
+}
+
+/// The GitHub panel's bordered panes, the connection pane, the reply
+/// composer and the confirmation, start their text at the panel's text edge,
+/// as the Conversations pane does.
+#[gpui::test]
+async fn the_github_panel_s_bordered_panes_start_their_text_at_its_edge(cx: &mut TestAppContext) {
+    grid(Surface::GitHubPanes, cx).await;
 }
 
 #[gpui::test]

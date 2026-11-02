@@ -562,7 +562,7 @@ impl Panel {
             .iter()
             .any(|thread| reply_matches(thread, target, self.account.as_deref()));
         div().debug_selector(||"github-reply-composer".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.input.read(cx).focus_handle(cx)))
-            .min_w_0().p_3().rounded(px(7.)).border_1().border_color(rgb(p.border)).bg(rgb(p.subtle)).flex().flex_col().gap_2()
+            .min_w_0().map(super::bordered_pane).rounded(px(7.)).border_1().border_color(rgb(p.border)).bg(rgb(p.subtle)).flex().flex_col().gap_2()
             .child(label("github-reply-heading", format!("Reply to conversation · {}", target.path)).font_weight(FontWeight::SEMIBOLD))
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
@@ -626,11 +626,11 @@ impl Panel {
                 }
             })
             .id("github-thread-section").debug_selector(||"github-thread-section".into()).min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
-            .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().py_3()
+            .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2()
             // Its border and side padding together are the panel's text inset, so its heading
             // and conversations start at the panel's text edge with its frame at the frames'
             // column; 0.75 rem inside the border, they started 0.65 px past it at 18 pt.
-            .px(super::text_inset() - px(1.))
+            .map(super::bordered_pane)
             .child(self.part("conversations-header", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(super::phrases("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).min_w_0().font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())

@@ -59,20 +59,40 @@ fn phrases(
 fn text_inset() -> Pixels {
     appearance::ui_size(crate::LABEL_INSET)
 }
+/// Pads `pane`, a bordered pane of the panel, by the panel's [`text_inset`] less its 1 px
+/// border at its sides and 0.75 rem above and below, so its frame stands with the Buttons'
+/// frames at the panel's side and its text starts at the panel's text edge at every interface
+/// size (DESIGN.md, "One left edge"): the Conversations pane, the reply and inline comment
+/// composers, the confirmation and the connection pane. 0.75 rem inside their border, as all
+/// but the Conversations pane once were, their text started 0.75 px past the panel's at 13 pt
+/// and 0.65 px at 18 pt, so the reply composer under the Conversations pane stood apart from it.
+fn bordered_pane<E: Styled>(pane: E) -> E {
+    pane.py_3().px(text_inset() - px(1.))
+}
 /// Moves the body's scroll up by `grew`, the room its top line took more than in the last
-/// frame, before the body places its content, and the reveal it last made with it, so the
-/// content stays where it was drawn ([`Panel::pin_top_line`], [`Panel::unpin_top_line`]).
+/// frame, before the body places its content, so the content stays where it was drawn, and
+/// the viewport the body's last reveal recorded down by `took`, how much further down the
+/// body's top stands than in the last frame, so the reveal finds the body it recorded and
+/// shows no focus anew ([`Panel::pin_top_line`], [`Panel::unpin_top_line`]). The two differ
+/// as the line moves between the content and above the body: the scroll moves by the
+/// difference of the line's room in the two places, the body's top by all of the height the
+/// line stands above it. Moved by the scroll's shift, the recorded viewport was a body of
+/// another size, and a reply closing scrolled back to a focused control the person had
+/// scrolled away from.
 fn shift_body(
     scroll: &ScrollHandle,
     revealed: &std::cell::RefCell<review::FocusObservation>,
     grew: Pixels,
+    took: Pixels,
 ) {
     if grew != Pixels::ZERO {
         let offset = scroll.offset();
         scroll.set_offset(point(offset.x, offset.y - grew));
+    }
+    if took != Pixels::ZERO {
         let mut revealed = revealed.borrow_mut();
-        revealed.viewport.origin.y += grew;
-        revealed.viewport.size.height -= grew;
+        revealed.viewport.origin.y += took;
+        revealed.viewport.size.height -= took;
     }
 }
 /// An element that holds `child` and records the layout ID it is laid out under in `laid`,
@@ -782,7 +802,7 @@ fn retain_window_close_completion(response: DraftSaveCompletion, cx: &mut App) {
 }
 
 fn apply_save_completion(
-    status: &mut String,
+    status: &mut SharedString,
     response_generation: u64,
     latest_generation: u64,
     current: Result<Draft, DraftIssue>,
@@ -866,7 +886,8 @@ struct Panel {
     control: Option<OperationControl>,
     task: Option<Task<()>>,
     saved: Vec<Draft>,
-    save_status: String,
+    /// The draft's save status, shared with each frame's labels, which copy nothing of it.
+    save_status: SharedString,
     draft_issue: Option<DraftIssue>,
     saver: commit_drafts::CoalescingSaver<String, Draft>,
     deferred_draft: DeferredDraft,
@@ -895,7 +916,7 @@ impl Panel {
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
-            confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
+            confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
             this.destination.update(cx, |input, cx| {
@@ -1106,7 +1127,7 @@ impl Panel {
         };
         self.draft_issue = None;
         if empty_pull_draft(&draft) {
-            self.save_status.clear();
+            self.save_status = SharedString::default();
             return None;
         }
         Some(draft)
@@ -1748,10 +1769,12 @@ impl Panel {
     /// own scrollbar drawn in it, so a line wraps as it did among the content: full width
     /// above the body, a long notice was 19 px wider pinned and could re-wrap as it moved
     /// there. Its divider spans the panel, as the body's track does.
+    /// `stood` is whether the line stood above the body in the last frame too.
     fn pin_top_line(
         &self,
         lines: Vec<AnyElement>,
         busy: Option<AnyElement>,
+        stood: bool,
         window: &Window,
         cx: &App,
     ) -> Div {
@@ -1800,7 +1823,10 @@ impl Panel {
             .flex_shrink_0()
             .on_children_prepainted(move |line, _, _| {
                 let height = line.first().map_or(Pixels::ZERO, |line| line.size.height);
-                shift_body(&scroll, &revealed, height - drawn.replace(height));
+                let before = drawn.replace(height);
+                // Among the content last frame, the line took its room there, not the body's.
+                let took = if stood { height - before } else { height };
+                shift_body(&scroll, &revealed, height - before, took);
             })
             .children(line)
     }
@@ -1823,7 +1849,8 @@ impl Panel {
                 window.layout_bounds(line).size.height + window.rem_size() * 0.5
             });
             drawn.set(room);
-            shift_body(&scroll, &revealed, room - stood);
+            // The body takes back the height the line stood above it.
+            shift_body(&scroll, &revealed, room - stood, -stood);
         })
     }
     /// The panel's top line among the content, under the toolbar, while no conversation is
@@ -2061,9 +2088,13 @@ impl Render for Panel {
         // A line the last frame stood above the body moves back among the content as the
         // conversation closes, and an element before the body moves the body's scroll by the
         // difference, read from where this frame lays the line out ([`Self::unpin_top_line`]).
-        let unpinned = self.review.top_line_pinned.replace(pinned) && !pinned;
+        let stood = self.review.top_line_pinned.replace(pinned);
+        let unpinned = stood && !pinned;
         let (flowing_line, top_line) = if pinned {
-            (None, Some(self.pin_top_line(lines, busy, window, cx)))
+            (
+                None,
+                Some(self.pin_top_line(lines, busy, stood, window, cx)),
+            )
         } else if unpinned {
             let laid = std::rc::Rc::new(std::cell::Cell::new(None));
             let ahead = self.unpin_top_line(laid.clone());
@@ -2113,7 +2144,7 @@ impl Render for Panel {
                 .child(self.part("refresh",div(),cx).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
                 .child(self.part("create",div(),cx).child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
                 .child(div().flex_1()).child(self.part("account",div(),cx).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
-            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).map(bordered_pane).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
@@ -2211,7 +2242,7 @@ impl Render for Panel {
                 .child(self.part("submit",div(),cx).flex().flex_wrap_reverse().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).debug_selector(||"github-draft-status".into()).min_w_0().mx(text_inset()).role(Role::Status).polite().text_color(rgb(p.muted)))
                     .child(button("github-review-submit","Review submission…","",true).debug_selector(||"github-review-submit".into()).ml_auto().disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .child(self.render_reply_composer(cx))
-            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
+            .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).map(bordered_pane).border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().id("github-confirm-text-scroll").debug_selector(||"github-confirm-text-scroll".into()).flex_shrink_0().max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}|Action::Reply{body,..}=>body.clone(),Action::SetThreadResolved{resolved,..}=>if *resolved{"Resolve this conversation"}else{"Reopen this conversation"}.into(),Action::Review(review)=>format!("{} review · {}\n\n{}{}",review.event.label(),crate::counted(review.comments.len(),"inline comment","inline comments"),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())})))
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
@@ -2300,6 +2331,17 @@ pub(crate) fn submit_test_request(
 /// it (`width_walk`). The caller settles the window.
 #[cfg(test)]
 pub(crate) fn open_offline_fixture(app: &Entity<GitTurtle>, window: &mut Window, cx: &mut App) {
+    open_offline_fixture_with(app, window, cx, |_| {});
+}
+
+/// [`open_offline_fixture`], `prepare` changing the panel before it opens; the panel.
+#[cfg(test)]
+fn open_offline_fixture_with(
+    app: &Entity<GitTurtle>,
+    window: &mut Window,
+    cx: &mut App,
+    prepare: impl FnOnce(&mut Panel),
+) -> Entity<Panel> {
     let repo = app.read(cx).repository.clone().unwrap();
     let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
     let pull = github::review::fixture_pull(false);
@@ -2311,9 +2353,48 @@ pub(crate) fn open_offline_fixture(app: &Entity<GitTurtle>, window: &mut Window,
         panel.account = Some("offline-reviewer".into());
         panel.pull = Some(pull);
         panel.notice = Some("Fixture PRs refreshed.".into());
+        prepare(panel);
         panel.close(window, cx);
     });
     app.update(cx, |app, cx| app.open_github(window, cx));
+    panel
+}
+
+/// [`open_offline_fixture`] on its PR's Overview with every bordered pane it draws: the
+/// connection pane open, the conversations read and a reply to the first one open and
+/// reviewed, so its confirmation shows. For the layout grid; the body's scroll.
+#[cfg(test)]
+pub(crate) fn open_offline_fixture_panes(
+    app: &Entity<GitTurtle>,
+    window: &mut Window,
+    cx: &mut App,
+) -> ScrollHandle {
+    let identity = github::review::fixture_pull(false)
+        .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+    let page = Client(UiTransport::Fixture { moved: false })
+        .review_threads(&identity, None, &OperationControl::default())
+        .unwrap();
+    let target = page.items[0].target.clone();
+    let reply = target.clone();
+    let panel = open_offline_fixture_with(app, window, cx, move |panel| {
+        panel.review.show_list = false;
+        panel.review.section = Section::Overview;
+        panel.review.connection_open = true;
+        panel.receive_threads(page, None);
+        panel.conversations.active = Some(reply);
+    });
+    // Opening clears a confirmation.
+    panel.update(cx, |panel, cx| {
+        panel.confirm = Some(Confirmation {
+            account: target.account.clone(),
+            action: Action::Reply {
+                target,
+                body: "Fixture reply".into(),
+            },
+        });
+        cx.notify();
+    });
+    panel.read(cx).review.body_scroll.clone()
 }
 
 #[cfg(test)]
@@ -2495,7 +2576,7 @@ mod tests {
                 entered_fields(),
             )
         };
-        let mut status = String::new();
+        let mut status = SharedString::default();
         // The failing saver retains its unsaved batch; there is no scheduled
         // retry. An older success must not leave the form stuck on Saving.
         apply_save_completion(&mut status, 2, 2, capture(), true, false);
@@ -6628,6 +6709,217 @@ mod tests {
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// A draft status the section tabs' last line leaves less room than its insets and an
+    /// ellipsis starts a line of its own below the tabs, drawn there, rather than drawing
+    /// nothing beside them: at 18 pt with the long counts "Files · 300+", across window
+    /// widths from 400 to 520 px, some width leaves the tabs' last line too little, and at
+    /// every width the status is at least that wide and draws its text where the body shows
+    /// it. The status took whatever room the line left, down to none.
+    #[gpui::test]
+    async fn a_draft_status_with_too_little_room_starts_a_line_below_the_tabs(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.section = Section::Overview;
+                panel.review.show_list = false;
+                if let Some(file) = panel.review.files.first().cloned() {
+                    panel.review.files = vec![file; 300];
+                }
+                panel.review.files_next = true;
+                panel.save_status = "Draft saved locally".into();
+                cx.notify();
+            })
+        });
+        settle_panel(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let least = text_inset() * 2. + appearance::ui_text(12.);
+        let slack = px(0.5);
+        let mut below = false;
+        for width in (400..=520).step_by(2) {
+            cx.simulate_resize(size(px(width as f32), px(490.)));
+            draw(cx);
+            draw(cx);
+            let at = format!("18 pt in {width} × 490");
+            let tab = cx.debug_bounds("github-section-1").expect("the Files tab");
+            let last = cx.debug_bounds("github-section-2").expect("the Review tab");
+            assert!(
+                tab.size.width > px(0.),
+                "{at}: the Files tab reads its long count"
+            );
+            let status = cx
+                .debug_bounds("github-local-save")
+                .unwrap_or_else(|| panic!("{at}: the status is drawn"));
+            assert!(
+                status.size.width + text_inset() * 2. >= least - slack,
+                "{at}: the status {status:?} keeps at least its insets and an ellipsis"
+            );
+            below |= status.top() >= last.bottom() - slack;
+        }
+        assert!(
+            below,
+            "some width leaves the tabs' last line too little, and the status starts its own"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// Closing the panel while a reply stands its top line above the body, and opening it
+    /// again with no reply open, moves nothing in the body as it opens: the closed panel
+    /// forgets the line it pinned ([`Panel::close`]), so the reopened panel's first frame
+    /// does not take the line among its content for one leaving above the body and scroll
+    /// the body by the difference.
+    #[gpui::test]
+    async fn reopening_after_a_reply_moves_nothing_for_its_line(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let long = format!("{MOVED} {MOVED} {MOVED} {MOVED}");
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target.clone());
+                panel.notice = Some(long.clone());
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        assert!(
+            cx.debug_bounds("github-top-line").is_some(),
+            "the line stands above the body beside the open reply"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let offset = cx.update(|window, cx| {
+            panel.update(cx, |panel, _| panel.conversations.active = None);
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            let offset = point(px(0.), -px(40.));
+            scroll.set_offset(offset);
+            offset
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-top-line").is_none(),
+            "the line stands among the content"
+        );
+        assert!(scroll.max_offset().y > px(40.), "the body scrolls");
+        assert_eq!(
+            scroll.offset(),
+            offset,
+            "the reopened panel's first frame moves the body for no line"
+        );
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.notice = None;
+                panel.close(window, cx);
+            })
+        });
+    }
+
+    /// Focus on a control the person scrolled out of view stays out of view as a reply
+    /// closes and its top line moves back among the content: the body's reveal finds the
+    /// viewport it recorded, moved by the body's own change (`shift_body`), and shows no focus
+    /// anew. Moved by the scroll's shift instead, the recorded viewport was a body of another
+    /// height, and the closing reply scrolled the body back to the destination field.
+    #[gpui::test]
+    async fn closing_a_reply_keeps_a_focused_control_where_it_was_scrolled(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let long = format!("{MOVED} {MOVED} {MOVED} {MOVED}");
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target.clone());
+                panel.notice = Some(long.clone());
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        // Focus on the destination field, shown, then the body scrolled to its end, the field
+        // above it.
+        cx.update(|window, cx| {
+            let focus = panel.read(cx).destination.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        draw(cx);
+        scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        draw(cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let field = cx.debug_bounds("github-destination").expect("the field");
+        assert!(
+            field.bottom() <= body.top(),
+            "the field {field:?} lies above the body {body:?}"
+        );
+        assert!(cx.debug_bounds("github-top-line").is_some());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.conversations.active = None;
+                cx.notify();
+            });
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-top-line").is_none(),
+            "the line moved back among the content"
+        );
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let field = cx.debug_bounds("github-destination").expect("the field");
+        assert!(
+            field.bottom() <= body.top(),
+            "the field {field:?} stays above the body {body:?} where it was scrolled"
+        );
+        cx.update(|window, cx| {
+            assert!(
+                panel
+                    .read(cx)
+                    .destination
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "focus stays on the field"
+            );
+            panel.update(cx, |panel, cx| {
+                panel.notice = None;
+                panel.close(window, cx);
+            })
+        });
     }
 
     /// Review's draft status gives way to Review submission…: where it fits beside the

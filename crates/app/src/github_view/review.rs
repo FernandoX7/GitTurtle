@@ -1257,14 +1257,18 @@ impl Panel {
     /// whole text in its tooltip and accessible name, as a long failure's remedy is there
     /// (decision of 2026-11-01).
     fn render_save_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let status: SharedString = self.save_status.clone().into();
+        let status = self.save_status.clone();
         let tooltip = status.clone();
+        // At least its insets and an ellipsis, a 1 em allowance in its 12 px text: where the
+        // tabs leave less on their last line, it starts a line of its own below them, whatever
+        // it says, rather than draw nothing there.
+        let least = super::text_inset() * 2. + appearance::ui_text(12.);
         div()
             .flex()
             .justify_end()
             .flex_grow(1.)
             .flex_basis(px(0.))
-            .min_w_0()
+            .min_w(least)
             .overflow_hidden()
             .ml(rems(-0.25))
             .child(
@@ -1296,7 +1300,7 @@ impl Panel {
             .on_children_prepainted(
                 self.reveal_on_focus(self.review.input.read(cx).focus_handle(cx)),
             )
-            .p_3()
+            .map(super::bordered_pane)
             .rounded(px(7.))
             .bg(rgb(p.subtle))
             .border_1()
@@ -2178,6 +2182,16 @@ mod tests {
         assert!(
             composer.size.height > px(100.) && composer.size.width > px(300.),
             "composer must retain useful native geometry"
+        );
+        // Its border and side padding together are the panel's text inset, as the
+        // Conversations pane's are ([`super::bordered_pane`]), so its text starts there.
+        let position = cx
+            .debug_bounds("github-composer-position")
+            .expect("the composer's position line");
+        assert!(
+            (position.left() - composer.left() - super::text_inset()).abs() <= px(0.25),
+            "the inline composer's text {position:?} starts the panel's text inset inside \
+             its frame {composer:?}"
         );
         assert!(
             composer.top() >= viewport.top() && composer.bottom() <= viewport.bottom(),
