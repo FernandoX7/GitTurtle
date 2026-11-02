@@ -12542,8 +12542,8 @@ pub(crate) mod tests {
                                     app.tab_strip_labelled_actions(window),
                                     app.tab_whole_widths(window)[0],
                                     // The list's padding for a focused tab's ring,
-                                    // as layout snaps it: 4 device pixels for 3 px.
-                                    window.pixel_snap(appearance::button_ring_room(cx)),
+                                    // rounded up to a device pixel: 5 for 3 px at 1.5.
+                                    repository_tabs::tab_list_ring_room(window, cx),
                                 )
                             });
                         seen.insert(labels);

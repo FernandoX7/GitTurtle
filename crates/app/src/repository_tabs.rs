@@ -1981,7 +1981,7 @@ impl GitTurtle {
         // button draws outside its edge, and gives the room back through its
         // margin so the tabs do not move. The strip is the window's first row,
         // so the room above a tab can only come from the strip itself.
-        let ring_room = appearance::button_ring_room(cx);
+        let ring_room = tab_list_ring_room(window, cx);
         // Menu and Workspaces each keep their labels only where every tab's
         // name stays whole beside them, and give way one at a time; the menu
         // renders inside this strip, after this, so it reads the decision in
@@ -1990,13 +1990,17 @@ impl GitTurtle {
         #[cfg(target_os = "linux")]
         self.primary_menu
             .update(cx, |menu, _| menu.set_labelled(labels.menu));
+        let (line, insets) = (
+            crate::views::LineKey::current(window),
+            tab_label_insets(window),
+        );
         div()
             .debug_selector(|| "repository-tab-strip".into())
             .flex()
             .items_center()
             .gap_1()
             .px_2()
-            .min_h(tab_strip_min_height(ring_room))
+            .min_h(tab_strip_min_height(appearance::button_ring_room(cx)))
             .bg(rgb(colors.panel))
             .border_b(TAB_STRIP_BORDER)
             .border_color(rgb(colors.border))
@@ -2039,9 +2043,10 @@ impl GitTurtle {
                                 // and an ellipsis, before its close button
                                 // (which keeps the kit's `flex_shrink_0`) is
                                 // cut at the edge. Only past that floor does
-                                // the list scroll.
-                                let name_floor = appearance::ui_size(crate::LABEL_INSET * 2.)
-                                    + tab_label_widths(&label, pin, window).1;
+                                // the list scroll. Both lengths lie on device
+                                // pixels, so layout keeps the floor whole.
+                                let name_floor =
+                                    insets + tab_label_widths(&label, pin, &line, window).1;
                                 div()
                                     .flex()
                                     .items_center()
@@ -2125,6 +2130,16 @@ impl GitTurtle {
     /// A repository tab's label, its pin, project name and what it reports,
     /// and the pin's length in bytes.
     pub(super) fn tab_label(&self, tab: &Tab) -> (String, usize) {
+        let mut label = String::new();
+        let pin = self.write_tab_label(tab, &mut label);
+        (label, pin)
+    }
+
+    /// Writes `tab`'s label ([`Self::tab_label`]) after what `label` holds,
+    /// and returns the pin's length in bytes. The name is `project_name`'s,
+    /// borrowed rather than copied, so a frame that measures every tab's
+    /// label into one buffer allocates nothing (`tab_whole_width_each`).
+    fn write_tab_label(&self, tab: &Tab, label: &mut String) -> usize {
         let pin = if self.tab_is_pinned(&tab.path) {
             "★ "
         } else {
@@ -2132,51 +2147,102 @@ impl GitTurtle {
         };
         let busy = self.operation_shown().is_some()
             && self.operation_repository.as_ref() == Some(&tab.path);
-        let label = format!(
-            "{pin}{}{}",
-            self.project_name(&tab.path),
-            if busy {
-                " · working"
-            } else if tab.error.is_some() {
-                " · unavailable"
-            } else {
-                ""
-            }
-        );
-        (label, pin.len())
+        label.push_str(pin);
+        match self.project_names.get(&tab.path) {
+            Some(name) => label.push_str(name),
+            // `preferences::directory_name`, which `project_name` falls back
+            // to, without its copy: the folder's name, or the whole path
+            // where it has none.
+            None => label.push_str(
+                &tab.path
+                    .file_name()
+                    .unwrap_or(tab.path.as_os_str())
+                    .to_string_lossy(),
+            ),
+        }
+        label.push_str(if busy {
+            " · working"
+        } else if tab.error.is_some() {
+            " · unavailable"
+        } else {
+            ""
+        });
+        pin.len()
     }
 
     /// Each tab's width with its label whole, to the tab's scaled 220 px
-    /// cap, without its close button: its label, as layout rounds it
-    /// (`tab_label_widths`), between its insets, the insets and the cap
-    /// snapped to device pixels as layout snaps them (at 18 pt and scale
-    /// factor 1.5 the cap is drawn 304⅔ px wide, not 304.62).
-    pub(super) fn tab_whole_widths(&self, window: &Window) -> Vec<Pixels> {
-        let insets = window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)) * 2.;
+    /// cap, without its close button, passed to `each` in order: its label,
+    /// as layout rounds it (`tab_label_widths`), between its insets
+    /// (`tab_label_insets`), the cap snapped to device pixels as layout
+    /// snaps it (at 18 pt and scale factor 1.5 the cap is drawn 304⅔ px
+    /// wide, not 304.62). The strip's choice asks on every frame
+    /// (`tabs_whole_width`), so each label is written into one buffer the
+    /// thread keeps and read from the label cache, under the window's line
+    /// key read once: on a frame whose tabs have not changed it allocates
+    /// nothing beyond that one read of the font, whatever the tab count,
+    /// where a label, the project's name and the font's key were allocated
+    /// anew for each tab, and the list of widths for each frame.
+    fn tab_whole_width_each(&self, window: &Window, mut each: impl FnMut(Pixels)) {
+        thread_local! {
+            /// The label being measured, kept for the next frame's.
+            static LABEL: std::cell::RefCell<String> = const {
+                std::cell::RefCell::new(String::new())
+            };
+        }
+        let key = crate::views::LineKey::current(window);
+        let insets = tab_label_insets(window);
         let cap = window.pixel_snap(appearance::ui_size(220.));
-        self.repository_tabs
-            .tabs
-            .iter()
-            .map(|tab| {
-                let (label, pin) = self.tab_label(tab);
-                (insets + tab_label_widths(&label, pin, window).0).min(cap)
-            })
-            .collect()
+        LABEL.with(|label| {
+            let mut label = label.borrow_mut();
+            for tab in &self.repository_tabs.tabs {
+                label.clear();
+                let pin = self.write_tab_label(tab, &mut label);
+                each((insets + tab_label_widths(&label, pin, &key, window).0).min(cap));
+            }
+        });
+    }
+
+    /// Each tab's whole width ([`Self::tab_whole_width_each`]), in order.
+    #[cfg(test)]
+    pub(super) fn tab_whole_widths(&self, window: &Window) -> Vec<Pixels> {
+        let mut widths = Vec::new();
+        self.tab_whole_width_each(window, |width| widths.push(width));
+        widths
     }
 
     /// The width the tab list takes with every tab whole
-    /// (`tab_whole_widths`) beside its 28 px close button, `gap_1` apart:
-    /// what the strip's labelled actions give way to
+    /// (`tab_whole_width_each`) beside its 28 px close button, `gap_1`
+    /// apart: what the strip's labelled actions give way to
     /// (`GitTurtle::tab_strip_labels`).
     pub(super) fn tabs_whole_width(&self, window: &Window) -> Pixels {
         let gap = window.pixel_snap(window.rem_size() * 0.25);
         let close = window.pixel_snap(appearance::ui_size(28.));
-        self.tab_whole_widths(window)
-            .into_iter()
-            .enumerate()
-            .map(|(index, tab)| tab + close + if index > 0 { gap } else { px(0.) })
-            .fold(px(0.), |total, width| total + width)
+        let mut total = px(0.);
+        let mut tabs = 0;
+        self.tab_whole_width_each(window, |tab| {
+            total += tab + close + if tabs > 0 { gap } else { px(0.) };
+            tabs += 1;
+        });
+        total
     }
+}
+
+/// The room the tab list keeps inside its clip, on every side, for the ring
+/// a focused tab or close button draws outside its edge
+/// (`appearance::button_ring_room`), rounded up to a whole device pixel:
+/// layout rounds a length to the nearest device pixel, so at scale factor
+/// 1.5 the ring's 3 px laid out as 2⅔ px and the clip cut the ring's outer
+/// device pixel; rounded up it is 3⅓ px there. At scale factors 1 and 2 it is
+/// the ring's room exactly.
+pub(super) fn tab_list_ring_room(window: &Window, cx: &App) -> Pixels {
+    let scale = window.scale_factor();
+    px((f32::from(appearance::button_ring_room(cx)) * scale).ceil() / scale)
+}
+
+/// A tab's label insets, the `button` helper's `LABEL_INSET` beside its
+/// label on either side, each snapped to device pixels as layout snaps it.
+fn tab_label_insets(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)) * 2.
 }
 
 /// The rule under the repository tab strip, inside its height.
@@ -2204,13 +2270,23 @@ thread_local! {
 /// bytes) and the name's first character before the ellipsis. The toolkit's
 /// truncation keeps the characters that fit strictly before its ellipsis and
 /// drops trailing whitespace and ASCII punctuation, so the cut runs to the
-/// first character it keeps, and takes the next whole pixel past its width.
-fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels) {
-    let key = crate::views::LineKey::current(window);
+/// first character it keeps, and takes the next whole pixel past its width,
+/// rounded up to a whole device pixel too: as a tab's minimum width, a whole
+/// pixel off the device grid lost a third of a pixel to layout at scale
+/// factor 1.5, which a cut a hair narrower than the floor needs. `key` is
+/// the window's [`crate::views::LineKey`], read once for every tab a frame
+/// measures: reading it builds the window's text style, whose default font
+/// features GPUI allocates.
+fn tab_label_widths(
+    label: &str,
+    pin: usize,
+    key: &crate::views::LineKey,
+    window: &Window,
+) -> (Pixels, Pixels) {
     let (whole, floor) = TAB_LABEL_WIDTHS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
-            *cache = Some((key, Vec::new()));
+        if cache.as_ref().is_none_or(|(cached, _)| cached != key) {
+            *cache = Some((key.clone(), Vec::new()));
         }
         let floors = &mut cache.as_mut().expect("the cache for this key").1;
         if let Some((_, widths)) = floors.iter().find(|(cached, _)| cached == label) {
@@ -2235,9 +2311,13 @@ fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels
         floors.push((label.to_owned(), (whole, floor)));
         (whole, floor)
     });
-    // Layout rounds the whole pixel up to a whole device pixel; the floor,
-    // no wider than the whole pixel, keeps below it.
-    (crate::views::laid_out_text_width(whole, window), floor)
+    // Layout rounds the whole label's pixel up to a whole device pixel; the
+    // floor, no wider than the whole pixel, takes the same rounding, so it
+    // stays no wider than the whole label.
+    (
+        crate::views::laid_out_text_width(whole, window),
+        crate::views::laid_out_text_width(floor, window),
+    )
 }
 
 /// The repository tab strip's minimum height: the larger of its 36 px at the
@@ -2345,6 +2425,62 @@ impl Render for LibraryView {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    /// The test binary's allocator: the system's, counting each thread's
+    /// allocations, so a test can tell that a path allocates nothing
+    /// ([`allocations`]). Each allocation costs one thread-local increment.
+    struct CountingAllocator;
+
+    #[global_allocator]
+    static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+    thread_local! {
+        static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The allocations this thread has made so far.
+    fn allocations() -> u64 {
+        ALLOCATIONS.with(std::cell::Cell::get)
+    }
+
+    fn count_allocation() {
+        // A const `Cell` has no destructor, so this never allocates and
+        // never fails; `try_with` keeps a late allocation during a thread's
+        // teardown from panicking all the same.
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+    }
+
+    // SAFETY: each method passes its call to the system allocator unchanged,
+    // so the system allocator's guarantees hold.
+    unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            count_allocation();
+            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+            count_allocation();
+            // SAFETY: the caller upholds `GlobalAlloc::alloc_zeroed`'s contract.
+            unsafe { std::alloc::System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn realloc(
+            &self,
+            pointer: *mut u8,
+            layout: std::alloc::Layout,
+            size: usize,
+        ) -> *mut u8 {
+            count_allocation();
+            // SAFETY: the caller upholds `GlobalAlloc::realloc`'s contract.
+            unsafe { std::alloc::System.realloc(pointer, layout, size) }
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+            // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract.
+            unsafe { std::alloc::System.dealloc(pointer, layout) }
+        }
+    }
 
     async fn settle_tab_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         for _ in 0..8 {
@@ -3383,8 +3519,11 @@ mod tests {
     /// bounds on both axes. The list keeps room inside that clip for the
     /// installed Button focus ring: each tab's and close button's ring, `gap +
     /// width` outside its edge, lies within the content mask the list paints
-    /// its tabs in. The list's margin gives the room back, so every tab sits
-    /// where a list without the room puts it.
+    /// its tabs in, at scale factors 2, 1.5 and 1: at 1.5 the 3 px room once
+    /// laid out as 2⅔ px, as layout rounds a length to the nearest device
+    /// pixel, and the clip cut each ring's outer device pixel. The list's
+    /// margin gives the room back, so every tab sits where a list without the
+    /// room puts it.
     #[gpui::test]
     async fn repository_tab_list_keeps_room_for_every_focus_ring(cx: &mut TestAppContext) {
         use gpui_kit::component::{FocusRing, Root, Theme};
@@ -3514,25 +3653,30 @@ mod tests {
         assert_eq!(installed, appearance::BUTTON_FOCUS_RING);
         let footprint = installed.gap + installed.width;
 
-        // The tab opened last is selected, then the first.
-        for selected in [1, 0] {
-            if selected == 0 {
+        // The tab opened last is selected, then the first, at each scale.
+        for scale in [2., 1.5, 1.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for selected in [1, 0] {
                 cx.update(|window, cx| {
-                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                    app.update(cx, |app, cx| {
+                        app.switch_repository_tab(selected, window, cx)
+                    })
                 });
                 settle_tab_test(&app, cx).await;
-            }
-            draw(cx);
-            let mask = tab_list_mask(cx, TABS[selected]);
-            for selector in TABS.into_iter().flatten() {
-                let ring = rendered(cx, selector).dilate(footprint);
-                assert!(
-                    holds(mask, ring),
-                    "tab {selected} selected: the ring around {selector}, {ring:?}, \
-                     lies outside the tab list's content mask {mask:?}"
-                );
+                draw(cx);
+                let mask = tab_list_mask(cx, TABS[selected]);
+                for selector in TABS.into_iter().flatten() {
+                    let ring = rendered(cx, selector).dilate(footprint);
+                    assert!(
+                        holds(mask, ring),
+                        "at scale {scale}, tab {selected} selected: the ring around \
+                         {selector}, {ring:?}, lies outside the tab list's content mask {mask:?}"
+                    );
+                }
             }
         }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        draw(cx);
 
         // Without the room the tabs lay out exactly as they do with it, and
         // the list clips every ring: the room alone keeps them whole.
@@ -4218,7 +4362,8 @@ mod tests {
             cx.update(|window, _| {
                 window.set_scale_factor(scale);
                 let before = layouts();
-                let width = tab_label_widths(label, 0, window).0;
+                let key = crate::views::LineKey::current(window);
+                let width = tab_label_widths(label, 0, &key, window).0;
                 (width, layouts() - before)
             })
         };
@@ -4240,6 +4385,151 @@ mod tests {
             );
         }
         cx.update(|window, _| window.set_scale_factor(2.));
+    }
+
+    /// A tab cut to its floor keeps the floor whole at scale factor 1.5:
+    /// in a window too narrow for its name, at 13, 17 and 18 pt, the tab
+    /// lays out at its floor, no narrower than its laid-out insets and the
+    /// floor's whole pixel, the room its first character and ellipsis need.
+    /// The floor in whole pixels lies off the device grid there for every
+    /// other width, as at 13 pt, and layout once rounded such a tab a third
+    /// of a pixel narrower; the floor is now rounded up to a device pixel, as
+    /// the label is. The insets are each snapped as layout snaps the label's
+    /// padding: at 17 pt their scaled sum rounded a device pixel short of
+    /// the two paddings.
+    #[gpui::test]
+    async fn a_tab_at_its_floor_keeps_it_whole_at_a_fractional_scale(cx: &mut TestAppContext) {
+        use crate::tags::tests::rendered;
+
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        let name = "a much longer repository name";
+        app.update(cx, |app, cx| {
+            app.project_names.insert(paths[0].clone(), name.to_owned());
+            cx.notify();
+        });
+        let mut off_grid = 0;
+        for interface in [13, 17, 18] {
+            let at = format!("{interface} pt");
+            resize_strip(cx, &app, (interface, 160., 490.)).await;
+            // A resize lays the window out at its own scale factor again.
+            cx.update(|window, _| window.set_scale_factor(1.5));
+            crate::tags::tests::draw(cx);
+            let (insets, floor, device) = cx.update(|window, _| {
+                assert_eq!(window.scale_factor(), 1.5, "{at}");
+                let weight = window.text_style().font_weight;
+                let size = appearance::ui_text(12.);
+                let cut = crate::views::shaped_width("a…", size, weight, window);
+                (
+                    tab_label_insets(window),
+                    cut.floor() + px(1.),
+                    px(1. / window.scale_factor()),
+                )
+            });
+            let device_floor = f32::from(floor) * 1.5;
+            off_grid += usize::from((device_floor - device_floor.round()).abs() > 0.01);
+            let tab = rendered(cx, "repository-tab-0");
+            assert!(
+                tab.size.width >= insets + floor - px(0.01),
+                "{at}: the tab {tab:?} is narrower than its insets {insets:?} and floor {floor:?}"
+            );
+            assert!(
+                tab.size.width < insets + floor + device,
+                "{at}: the tab {tab:?} stands at its floor {floor:?}, the window too narrow"
+            );
+        }
+        assert!(off_grid > 0, "a floor lies off the device grid at 1.5");
+        reset_strip_text(cx, &app);
+        cx.update(|window, _| window.set_scale_factor(2.));
+    }
+
+    /// The strip's choice measures every tab's whole label on each frame
+    /// (`tabs_whole_width`), and on a frame where no tab changed that
+    /// allocates nothing beyond reading the window's line key once: each
+    /// label is written into one buffer the thread keeps and read from the
+    /// label cache. It once formatted each tab's label, copied its project's
+    /// name and read the key, three allocations per tab, and collected the
+    /// widths, one more per frame. (Reading the key builds the window's
+    /// text style, whose default font features GPUI allocates, wherever a
+    /// `LineKey` is read.) The labels it measures are the tabs' own: a
+    /// renamed project's name, and a folder's name with a running write's
+    /// "· working".
+    #[gpui::test]
+    async fn the_tab_strip_measures_its_tabs_without_allocating(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(paths[1].clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.update(cx, |app, cx| {
+            app.project_names
+                .insert(paths[0].clone(), "a much longer repository name".into());
+            cx.notify();
+        });
+        crate::tags::tests::draw(cx);
+        // What reading the window's line key alone allocates.
+        let key = cx.update(|window, _| {
+            let before = allocations();
+            let _ = crate::views::LineKey::current(window);
+            allocations() - before
+        });
+        assert!(key <= 1, "reading the line key allocates {key} times");
+        // The tab list's whole width, and what measuring it allocates beyond
+        // reading the key.
+        let measure = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let before = allocations();
+                let whole = app.tabs_whole_width(window);
+                (whole, (allocations() - before).saturating_sub(key))
+            })
+        };
+        let labels = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.repository_tabs
+                    .tabs
+                    .iter()
+                    .map(|tab| app.tab_label(tab).0)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            labels(cx),
+            ["a much longer repository name", "second"],
+            "each tab's label is its project's name"
+        );
+        let (whole, _) = measure(cx);
+        for frame in 0..3 {
+            assert_eq!(
+                measure(cx),
+                (whole, 0),
+                "frame {frame}: the same width, with nothing allocated"
+            );
+        }
+        // A tab that changes is measured again, and then allocates nothing.
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            app.operation_repository = Some(paths[1].clone());
+            cx.notify();
+        });
+        crate::tags::tests::draw(cx);
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        crate::tags::tests::draw(cx);
+        assert_eq!(
+            labels(cx),
+            ["a much longer repository name", "second · working"],
+            "the busy tab's label reports its work"
+        );
+        let (working, _) = measure(cx);
+        assert!(working > whole, "{working:?} for the longer label");
+        assert_eq!(measure(cx), (working, 0), "nothing allocated");
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            app.operation_repository = None;
+            cx.notify();
+        });
     }
 
     /// Every clip that keeps room for the ring a focused Button draws outside
