@@ -125,13 +125,21 @@ impl GitTurtle {
         }
     }
     pub(super) fn open_revision_comparison(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self
+        self.open_compare_form(window, cx);
+    }
+
+    /// Opens Compare local revisions, as [`Self::open_revision_comparison`]
+    /// does, and returns its form, which a test waits on for its branch and
+    /// tag choices (`focus_ring::sweep::Opened`).
+    pub(super) fn open_compare_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<CompareForm>> {
+        let repo = self
             .repository
             .clone()
-            .filter(|_| self.operation_busy.is_none())
-        else {
-            return;
-        };
+            .filter(|_| self.operation_busy.is_none())?;
         let (before, after, mode) = match self
             .revision_inspection
             .active
@@ -150,6 +158,7 @@ impl GitTurtle {
         let form = cx.new(|cx| {
             CompareForm::new(owner, repo, (before, after, mode), return_focus, window, cx)
         });
+        let opened = form.clone();
         let focus_form = form.downgrade();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
@@ -195,6 +204,7 @@ impl GitTurtle {
                 }
             });
         });
+        Some(opened)
     }
 
     pub(super) fn open_quick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -601,7 +611,29 @@ impl GitTurtle {
     }
 }
 
-struct CompareForm {
+/// The width walk (`width_walk`) reads Compare local revisions once its
+/// branch and tag choices have landed. They are read on the form's own
+/// worker, which neither `run_until_parked` nor the drain of the app's
+/// executor waits for, and a reply that landed mid-walk added the choices
+/// matching the field the walk read. A read that answers lists HEAD at least.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<CompareForm>> {
+    fn finish(self, cx: &mut gpui::VisualTestContext) {
+        let Some(compare) = self else {
+            return;
+        };
+        // The worker answers before it idles, and the reply lands on this
+        // thread when it next runs.
+        compare.read_with(cx, |compare, _| compare.worker.wait_idle());
+        cx.executor().run_until_parked();
+        assert!(
+            compare.read_with(cx, |compare, _| !compare.targets.is_empty()),
+            "the comparison's branch and tag choices land"
+        );
+    }
+}
+
+pub(crate) struct CompareForm {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     before: Entity<InputState>,

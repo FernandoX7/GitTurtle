@@ -1685,9 +1685,11 @@ impl Dialog {
                 Box::pin(Dialog::Worktrees.open(app, cx)).await;
                 crate::worktrees::show_reading(app, cx);
             }
+            // Through the form, whose branch and tag choices, read on its
+            // own worker, `open_dialog` waits for.
             Dialog::RevisionComparison => {
                 open_dialog(app, cx, &name, |app, window, cx| {
-                    app.open_revision_comparison(window, cx)
+                    app.open_compare_form(window, cx)
                 })
                 .await
             }
