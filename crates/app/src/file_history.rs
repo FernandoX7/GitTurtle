@@ -1538,25 +1538,25 @@ mod tests {
     /// fit its 45% share: it kept that fixed share of the room between File
     /// History's header and footer, which left 93 px from the paths to the
     /// revisions at 13 pt in 1,000 × 980. Nothing scrolls where everything
-    /// fits.
+    /// fits. File History opened at 13 pt in 1,200 × 900, the size History
+    /// was drawn at, with no resize or text size between, is measured for
+    /// its revision, never with History's measurement of the same commit at
+    /// the same width, bound and text, which lacks the revision's paths: it
+    /// opens with no measurement (`take_inspection_context`), and were the
+    /// two to share one, whose details it measured would tell them apart
+    /// (`commit_message::Details`, pinned by
+    /// `commit_message::tests::a_kept_measurement_stands_only_for_the_details_it_measured`).
+    /// Every later step resizes first.
     #[gpui::test]
     async fn file_revisions_follow_the_revisions_paths(cx: &mut TestAppContext) {
         use crate::views::tests::{draw, history_script, history_window_from, settle};
         use gpui_kit::px;
         let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.simulate_resize(gpui_kit::size(px(1200.), px(900.)));
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
         settle(&app, cx).await;
         open_landed(&app, cx).await;
-        for (text, width, height) in [
-            (13, 1000., 980.),
-            (13, 461., 980.),
-            (13, 1280., 800.),
-            (18, 1480., 1200.),
-        ] {
-            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
-            cx.simulate_resize(gpui_kit::size(px(width), px(height)));
-            draw(cx);
-            let at = format!("{text} pt in {width} × {height}");
+        let follows = |cx: &mut gpui_kit::VisualTestContext, at: &str| {
             let paths = cx.debug_bounds("file-revision-paths").unwrap();
             let revisions = cx.debug_bounds("file-revision-list").unwrap();
             // The inset, then the panel's 1 px bottom border.
@@ -1572,6 +1572,18 @@ mod tests {
                 Some(px(0.)),
                 "{at}: nothing to scroll"
             );
+        };
+        follows(cx, "at the size History was drawn at");
+        for (text, width, height) in [
+            (13, 1000., 980.),
+            (13, 461., 980.),
+            (13, 1280., 800.),
+            (18, 1480., 1200.),
+        ] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+            draw(cx);
+            follows(cx, &format!("{text} pt in {width} × {height}"));
         }
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }

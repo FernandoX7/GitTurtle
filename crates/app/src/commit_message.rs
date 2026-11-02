@@ -1213,6 +1213,67 @@ pub(crate) mod tests {
         });
     }
 
+    /// A kept measurement of one commit's message stands only for the
+    /// details it measured with, at the same width, bound and text: the
+    /// commit's own, as History measures them, never stand for a revision
+    /// of it, whose details add its paths, nor one revision's for another
+    /// change or parent. No window path reaches this yet, since File
+    /// History opens with no measurement (`take_inspection_context`) and a
+    /// file's lineage lists each commit once, so its rendered regression
+    /// (`file_history::tests::file_revisions_follow_the_revisions_paths`)
+    /// passes with this key gone; the key keeps one presentation that
+    /// measured either from answering for the other.
+    #[gpui::test]
+    fn a_kept_measurement_stands_only_for_the_details_it_measured(cx: &mut TestAppContext) {
+        let (_, app, cx) = fixture(cx, vec![commit("a", "First", "Body")]);
+        let revision = |path: &str, parent: &str| FileHistoryEntry {
+            commit: commit("a", "First", "Body"),
+            change: gitturtle_core::FileChange {
+                old_path: Some(path.into()),
+                new_path: Some(path.into()),
+                old_oid: Some("c".repeat(40)),
+                new_oid: Some("d".repeat(40)),
+                status: gitturtle_core::ChangeStatus::Modified,
+                old_mode: "100644".into(),
+                new_mode: "100644".into(),
+            },
+            parent_oid: Some(parent.repeat(40)),
+        };
+        let (notes, other_path, other_parent) = (
+            revision("notes.txt", "f"),
+            revision("other.txt", "f"),
+            revision("notes.txt", "e"),
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let state = &app.inspector_message;
+                state.presentation(&app.commits[0], cx);
+                let key = LineKey::current(window);
+                let (width, bound, height) = (px(300.), px(400.), px(120.));
+                state.remember_extent(width, bound, key.clone(), None, height);
+                assert_eq!(state.extent(width, bound, &key, None), Some(height));
+                assert_eq!(
+                    state.extent(width, bound, &key, Some(&notes)),
+                    None,
+                    "the commit's own details stand for no revision of it"
+                );
+                state.remember_extent(width, bound, key.clone(), Some(&notes), height);
+                assert_eq!(state.extent(width, bound, &key, Some(&notes)), Some(height));
+                for (other, what) in [
+                    (None, "the commit's own details"),
+                    (Some(&other_path), "another path"),
+                    (Some(&other_parent), "another parent"),
+                ] {
+                    assert_eq!(
+                        state.extent(width, bound, &key, other),
+                        None,
+                        "a revision's details stand not for {what}"
+                    );
+                }
+            })
+        });
+    }
+
     pub(crate) fn message_selection(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
