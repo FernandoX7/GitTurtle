@@ -580,6 +580,11 @@ struct GitTurtle {
     loading: Option<&'static str>,
     error: Option<String>,
     status: String,
+    /// The parts the status was last joined from where one comes from user
+    /// text (`views::StatusParts`): the status line reads them only while
+    /// it still says that text, so a status set since, or restored, as File
+    /// History's return restores one, needs nothing reset here.
+    status_parts: views::StatusParts,
     /// A Git write's outcome, which the status line keeps over the reads
     /// that follow it for as long as a control confirms in place
     /// (`workspace::StatusOutcome`).
@@ -929,6 +934,7 @@ impl GitTurtle {
             loading: None,
             error: None,
             status: "Open a repository to explore its history".into(),
+            status_parts: views::StatusParts::default(),
             status_outcome: None,
             sidebar: true,
             history_sidebar: true,

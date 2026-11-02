@@ -1685,7 +1685,8 @@ impl GitTurtle {
     pub(super) fn register_completed_repository(
         &mut self,
         path: PathBuf,
-        notice: String,
+        done: &str,
+        name: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1698,10 +1699,15 @@ impl GitTurtle {
                 error: None,
             });
         }
-        self.status = format!(
-            "{notice} · {} · open its repository tab or folder",
-            path.display()
-        );
+        // The project's name and the path are the user's, either of which
+        // can hold " · " itself: the line gives way only between the parts,
+        // so a narrow one still reads "Repository cloned" whole.
+        self.set_status_parts(&[
+            done,
+            name,
+            &path.display().to_string(),
+            "open its repository tab or folder",
+        ]);
         self.save_repository_session(window, cx);
     }
     pub(super) fn tab_commit_receipt(&mut self, path: &Path, oid: String) {
@@ -1734,15 +1740,15 @@ impl GitTurtle {
                 warm.operation_notice = notice;
                 warm.operation_error = error.clone();
             }
-            self.status = format!(
-                "Git operation {} in {} · open that tab for details",
-                if error.is_some() {
-                    "failed"
-                } else {
-                    "completed"
-                },
-                path.display()
-            );
+            let outcome = if error.is_some() {
+                "failed"
+            } else {
+                "completed"
+            };
+            self.set_status_parts(&[
+                &format!("Git operation {outcome} in {}", path.display()),
+                "open that tab for details",
+            ]);
         }
     }
 }

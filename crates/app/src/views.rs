@@ -7140,28 +7140,76 @@ fn whole_status_width(text: &str, window: &Window) -> Pixels {
 /// "content read 12.3 ms" and "captured snapshot".
 const STATUS_SEPARATOR: &str = " · ";
 
+/// A status line's text joined from its parts where one comes from user
+/// text, such as a path, which can hold [`STATUS_SEPARATOR`] itself: the
+/// line gives way only where its parts end ([`status_parts_end`]), never
+/// inside one. Split at every separator it holds, a cloned repository's
+/// "Repository cloned · demo · /srv/clones/a · b · open its repository tab
+/// or folder" gave way inside the path and read "Repository cloned · demo ·
+/// /srv/clones/a", a whole path, and another one.
+#[derive(Default)]
+pub(crate) struct StatusParts {
+    text: String,
+    /// The byte where each part but the last ends.
+    ends: Vec<usize>,
+}
+
+impl StatusParts {
+    pub(crate) fn join(parts: &[&str]) -> Self {
+        let mut joined = Self::default();
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                joined.ends.push(joined.text.len());
+                joined.text.push_str(STATUS_SEPARATOR);
+            }
+            joined.text.push_str(part);
+        }
+        joined
+    }
+
+    /// Where `text`'s parts end, where it is this text; another, as the
+    /// status line says once anything else has replaced it, gives way at
+    /// each separator it holds.
+    fn ends_in(&self, text: &str) -> Option<&[usize]> {
+        (self.text == text).then_some(self.ends.as_slice())
+    }
+}
+
 /// Where the status line's `text` ends in a box `room` wide: all of it
 /// where it fits (`None`), else after the last of its whole parts
 /// ([`STATUS_SEPARATOR`]) that fit with those before it, else after its
 /// first, which ends in an ellipsis. A part so reads whole or gives way
 /// whole with the parts after it: at 18 pt in a 461 px half tile, Compare's
 /// whole keyboard hints left "1 changed file · content read 12.3 ms" too
-/// little room, and the app drew its timing cut mid-number. The widths are
-/// kept for each text, from one layout of it ([`status_part_widths`]).
-fn status_parts_end(text: &str, room: Pixels, window: &Window) -> Option<usize> {
+/// little room, and the app drew its timing cut mid-number. Its parts end
+/// at each separator, or only at `ends` where a part comes from user text
+/// ([`StatusParts`]). The widths are kept for each text, from one layout
+/// of it ([`status_part_widths`]).
+fn status_parts_end(
+    text: &str,
+    ends: Option<&[usize]>,
+    room: Pixels,
+    window: &Window,
+) -> Option<usize> {
     if !text.contains(STATUS_SEPARATOR) {
         return None;
     }
     status_parts(text, window, |widths| {
         let (whole, leading) = widths.split_last()?;
-        (whole.1 > room).then(|| {
+        if whole.1 <= room {
+            return None;
+        }
+        let leading = leading
+            .iter()
+            .filter(|(end, _)| ends.is_none_or(|ends| ends.contains(end)));
+        let first = leading.clone().next();
+        Some(
             leading
-                .iter()
                 .rev()
                 .find(|(_, width)| *width <= room)
-                .or(leading.first())
-                .map_or(whole.0, |(end, _)| *end)
-        })
+                .or(first)
+                .map_or(whole.0, |(end, _)| *end),
+        )
     })
 }
 
@@ -7869,7 +7917,9 @@ impl GitTurtle {
                     let hints = hints.map_or(px(0.), |(_, width)| {
                         gap + laid_out_text_width(*width, window)
                     });
-                    status_parts_end(self.status_text(), room + cancel - hints, window)
+                    let text = self.status_text();
+                    let ends = self.status_parts.ends_in(text);
+                    status_parts_end(text, ends, room + cancel - hints, window)
                 })
                 .flatten();
             StatusFit {
@@ -7885,6 +7935,15 @@ impl GitTurtle {
     fn status_line_text(&self, fit: &StatusFit) -> &str {
         let text = self.status_text();
         fit.parts.map_or(text, |end| &text[..end])
+    }
+
+    /// Sets the status to `parts` joined, a part of which comes from user
+    /// text that can hold [`STATUS_SEPARATOR`] itself, as a path can: the
+    /// line gives way only where they end ([`StatusParts`]).
+    pub(super) fn set_status_parts(&mut self, parts: &[&str]) {
+        let parts = StatusParts::join(parts);
+        self.status.clone_from(&parts.text);
+        self.status_parts = parts;
     }
 
     /// The status line's text as the status bar draws it
@@ -16330,6 +16389,70 @@ pub(crate) mod tests {
             "Compare's timing gives way in the half tile"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The status line gives way only where its parts end, never inside a
+    /// part from user text: with a repository cloned into a folder whose
+    /// path holds " · " itself, at 13 pt in History at every fourth width
+    /// from 461 to 1,000 px, the line reads "Repository cloned", then the
+    /// project's name, the whole path and the hint after it, each part
+    /// after the first whole, so "Repository cloned" alone where the name
+    /// does not fit beside it, and the name without the path where the
+    /// path's head alone would fit. Split at each separator it held, the
+    /// line read "Repository cloned · demo-project · /srv/clones/a long
+    /// folder name", a whole path, and another one; with the notice one
+    /// part, a narrow line read "Repository cloned · de…".
+    #[gpui::test]
+    async fn the_status_line_keeps_a_path_whole_or_drops_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let weight = cx.update(|window, _| window.text_style().font_weight);
+        let (done, name) = ("Repository cloned", "demo-project");
+        let head = "/srv/clones/a long folder name";
+        let path = format!("{head} · b");
+        let hint = "open its repository tab or folder";
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.register_completed_repository(path.clone().into(), done, name, window, cx)
+            })
+        });
+        let notice = format!("{done} · {name}");
+        let kept = [
+            done.to_owned(),
+            notice.clone(),
+            format!("{notice} · {path}"),
+            format!("{notice} · {path} · {hint}"),
+        ];
+        let read_as_whole = format!("{notice} · {head}");
+        let (mut alone, mut dropped_whole) = (false, false);
+        for width in (461..=1000).step_by(4) {
+            cx.simulate_resize(size(px(width as f32), px(680.)));
+            draw(cx);
+            let drawn =
+                cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)));
+            assert!(kept.contains(&drawn), "at {width}: {drawn:?}");
+            let line = cx.debug_bounds("status-line").expect("the status line");
+            let need = |cx: &mut VisualTestContext, text: &str| {
+                cx.update(|window, _| shaped_width(text, appearance::ui_text(10.), weight, window))
+            };
+            let drawn_width = need(cx, &drawn);
+            assert!(
+                drawn == done || drawn_width <= line.size.width + px(0.5),
+                "at {width}: {drawn:?}, {drawn_width:?} wide, whole in {line:?}"
+            );
+            alone |= drawn == done;
+            dropped_whole |=
+                drawn == notice && need(cx, &read_as_whole) + px(1.) <= line.size.width;
+        }
+        assert!(alone, "a narrow line reads \"{done}\" whole");
+        assert!(
+            dropped_whole,
+            "a line with room for the path's head drops the path whole"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.status.clone()),
+            kept[3],
+            "the status reads all its parts"
+        );
     }
 
     /// At an 18 pt interface size the column and inspector minimums grow with

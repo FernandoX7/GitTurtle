@@ -1900,12 +1900,13 @@ impl GitTurtle {
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
-                        let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, this.project_name(repo.path()));
+                        let done = if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" };
+                        let name = this.project_name(repo.path());
                         if opening {
                             this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
-                            this.operation_notice = Some(message);
+                            this.operation_notice = Some(format!("{done} · {name}"));
                         } else {
-                            this.register_completed_repository(repo.path().to_owned(), message, window, cx);
+                            this.register_completed_repository(repo.path().to_owned(), done, &name, window, cx);
                         }
                     }
                     Err(error) => {
@@ -1915,7 +1916,8 @@ impl GitTurtle {
                             this.operation_error = Some(message);
                             this.operation_notice = None;
                         } else {
-                            this.status = format!("Repository operation failed in {}: {message}",destination.display());
+                            // One part: the path and Git's message are the user's and can hold " · ".
+                            this.set_status_parts(&[&format!("Repository operation failed in {}: {message}", destination.display())]);
                         }
                     }
                 }
