@@ -61,7 +61,8 @@ const ERROR_TOOLTIP_LINES: usize = 12;
 const ERROR_TOOLTIP_BYTES: usize = 1024;
 
 /// A dialog form's error line, `id`, which is also its debug selector:
-/// `text` at `size` (the inherited size where `None`) in at most
+/// `text` at `size` (where `None`, the interface text size, `ui_text(13.)`,
+/// the size a dialog's text inherits from the window's root) in at most
 /// [`ERROR_LINES`] lines, the last ending in an ellipsis where it needs
 /// more, its whole text, bounded (`bounded_accessible_text`), its
 /// accessible value, as the alert that says it ([`set_error_line`]) says it
@@ -91,6 +92,15 @@ pub(crate) fn error_line(
     cx: &mut App,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let whole = native_accessibility::bounded_accessible_text(text);
+    // The size the line is drawn and measured at, set on the line itself,
+    // so its prepaint never reads the window's text style for it: that read
+    // builds GPUI's default text style, whose font features are an
+    // allocation, and walks the style stack, which a line without a size of
+    // its own (the profile form's) did on every frame, however steady.
+    // Where none is given it is the size such a line inherited, the
+    // interface size the window's render sets on its root (`views.rs`,
+    // `GitTurtle::render`), which the kit's dialogs keep for their content.
+    let size = size.unwrap_or_else(|| crate::appearance::ui_text(13.));
     // How the line was laid out last, which its prepaint records, kept
     // across frames so the hover a frame began reads the latest.
     let laid_out = window
@@ -106,30 +116,40 @@ pub(crate) fn error_line(
     native_accessibility::static_text(
         div()
             .on_children_prepainted(move |bounds, window, _| {
-                // Inside the line's own text style, so its font measures it
-                // and its size is the one it is drawn at.
-                let measured = size
-                    .unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
+                #[cfg(test)]
+                let before = crate::test_support::allocations();
+                // A steady frame compares what it lays out with what was
+                // laid out last and reads nothing more; a change measures
+                // inside the line's own text style, so its font measures it.
                 let mut laid = recorded.borrow_mut();
-                let Some(width) = bounds.first().map(|line| line.size.width) else {
-                    *laid = None;
-                    return;
-                };
-                if !laid
-                    .as_ref()
-                    .is_some_and(|laid| laid.is(&report, width, measured))
-                {
-                    *laid = Some(LaidOut {
-                        cut: report_cut(&report, measured, width, window),
-                        report: report.clone(),
-                        width,
-                        size: measured,
-                    });
+                match bounds.first().map(|line| line.size.width) {
+                    None => *laid = None,
+                    Some(width) => {
+                        if !laid
+                            .as_ref()
+                            .is_some_and(|laid| laid.is(&report, width, size))
+                        {
+                            *laid = Some(LaidOut {
+                                cut: report_cut(&report, size, width, window),
+                                report: report.clone(),
+                                width,
+                                size,
+                            });
+                        }
+                    }
                 }
+                #[cfg(test)]
+                PREPAINT_ALLOCATIONS.with(|counted| {
+                    let (prepaints, allocations) = counted.get();
+                    counted.set((
+                        prepaints + 1,
+                        allocations + crate::test_support::allocations() - before,
+                    ));
+                });
             })
             .id(id)
             .debug_selector(move || id.into())
-            .when_some(size, |line, size| line.text_size(size))
+            .text_size(size)
             .line_clamp(ERROR_LINES)
             .text_ellipsis()
             .tooltip(move |window, cx| {
@@ -216,6 +236,10 @@ thread_local! {
     /// Test-only: the reports [`report_cut`] has shaped, and the lines it
     /// has laid out for them.
     static REPORT_LINES_LAID: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+    /// Test-only: the error lines' prepaints ([`error_line`]), and the
+    /// allocations they made.
+    static PREPAINT_ALLOCATIONS: std::cell::Cell<(usize, u64)> =
         const { std::cell::Cell::new((0, 0)) };
 }
 
@@ -2461,6 +2485,63 @@ pub(crate) mod tests {
                 "{lines} lines: cut, its tooltip"
             );
         }
+    }
+
+    /// An error line without a size of its own, as the profile form's, is
+    /// drawn at the size a dialog's text inherits and prepaints a steady
+    /// frame without allocating: under a dialog in a 1480 × 980 window, at
+    /// 13 and 18 pt, a one-line report is as tall as a line of the dialog's
+    /// own text beside it, and a frame drawn again with nothing changed
+    /// prepaints the line once with no allocation. Read from the window's
+    /// text style on each prepaint, its size built GPUI's default style,
+    /// whose font features are an allocation, on every frame however steady.
+    #[gpui::test]
+    async fn a_line_without_a_size_prepaints_a_steady_frame_without_allocating(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.open_alert_dialog(cx, |dialog, window, cx| {
+                dialog
+                    .child(
+                        div()
+                            .debug_selector(|| "probe-dialog-text".into())
+                            .child("Profile name"),
+                    )
+                    .child(error_line(
+                        "probe-error-line",
+                        "Saving the profile failed",
+                        None,
+                        window,
+                        cx,
+                    ))
+            })
+        });
+        for interface in [13, 18] {
+            set_interface_text_size(cx, &app, interface);
+            draw(cx);
+            let inherited = rendered(cx, "probe-dialog-text").size.height;
+            let drawn = rendered(cx, "probe-error-line").size.height;
+            assert_eq!(
+                drawn, inherited,
+                "at {interface} pt the line is one line of the dialog's text"
+            );
+            PREPAINT_ALLOCATIONS.set((0, 0));
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            assert_eq!(
+                PREPAINT_ALLOCATIONS.get(),
+                (1, 0),
+                "at {interface} pt a steady frame prepaints the line once, allocating nothing"
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
     }
 
     /// A hover's tooltip answers for the frame drawn last, its width, text
