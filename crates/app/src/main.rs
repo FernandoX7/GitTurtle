@@ -46,8 +46,8 @@ mod operations;
 mod page_navigation;
 mod partial_view;
 mod path_filter;
-// The confined PDF helper process and its client; `pdf_view` calls the client
-// from the next slice.
+// The confined PDF helper process and its client. Nothing calls the client
+// until `pdf_view` does in the next slice (T3), which drops this allow.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")

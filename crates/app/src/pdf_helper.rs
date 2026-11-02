@@ -1,27 +1,37 @@
-//! GitTurtle's Linux PDF helper process: its entry, self-confinement and
-//! seccomp allow-list.
+//! GitTurtle's Linux PDF helper process (its entry, self-confinement and
+//! seccomp allow-list) and the client that runs it.
 //!
 //! The app binary becomes the helper only when started with exactly
 //! `--gitturtle-pdf-helper <protocol version> <parent pid>`: [`run_if_requested`]
 //! is the first statement of `main`. The helper confines itself before it
 //! reads a byte, then serves one request with
 //! [`gitturtle_preview::pdf_helper::serve`] and exits; hayro never runs in the
-//! app process. The contract is section 6 of the
+//! app process. [`Client::render`] starts one helper per page from
+//! `/proc/self/exe`, at most two across the app, and kills and reaps it on the
+//! calling thread at the deadline, when the caller's check fails, or when its
+//! reply exceeds the cap. The contract is section 6 of the
 //! [architecture review](../../../docs/development/2026-11-02-linux-pdf-pages-architecture.md).
 //!
 //! The module depends only on std, `libc`, `anyhow` and `gitturtle-preview`:
 //! `tests/pdf_helper.rs` compiles it as its own module to drive the filter and
 //! the real binary.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::fs::File;
 use std::hash::RandomState;
-use std::io;
+use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
-use gitturtle_preview::pdf_helper::{PROTOCOL_VERSION, serve};
+use gitturtle_preview::pdf_helper::{
+    ErrorKind, MAX_REPLY_BYTES, PROTOCOL_VERSION, PageReply, encode_request, read_reply, serve,
+};
 
 /// The first argument that makes this binary the helper.
 pub(crate) const HELPER_FLAG: &str = "--gitturtle-pdf-helper";
@@ -431,5 +441,499 @@ impl Filter {
             1.. => Err(io::Error::from_raw_os_error(libc::EBUSY)),
             _ => Err(io::Error::last_os_error()),
         }
+    }
+}
+
+/// The wall-clock time a helper gets for one page, from its start.
+pub(crate) const DEADLINE: Duration = Duration::from_secs(10);
+/// The longest the client goes without running the caller's check.
+const TICK: Duration = Duration::from_millis(25);
+/// Helpers running at once across the app: requests come from each window's
+/// reader and the shared page lane.
+pub(crate) static HELPERS: Slots = Slots::new(2);
+
+/// Why a page request returned no page. Its wording is fixed: nothing the
+/// helper sends reaches it, only a count the client has validated.
+#[derive(Debug)]
+pub(crate) enum Failure {
+    /// The caller's check failed; a helper that had started was killed and
+    /// reaped first.
+    Cancelled(anyhow::Error),
+    /// The input exceeds a bound; no helper started.
+    Refused(anyhow::Error),
+    /// The helper reported a document error for zero-based `page`.
+    Document { kind: ErrorKind, page: usize },
+    /// The helper ran past the deadline, its CPU limit or its own alarm.
+    TimedOut,
+    /// The helper died on `signal`, stopped in the renderer or exited without
+    /// a valid reply. The signal is for tests and diagnostics, never wording.
+    Stopped { signal: Option<i32> },
+    /// The reply was malformed, out of bounds, short, larger than the cap or
+    /// followed by more bytes.
+    Unreadable,
+    /// The helper could not be started or could not confine itself.
+    CouldNotStart,
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sentence = match self {
+            Self::Cancelled(error) | Self::Refused(error) => return write!(formatter, "{error}"),
+            Self::Document {
+                kind: ErrorKind::PageOutOfRange { page_count },
+                page,
+            } => {
+                let pages = if *page_count == 1 { "page" } else { "pages" };
+                return write!(
+                    formatter,
+                    "PDF page {} is outside this document's {page_count} {pages}",
+                    page + 1
+                );
+            }
+            // The other platforms' wording for the same document errors.
+            Self::Document { kind, .. } => match kind {
+                ErrorKind::InputTooLarge => "PDF exceeds the 32 MiB input limit",
+                ErrorKind::NotPdf => "Unrecognized PDF header",
+                ErrorKind::PageBound => "PDF page exceeds the 100,000-page navigation bound",
+                ErrorKind::Corrupt => "Cannot read PDF; corrupt or unsupported document",
+                ErrorKind::Locked => {
+                    "PDF is password protected; use explicit external inspection to unlock it"
+                }
+                ErrorKind::NoPages => "PDF contains no pages",
+                ErrorKind::TooManyPages => {
+                    "PDF page count exceeds the 100,000-page navigation bound"
+                }
+                ErrorKind::InvalidPageSize => "Invalid PDF page dimensions",
+                ErrorKind::PageEdgeLimit => "Image dimensions exceed the 32768-pixel edge limit",
+                ErrorKind::PagePixelLimit => "Image exceeds the 32-million-pixel limit",
+                ErrorKind::Request | ErrorKind::PageOutOfRange { .. } => {
+                    "The PDF renderer returned an unreadable result."
+                }
+                ErrorKind::RendererFailed => "The PDF renderer stopped on this page.",
+            },
+            Self::TimedOut => "The PDF page took longer than 10 seconds and was stopped.",
+            Self::Stopped { .. } => "The PDF renderer stopped on this page.",
+            Self::Unreadable => "The PDF renderer returned an unreadable result.",
+            Self::CouldNotStart => "The PDF renderer could not start.",
+        };
+        formatter.write_str(sentence)
+    }
+}
+
+impl std::error::Error for Failure {}
+
+/// A limit on helpers running at once. A waiting request keeps running its
+/// check, so cancelling it never waits for a slot.
+pub(crate) struct Slots {
+    running: Mutex<usize>,
+    freed: Condvar,
+    limit: usize,
+}
+
+impl Slots {
+    pub(crate) const fn new(limit: usize) -> Self {
+        Self {
+            running: Mutex::new(0),
+            freed: Condvar::new(),
+            limit,
+        }
+    }
+
+    fn acquire(&self, check: &dyn Fn() -> anyhow::Result<()>) -> Result<Slot<'_>, Failure> {
+        loop {
+            check().map_err(Failure::Cancelled)?;
+            let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+            let (mut running, _) = self
+                .freed
+                .wait_timeout_while(running, TICK, |running| *running >= self.limit)
+                .unwrap_or_else(PoisonError::into_inner);
+            if *running < self.limit {
+                *running += 1;
+                return Ok(Slot(self));
+            }
+        }
+    }
+}
+
+struct Slot<'a>(&'a Slots);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+/// The program and arguments that start a helper.
+pub(crate) struct HelperCommand {
+    program: OsString,
+    arguments: Vec<OsString>,
+}
+
+impl HelperCommand {
+    /// This running executable as the helper of this process, even after a
+    /// package upgrade replaced its file.
+    pub(crate) fn current() -> Self {
+        Self {
+            program: "/proc/self/exe".into(),
+            arguments: vec![
+                HELPER_FLAG.into(),
+                PROTOCOL_VERSION.to_string().into(),
+                std::process::id().to_string().into(),
+            ],
+        }
+    }
+
+    /// Any program as the helper: the real binary or a shell fake.
+    #[cfg(test)]
+    pub(crate) fn new<A: Into<OsString>>(
+        program: impl Into<OsString>,
+        arguments: impl IntoIterator<Item = A>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            arguments: arguments.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// The program, then its arguments.
+    #[cfg(test)]
+    pub(crate) fn argv(&self) -> Vec<&OsStr> {
+        std::iter::once(self.program.as_os_str())
+            .chain(self.arguments.iter().map(OsString::as_os_str))
+            .collect()
+    }
+
+    fn spawn(&self) -> io::Result<Child> {
+        // No `pre_exec`, uid, gid or groups, so std keeps `posix_spawn` in the
+        // multithreaded app.
+        Command::new(&self.program)
+            .args(&self.arguments)
+            .env_clear()
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    }
+}
+
+/// Renders PDF pages in confined helper processes, one per request.
+pub(crate) struct Client<'a> {
+    command: HelperCommand,
+    deadline: Duration,
+    slots: &'a Slots,
+}
+
+impl Client<'static> {
+    /// This executable as the helper, with the 10 s deadline and the app's
+    /// two helper slots.
+    pub(crate) fn new() -> Self {
+        Self {
+            command: HelperCommand::current(),
+            deadline: DEADLINE,
+            slots: &HELPERS,
+        }
+    }
+}
+
+impl<'a> Client<'a> {
+    /// The helper command, deadline and slots a client uses.
+    #[cfg(test)]
+    pub(crate) fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
+        (&self.command, self.deadline, self.slots)
+    }
+
+    /// A client for tests: another helper, a shorter deadline, own slots.
+    #[cfg(test)]
+    pub(crate) fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
+        Self {
+            command,
+            deadline,
+            slots,
+        }
+    }
+
+    /// Zero-based `page` of `pdf` and its text, from a new helper. Blocks the
+    /// calling thread, which starts, feeds, waits for, kills and reaps the
+    /// helper: the parent-death signal follows the thread that spawned it.
+    /// `check` runs at least every 25 ms, also while waiting for a slot.
+    pub(crate) fn render(
+        &self,
+        pdf: &[u8],
+        page: usize,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> Result<PageReply, Failure> {
+        let header = encode_request(page, pdf).map_err(Failure::Refused)?;
+        let _slot = self.slots.acquire(check)?;
+        check().map_err(Failure::Cancelled)?;
+        let child = self.command.spawn().map_err(|_| Failure::CouldNotStart)?;
+        let started = Instant::now();
+        let mut running = Running::new(child)?;
+        let (ending, reply) = running.exchange([&header, pdf], started + self.deadline, check);
+        classify(ending, &reply, page)
+    }
+}
+
+/// How the exchange with a helper ended.
+enum Ending {
+    Exited(ExitStatus),
+    /// The client killed and reaped the helper.
+    Killed(Kill),
+}
+
+enum Kill {
+    Deadline,
+    Cancelled(anyhow::Error),
+    Oversized,
+    /// Waiting for the helper failed.
+    Unwaitable,
+}
+
+/// A started helper. Dropping it kills and reaps the process on every path;
+/// `Child::kill` does nothing once a wait has succeeded, so a reused pid is
+/// never signalled.
+struct Running {
+    child: Child,
+    input: Option<ChildStdin>,
+    output: Option<ChildStdout>,
+    /// Readable once the helper exits, where the kernel has pidfds (5.3).
+    exited: Option<OwnedFd>,
+}
+
+impl Running {
+    fn new(mut child: Child) -> Result<Self, Failure> {
+        let running = Self {
+            input: child.stdin.take(),
+            output: child.stdout.take(),
+            exited: pidfd(child.id()),
+            child,
+        };
+        for fd in [
+            running.input.as_ref().map(AsRawFd::as_raw_fd),
+            running.output.as_ref().map(AsRawFd::as_raw_fd),
+        ] {
+            fd.ok_or(Failure::CouldNotStart)
+                .and_then(|fd| non_blocking(fd).map_err(|_| Failure::CouldNotStart))?;
+        }
+        Ok(running)
+    }
+
+    /// Writes `request` and collects the whole reply, at most
+    /// [`MAX_REPLY_BYTES`], until the helper exits, the deadline passes or
+    /// `check` fails.
+    fn exchange(
+        &mut self,
+        request: [&[u8]; 2],
+        deadline: Instant,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> (Ending, Vec<u8>) {
+        let mut reply = Vec::new();
+        let mut written = 0;
+        let mut reading = true;
+        let mut chunk = vec![0; 64 * 1024];
+        // Without a pidfd, waiting for the exit backs off from 1 ms to a tick.
+        let mut backoff = Duration::from_millis(1);
+        loop {
+            if let Err(error) = check() {
+                return (self.kill(Kill::Cancelled(error)), reply);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return (self.kill(Kill::Deadline), reply);
+            }
+            let mut wait = (deadline - now).min(TICK);
+            if !reading {
+                // The reply is complete once the helper closes its output.
+                match self.child.try_wait() {
+                    Ok(Some(status)) => return (Ending::Exited(status), reply),
+                    Ok(None) if self.exited.is_none() => {
+                        wait = wait.min(backoff);
+                        backoff = (backoff * 2).min(TICK);
+                    }
+                    Ok(None) => {}
+                    Err(_) => return (self.kill(Kill::Unwaitable), reply),
+                }
+            }
+            let mut polled = [
+                pollfd(
+                    self.output
+                        .as_ref()
+                        .filter(|_| reading)
+                        .map(AsRawFd::as_raw_fd),
+                    libc::POLLIN,
+                ),
+                pollfd(self.input.as_ref().map(AsRawFd::as_raw_fd), libc::POLLOUT),
+                pollfd(
+                    self.exited
+                        .as_ref()
+                        .filter(|_| !reading)
+                        .map(AsRawFd::as_raw_fd),
+                    libc::POLLIN,
+                ),
+            ];
+            let millis = libc::c_int::try_from(wait.as_millis().max(1)).unwrap_or(25);
+            // SAFETY: polls the entries of a local array.
+            if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, millis) } < 0
+            {
+                continue;
+            }
+            if polled[1].revents != 0 {
+                self.write(request, &mut written);
+            }
+            if polled[0].revents != 0 && !self.read(&mut reply, &mut chunk, &mut reading) {
+                return (self.kill(Kill::Oversized), reply);
+            }
+        }
+    }
+
+    /// Writes what the pipe takes; stops writing once everything is written
+    /// or the helper closed its input.
+    fn write(&mut self, request: [&[u8]; 2], written: &mut usize) {
+        let Some(input) = self.input.as_mut() else {
+            return;
+        };
+        let [header, body] = request;
+        loop {
+            let rest = match header.get(*written..) {
+                Some(rest) if !rest.is_empty() => rest,
+                _ => &body[*written - header.len()..],
+            };
+            if rest.is_empty() {
+                self.input = None;
+                return;
+            }
+            match input.write(rest) {
+                Ok(count) => *written += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+                Err(_) => {
+                    self.input = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Reads what the pipe holds into `reply`; false once it exceeds the cap.
+    fn read(&mut self, reply: &mut Vec<u8>, chunk: &mut [u8], reading: &mut bool) -> bool {
+        let Some(output) = self.output.as_mut() else {
+            *reading = false;
+            return true;
+        };
+        loop {
+            match output.read(chunk) {
+                Ok(0) => {
+                    *reading = false;
+                    self.input = None;
+                    return true;
+                }
+                Ok(count) => {
+                    if reply.len() + count > MAX_REPLY_BYTES {
+                        return false;
+                    }
+                    reply.extend_from_slice(&chunk[..count]);
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(_) => {
+                    *reading = false;
+                    return true;
+                }
+            }
+        }
+    }
+
+    fn kill(&mut self, why: Kill) -> Ending {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        Ending::Killed(why)
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A pidfd for `pid`, a child not yet waited for, so the pid is still ours.
+fn pidfd(pid: u32) -> Option<OwnedFd> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: opens a new descriptor; pidfds are close-on-exec.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let fd = RawFd::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+    // SAFETY: the descriptor was just opened and nothing else owns it.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn pollfd(fd: Option<RawFd>, events: libc::c_short) -> libc::pollfd {
+    libc::pollfd {
+        // A negative descriptor is skipped.
+        fd: fd.unwrap_or(-1),
+        events,
+        revents: 0,
+    }
+}
+
+fn non_blocking(fd: RawFd) -> io::Result<()> {
+    // SAFETY: reads and sets the status flags of a pipe this process owns.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// [`classify`] for a helper that ended with `status`, so tests can cover the
+/// signals that would make a fake helper dump core.
+#[cfg(test)]
+pub(crate) fn classify_exit(
+    status: ExitStatus,
+    reply: &[u8],
+    page: usize,
+) -> Result<PageReply, Failure> {
+    classify(Ending::Exited(status), reply, page)
+}
+
+/// Success needs a valid frame for the requested page and exit status 0.
+fn classify(ending: Ending, reply: &[u8], page: usize) -> Result<PageReply, Failure> {
+    let status = match ending {
+        Ending::Killed(Kill::Deadline) => return Err(Failure::TimedOut),
+        Ending::Killed(Kill::Cancelled(error)) => return Err(Failure::Cancelled(error)),
+        Ending::Killed(Kill::Oversized) => return Err(Failure::Unreadable),
+        Ending::Killed(Kill::Unwaitable) => return Err(Failure::Stopped { signal: None }),
+        Ending::Exited(status) => status,
+    };
+    if let Some(signal) = status.signal() {
+        return Err(match signal {
+            libc::SIGXCPU | libc::SIGALRM => Failure::TimedOut,
+            _ => Failure::Stopped {
+                signal: Some(signal),
+            },
+        });
+    }
+    match status.code() {
+        Some(0) => {}
+        Some(code) if (exit::ARGUMENTS..=exit::CONFINEMENT).contains(&code) => {
+            return Err(Failure::CouldNotStart);
+        }
+        _ => return Err(Failure::Stopped { signal: None }),
+    }
+    match read_reply(reply) {
+        Ok(Ok(rendered)) if rendered.page == page => Ok(rendered),
+        // A count the request contradicts is a malformed reply.
+        Ok(Err(ErrorKind::PageOutOfRange { page_count })) if page_count > page => {
+            Err(Failure::Unreadable)
+        }
+        Ok(Err(kind)) => Err(Failure::Document { kind, page }),
+        Ok(Ok(_)) | Err(_) => Err(Failure::Unreadable),
     }
 }
