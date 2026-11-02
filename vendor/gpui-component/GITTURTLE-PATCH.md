@@ -740,9 +740,18 @@ thousandth of a pixel, where it kept it to a sixteenth and GPUI's outward
 rounding could carry a mask a whole device pixel past its line at a
 fractional scale; and a row's edges are drawn a hundredth of a pixel toward
 the popup, so that the rounding of their product with the scale lands on
-the row's own boundary. The consumers are the app's dropdowns (`AppDropdown`), its
-row menus, which mask themselves through `ClearOfOpener::mask` at their row
-(`RowMenu`), and the drawn menu of every input on Linux.
+the row's own boundary. The consumers are the app's dropdowns
+(`AppDropdown`), the theme editor's `ColorPicker` popover
+(`crates/app/src/theme_editor.rs`), its row menus, which mask themselves
+through `ClearOfOpener::mask` at their row (`RowMenu`), and the drawn menu of
+every input on Linux. Three cases keep their shadow uncut: a popup whose fill
+spans what it opened from, clamped over it in a window too short for either
+side, takes no mask (`ClearOfOpener::mask` gives `None`); a popover anchored
+at its trigger's side (`Anchor::LeftCenter`, `RightCenter`) takes no wrapper,
+and no app popover is anchored so; and GPUI rounds every content mask out to
+whole device pixels (`cover_bounds`), so a mask whose end falls part way into
+one, as the 5.5 px gap at 18 pt can at scale 1, lets the shadow's tail reach
+one device pixel into the button or row.
 `cargo test --locked -p gitturtle menus_draw_nothing_over_their_button_or_row`
 reads the content mask of a dropdown's surface below and above its button
 and of a right-click menu above its row, and
