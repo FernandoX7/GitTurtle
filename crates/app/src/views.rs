@@ -7126,7 +7126,12 @@ fn status_line_width(
 /// ([`STATUS_SEPARATOR`]), the last of the widths its parts are read from
 /// ([`STATUS_PARTS`]), which the line's fitting lays it out for anyway;
 /// for another, its own layout ([`STATUS_TEXT`]). Each laid out a text with
-/// parts once more where spare hints asked for its whole width.
+/// parts once more where spare hints asked for its whole width. Both are
+/// rounded once, the one way layout rounds a text element
+/// ([`laid_out_text_width`]): a text without parts was rounded to a whole
+/// pixel only, at scale 1.5 up to a device pixel short of the same words
+/// with a part after them, so the line could fit a text in one place and
+/// not in another.
 fn whole_status_width(text: &str, window: &Window) -> Pixels {
     if text.contains(STATUS_SEPARATOR) {
         return status_parts(text, window, |widths| {
@@ -7136,7 +7141,11 @@ fn whole_status_width(text: &str, window: &Window) -> Pixels {
     status_line_width(&STATUS_TEXT, text, window, || {
         #[cfg(test)]
         STATUS_TEXT_MEASURED.with(|measured| measured.set(measured.get() + 1));
-        line_widths(&[(text, appearance::ui_text(10.))], window)
+        let weight = window.text_style().font_weight;
+        laid_out_text_width(
+            shaped_width(text, appearance::ui_text(10.), weight, window),
+            window,
+        )
     })
 }
 
@@ -7912,7 +7921,11 @@ impl GitTurtle {
                 Some(outcome) => status_line_width(&STATUS_OUTCOME, outcome, window, || {
                     #[cfg(test)]
                     STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
-                    line_widths(&[(outcome, appearance::ui_text(10.))], window)
+                    let weight = window.text_style().font_weight;
+                    laid_out_text_width(
+                        shaped_width(outcome, appearance::ui_text(10.), weight, window),
+                        window,
+                    )
                 }),
                 None => widths.ellipsis,
             };
@@ -7947,7 +7960,8 @@ impl GitTurtle {
             let parts = (!carried && self.fresh_outcome().is_none())
                 .then(|| {
                     let hints = hints.map_or(px(0.), |(_, width)| {
-                        gap + laid_out_text_width(*width, window)
+                        // Laid out already (`status_widths`).
+                        gap + *width
                     });
                     let text = self.status_text();
                     let ends = self.status_parts.ends_in(text);
@@ -8089,7 +8103,17 @@ impl GitTurtle {
     fn status_widths(&self, hints: &shortcuts::KeyHints, window: &Window) -> StatusWidths {
         #[cfg(test)]
         STATUS_MEASURED.with(|measured| measured.set(measured.get() + 1));
-        let text = |text: &str| line_widths(&[(text, appearance::ui_text(10.))], window);
+        // Each as layout lays it out, rounded once, as the status line's own
+        // text is (`whole_status_width`): rounded to a whole pixel only, a
+        // hint form at scale 1.5 measured up to a device pixel less than the
+        // parts fit took it to be.
+        let weight = window.text_style().font_weight;
+        let text = |text: &str| {
+            laid_out_text_width(
+                shaped_width(text, appearance::ui_text(10.), weight, window),
+                window,
+            )
+        };
         let gap = window.pixel_snap(window.rem_size() * 0.5);
         let lead = text(WATCH_WARNING)
             + gap
@@ -17332,6 +17356,113 @@ pub(crate) mod tests {
             "Compare's timing gives way in the half tile"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The status line's whole text is measured as layout lays it out, one
+    /// rounding with parts or without: at scale 1.5, where a device pixel
+    /// is two thirds of a pixel, a status without parts whose shaped width
+    /// rounds up to an odd whole pixel, between two device pixels, measures
+    /// the device pixel after it, as a status with parts measures its whole
+    /// text (`laid_out_text_width`). Rounded to a whole pixel only, a text
+    /// without parts measured a third of a pixel less than layout gives it,
+    /// so the bar could fit it beside spare hints in one place and find it
+    /// cut in another. History's keyboard hint forms are measured the same
+    /// way at every size from 13 to 18 pt, among them forms whose whole pixel
+    /// lies between two device pixels, which a whole pixel alone measured
+    /// short of the parts fit's room for them.
+    #[gpui::test]
+    async fn the_status_lines_whole_width_rounds_one_way_at_a_fractional_scale(
+        cx: &mut TestAppContext,
+    ) {
+        const STATUSES: [&str; 8] = [
+            "Up to date",
+            "Ready",
+            "Refreshed",
+            "Nothing to commit",
+            "Up to date with origin",
+            "Reached the end of this captured history",
+            "Loading history",
+            "Fetched origin",
+        ];
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, _| window.set_scale_factor(1.5));
+        draw(cx);
+        // History's keyboard hints, each form the bar can draw measured as
+        // layout lays it out, at each interface size: the forms whose whole
+        // pixel lies between two device pixels are the ones a whole pixel
+        // alone measured short.
+        let mut boundary_forms = Vec::new();
+        for interface in 13..=18 {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            draw(cx);
+            cx.update(|window, cx| {
+                let hints = app
+                    .update(cx, |app, cx| app.key_hints(window, cx))
+                    .expect("History's keyboard hints");
+                let widths = app.read(cx).status_widths(&hints, window);
+                let weight = window.text_style().font_weight;
+                for (form, width) in &widths.forms {
+                    let shaped = shaped_width(form, appearance::ui_text(10.), weight, window);
+                    assert_eq!(
+                        *width,
+                        laid_out_text_width(shaped, window),
+                        "at {interface} pt the hint form {form:?} measures what layout gives it"
+                    );
+                    if (f32::from(shaped.ceil()) * 1.5).fract() != 0. {
+                        boundary_forms.push((interface, form.clone()));
+                    }
+                }
+            });
+        }
+        assert!(
+            !boundary_forms.is_empty(),
+            "a hint form whose whole pixel lies between two device pixels"
+        );
+        // The interface size whose status text first has such a status.
+        let mut widths = Vec::new();
+        let interface = (13..=18).find(|interface| {
+            cx.update(|window, cx| appearance::apply_text_sizes(*interface, 12, window, cx));
+            draw(cx);
+            cx.update(|window, _| {
+                let weight = window.text_style().font_weight;
+                STATUSES.iter().any(|text| {
+                    let shaped = shaped_width(text, appearance::ui_text(10.), weight, window);
+                    widths.push((*interface, *text, shaped));
+                    (f32::from(shaped.ceil()) * 1.5).fract() != 0.
+                })
+            })
+        });
+        assert!(
+            interface.is_some(),
+            "a status whose whole pixel lies between two device pixels: {widths:?}"
+        );
+        cx.update(|window, _| {
+            let weight = window.text_style().font_weight;
+            let shaped = |text: &str| shaped_width(text, appearance::ui_text(10.), weight, window);
+            let boundary = STATUSES
+                .iter()
+                .find(|text| (f32::from(shaped(text).ceil()) * 1.5).fract() != 0.)
+                .expect("the status found above");
+            let laid = laid_out_text_width(shaped(boundary), window);
+            assert!(
+                laid > shaped(boundary).ceil(),
+                "{boundary:?} lays out past its whole pixel, at {laid:?}"
+            );
+            assert_eq!(
+                whole_status_width(boundary, window),
+                laid,
+                "{boundary:?}, without parts, measures what layout gives it"
+            );
+            let parts = format!("{boundary}{STATUS_SEPARATOR}content read 12.3 ms");
+            assert_eq!(
+                whole_status_width(&parts, window),
+                laid_out_text_width(shaped(&parts), window),
+                "{parts:?}, with parts, measures what layout gives it"
+            );
+        });
+        cx.update(|window, cx| {
+            appearance::apply_text_sizes(appearance::DEFAULT_INTERFACE_TEXT_SIZE, 12, window, cx)
+        });
     }
 
     /// A status line that drops a part or ends in an ellipsis reads whole to
