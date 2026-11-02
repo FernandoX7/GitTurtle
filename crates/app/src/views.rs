@@ -7469,7 +7469,7 @@ impl GitTurtle {
     ) -> StatusFit {
         let bar_room = plan.is_some_and(|plan| plan.bar_room);
         let carried = self.bar_operation(plan).is_some();
-        self.fit_status_bar_carrying(body_size(window).width, bar_room, carried, window, cx)
+        self.fit_status_bar_in(body_size(window).width, bar_room, carried, window, cx)
     }
 
     /// A running write's status where the header's rows have no room for it,
@@ -7481,22 +7481,10 @@ impl GitTurtle {
     }
 
     /// [`Self::fit_status_bar`] for a bar `width` wide that keeps Cancel's
-    /// room beside its line where `bar_room`, its line not taken by a
-    /// write's status: the width walks' fit at a width of their choosing.
-    #[cfg(test)]
+    /// room beside its line where `bar_room`, its line taken by a running
+    /// write's status where `carried` ([`Self::bar_operation`]); the width
+    /// walks fit it at widths of their choosing.
     fn fit_status_bar_in(
-        &self,
-        width: Pixels,
-        bar_room: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> StatusFit {
-        self.fit_status_bar_carrying(width, bar_room, false, window, cx)
-    }
-
-    /// [`Self::fit_status_bar_in`], with the line taken by a running write's
-    /// status where `carried` ([`Self::bar_operation`]).
-    fn fit_status_bar_carrying(
         &self,
         width: Pixels,
         bar_room: bool,
@@ -12389,7 +12377,7 @@ pub(crate) mod tests {
             let room = app
                 .header_arrangement(width, narrow, &widths, window)
                 .bar_room;
-            app.fit_status_bar_in(width, room, window, cx)
+            app.fit_status_bar_in(width, room, false, window, cx)
         };
         let breakpoint = cx
             .update(|window, cx| {
@@ -16932,7 +16920,7 @@ pub(crate) mod tests {
                 for width in (461..=1480).map(|width| width as f32) {
                     let fit = cx.update(|window, cx| {
                         app.update(cx, |app, cx| {
-                            app.fit_status_bar_in(px(width), true, window, cx)
+                            app.fit_status_bar_in(px(width), true, false, window, cx)
                         })
                     });
                     if forms.last().is_none_or(|(_, last)| *last != fit) {
@@ -17101,8 +17089,8 @@ pub(crate) mod tests {
                                 .header_arrangement(px(width), narrow, &widths, window)
                                 .bar_room;
                             if cases[usize::from(room)].is_none()
-                                && app.fit_status_bar_in(px(width), true, window, cx)
-                                    != app.fit_status_bar_in(px(width), false, window, cx)
+                                && app.fit_status_bar_in(px(width), true, false, window, cx)
+                                    != app.fit_status_bar_in(px(width), false, false, window, cx)
                             {
                                 cases[usize::from(room)] = Some(width);
                             }
@@ -17119,8 +17107,8 @@ pub(crate) mod tests {
                             let width = body_size(window).width;
                             (
                                 app.frame_plan(window, cx),
-                                app.fit_status_bar_in(width, room, window, cx).hints,
-                                app.fit_status_bar_in(width, !room, window, cx).hints,
+                                app.fit_status_bar_in(width, room, false, window, cx).hints,
+                                app.fit_status_bar_in(width, !room, false, window, cx).hints,
                             )
                         })
                     });
@@ -17166,6 +17154,23 @@ pub(crate) mod tests {
                     assert!(
                         place != Some(OperationPlace::StatusBar) || room,
                         "{at}: {widest:?} goes to {place:?}"
+                    );
+                    // The walk's fit at this width, its line taken by the
+                    // write's status where the bar draws it, is the frame's.
+                    let carried = place == Some(OperationPlace::StatusBar);
+                    let (frame, walked) = cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            let plan = app.frame_plan(window, cx);
+                            let width = body_size(window).width;
+                            (
+                                app.fit_status_bar(plan, window, cx),
+                                app.fit_status_bar_in(width, room, carried, window, cx),
+                            )
+                        })
+                    });
+                    assert_eq!(
+                        frame, walked,
+                        "{at}: the fit carrying the write is the frame's"
                     );
                     assert!(
                         cx.debug_bounds("operation-progress").is_some(),
@@ -17285,7 +17290,9 @@ pub(crate) mod tests {
         let fit =
             |app: &Entity<GitTurtle>, width: Pixels, room: bool, cx: &mut VisualTestContext| {
                 cx.update(|window, cx| {
-                    app.update(cx, |app, cx| app.fit_status_bar_in(width, room, window, cx))
+                    app.update(cx, |app, cx| {
+                        app.fit_status_bar_in(width, room, false, window, cx)
+                    })
                 })
             };
         // A fresh outcome for which the bar's form at `one` differs from its

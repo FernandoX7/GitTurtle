@@ -741,7 +741,7 @@ impl Render for RebaseForm {
                 .child(refusing(button("review-interactive-rebase", "Review rebase…", "", true).debug_selector(|| "review-interactive-rebase".into()), "review-interactive-rebase", self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
             .when(changed_base, |element| element.child(label("rebase-base-changed", "Base edited: load commits again to update the sequence.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .children(issue.map(|issue| label("rebase-invalid-plan", issue).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("rebase-form-error", error).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("rebase-form-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))))
     }
 }
 
@@ -904,7 +904,7 @@ impl Render for MessageForm {
             .when_some(self.editor.as_ref(), |element, editor| element.child(shortcuts::tab_leaves(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message"))))
             .child(label("rebase-draft-save-status", durable_status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("rebase-message-error", error).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("rebase-message-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
             // A write refuses it at once, announced unavailable at once, and
             // it dims only once the write looks busy (`workspace::BusyLook`).
             .child({ let (refused, dimmed) = self.refusal(cx); crate::workspace::refusing(button("review-rebase-continue", "Review Continue…", "", true).debug_selector(|| "review-rebase-continue".into()), || "review-rebase-continue".into(), refused, dimmed) }.on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))))

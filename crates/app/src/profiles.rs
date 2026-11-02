@@ -670,7 +670,7 @@ impl ProfileForm {
     }
 }
 impl Render for ProfileForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         crate::native_accessibility::clips_children(div().id("profile-form").max_h(px(420.)).overflow_y_scroll().flex().flex_col().gap_3()
             .child(label("profile-label", "Profile name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.label).aria_label("Profile name").disabled(self.pending))
@@ -681,6 +681,6 @@ impl Render for ProfileForm {
             .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {} · Annotated signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags, self.signing.annotated_tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(label("profile-save-pending", "Saving profile…").text_color(rgb(p.accent))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("profile-form-error", error).text_color(rgb(p.warning)))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("profile-form-error", error, None, window, cx).text_color(rgb(p.warning)))))
     }
 }

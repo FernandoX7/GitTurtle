@@ -259,7 +259,7 @@ impl IgnoreForm {
     }
 }
 impl Render for IgnoreForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pending = self.pending(cx);
         let parent = self
@@ -274,7 +274,7 @@ impl Render for IgnoreForm {
             .when_some(parent, |element, parent| element.child(Checkbox::new("ignore-containing-directory").label(format!("Ignore containing directory: {}/", parent.display())).checked(self.directory).disabled(pending).on_click(cx.listener(|this, checked, _, cx| { this.directory = *checked; this.error = None; cx.notify(); }))))
             .child(static_text("ignore-tracked-explanation", "The next step previews the exact escaped rule and destination. Ignore rules affect untracked content; they never remove tracked files from Git.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(pending, |element| element.child(static_text("ignore-preparation-status", "Preparing exact rule and checking current content…").text_size(crate::appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("ignore-preparation-error", error).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("ignore-preparation-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
     }
 }
 

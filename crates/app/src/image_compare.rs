@@ -2539,7 +2539,7 @@ pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Win
 /// "After: Copy source", as the model's and a document's Copy source are
 /// named, and "Copy source" for a side shown alone. The two share one row
 /// rather than each side's caption, so the drawn label says its side too,
-/// and the words drawn are the words named, which speech input says. It was
+/// and the words drawn are the words named, which speech input says. It once was
 /// drawn and named "Copy Before source", a second spelling of the side's
 /// prefix kept apart from the one every other side's control takes.
 pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: &App) -> Button {

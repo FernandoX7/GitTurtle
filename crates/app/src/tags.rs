@@ -55,31 +55,81 @@ pub(crate) fn alert_error_line(
 /// The most lines a dialog form's error line draws ([`error_line`]).
 pub(crate) const ERROR_LINES: usize = 3;
 
+/// The most lines, and bytes, a cut error line's tooltip shows of its
+/// report ([`error_line`]): a tooltip has no height of its own to keep.
+const ERROR_TOOLTIP_LINES: usize = 12;
+const ERROR_TOOLTIP_BYTES: usize = 1024;
+
 /// A dialog form's error line, `id`, which is also its debug selector:
-/// `text` in at most [`ERROR_LINES`] lines, the last ending in an ellipsis
-/// where it needs more, its whole text, bounded
-/// (`bounded_accessible_text`), its accessible value and its tooltip, as
-/// the alert that says it ([`set_error_line`]) says it whole. Drawn whole,
-/// a long Git report, as a hook's or a remote's stderr, grew the form by
-/// each of its lines, past its fields and actions.
+/// `text` at `size` (the inherited size where `None`) in at most
+/// [`ERROR_LINES`] lines, the last ending in an ellipsis where it needs
+/// more, its whole text, bounded (`bounded_accessible_text`), its
+/// accessible value, as the alert that says it ([`set_error_line`]) says it
+/// whole. Only a line that is cut, wrapped at the width it was last drawn
+/// at, has a tooltip, which shows the report's first lines
+/// ([`error_tooltip`]); a whole line has none, as a whole label has none.
+/// Drawn whole, a long Git report, as a hook's or a remote's stderr, grew
+/// the form by each of its lines, past its fields and actions.
 pub(crate) fn error_line(
     id: &'static str,
     text: &str,
+    size: Option<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let whole = native_accessibility::bounded_accessible_text(text);
-    let tooltip = whole.clone();
+    // The width the line was drawn at last, which its prepaint records.
+    let drawn = window.use_keyed_state(
+        ElementId::from(SharedString::from(format!("{id}/width"))),
+        cx,
+        |_, _| std::rc::Rc::new(std::cell::Cell::new(None::<Pixels>)),
+    );
+    let drawn = drawn.read(cx).clone();
+    let measured =
+        size.unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
+    let cut = drawn.get().is_some_and(|width| {
+        crate::image_compare::wrapped_lines(&whole, measured, width, window) > ERROR_LINES
+    });
+    let tooltip = cut.then(|| error_tooltip(&whole));
     native_accessibility::static_text(
         div()
+            .on_children_prepainted(move |bounds, _, _| {
+                drawn.set(bounds.first().map(|line| line.size.width));
+            })
             .id(id)
             .debug_selector(move || id.into())
+            .when_some(size, |line, size| line.text_size(size))
             .line_clamp(ERROR_LINES)
             .text_ellipsis()
-            .tooltip(move |window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            .when_some(tooltip, |line, tooltip| {
+                line.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
             })
             .child(whole.clone()),
         whole,
     )
+}
+
+/// What a cut error line's tooltip shows of `report`: its first
+/// [`ERROR_TOOLTIP_LINES`] lines, within [`ERROR_TOOLTIP_BYTES`], with an
+/// ellipsis where more follows; the line's accessible value keeps the rest.
+fn error_tooltip(report: &str) -> SharedString {
+    let mut lines = report.lines();
+    let mut shown = lines
+        .by_ref()
+        .take(ERROR_TOOLTIP_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut more = lines.next().is_some();
+    if shown.len() > ERROR_TOOLTIP_BYTES {
+        shown.truncate(shown.floor_char_boundary(ERROR_TOOLTIP_BYTES));
+        more = true;
+    }
+    if more {
+        shown.push('…');
+    }
+    shown.into()
 }
 
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's
@@ -1045,7 +1095,7 @@ impl TagForm {
     }
 }
 impl Render for TagForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pending = self.pending(cx);
         div().flex().flex_col().gap_3()
@@ -1055,7 +1105,7 @@ impl Render for TagForm {
             .when(self.annotated, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.message).aria_label("Tag annotation"))))
             .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| error_line("tag-preparation-error", error).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| error_line("tag-preparation-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
     }
 }
 
@@ -2085,10 +2135,12 @@ pub(crate) mod tests {
 
     /// A long Git report in a form's error line is drawn in at most
     /// [`ERROR_LINES`] lines, the last ending in an ellipsis, with its whole
-    /// text as the line's accessible value and in its tooltip: at 13 pt in
-    /// a 1480 × 980 window, a forty-line report under Create tag keeps three
-    /// lines, Review tag whole in the window beneath it. Drawn whole, it
-    /// grew the form by each of its lines.
+    /// text as the line's accessible value and its first lines in its
+    /// tooltip: at 13 pt in a 1480 × 980 window, a forty-line report under
+    /// Create tag keeps three lines, Review tag whole in the window beneath
+    /// it, while a one-line report, whole, shows no tooltip. Drawn whole, a
+    /// long report grew the form by each of its lines, and a whole line once
+    /// repeated itself in a tooltip.
     #[gpui::test]
     async fn a_long_error_line_keeps_three_lines(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -2129,6 +2181,43 @@ pub(crate) mod tests {
             hovered_tooltips(cx, "tag-preparation-error"),
             1,
             "its tooltip"
+        );
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                set_error_line(&mut form.error, "Tag v9.0 already exists", window, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            hovered_tooltips(cx, "tag-preparation-error"),
+            0,
+            "a whole line has no tooltip"
+        );
+    }
+
+    /// A cut error line's tooltip shows the report's first twelve lines,
+    /// within 1 KiB, and an ellipsis where more follows; a short report
+    /// whole. The kit's tooltip has no height bound, so a whole report of
+    /// many lines would run past the window.
+    #[test]
+    fn an_error_tooltip_shows_the_reports_first_lines() {
+        let report = (1..=40)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let shown = error_tooltip(&report);
+        assert_eq!(shown.lines().count(), ERROR_TOOLTIP_LINES);
+        assert!(
+            shown.starts_with("line 1\n") && shown.ends_with("line 12…"),
+            "{shown:?}"
+        );
+        let long = "x".repeat(4 * ERROR_TOOLTIP_BYTES);
+        let shown = error_tooltip(&long);
+        assert_eq!(shown.len(), ERROR_TOOLTIP_BYTES + '…'.len_utf8());
+        assert_eq!(
+            error_tooltip("Tag v9.0 already exists"),
+            "Tag v9.0 already exists"
         );
     }
 

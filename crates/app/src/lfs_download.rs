@@ -289,7 +289,7 @@ fn this_path(repo: &GitRepository) -> &std::path::Path {
 }
 
 impl Render for LfsDownloadForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pointer = gitturtle_preview::detect_lfs_pointer(&self.target.pointer);
         crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll()
@@ -301,7 +301,7 @@ impl Render for LfsDownloadForm {
             .child(button("read-lfs-source", "Read configured source", "refresh", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx))))
             .when(self.pending, |element| element.child(label("lfs-source-loading", "Resolving the selected pointer, Git LFS tooling, and configured source…").text_size(appearance::ui_text(12.))))
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error, Some(appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
             .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))))
     }
 }

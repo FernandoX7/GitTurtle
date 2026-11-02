@@ -742,7 +742,7 @@ impl Render for WorktreeManager {
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).track_focus(&tabs[1]).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
                 .child(button("refresh-worktrees", "Refresh", "refresh", false).track_focus(&tabs[2]).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when(self.pending, |element| element.child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![None, Some(self.cancel_read.handle().clone())], room)).child(label("worktree-loading", "Reading worktree identities and content…").min_w_0().text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("worktree-error", error).ml(TEXT_INSET).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("worktree-error", error, Some(crate::appearance::ui_text(12.)), window, cx).ml(TEXT_INSET).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 // Each first field stands in the ring's room, given back
                 // through its margin, so revealing it shows its ring whole.

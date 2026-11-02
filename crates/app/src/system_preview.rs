@@ -2998,7 +2998,7 @@ pub(crate) mod tests {
     /// of captured actions, are drawn and named by their sides through
     /// [`side_control_name`], as every side's Copy source is: "Before: Copy
     /// source" and "After: Copy source", and "Copy source" for a side shown
-    /// alone. They read "Copy Before source", the side's prefix spelt apart.
+    /// alone. They once read "Copy Before source", the side's prefix spelt apart.
     #[gpui::test]
     fn an_svgs_copies_are_named_by_their_sides_first(cx: &mut gpui_kit::TestAppContext) {
         let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());

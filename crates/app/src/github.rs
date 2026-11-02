@@ -757,23 +757,32 @@ pub(crate) fn validate_text(value: &str, required: bool) -> Result<()> {
 /// What a `retry-after` header says to wait, as a sentence after the
 /// refusal: its seconds agreeing with their noun ("Retry after 1 second.",
 /// where it read "1 seconds"), a decimal number of them with its unit
-/// ("Retry after 1.5 seconds.", where it read "Retry after 1.5."), or the
-/// date and time the header can give instead, as it gives them.
+/// ("Retry after 1.5 seconds.", where it read "Retry after 1.5."), written
+/// as a number is ("5." as 5 seconds, ".5" as 0.5 seconds), whole seconds
+/// beyond `u64` still in seconds, or the date and time the header can give
+/// instead, as it gives them.
 pub(crate) fn retry_after(value: &str) -> String {
     let value = value.trim();
-    // Digits with one decimal point: the header's seconds are whole, but a
-    // server that sends a fraction still means seconds.
-    let decimal = value.matches('.').count() == 1
-        && value.chars().any(|c| c.is_ascii_digit())
-        && value.chars().all(|c| c.is_ascii_digit() || c == '.');
-    match value.parse::<u64>() {
-        Ok(seconds) => format!(
-            " Retry after {}.",
-            crate::counted(seconds, "second", "seconds")
-        ),
-        Err(_) if decimal => format!(" Retry after {value} seconds."),
-        Err(_) => format!(" Retry after {value}."),
-    }
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let whole = |seconds: &str| match seconds.parse::<u64>() {
+        Ok(seconds) => crate::counted(seconds, "second", "seconds"),
+        // More seconds than a u64 holds are still seconds.
+        Err(_) => format!("{seconds} seconds"),
+    };
+    // The header's seconds are whole, but a server that sends a fraction
+    // still means seconds.
+    let wait = match value.split_once('.') {
+        None if digits(value) => whole(value),
+        Some((seconds, "")) if digits(seconds) => whole(seconds),
+        Some((seconds, fraction))
+            if (seconds.is_empty() || digits(seconds)) && digits(fraction) =>
+        {
+            let seconds = if seconds.is_empty() { "0" } else { seconds };
+            format!("{seconds}.{fraction} seconds")
+        }
+        _ => value.to_owned(),
+    };
+    format!(" Retry after {wait}.")
 }
 
 #[cfg(test)]
@@ -788,6 +797,14 @@ mod tests {
         assert_eq!(retry_after("30"), " Retry after 30 seconds.");
         assert_eq!(retry_after(" 1.5 "), " Retry after 1.5 seconds.");
         assert_eq!(retry_after("0.25"), " Retry after 0.25 seconds.");
+        assert_eq!(retry_after("5."), " Retry after 5 seconds.");
+        assert_eq!(retry_after("1."), " Retry after 1 second.");
+        assert_eq!(retry_after(".5"), " Retry after 0.5 seconds.");
+        assert_eq!(
+            retry_after("99999999999999999999"),
+            " Retry after 99999999999999999999 seconds."
+        );
+        assert_eq!(retry_after("."), " Retry after ..");
         assert_eq!(retry_after("1.2.3"), " Retry after 1.2.3.");
         assert_eq!(
             retry_after("Wed, 21 Oct 2026 07:28:00 GMT"),
