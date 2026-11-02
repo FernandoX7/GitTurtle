@@ -7216,7 +7216,7 @@ impl GitTurtle {
             let owner = cx.entity().downgrade();
             let panels = self.history_panels.clone();
             crate::in_frame::in_frame(move |bounds, window, cx| {
-                panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+                panels.update(cx, |panels, _| panels.fit_container(bounds.size.width));
                 owner
                     .update(cx, |this, cx| this.render_history_columns(window, cx))
                     .unwrap_or_else(|_| div().into_any_element())
@@ -7365,7 +7365,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let panels = self.content_panels.clone();
         let columns = crate::in_frame::in_frame(move |bounds, window, cx| {
-            panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+            panels.update(cx, |panels, _| panels.fit_container(bounds.size.width));
             owner
                 .update(cx, |this, cx| {
                     this.render_content_columns(working_layout, bounds.size.height, window, cx)
@@ -7720,7 +7720,7 @@ impl Render for GitTurtle {
             frame
                 .child(
                     crate::in_frame::in_frame(move |bounds, _, cx| {
-                        panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+                        panels.update(cx, |panels, _| panels.fit_container(bounds.size.width));
                         h_resizable("workspace-columns")
                             .with_state(&panels)
                             .on_resize(move |panels, window, cx| {
@@ -12050,7 +12050,9 @@ pub(crate) mod tests {
     /// twice on Wayland (`docs/benchmarks/2026-10-29-columns-in-frame.md`)
     /// is checked: a field's placeholder fitted once the field was painted
     /// and drawn by a refresh, as the changed files' filter's between 461 and
-    /// 980 px at 18 pt.
+    /// 980 px at 18 pt;
+    /// History's navigation group, drawn again where a window widens past
+    /// History's rail, notifying the window after the frame that fitted it.
     async fn assert_a_width_step_draws_one_frame(
         cx: &mut TestAppContext,
         path: Option<&'static str>,
@@ -12141,6 +12143,38 @@ pub(crate) mod tests {
         }
         probe::stop();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// History's navigation group, drawn again when a window widens past
+    /// History's narrow rail, notifies no one as the frame that draws it fits
+    /// it and lays its panels out. The window observes its panel groups, and
+    /// such a notify, made while the frame was drawn, reached that observer
+    /// once the frame was done, as the frame before had not drawn the group,
+    /// and asked for a second frame (`ResizableState::fit_container`).
+    #[gpui::test]
+    async fn history_navigation_drawn_again_by_a_widening_notifies_no_one(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("history-sidebar").is_none(),
+            "the half tile draws History's rail"
+        );
+        let notified = std::rc::Rc::new(std::cell::Cell::new(0));
+        let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+        let _observing = cx.update(|_, cx| {
+            let notified = notified.clone();
+            cx.observe(&panels, move |_, _| notified.set(notified.get() + 1))
+        });
+        cx.simulate_resize(size(px(980.), px(490.)));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("history-sidebar").is_some(),
+            "980 px draws History's navigation"
+        );
+        assert_eq!(notified.get(), 0, "the group's fit and layout notified no one");
     }
 
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws

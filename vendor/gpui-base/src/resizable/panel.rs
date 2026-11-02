@@ -342,8 +342,8 @@ impl RenderOnce for ResizablePanel {
             .on_prepaint({
                 let state = state.clone();
                 move |bounds, _, cx| {
-                    state.update(cx, |state, cx| {
-                        state.update_panel_size(self.panel_ix, bounds, self.size_range, cx)
+                    state.update(cx, |state, _| {
+                        state.update_panel_size(self.panel_ix, bounds, self.size_range)
                     })
                 }
             })
