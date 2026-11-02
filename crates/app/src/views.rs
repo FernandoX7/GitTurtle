@@ -1701,24 +1701,31 @@ impl GitTurtle {
     /// it to device pixels, so one window width always measures the same.
     /// It is kept exactly: a tolerance would keep a nearby stale width, and
     /// Subject takes the leftover, so the columns would land somewhere else
-    /// after navigation is hidden and shown again. An unchanged width
-    /// changes nothing. A new one reveals the selected commit's lane, so a
-    /// window narrowed to fewer lanes, as narrow History's one, shows that
-    /// lane as well as its row, which the list's viewport probe reveals
-    /// ([`Self::list_viewport_probe`]); the header's lane buttons and the
-    /// rows built in this frame read it. It does not while a cold tab is
-    /// restored or before the list was first laid out, which keep a saved
-    /// view, as the probe's reveal does not.
+    /// after navigation is hidden and shown again.
+    ///
+    /// Where the list was last laid out at another width, it reveals the
+    /// selected commit's lane, so a list narrowed to fewer lanes, as narrow
+    /// History's one, shows that lane as well as its row, which the list's
+    /// viewport probe reveals ([`Self::list_viewport_probe`]); the header's
+    /// lane buttons and the rows built in this frame read it. The list's own
+    /// record decides, not the window's width: a warm tab brings back the
+    /// layout and lanes it was left with, at a width the window may have
+    /// taken while another tab showed, and revealed only for a new window
+    /// width, a tab left at 1,480 px and shown again in a half tile kept its
+    /// selected commit's lane out of its one. It reveals nothing while a cold
+    /// tab is restored or before the list was first laid out, which keep a
+    /// saved view, as the probe's reveal does not.
     fn take_history_width(&mut self, width: Pixels) {
-        let width = f32::from(width);
-        if self.history_width == width {
-            return;
+        let taken = f32::from(width);
+        if self.history_width != taken {
+            #[cfg(test)]
+            HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
+            self.history_width = taken;
         }
-        #[cfg(test)]
-        HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
-        self.history_width = width;
         if self.repository_tabs.restoring.is_none()
-            && self.history_list_layout.is_some()
+            && self
+                .history_list_layout
+                .is_some_and(|(list, _)| list.width != width)
             && let Some(index) = self.selected_commit
             && self.visible.contains(&index)
         {
@@ -1736,6 +1743,13 @@ impl GitTurtle {
             .unwrap_or("All history".into());
         let metrics = self.history_metrics.get();
         let columns = self.history_column_layout();
+        #[cfg(test)]
+        HISTORY_LANES.with_borrow_mut(|lanes| {
+            if let Some(lanes) = lanes {
+                let rows = self.history_rows(cx);
+                lanes.push((rows.lane_offset, self.layout_lane_capacity(&rows.columns)));
+            }
+        });
         let table_width = columns.content_width + metrics.insets();
         let history = if self.commits.is_empty() && self.error.is_some() {
             empty(
@@ -6617,6 +6631,9 @@ thread_local! {
     /// Widths History has taken from the bounds it is laid out in
     /// (`GitTurtle::take_history_width`).
     static HISTORY_WIDTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// While a test records them, the lanes each frame's History rows were
+    /// built to show: the first and how many.
+    pub(crate) static HISTORY_LANES: RefCell<Option<Vec<(usize, usize)>>> = const { RefCell::new(None) };
     /// Room taken off the left of the body beside the project pane, in
     /// pixels, so the body is narrower than the window's content, as no test
     /// window draws it otherwise
@@ -12296,6 +12313,90 @@ pub(crate) mod tests {
             0,
             "the group's fit and layout notified no one"
         );
+    }
+
+    /// Asserts the last frame drew `row`'s graph node inside its graph cell,
+    /// among the lanes History shows: the selected commit's 10 px node, as
+    /// [`narrowing_history_keeps_the_selected_row_and_lane_in_view`] reads it.
+    fn assert_lane_shown(app: &Entity<GitTurtle>, row: usize, cx: &mut VisualTestContext, at: &str) {
+        let (lane, offset, capacity) = app.read_with(cx, |app, cx| {
+            let rows = app.history_rows(cx);
+            (
+                app.graph[row].lane,
+                rows.lane_offset,
+                app.layout_lane_capacity(&rows.columns),
+            )
+        });
+        assert!(
+            (offset..offset + capacity).contains(&lane),
+            "{at}: lane {lane} among the {capacity} from {offset}"
+        );
+        let graph = bounds_of(
+            cx,
+            format!("history-cell-{row}-{}", ColumnId::Graph as usize),
+        )
+        .unwrap_or_else(|| panic!("{at}: row {row}'s graph cell is drawn"));
+        let drawn = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window.painted_quads().into_iter().any(|quad| {
+                let left = px(quad.bounds.left().as_f32() / scale);
+                let right = px(quad.bounds.right().as_f32() / scale);
+                let middle =
+                    px((quad.bounds.top().as_f32() + quad.bounds.bottom().as_f32()) / 2. / scale);
+                (quad.bounds.size.width.as_f32() / scale - 10.).abs() < 0.01
+                    && (quad.corner_radii.top_left.as_f32() / scale - 5.).abs() < 0.01
+                    && graph.top() <= middle
+                    && middle < graph.bottom()
+                    && left >= graph.left() - px(0.5)
+                    && right <= graph.right() + px(0.5)
+            })
+        });
+        assert!(drawn, "{at}: row {row}'s node is drawn in its graph cell {graph:?}");
+    }
+
+    /// A warm tab shown again at a width the window took while another tab
+    /// showed draws its selected commit's lane in the first frame that draws
+    /// it: the side commit, on the second lane, selected in a tab left at
+    /// 1,480 × 980, then a second tab opened and the window narrowed to a
+    /// 461 × 490 half tile, where narrow History's graph holds one lane. The
+    /// tab came back with the layout and lanes it was left with, and History
+    /// revealed the lane only where the window's width changed, which the
+    /// second tab had already taken, so the lane stayed out of view.
+    #[gpui::test]
+    async fn a_warm_tab_shown_at_another_width_draws_its_selected_lane(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(side, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert_lane_shown(&app, side, cx, "the first tab at 1480 × 980");
+        let other = tempfile::tempdir().unwrap();
+        let second = fixture_repository(other.path().join("second"));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(second.path().to_owned(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let held = quiet_reader(&app, cx).await;
+        HISTORY_LANES.with_borrow_mut(|lanes| *lanes = Some(Vec::new()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        cx.run_until_parked();
+        let lanes = HISTORY_LANES.with_borrow_mut(Option::take).unwrap_or_default();
+        assert_eq!(app.read_with(cx, |app, _| app.selected_commit), Some(side));
+        let lane = app.read_with(cx, |app, _| app.graph[side].lane);
+        let (first, shown) = *lanes.first().expect("the switch draws History");
+        assert!(
+            (first..first + shown).contains(&lane),
+            "the first frame after the switch shows lane {lane} among the {shown} from {first}"
+        );
+        assert_lane_shown(&app, side, cx, "the first tab shown again at 461 × 490");
+        drop(held);
     }
 
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
