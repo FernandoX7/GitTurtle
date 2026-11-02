@@ -576,6 +576,9 @@ thread_local! {
     /// Each side header's heading, laid out.
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// Each side's name alone, its heading where the whole does not fit.
+    static BEFORE_NAME: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_NAME: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Read page text's and Retry page's labels, laid out; the link is a
     /// toggle, laid out at both its readings
     /// (`system_preview::HeaderControl::toggle`).
@@ -600,21 +603,39 @@ thread_local! {
     pub(crate) static PAGE_NUMBER_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The room the first line of side `index`'s header leaves its open control
-/// in a side `side` wide: the side less its right edge, the header's `p_2`
-/// either side, and its semibold `heading` followed by `gap_2`.
-fn header_room(index: usize, side: Pixels, heading: &str, window: &Window) -> Pixels {
-    let cache = if index == 0 {
-        &BEFORE_HEADING
+/// Side `index`'s heading, as wide as it is laid out: "Before · PDF" where a
+/// line of the header holds it (`line`), and otherwise the side's name
+/// alone, "Before", whose format, a caption, gives way first, as labels do
+/// in the one responsive order; where even the name does not fit, it ends
+/// in an ellipsis (`render_comparison`). The heading was once laid out whole
+/// in every side and cut at the side's edge, "Before · PD" at 18 pt in a
+/// 461 × 490 window.
+fn side_heading(index: usize, label: &str, line: Pixels, window: &Window) -> (String, Pixels) {
+    let [whole_cache, name_cache] = if index == 0 {
+        [&BEFORE_HEADING, &BEFORE_NAME]
     } else {
-        &AFTER_HEADING
+        [&AFTER_HEADING, &AFTER_NAME]
     };
-    let rem = window.rem_size();
-    let text = crate::views::cached_text_width(cache, heading, window, || {
-        let size = window.text_style().font_size.to_pixels(rem);
-        crate::views::shaped_width(heading, size, FontWeight::SEMIBOLD, window).ceil()
-    });
-    side - px(1.) - rem * (0.5 * 2. + 0.5) - text
+    let measure = |cache, text: &str| {
+        crate::views::cached_text_width(cache, text, window, || {
+            let size = window.text_style().font_size.to_pixels(window.rem_size());
+            crate::views::shaped_width(text, size, FontWeight::SEMIBOLD, window).ceil()
+        })
+    };
+    let whole = format!("{label} · PDF");
+    let width = measure(whole_cache, &whole);
+    if width <= line {
+        (whole, width)
+    } else {
+        (label.to_owned(), measure(name_cache, label).min(line))
+    }
+}
+
+/// The room the first line of a side's header leaves its open control in a
+/// side `side` wide: the side less its right edge, the header's `p_2` either
+/// side, and its semibold heading, `heading` wide, followed by `gap_2`.
+fn header_room(side: Pixels, heading: Pixels, window: &Window) -> Pixels {
+    side - px(1.) - window.rem_size() * (0.5 * 2. + 0.5) - heading
 }
 
 /// The readings a page number of `count` pages is measured at, whole
@@ -689,13 +710,13 @@ pub(super) fn render_comparison<T: 'static>(
     let colors = palette(cx);
     let side_width = width / if quick { 1. } else { 2. };
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
-        let heading = format!("{label} · PDF");
-        let room = header_room(index, side_width, &heading, window);
         // A line of the header to itself: a labelled control wider than this
         // draws its icon or a shorter reading rather than be cut at the
         // side's edge, its whole label in its tooltip and its accessible
         // name the one it has labelled.
         let line_room = crate::system_preview::header_line_room(side_width, window.rem_size() * 0.5);
+        let (heading, heading_width) = side_heading(index, label, line_room, window);
+        let room = header_room(side_width, heading_width, window);
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's.
         // The header's padding beneath and its rule end it beneath the line
@@ -704,7 +725,7 @@ pub(super) fn render_comparison<T: 'static>(
         // the line scroll (`system_preview::header_ends`).
         // The header's padding, which its floor in `header_ends` counts.
         let padding = rems(0.5);
-        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p(padding).child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
+        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p(padding).child(div().debug_selector(move || format!("pdf-side-heading-{index}")).min_w_0().max_w_full().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(div().min_w_0().truncate().child(heading)));
         let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
         // The header scrolls where a narrow side cannot hold its controls,
@@ -1749,6 +1770,55 @@ pub(crate) mod tests {
                 }
             }
             assert!(moved, "at some width the run starts a line of its own");
+        }
+
+        /// A side's heading gives way rather than be cut: it lies inside its
+        /// header at every side width from 80 to 400 px at 13 and 18 pt, and
+        /// where a line holds "Before · PDF" it reads whole. At 18 pt in a
+        /// 461 × 490 window it was laid out whole in a 121 px side and cut
+        /// at the side's edge, "Before · PD".
+        #[gpui::test]
+        fn a_side_s_heading_gives_way_rather_than_be_cut(cx: &mut gpui_kit::TestAppContext) {
+            let (content, document) = before_only(&pdf("a side's heading"), 3, 0);
+            // Drawn with its pages prepared, so the page lane, which every
+            // test in the process shares, is never asked for one.
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(0, PreparedPage::from(page()));
+            let (view, cx) = window(cx, content);
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                let whole = cx.update(|window, _| side_heading(0, "Before", px(1000.), window));
+                assert_eq!(whole.0, "Before · PDF");
+                for width in (160..=800).step_by(4) {
+                    view.update(cx, |view, cx| {
+                        view.width = px(width as f32);
+                        cx.notify();
+                    });
+                    crate::tags::tests::draw(cx);
+                    let header = cx.debug_bounds("pdf-side-header-0").expect("a header");
+                    let heading = cx.debug_bounds("pdf-side-heading-0").expect("a heading");
+                    let half = cx.update(|window, _| window.rem_size()) * 0.5;
+                    let at = format!(
+                        "{text} pt, side {} px: {heading:?} in {header:?}",
+                        width / 2
+                    );
+                    assert!(
+                        heading.left() >= header.left() + half - px(0.5)
+                            && heading.right() <= header.right() - half + px(0.5),
+                        "{at}: the heading lies inside its header"
+                    );
+                    if width == 800 {
+                        assert!(
+                            (heading.size.width - whole.1).abs() <= px(1.),
+                            "{at}: a wide side reads the heading whole"
+                        );
+                    }
+                }
+            }
         }
 
         /// The page number's dialog opens with the current page selected in
