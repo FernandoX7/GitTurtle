@@ -13010,6 +13010,81 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The UI thread's handling of a warm-tab switch, for a release build:
+    /// forty switches between the two tabs of [`two_history_tabs`], twenty
+    /// each way, at 13 and 18 pt, in their 461 × 490 half tile and in a
+    /// 1,480 × 980 window, after one untimed pass of the same switches. Each
+    /// switch times one `switch_repository_tab`, from before the call to its
+    /// return: the tab's state handed back and every frame drawn as the
+    /// update's effects flush, layout, prepaint and paint included, on the
+    /// test platform, with no GPU, compositor or display link. The window's
+    /// reader and the executors it saves, watches and filters through are
+    /// held through each switch, so no reply is timed or drawn
+    /// ([`switch_warm_tab`]). Its frames are counted by the repository
+    /// columns' `InFrame` record, and the frame callbacks the switch leaves
+    /// are delivered afterwards, three times, untimed in `handler_ms` and
+    /// timed apart in `next_frame_ms`, with any frame they draw counted in
+    /// `next_frame_frames`.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_TAB_SWITCH_BENCH_OUTPUT and run with --release --ignored"]
+    async fn warm_tab_switch_release_benchmark(cx: &mut TestAppContext) {
+        const SWITCHES: usize = 40;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_TAB_SWITCH_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+        let (_fixtures, app, cx, _) = two_history_tabs(cx).await;
+        crate::in_frame::probe::watch();
+        let mut series = Vec::new();
+        for text in [13, 18] {
+            for window in [size(px(461.), px(490.)), size(px(1480.), px(980.))] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(window);
+                settle(&app, cx).await;
+                let mut handler_ms = Vec::new();
+                let mut next_frame_ms = Vec::new();
+                let mut frames = Vec::new();
+                let mut next_frame_frames = Vec::new();
+                let mut targets = Vec::new();
+                for pass in 0..2 {
+                    // The second tab is shown as each pass starts and ends.
+                    for switch in 0..SWITCHES {
+                        let index = (switch + 1) % 2;
+                        let timed = switch_warm_tab(&app, index, cx).await;
+                        if pass == 1 {
+                            handler_ms.push(timed.handler_ms);
+                            next_frame_ms.push(timed.next_frame_ms);
+                            frames.push(timed.frames);
+                            next_frame_frames.push(timed.next_frame_frames);
+                            targets.push(index);
+                        }
+                    }
+                }
+                series.push(serde_json::json!({
+                    "text_pt": text,
+                    "window": [f32::from(window.width), f32::from(window.height)],
+                    "tabs": targets,
+                    "handler_ms": handler_ms,
+                    "next_frame_ms": next_frame_ms,
+                    "frames": frames,
+                    "next_frame_frames": next_frame_frames,
+                }));
+            }
+        }
+        crate::in_frame::probe::stop();
+        let result = serde_json::json!({
+            "schema": 1,
+            "switches": SWITCHES,
+            "warmup_passes": 1,
+            "boundary": "One `switch_repository_tab` on the UI thread, from before the call to its return: the warm tab's state handed back and every frame drawn as its effects flush (layout, prepaint and paint on the test platform; no GPU, compositor or display link), with the reader and the operation, preferences and path-filter executors held. `next_frame_ms` times delivering the frame callbacks the switch left, three times, and any frame they draw, separately.",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Every choice the repository page's width makes reads one width: the
     /// window's less the project pane as its group draws it. The page drew
     /// its rail from its width in the frame, while Toggle Sidebar, the
