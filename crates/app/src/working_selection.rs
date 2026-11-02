@@ -595,10 +595,24 @@ impl GitTurtle {
     /// showed the read's look at once, dimming what the person had not
     /// touched for a reason that was not why.
     pub(super) fn refuse_working_press(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.operation_busy.is_some() || self.working_paths.pending {
+        self.refuse_busy_press(cx) || self.working_paths.error.is_some()
+    }
+
+    /// Whether work in flight, a write or the rows being prepared, refuses
+    /// a press on the list or on a control that acts on the files it lists,
+    /// Stage all, Unstage all, the selection's Stage and Unstage, and
+    /// Commit, whatever it looks like yet: where it does, the busy spell's
+    /// look shows at once ([`Self::show_busy_look`]), so the control dims
+    /// and says why (`rows_wait`) in the frame of the refusal, as a press on
+    /// the list does ([`Self::refuse_working_press`]). A pointer press on
+    /// one of those controls in the look's delay was once refused with
+    /// nothing to show for it.
+    pub(super) fn refuse_busy_press(&mut self, cx: &mut Context<Self>) -> bool {
+        let refused = self.operation_busy.is_some() || self.working_paths.pending;
+        if refused {
             self.show_busy_look(cx);
         }
-        self.working_list_refuses()
+        refused
     }
 
     pub(super) fn choose_working_selection(
@@ -929,8 +943,9 @@ impl GitTurtle {
     /// selection's controls draw it (`render_working_selection`), `compact`
     /// with only its icon: labelled by how many of the selected files it
     /// acts on, refused while there are none, and refused at once by a
-    /// write in flight or rows being prepared (`apply_selected_files`),
-    /// dimmed once the spell looks busy. While only the rows being prepared
+    /// write in flight or rows being prepared, dimmed once the spell looks
+    /// busy, which a refused press shows at once (`refuse_busy_press`).
+    /// While only the rows being prepared
     /// refuse it, its name and tooltip say why once it dims (`rows_wait`).
     pub(super) fn selection_action(
         &self,
@@ -984,9 +999,12 @@ impl GitTurtle {
                 count == 0 || unavailable,
             )
         })
-        .on_click(
-            cx.listener(move |this, _, window, cx| this.apply_selected_files(staged, window, cx)),
-        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // Refused at once, its look showing why (`refuse_busy_press`).
+            if !this.refuse_busy_press(cx) {
+                this.apply_selected_files(staged, window, cx)
+            }
+        }))
     }
 
     /// The filter and the selection's controls. Stage and Unstage stay

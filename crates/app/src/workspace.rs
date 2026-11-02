@@ -79,6 +79,10 @@ struct WorkingBodyParts {
     identity_ready: bool,
     shown: bool,
     conflicted: bool,
+    /// Whether Commit is refused for a reason of its own, whatever the
+    /// window's busy spell: nothing staged, a conflict, no identity or no
+    /// title.
+    commit_unavailable: bool,
     commit_disabled: bool,
     commit_refused: bool,
 }
@@ -3561,8 +3565,13 @@ impl GitTurtle {
             // (`working_control_focused`).
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
                 // One the list refuses chooses nothing, its busy look saying
-                // why at once (`refuse_working_press`).
+                // why at once (`refuse_working_press`). With no file drawn,
+                // clean or matching no filter, there is nothing to choose or
+                // refuse, so no busy look either, as for an arrow
+                // (`working_files_drawn`): Enter there during a write once
+                // showed the write's look at once.
                 if this.working_control_focused(window, cx)
+                    || !this.working_files_drawn()
                     || this.refuse_working_press(cx)
                     || !this.activate_working_preview(window, cx)
                 {
@@ -3691,6 +3700,7 @@ impl GitTurtle {
                     identity_ready,
                     shown,
                     conflicted,
+                    commit_unavailable,
                     commit_disabled,
                     commit_refused,
                 }),
@@ -3726,6 +3736,7 @@ impl GitTurtle {
             identity_ready,
             shown,
             conflicted,
+            commit_unavailable,
             commit_disabled,
             commit_refused,
         } = parts;
@@ -4213,14 +4224,9 @@ impl GitTurtle {
                                     // its name and tooltip say why once it dims
                                     // (`rows_wait`); a label that says why it
                                     // cannot commit is its own reason.
-                                    let own = !shown
-                                        || staged == 0
-                                        || conflicted
-                                        || !identity_ready
-                                        || self.commit_title.read(cx).value().trim().is_empty();
                                     let (named, tooltip) = self.rows_wait(
                                         "commit-staged",
-                                        own,
+                                        !shown || commit_unavailable,
                                         &label,
                                         Some(if forms.compact_commit {
                                             format!("{label} · {detail}")
@@ -4256,8 +4262,10 @@ impl GitTurtle {
                                     })
                                     .on_click(cx.listener(
                                         |this, _, window, cx| {
-                                            // Refused at once, whatever it looks like yet.
-                                            if this.working_paths.pending {
+                                            // Refused at once, whatever it looks like
+                                            // yet, its look showing why at once
+                                            // (`refuse_busy_press`).
+                                            if this.refuse_busy_press(cx) {
                                                 return;
                                             }
                                             let message = this.current_commit_draft(cx).message();
@@ -4466,9 +4474,11 @@ impl GitTurtle {
                                 control.text_color(rgb(p.control_label()))
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                // Refused at once while the rows it counts
-                                // are prepared, whatever it looks like yet.
-                                if this.working_paths.pending {
+                                // Refused at once while a write runs or the
+                                // rows it counts are prepared, whatever it
+                                // looks like yet, its look showing why at
+                                // once (`refuse_busy_press`).
+                                if this.refuse_busy_press(cx) {
                                     return;
                                 }
                                 this.write_from(
@@ -4937,9 +4947,9 @@ impl GitTurtle {
     /// on every passive refresh. The name once came at once, so every
     /// watcher-driven refresh, however short, renamed a focused Commit
     /// "Commit 2 files, unavailable. …" and back; a refresh shorter than
-    /// the look's delay now changes no word, and a press the list refuses
-    /// shows the look, and the name with it, at once
-    /// ([`Self::show_busy_look`]).
+    /// the look's delay now changes no word, and a press the list or the
+    /// control refuses shows the look, and the name with it, at once
+    /// ([`Self::refuse_busy_press`]).
     /// `key` names the control for tests (`refusals::waiting`).
     pub(super) fn rows_wait(
         &self,

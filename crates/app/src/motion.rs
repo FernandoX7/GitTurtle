@@ -6115,6 +6115,92 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A pointer press on Stage all, Unstage all, the selection's Stage or
+    /// Unstage, or Commit, refused before the busy look has shown, while a
+    /// quiet refresh's rows are prepared or as a write starts, shows that
+    /// look in the frame of the refusal, as a press on the list does
+    /// (`refuse_busy_press`, `show_busy_look`): the control dims and says
+    /// why at once, and nothing is written. Each once refused the press and
+    /// showed nothing until the 200 ms delay had passed.
+    #[gpui::test]
+    async fn a_press_a_working_control_refuses_shows_why_at_once(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        crate::views::tests::fixture_identity(&repository);
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        fixture_git(&repository, &["add", "another.txt"]);
+        quietly_refreshed(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.commit_title
+                    .update(cx, |title, cx| title.set_value("Notes", window, cx))
+            })
+        });
+        app.update(cx, |app, cx| app.select_all_working(cx));
+        draw(cx);
+        let looks_busy = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.busy_shown());
+        let press = |cx: &mut VisualTestContext, key: &'static str| {
+            let control = cx
+                .debug_bounds(key)
+                .unwrap_or_else(|| panic!("{key} is drawn"));
+            cx.simulate_click(control.center(), Modifiers::default());
+            next_frame(cx);
+        };
+        const CONTROLS: [&str; 5] = [
+            "stage-all",
+            "unstage-all",
+            "stage-selection",
+            "unstage-selection",
+            "commit-staged",
+        ];
+        for key in CONTROLS {
+            // A quiet refresh's rows, held on the filter's thread.
+            let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.schedule_working_filter(
+                        None,
+                        false,
+                        crate::working_selection::Preparation::Status,
+                        window,
+                        cx,
+                    )
+                })
+            });
+            next_frame(cx);
+            assert!(!looks_busy(cx), "{key}: the rows' look waits");
+            press(cx, key);
+            assert!(looks_busy(cx), "{key}: the refused press shows the look");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                None,
+                "{key}: nothing is written"
+            );
+            assert!(
+                crate::workspace::refusals::get(key).is_some_and(|refusal| refusal.dimmed),
+                "{key}: it dims at once"
+            );
+            drop(rows);
+            crate::path_filter::filters_land(&app, cx);
+            next_frame(cx);
+            assert!(!looks_busy(cx), "{key}: the look ends with the rows");
+        }
+
+        // As a write starts: Commit, pressed in the write's delay.
+        let write = held_write(&app, cx);
+        let label = app.read_with(cx, |app, _| app.operation_busy);
+        assert!(!looks_busy(cx), "the write's look waits");
+        press(cx, "commit-staged");
+        assert!(looks_busy(cx), "Commit refused by the write shows the look");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            label,
+            "the write runs alone"
+        );
+        release(&app, write, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Enter, an arrow or Select All that the Working list refuses only for
     /// its filter's error, which says why in the list, shows no busy look,
     /// though a status read runs: the read refuses no press, and its look
@@ -6173,10 +6259,10 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// An arrow or Select All on a Working list that draws no file, as one
-    /// whose filter matches nothing, has nothing to act on and refuses
-    /// nothing, so a write running shows no busy look for it: the look
-    /// waits its 200 ms. Each once showed it at once. On rows kept drawn
+    /// An arrow, Enter or Select All on a Working list that draws no file,
+    /// as one whose filter matches nothing, has nothing to act on and
+    /// refuses nothing, so a write running shows no busy look for it: the
+    /// look waits its 200 ms. Each once showed it at once. On rows kept drawn
     /// while new ones are prepared, which it cannot act on, an arrow is
     /// refused and still shows the look at once.
     #[gpui::test]
@@ -6203,7 +6289,7 @@ mod tests {
         );
         let write = held_write(&app, cx);
         assert!(!looks_busy(cx), "the write's look waits");
-        for press in ["down", "up", "Select All"] {
+        for press in ["down", "up", "enter", "Select All"] {
             match press {
                 "Select All" => app.update(cx, |app, cx| app.select_all_working(cx)),
                 keys => cx.simulate_keystrokes(keys),
