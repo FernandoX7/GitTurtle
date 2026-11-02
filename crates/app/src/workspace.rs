@@ -3164,18 +3164,20 @@ impl GitTurtle {
         );
     }
 
-    /// The Working inspector's layout as last laid out, which `window` keeps
-    /// while the inspector is drawn, `width` being the inspector's expected
-    /// width until it is first laid out. It is keyed as the window renders
-    /// (`render_repository`), before the inspector is built in its frame,
-    /// where the key would take the frame's ancestors: those change with the
-    /// project pane, and showing or hiding it lost the layout.
-    /// The Working inspector's layout as last laid out, which the shown tab
-    /// keeps while another tab, mode or page is drawn, so that Changes shown
-    /// again lays its list and composer out where they were drawn. As
-    /// element state it lasted only while drawn: a Changes tab shown again
-    /// laid them out from the estimates below and drew a second frame where
-    /// they measured themselves.
+    /// The Working inspector's layout as last laid out, `width` being the
+    /// inspector's expected width until it is first laid out. The shown tab
+    /// holds it while another tab, mode or page is drawn and a warm tab keeps
+    /// it, so Changes shown again lays its list and composer out where they
+    /// were drawn; taken as the window renders (`render_repository`), not as
+    /// the inspector is built in its frame, it outlasts the project pane
+    /// coming and going too. Kept as element state, it lasted only while
+    /// drawn: a Changes tab shown again laid its list and composer out from
+    /// the estimates below and drew a second frame where they measured
+    /// themselves. A resize, text size or density change while it is not
+    /// drawn keeps it too, unlike History's list layouts: measured at the old
+    /// size it is still nearer than the estimates, so the return draws the
+    /// two frames a resize draws while Changes is shown, where estimates drew
+    /// three.
     pub(super) fn working_inspector_layout(
         &self,
         width: Pixels,

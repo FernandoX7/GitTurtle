@@ -13486,6 +13486,46 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
     }
 
+    /// A Changes tab shown again after the window was resized while another
+    /// showed draws no more frames than a resize draws while Changes shows:
+    /// the Working inspector measures its list and composer once laid out
+    /// and lays them out again in a second frame where they changed. The tab
+    /// keeps the layout it last drew, which a resize leaves nearer than the
+    /// estimates a layout starts from: started again from them, the return
+    /// drew three frames (`GitTurtle::working_inspector_layout`).
+    #[gpui::test]
+    async fn a_changes_tab_shown_again_after_a_resize_draws_as_a_resize_does(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixtures, app, cx, left) = tabs_in_each_mode(cx).await;
+        crate::in_frame::probe::watch();
+        assert_eq!(switch_and_land(&app, 0, cx), 1, "History shown again");
+        cx.simulate_resize(size(px(1200.), px(900.)));
+        land_every_reply(&app, cx);
+        draw(cx);
+        let returned = switch_and_land(&app, 1, cx);
+        assert_eq!(
+            left_tab(&app, cx).focus,
+            left[1].focus,
+            "focus as it was left"
+        );
+        repository_frames();
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        land_every_reply(&app, cx);
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            land_every_reply(&app, cx);
+        }
+        let resized = repository_frames();
+        crate::in_frame::probe::stop();
+        assert!(
+            returned <= resized,
+            "the return after a resize draws {returned} frames, a resize while shown {resized}"
+        );
+    }
+
     /// A History tab left at its newest commits, which History follows, has
     /// its rescan install the page it reads as it is shown again: the same
     /// rows draw no frame of their own, and new ones, a commit made outside
