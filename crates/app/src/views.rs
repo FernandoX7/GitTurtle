@@ -1,7 +1,6 @@
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use columns::ColumnId;
-use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
@@ -70,95 +69,70 @@ impl GitTurtle {
     /// viewport's size or the row height changes
     /// ([`reveal_resized_selection`]).
     ///
-    /// The changed files' probe reveals the row as it is prepainted, so it
-    /// goes before their list: the list applies the reveal as it lays its
-    /// rows out in the same frame, and the frame that first draws the list
-    /// at a new size, as the inspector after a width change, draws the
-    /// selection where it settles and asks for no other. Revealed as it was
-    /// painted, after the list, the row moved only in the next frame, so
-    /// each reveal asked for one, and a Compare width step drew two frames
-    /// where the second, the selection still in view, redrew the first.
-    /// History's probe reveals as it is painted, once History's prepaint has
-    /// measured the viewport's width (`history_width`), and moves the graph's
-    /// lanes, which the rows already built read, so it asks for the next
-    /// frame.
+    /// The probe reveals the row as it is prepainted, so it goes before its
+    /// list: the list applies the reveal as it lays its rows out in the same
+    /// frame, and the frame that first draws the list at a new size, as the
+    /// inspector or History after a width change, draws the selection where
+    /// it settles and asks for no other. Revealed as it was painted, after
+    /// the list, the row moved only in the next frame, so each reveal asked
+    /// for one, and a width step drew two frames where the second, the
+    /// selection still in view, redrew the first. History's selected lane,
+    /// which a new width can leave out of the graph's lanes, is revealed as
+    /// History takes that width, before the frame builds its header and rows
+    /// ([`Self::take_history_width`]).
     fn list_viewport_probe(&self, history: bool, cx: &Context<Self>) -> impl IntoElement {
         let owner = cx.entity().downgrade();
-        let reveal = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
-            let _ = owner.update(cx, |this, cx| {
-                // Cold loading geometry must not reveal selection over a
-                // saved viewport or a wheel scroll made during restoration.
-                if this.repository_tabs.restoring.is_some() {
-                    return;
-                }
-                let row_height = px(if history {
-                    this.settings.density.history_row_height()
-                } else {
-                    this.settings.density.file_row_height()
-                });
-                let previous = if history {
-                    this.history_list_layout
-                } else {
-                    this.file_list_layout
-                };
-                // History's probe sits in its table, which is as wide as
-                // the columns and scrolls sideways inside the viewport;
-                // the columns follow the width History's prepaint
-                // measured a frame earlier. Take the viewport's width
-                // from this frame's prepaint instead, so after a resize
-                // the frame that only finishes the table is no viewport
-                // change: a cold tab's last read can land on the frame
-                // before it and seed the restored layout there.
-                let width = if history {
-                    px(this.history_width)
-                } else {
-                    bounds.size.width
-                };
-                let next = (size(width, bounds.size.height), row_height);
-                if previous == Some(next) {
-                    return;
-                }
-                let selected = if history {
-                    this.selected_commit
-                        .and_then(|index| this.visible.iter().position(|i| *i == index))
-                } else {
-                    this.selected_file.and_then(|index| {
-                        this.filtered_file_indices(cx)
-                            .iter()
-                            .position(|i| *i == index)
-                    })
-                };
-                let (previous, scroll) = if history {
-                    (&mut this.history_list_layout, &this.history_scroll)
-                } else {
-                    (&mut this.file_list_layout, &this.file_scroll)
-                };
-                if reveal_resized_selection(previous, next, selected, scroll) && history {
-                    // The graph's lanes as this frame lays them out, its
-                    // width taken in prepaint: a window narrowed to fewer
-                    // lanes, as narrow History's one, shows the selected
-                    // commit's lane as well as its row.
-                    if let Some(index) = this.selected_commit {
-                        this.reveal_graph_lane(index);
+        canvas(
+            move |bounds, _, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    // Cold loading geometry must not reveal selection over a
+                    // saved viewport or a wheel scroll made during restoration.
+                    if this.repository_tabs.restoring.is_some() {
+                        return;
                     }
-                    cx.notify();
-                    // A refresh requested during paint takes effect on the
-                    // next frame, after the list has its new dimensions.
-                    window.defer(cx, |window, _| window.refresh());
-                }
-            });
-        };
-        if history {
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, cx| reveal(bounds, window, cx),
-            )
-        } else {
-            canvas(
-                move |bounds, window, cx| reveal(bounds, window, cx),
-                |_, _, _, _| {},
-            )
-        }
+                    let row_height = px(if history {
+                        this.settings.density.history_row_height()
+                    } else {
+                        this.settings.density.file_row_height()
+                    });
+                    // History's probe sits in its table, which is as wide as
+                    // the columns and scrolls sideways inside the viewport:
+                    // the viewport's width is the one History took in this
+                    // frame.
+                    let width = if history {
+                        px(this.history_width)
+                    } else {
+                        bounds.size.width
+                    };
+                    let next = (size(width, bounds.size.height), row_height);
+                    let previous = if history {
+                        this.history_list_layout
+                    } else {
+                        this.file_list_layout
+                    };
+                    if previous == Some(next) {
+                        return;
+                    }
+                    let selected = if history {
+                        this.selected_commit
+                            .and_then(|index| this.visible.iter().position(|i| *i == index))
+                    } else {
+                        this.selected_file.and_then(|index| {
+                            this.filtered_file_indices(cx)
+                                .iter()
+                                .position(|i| *i == index)
+                        })
+                    };
+                    let (previous, scroll) = if history {
+                        (&mut this.history_list_layout, &this.history_scroll)
+                    } else {
+                        (&mut this.file_list_layout, &this.file_scroll)
+                    };
+                    reveal_resized_selection(previous, next, selected, scroll);
+                });
+            },
+            |_, _, _, _| {},
+        )
         .absolute()
         .inset_0()
     }
@@ -1691,16 +1665,76 @@ impl GitTurtle {
         }
     }
 
-    pub(super) fn render_history(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// History, laid out for the width it has in the frame that draws it
+    /// ([`crate::in_frame`]): it takes that width
+    /// ([`Self::take_history_width`]) before anything in the frame lays its
+    /// columns, toolbar or search controls out. Measured as History was
+    /// prepainted, the width came after the columns were built for the one
+    /// before, so each width step asked for a second frame that laid them
+    /// out for the new one.
+    pub(super) fn render_history(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                crate::in_frame::in_frame(move |bounds, window, cx| {
+                    owner
+                        .update(cx, |this, cx| {
+                            // Before anything in this frame lays the columns
+                            // out, the lane its new width reveals and the
+                            // rows included.
+                            let metrics = HistoryMetrics::current(window, this.widest_references());
+                            this.history_metrics.set(metrics);
+                            this.take_history_width(bounds.size.width);
+                            this.render_history_at(window, cx)
+                        })
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+                .named("history"),
+            )
+            .into_any_element()
+    }
+
+    /// Takes the width History is laid out at in this frame. Layout snaps
+    /// it to device pixels, so one window width always measures the same.
+    /// It is kept exactly: a tolerance would keep a nearby stale width, and
+    /// Subject takes the leftover, so the columns would land somewhere else
+    /// after navigation is hidden and shown again. An unchanged width
+    /// changes nothing. A new one reveals the selected commit's lane, so a
+    /// window narrowed to fewer lanes, as narrow History's one, shows that
+    /// lane as well as its row, which the list's viewport probe reveals
+    /// ([`Self::list_viewport_probe`]); the header's lane buttons and the
+    /// rows built in this frame read it. It does not while a cold tab is
+    /// restored or before the list was first laid out, which keep a saved
+    /// view, as the probe's reveal does not.
+    fn take_history_width(&mut self, width: Pixels) {
+        let width = f32::from(width);
+        if self.history_width == width {
+            return;
+        }
+        #[cfg(test)]
+        HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
+        self.history_width = width;
+        if self.repository_tabs.restoring.is_none()
+            && self.history_list_layout.is_some()
+            && let Some(index) = self.selected_commit
+            && self.visible.contains(&index)
+        {
+            self.reveal_graph_lane(index);
+        }
+    }
+
+    /// History as [`Self::render_history`] builds it, for the width it took.
+    fn render_history_at(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let scope = self
             .scope
             .as_ref()
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
-        // Before anything in this frame lays the columns out, rows included.
-        let metrics = HistoryMetrics::current(window, self.widest_references());
-        self.history_metrics.set(metrics);
+        let metrics = self.history_metrics.get();
         let columns = self.history_column_layout();
         let table_width = columns.content_width + metrics.insets();
         let history = if self.commits.is_empty() && self.error.is_some() {
@@ -1782,7 +1816,6 @@ impl GitTurtle {
         } else {
             history
         };
-        let view = cx.entity().downgrade();
         let header = div()
             .h(crate::appearance::ui_size(HISTORY_HEADER_HEIGHT))
             .flex_shrink_0()
@@ -1893,30 +1926,6 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .bg(rgb(colors.canvas))
-            // Layout snaps this width to device pixels, so one window width
-            // always measures the same. Keep it exactly: a tolerance would
-            // keep a nearby stale width, and Subject takes the leftover, so
-            // the columns would land somewhere else after navigation is
-            // hidden and shown again. An unchanged width lays nothing out.
-            .on_prepaint(move |bounds, window, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    let width = f32::from(bounds.size.width);
-                    if this.history_width != width {
-                        #[cfg(test)]
-                        HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
-                        this.history_width = width;
-                        cx.notify();
-                        // A notify during a draw only marks the view for
-                        // whichever frame something else asks for: after a
-                        // single resize the table kept the old width's
-                        // columns until the next input. Ask for the next
-                        // frame, which lays the columns out for this width;
-                        // that frame measures the same width and asks for
-                        // nothing, so an idle window draws no more.
-                        window.request_animation_frame();
-                    }
-                });
-            })
             .child(self.render_history_scope_toolbar(scope.into(), window, cx))
             .child(
                 div()
@@ -2007,8 +2016,11 @@ impl GitTurtle {
                                             window.focus(&this.focus, cx);
                                         }),
                                     )
-                                    .child(history)
+                                    // Before the list, which applies its reveal
+                                    // in the same frame
+                                    // ([`Self::list_viewport_probe`]).
                                     .child(self.list_viewport_probe(true, cx))
+                                    .child(history)
                                     .children(self.commit_menu.as_ref().map(|menu| {
                                         menu.render(
                                             "commit-menu-overlay",
@@ -6602,8 +6614,8 @@ pub(crate) const CHANGED_FILTER_NAME: &str = "Filter changed paths";
 thread_local! {
     /// Lines [`line_widths`] has asked the text system to lay out.
     pub(crate) static LINE_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Widths History has taken from its measured bounds, each of which
-    /// notifies so its columns are laid out again.
+    /// Widths History has taken from the bounds it is laid out in
+    /// (`GitTurtle::take_history_width`).
     static HISTORY_WIDTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Room taken off the left of the body beside the project pane, in
     /// pixels, so the body is narrower than the window's content, as no test
@@ -12052,7 +12064,11 @@ pub(crate) mod tests {
     /// and drawn by a refresh, as the changed files' filter's between 461 and
     /// 980 px at 18 pt;
     /// History's navigation group, drawn again where a window widens past
-    /// History's rail, notifying the window after the frame that fitted it.
+    /// History's rail, notifying the window after the frame that fitted it;
+    /// and History's width, measured as History was prepainted, which asked
+    /// for the next frame to lay its columns out, and its list's probe
+    /// revealing the selected commit as it was painted, which asked for
+    /// another.
     async fn assert_a_width_step_draws_one_frame(
         cx: &mut TestAppContext,
         path: Option<&'static str>,
@@ -12143,6 +12159,46 @@ pub(crate) mod tests {
         }
         probe::stop();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// History narrowed from 1,480 to 1,000 px draws one frame where it
+    /// settles ([`assert_a_width_step_draws_one_frame`]).
+    #[gpui::test]
+    async fn history_narrowed_from_1480_to_1000_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (wide, narrow) = (size(px(1480.), px(980.)), size(px(1000.), px(980.)));
+        assert_a_width_step_draws_one_frame(cx, None, wide, narrow).await;
+    }
+
+    /// History widened from 1,000 to 1,480 px draws one frame where it
+    /// settles; at 18 pt the step also draws its navigation again.
+    #[gpui::test]
+    async fn history_widened_from_1000_to_1480_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (narrow, wide) = (size(px(1000.), px(980.)), size(px(1480.), px(980.)));
+        assert_a_width_step_draws_one_frame(cx, None, narrow, wide).await;
+    }
+
+    /// History narrowed from 980 px to a 461 × 490 half tile draws one frame
+    /// where it settles, its search field's placeholder shortened in it.
+    #[gpui::test]
+    async fn history_narrowed_from_980_to_461_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (wide, tile) = (size(px(980.), px(490.)), size(px(461.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, None, wide, tile).await;
+    }
+
+    /// History widened from a 461 × 490 half tile to 980 px draws one frame
+    /// where it settles, its navigation drawn again at 13 pt.
+    #[gpui::test]
+    async fn history_widened_from_461_to_980_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (tile, wide) = (size(px(461.), px(490.)), size(px(980.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, None, tile, wide).await;
     }
 
     /// History's navigation group, drawn again when a window widens past
@@ -25324,14 +25380,15 @@ pub(crate) mod tests {
     /// One resize, and only the frames it causes, lay History out for the
     /// new width: natively, after a single resize with no further input,
     /// the table kept the old width's columns for 2.5 s, until something
-    /// else redrew, because History measures its width while drawing and a
+    /// else redrew, because History measured its width while drawing and a
     /// notify during a draw asks for no frame. Each resize below, wider and
     /// narrower, settles in the frames it asks for to the columns, list and
     /// inspector that further forced frames keep, and once settled the
     /// window asks for no frame at all, so an idle window draws nothing.
-    /// With a commit selected, the list's probe reveals it after the
-    /// viewport changes and asks for a frame of its own; without one, only
-    /// History's new width can.
+    /// History now takes its width in the frame it is laid out in and its
+    /// list's probe reveals the selected commit before the list, so a resize
+    /// asks for no frame of its own, with a commit selected or without one
+    /// ([`assert_a_width_step_draws_one_frame`]).
     #[gpui::test]
     async fn one_resize_lays_history_out_for_its_new_width(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window(cx).await;
