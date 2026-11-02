@@ -896,7 +896,9 @@ mod tests {
     /// SVG document or a PHP opening tag, is refused exactly when GIO types
     /// it as something else, as GLib with shared-mime-info 2.2 or later does
     /// (`*.png` is also claimed by APNG there, so GIO sniffs and SVG's
-    /// priority 80 magic wins).
+    /// priority 80 magic wins). Without the shared MIME database GIO types
+    /// every file `application/octet-stream`, as on an Arch image without
+    /// shared-mime-info, so the test first names that cause.
     #[test]
     fn the_real_gio_decides_for_polyglots() {
         let Some(gio) = find_launcher(&GIO.map(Path::new)) else {
@@ -905,6 +907,35 @@ mod tests {
         let svg = br#"<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>"#;
         let folder = tempfile::tempdir().unwrap();
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let typed = |copy: &Path, directory: &Path| {
+            let mut asked = environment.clone();
+            asked.push(("GIO_USE_VFS".into(), "local".into()));
+            let arguments = [
+                "info".into(),
+                "-a".into(),
+                "standard::content-type".into(),
+                copy.as_os_str().to_owned(),
+            ];
+            let wait = Duration::from_secs(5);
+            let answer = query("gio", &gio, &arguments, directory, asked, wait).unwrap();
+            answer
+                .lines()
+                .find_map(|line| line.trim_start().strip_prefix("standard::content-type:"))
+                .unwrap()
+                .trim()
+                .to_owned()
+        };
+        let probe = folder.path().join("database");
+        std::fs::create_dir(&probe).unwrap();
+        let plain = probe.join("Captured revision.png");
+        std::fs::write(&plain, png(None)).unwrap();
+        let typed_plain = typed(&plain, &probe);
+        assert_ne!(
+            typed_plain, "application/octet-stream",
+            "GIO typed a PNG application/octet-stream: the shared MIME database \
+             (shared-mime-info's mime.cache under XDG_DATA_DIRS) is missing"
+        );
+        assert_eq!(typed_plain, "image/png");
         let samples = [
             ("plain", Kind::Png, png(None)),
             ("png-svg", Kind::Png, png(Some(svg))),
@@ -921,21 +952,7 @@ mod tests {
             std::fs::write(&copy, bytes).unwrap();
             let wait = Duration::from_secs(5);
             let verdict = gio_agrees(kind, &gio, &copy, &directory, environment.clone(), wait);
-            let mut asked = environment.clone();
-            asked.push(("GIO_USE_VFS".into(), "local".into()));
-            let arguments = [
-                "info".into(),
-                "-a".into(),
-                "standard::content-type".into(),
-                copy.clone().into_os_string(),
-            ];
-            let answer = query("gio", &gio, &arguments, &directory, asked, wait).unwrap();
-            let typed = answer
-                .lines()
-                .find_map(|line| line.trim_start().strip_prefix("standard::content-type:"))
-                .unwrap()
-                .trim()
-                .to_owned();
+            let typed = typed(&copy, &directory);
             assert_eq!(
                 verdict.is_ok(),
                 kind.media_types().contains(&typed.as_str()),
@@ -947,9 +964,6 @@ mod tests {
                     matches!(&refusal.category, Category::SeenAs(_)),
                     "{name}: {refusal:?}"
                 );
-            }
-            if name == "plain" {
-                assert_eq!(typed, "image/png");
             }
         }
     }
