@@ -157,6 +157,26 @@ or more above the status bar. Remove this part of the patch when upstream lets
 an application keep popups clear of a region at the window's foot, and those
 tests pass without it.
 
+The popup-margin patch also modifies `src/popup.rs`, `src/popover.rs` and
+`src/positioner.rs`. Upstream's `Popup` host keeps a popup's box 8 px inside
+the window and lets no caller choose otherwise, while the component kit draws
+a popup's edge, its ring, in the band outside that box, so a dropdown moved in
+from a window's side drew its edge 7 px from it. `Popup::margin` sets the
+margin the host keeps instead of its 8 px, and `Popover::margin` passes one to
+its host; neither changes a popup that sets none. The positioner also moves a
+popup by whole pixels without crossing its side margins: where rounding its
+offset to the nearest pixel would carry a popup that lies inside the margin
+past it, it rounds toward the inside instead, as it already did at the foot,
+so a popup moved in from a side up to half a pixel past its margin no longer
+draws its ring nearer the side. The component's popover gives the host its
+`popup_fill_margin`, 9 px, so its ring stands 8 px in
+([component patch](../gpui-component/GITTURTLE-PATCH.md), the window-margin
+patch, which lists the consumers and tests:
+`menus_keep_their_drawn_edge_8_px_from_the_window_sides` and, on Linux,
+`the_main_menu_keeps_its_drawn_edge_8_px_from_the_windows_side`, whose Main
+Menu sets the margin on this host itself). Remove this part with the
+component's window-margin patch.
+
 The popup-frame patch also modifies `src/popup.rs` and `src/positioner.rs`.
 Upstream a `Popup` asks for the next frame (`request_animation_frame`) the
 first time its trigger is prepainted, so content it holds back until the

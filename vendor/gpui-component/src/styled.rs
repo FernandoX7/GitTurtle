@@ -59,6 +59,22 @@ const POPOVER_RING_INK: f32 = 0.1;
 /// popup clear of something keeps it this much further.
 pub const POPOVER_EDGE_WIDTH: Pixels = px(1.);
 
+/// GitTurtle patch: how far every popup's drawn edge, the ring in the band
+/// outside its fill ([`POPOVER_EDGE_WIDTH`]), stays inside its window's
+/// sides, top and foot: 8 px of page, for every menu and popover alike,
+/// since the edge, not the fill, is what the eye reads as a menu's side.
+/// A popup host keeps the fill [`popup_fill_margin`] in. The hosts kept
+/// their fill 8 px in, so a menu they moved in from a side drew its ring
+/// 7 px from it, where the input's drawn menu kept its ring 8 px in.
+pub const POPUP_WINDOW_MARGIN: Pixels = px(8.);
+
+/// GitTurtle patch: how far a popup host keeps a popup's fill inside its
+/// window, so that its drawn edge stands [`POPUP_WINDOW_MARGIN`] in: that
+/// margin and the edge's band, 9 px.
+pub fn popup_fill_margin() -> Pixels {
+    POPUP_WINDOW_MARGIN + POPOVER_EDGE_WIDTH
+}
+
 /// The colour of a popup surface's hairline ring in this theme: the theme's
 /// [`crate::Theme::popover_edge`] when it sets one, and otherwise 10% of the
 /// foreground.

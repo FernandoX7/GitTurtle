@@ -147,11 +147,12 @@ async fn the_profile_menu_names_its_rows(cx: &mut TestAppContext) {
 }
 
 /// In a 461 × 490 window, narrower than a menu's 500 px maximum, the profile
-/// menu keeps inside the window less the popup's 8 px inset on either side,
-/// even with a long name and email. The current identity and the saved
-/// profile that carries the email keep one line each, as tall as a short
-/// row's, ending with an ellipsis where the menu ends, and each is still
-/// announced by its whole text. The menu used to run past the window's edge.
+/// menu keeps its drawn edge, the ring outside its fill, inside the window
+/// less the popup's 8 px inset on either side, even with a long name and
+/// email. The current identity and the saved profile that carries the email
+/// keep one line each, as tall as a short row's, ending with an ellipsis
+/// where the menu ends, and each is still announced by its whole text. The
+/// menu used to run past the window's edge.
 #[gpui::test]
 async fn the_profile_menu_keeps_a_long_identity_inside_a_narrow_window(cx: &mut TestAppContext) {
     const NAME: &str = "Maximiliana Konstantinopoulou-Vanderbergh";
@@ -169,9 +170,10 @@ async fn the_profile_menu_keeps_a_long_identity_inside_a_narrow_window(cx: &mut 
         cx.debug_bounds(selector.clone().leak())
             .unwrap_or_else(|| panic!("{selector}"))
     };
-    let (start, end) = (px(8.), px(461. - 8.));
-    // The menu takes the whole 445 px: the long identity's row ends at the
-    // cap less the menu's `p_1` (3.25 px at 13 pt).
+    // The menu's fill takes the whole 443 px, 9 px inside either side, its
+    // drawn edge 8 px in: the long identity's row ends at the cap less the
+    // menu's `p_1` (3.25 px at 13 pt).
+    let (start, end) = (px(9.), px(461. - 9.));
     let identity = bounds(cx, format!("menu-item: {current} · Label"));
     assert!(
         (identity.right() - (end - px(3.25))).abs() < px(0.5),

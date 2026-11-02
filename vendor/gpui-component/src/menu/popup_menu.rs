@@ -20,11 +20,6 @@ use std::rc::Rc;
 
 const CONTEXT: &str = "PopupMenu";
 
-/// GitTurtle patch: the room a menu keeps from its window's edges, the
-/// margin gpui-base's `Popup` host snaps a dropdown menu to and the context
-/// menu's `snap_to_window_with_margin(px(8.))`.
-const WINDOW_INSET: Pixels = px(8.);
-
 /// GitTurtle patch: a row's text, kept on one line. Upstream let a row's
 /// text wrap wherever the menu was narrower than it, which an item's fixed
 /// height then cut; a row now ends with an ellipsis instead, its whole text
@@ -1678,13 +1673,15 @@ impl PopupMenu {
     }
 
     /// GitTurtle patch: the widest the menu draws, its own maximum (500 px by
-    /// default) but never wider than its window less [`WINDOW_INSET`] on
-    /// either side. Upstream capped a menu only at its maximum, so in a
-    /// window narrower than that a menu with a long row, such as a long Git
+    /// default) but never wider than its window less the room every popup
+    /// host keeps its fill from the window's sides
+    /// ([`crate::popup_fill_margin`]), so that its drawn edge too stays 8 px
+    /// in. Upstream capped a menu only at its maximum, so in a window
+    /// narrower than that a menu with a long row, such as a long Git
     /// identity, ran off the window's edge; it now keeps inside the window
     /// and its rows end with an ellipsis ([`menu_row_text`]).
     fn max_width(&self, window: &Window) -> Pixels {
-        let room = window.viewport_size().width - WINDOW_INSET * 2.;
+        let room = window.viewport_size().width - crate::popup_fill_margin() * 2.;
         self.max_width.unwrap_or(px(500.)).min(room)
     }
 
@@ -2190,18 +2187,27 @@ impl PopupMenu {
                         let (anchor, left) = self.submenu_anchor;
                         let is_bottom_pos =
                             matches!(anchor, Anchor::BottomLeft | Anchor::BottomRight);
+                        // GitTurtle patch: the submenu's drawn edge, the
+                        // ring outside its fill, stays the popup margin
+                        // inside the window, as every menu's does
+                        // ([`InsideWindow`]). GPUI's anchor moved it only
+                        // once the corner it anchors ran past the window,
+                        // 4 px in, not counting the submenu's offset from
+                        // that corner, so a submenu could run up to the
+                        // window's side or past it.
                         deferred(
                             anchored()
                                 .anchor(anchor)
-                                .child(
+                                .child(InsideWindow(
                                     div()
                                         .id("submenu")
                                         .occlude()
                                         .when(is_bottom_pos, |this| this.bottom_0())
                                         .when(!is_bottom_pos, |this| this.top_neg_1())
                                         .left(left)
-                                        .child(menu.clone()),
-                                )
+                                        .child(menu.clone())
+                                        .into_any_element(),
+                                ))
                                 .snap_to_window_with_margin(Edges::all(EDGE_PADDING)),
                         )
                         .with_priority(self.priority + 1)
@@ -2374,6 +2380,102 @@ impl Render for PopupMenu {
                         ),
                 )
             })
+    }
+}
+
+/// GitTurtle patch: a submenu, moved by whole pixels only as far as keeps
+/// its fill [`crate::popup_fill_margin`] inside the window, so its drawn
+/// edge stands [`crate::POPUP_WINDOW_MARGIN`] in, as every menu's does;
+/// where it lies that far in already, it does not move. It adds no layout
+/// node, as GPUI's `deferred` adds none: it moves its child where its
+/// anchor, offsets included, put it. Upstream's anchor moved a submenu
+/// only once the corner it anchors ran past the window, so a submenu could
+/// end on the window's side or past it.
+struct InsideWindow(AnyElement);
+
+impl InsideWindow {
+    /// How far a popup's fill laid at `bounds` in a `viewport` moves to lie
+    /// `margin` inside it, by whole pixels: along each axis toward the
+    /// window, from the side it runs past, and from the top or the leading
+    /// side where it is too large for both.
+    fn shift(bounds: Bounds<Pixels>, viewport: gpui::Size<Pixels>, margin: Pixels) -> Point<Pixels> {
+        let axis = |start: Pixels, end: Pixels, room: Pixels| {
+            let past = end - (room - margin);
+            let shift = if past > px(0.) { -past } else { px(0.) };
+            let short = margin - (start + shift);
+            if short > px(0.) {
+                (shift + short).ceil()
+            } else {
+                shift.floor()
+            }
+        };
+        gpui::point(
+            axis(bounds.left(), bounds.right(), viewport.width),
+            axis(bounds.top(), bounds.bottom(), viewport.height),
+        )
+    }
+}
+
+impl IntoElement for InsideWindow {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for InsideWindow {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // The margin outside the client inset, as the popup hosts keep it.
+        let inset = window.client_inset().unwrap_or(px(0.));
+        let shift = Self::shift(
+            bounds,
+            window.viewport_size(),
+            crate::popup_fill_margin() + inset,
+        );
+        window.with_element_offset(shift, |window| self.0.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
     }
 }
 

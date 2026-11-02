@@ -9,8 +9,8 @@
 //! holds returns there when it closes, by Escape, an item or a resized
 //! window.
 //!
-//! GitTurtle patch: placed at the pointer by the base `Positioner`, inside
-//! the window less 8 px and above the room an application keeps at its foot
+//! GitTurtle patch: placed at the pointer by the base `Positioner`, its
+//! drawn edge inside the window less 8 px and above the room an application keeps at its foot
 //! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
 //! at: below the pointer where it fits, otherwise above it, its drawn edge
 //! next to the pixel row the pointer lies in either way, never on it, its
@@ -21,7 +21,7 @@
 
 use gpui::{
     App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
-    Point, Render, Subscription, Window, deferred, div, px,
+    Point, Render, Subscription, Window, deferred, div,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
@@ -48,27 +48,19 @@ struct ActiveMenu {
 /// foot. With its fill at the point the ring lay on the row clicked, and on
 /// a whole-pixel pointer, as X11 reports, the fill's top held the point.
 ///
-/// Its margin is kept from the drawn edge, not the fill, on all four sides:
-/// the fill stays [`WINDOW_MARGIN`] and the edge's band, 9 px, inside the
-/// window, so the ring stays 8 px in. A menu capped at the room the point
-/// leaves ([`gpui_base::Positioner::point_room`]), measured to the fill,
-/// filled it whole where that room held less than its first row, and drew
-/// its ring 7 px from the window's top. The base popup host and the kit's
-/// context menu still clamp their fill, not their ring, 8 px inside the
-/// window's top and sides, so a popup they clamp there draws its ring 7 px
-/// in.
+/// Its margin is kept from the drawn edge, not the fill, on all four sides,
+/// as every popup host keeps it: the fill stays
+/// [`crate::popup_fill_margin`], 9 px, inside the window, so the ring stays
+/// [`crate::POPUP_WINDOW_MARGIN`], 8 px, in. A menu capped at the room the
+/// point leaves ([`gpui_base::Positioner::point_room`]), measured to the
+/// fill, filled it whole where that room held less than its first row, and
+/// drew its ring 7 px from the window's top.
 fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::Positioner {
     gpui_base::Positioner::point(position)
         .offset(crate::POPOVER_EDGE_WIDTH)
-        .margin(WINDOW_MARGIN + crate::POPOVER_EDGE_WIDTH)
+        .margin(crate::popup_fill_margin())
         .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
 }
-
-/// GitTurtle patch: how far the menu's drawn edge, its ring, stays inside
-/// the window on every side: its fill this and [`crate::POPOVER_EDGE_WIDTH`]
-/// in ([`placement`]). The kit's popup hosts keep their fill, not their
-/// ring, this far in.
-const WINDOW_MARGIN: Pixels = px(8.);
 
 impl FallbackMenuOverlay {
     pub(crate) fn new() -> Self {

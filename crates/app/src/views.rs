@@ -22031,10 +22031,12 @@ pub(crate) mod tests {
                         "{at}: the menu {surface:?} draws its edge on the row below {pointer:?}"
                     );
                     // Its leading edge at the pointer, or, at 18 pt, moved
-                    // in to 8 px inside the window's side.
+                    // in until its drawn edge stands 8 px inside the
+                    // window's side, by whole pixels, never nearer.
+                    let side = px(461.) - drawn.right();
                     assert!(
                         (surface.left() - pointer.x).abs() <= px(1.)
-                            || (surface.right() - (px(461.) - px(8.))).abs() <= px(1.),
+                            || (side >= px(8.) - px(0.01) && side < px(9.)),
                         "{at}: the menu {surface:?} opens with its leading edge at the pointer {pointer:?}"
                     );
                     cx.simulate_keystrokes("escape");
@@ -23153,6 +23155,54 @@ pub(crate) mod tests {
             assert!(
                 (gap - expected).abs() <= px(0.5),
                 "{at}: the Main Menu {drawn:?} draws its edge {gap:?} below its button {trigger:?}, not {expected:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Linux Main Menu, whose button leads the tab strip, draws its edge,
+    /// the ring outside its fill, 8 px from the window's left side at 13 and
+    /// 18 pt, as every menu does: at 13 pt, where the button starts 6.5 px
+    /// in, the menu is moved in from the side, and its fill stood 8 px in
+    /// and its edge 7 px; at 18 pt the button starts 9 px in, its edge 8 px
+    /// in beside it.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_main_menu_keeps_its_drawn_edge_8_px_from_the_windows_side(
+        cx: &mut TestAppContext,
+    ) {
+        let open = crate::command_palette::COMMANDS
+            .iter()
+            .find(|spec| spec.id == crate::command_palette::CommandId::Open)
+            .unwrap()
+            .label;
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        settle(&app, cx).await;
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1280., 800.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            let item = menu_rows(cx, &[open])
+                .first()
+                .map(|(_, row)| *row)
+                .unwrap_or_else(|| panic!("{at}: the Main Menu opened"));
+            let drawn = menu_surface(cx, item).dilate(edge);
+            assert!(
+                trigger.left() - edge <= px(8.),
+                "{at}: the button {trigger:?} puts the menu's edge further than 8 px from the side"
+            );
+            assert!(
+                drawn.left() >= px(8.) - px(0.01) && drawn.left() < px(9.),
+                "{at}: the Main Menu {drawn:?} draws its edge {:?} from the window's side, not 8 px",
+                drawn.left()
             );
             cx.simulate_keystrokes("escape");
             draw(cx);

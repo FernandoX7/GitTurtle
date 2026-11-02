@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
-    Render, RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
+    Pixels, Render, RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
     prelude::FluentBuilder as _,
 };
 
@@ -185,6 +185,9 @@ pub struct Popover {
     mouse_button: MouseButton,
     overlay_closable: bool,
     on_open_change: Option<OpenChangeHandler>,
+    /// GitTurtle patch: the popup host's window margin, where the caller
+    /// sets one ([`Popover::margin`]).
+    margin: Option<Pixels>,
 }
 
 impl Popover {
@@ -200,11 +203,19 @@ impl Popover {
             mouse_button: MouseButton::Left,
             overlay_closable: true,
             on_open_change: None,
+            margin: None,
         }
     }
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
+        self
+    }
+
+    /// GitTurtle patch: keeps the surface `margin` inside the window, in
+    /// place of the popup host's 8 px ([`Popup::margin`]).
+    pub fn margin(mut self, margin: Pixels) -> Self {
+        self.margin = Some(margin);
         self
     }
 
@@ -293,8 +304,11 @@ impl RenderOnce for Popover {
             return div().id("empty").into_any_element();
         };
         let parent_view_id = window.current_view();
-        let popup = Popup::new(self.id, trigger(open, window, cx))
-            .anchor(self.anchor)
+        let mut popup = Popup::new(self.id, trigger(open, window, cx)).anchor(self.anchor);
+        if let Some(margin) = self.margin {
+            popup = popup.margin(margin);
+        }
+        let popup = popup
             .key_context(CONTEXT)
             .on_action({
                 let state = state.clone();

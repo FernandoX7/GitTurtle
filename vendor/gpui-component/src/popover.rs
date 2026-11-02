@@ -30,12 +30,14 @@ const DROPDOWN_ENTER_DURATION: Duration = Duration::from_millis(150);
 /// `2` is `0.5rem`, which is 8px at the default root size.
 const DROPDOWN_ENTER_OFFSET: Pixels = px(-8.);
 
+/// GitTurtle patch: its drawn edge, not only its fill, stays the popup
+/// margin inside the window ([`crate::popup_fill_margin`]).
 fn dropdown_positioner(bounds: Bounds<Pixels>) -> gpui_base::Positioner {
     gpui_base::Positioner::side(bounds)
         .placement(gpui_base::Placement::Bottom)
         .align(gpui_base::Align::Start)
         .offset(px(6.))
-        .margin(px(8.))
+        .margin(crate::popup_fill_margin())
 }
 
 /// Positions a dropdown surface under its trigger and animates it in.
@@ -317,6 +319,11 @@ impl RenderOnce for Popover {
 
         let popover = BasePopover::new(self.id)
             .anchor(self.anchor)
+            // GitTurtle patch: the host keeps the drawn edge, the ring
+            // outside the surface's fill, the popup margin inside the
+            // window, where it kept the fill there and the ring 1 px nearer
+            // ([`crate::POPUP_WINDOW_MARGIN`]).
+            .margin(crate::popup_fill_margin())
             .mouse_button(self.mouse_button)
             .default_open(self.default_open)
             .overlay_closable(self.overlay_closable)

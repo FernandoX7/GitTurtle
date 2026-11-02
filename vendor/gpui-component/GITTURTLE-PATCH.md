@@ -756,14 +756,14 @@ right-clicks low in the code editor, where the room above the pointer is the
 larger, and reads the capped menu drawn wholly above the point and taller
 than the room below, so a cap at the smaller room fails it. The fallback
 also keeps its 8 px window margin from its drawn edge rather than its fill,
-giving the positioner a margin of 8 px and `POPOVER_EDGE_WIDTH`: the room
+giving the positioner a margin of 8 px and `POPOVER_EDGE_WIDTH`
+(`popup_fill_margin`, below): the room
 `Positioner::point_room` gives is measured to the fill, so a menu capped at
 a room shorter than its first row, whose items column then takes the whole
 room, ended its fill at the margin and drew its ring 7 px from the window's
-top. The margin holds on all four sides, so the fallback's fill now stays
-9 px inside the window's top and sides, where the base popup host and the
-kit's context menu still clamp their fill 8 px in, and a popup they clamp
-there draws its ring 7 px in. At the window's
+top. The margin holds on all four sides, so the fallback's fill stays 9 px
+inside the window's top and sides, as every popup host's now does (the
+window-margin patch below). At the window's
 foot the application's inset already counts the edge, so nothing there
 moves.
 `an_inputs_capped_menu_keeps_its_drawn_edge_inside_the_window_margin`
@@ -1133,8 +1133,9 @@ wrap wherever the menu was narrower than it. In a window narrower than that
 maximum, such as a 461 px half tile, a menu with a long row, such as the profile
 menu's current identity, ran past the window's edge, and an item's wrapped
 text overflowed its fixed height. `PopupMenu::max_width` now also caps a menu at
-its window's width less `WINDOW_INSET` on either side, the 8 px the base
-`Popup` host and the context menu keep from the window's edges. Every row's
+its window's width less `popup_fill_margin` on either side, the 9 px the
+popup hosts keep its fill from the window's sides, so its drawn edge stays
+8 px in (the window-margin patch below). Every row's
 text, an item's, a submenu's and a label's, keeps one line and ends with an
 ellipsis where the menu is narrower than it (`menu_row_text`, and `truncate` on
 a label's text), its row and text shrinking below their content (`min_w_0`);
@@ -1150,10 +1151,59 @@ worktree menu (`crates/app/src/views.rs`). The profile picker's tooltip keeps
 the whole current identity.
 `cargo test --locked -p gitturtle the_profile_menu_keeps_a_long_identity_inside_a_narrow_window`
 opens the profile menu in a 461 × 490 window with a long name and email and
-reads each row inside the window less 8 px on either side, named by its whole
-text, and the current identity and the saved profile on one line as tall as a
+reads each row inside the menu's fill, 9 px inside either side, named by its
+whole text, and the current identity and the saved profile on one line as tall as a
 short row's. Remove this part of the patch when upstream keeps a menu inside its
 window and its rows on one line, and that test passes without it.
+
+The window-margin patch modifies `src/styled.rs`, `src/popover.rs`,
+`src/menu/context_menu.rs`, `src/menu/popup_menu.rs` and
+`src/native_menu/fallback.rs`, with the base patch's `Popup::margin`,
+`Popover::margin` and its whole-pixel rounding at a popup's side margins
+([base patch](../gpui-base/GITTURTLE-PATCH.md)). Upstream's popup hosts keep a
+popup's box 8 px inside the window, the base `Popup` host and the kit's
+context menu by the positioner's margin and a submenu by GPUI's anchor, 4 px
+in; a kit popup draws its edge, the ring, in the band outside that box
+(`POPOVER_EDGE_WIDTH`), so a menu moved in from a window's side drew its edge
+7 px from it, a submenu 3 px, while the input's drawn menu (the input-menu
+patch above) kept its edge 8 px in. GitTurtle's decision (2026-11-01) is that
+every menu's drawn edge, not its fill, stands 8 px from the window's sides,
+since the edge is what the eye reads as a menu's side. `POPUP_WINDOW_MARGIN`
+names those 8 px and `popup_fill_margin` the 9 px a host keeps the fill in.
+The kit's `Popover` hands it to the base popover's host (`Popover::margin`),
+so a dropdown menu and a popover keep it; `dropdown_popup`, the Select,
+Combobox and DatePicker surface, and the context menu give it to their
+positioner; the fallback menu takes it in place of its own constant; and
+`PopupMenu::max_width` caps a menu at the window less it on either side, so a
+menu as wide as its cap keeps its edge 8 px in on both. A submenu keeps GPUI's
+anchor, which decides the side it opens on and so which of Left and Right
+enters and leaves it, and is drawn through `InsideWindow`, which moves the
+submenu as its anchor placed it, its offset from the corner included, by
+whole pixels only as far as keeps its fill `popup_fill_margin` inside the
+window: GPUI's anchor moved it only once that corner, not the submenu, ran
+past the window. `InsideWindow` adds no layout node and moves nothing that
+lies that far in already.
+
+The consumers are every app dropdown (`AppDropdown`, on the kit's dropdown
+menu and popover), the theme editor's `ColorPicker` popover, the app's row
+menus, which take the same margin from `POPUP_WINDOW_MARGIN` for their room
+(`menu_bounds` in `crates/app/src/native_accessibility.rs`), its Linux Main
+Menu (`PrimaryMenu` in `crates/app/src/platform_polish.rs`, on the base popup
+host with `Popup::margin(popup_fill_margin())`), and the drawn menu of every
+input on Linux; no app menu has a submenu or opens through the kit's context
+menu or `dropdown_popup`.
+`cargo test --locked -p gitturtle menus_keep_their_drawn_edge_8_px_from_the_window_sides`
+opens, at 13 and 18 pt in a 461 × 490 window, an app dropdown on a button at
+either side of the window, a row's right-click menu 3 px from either side, and
+a kit dropdown's submenu that runs past either side, and reads each drawn
+edge 8 px from that side, or less than a pixel more;
+`the_main_menu_keeps_its_drawn_edge_8_px_from_the_windows_side`, on Linux,
+reads the Main Menu's 8 px from the window's left side, where its button
+leads the tab strip; and
+`the_profile_menu_keeps_a_long_identity_inside_a_narrow_window` reads a menu
+at its width cap, its fill 443 px wide in a 461 px window. Remove this part
+when upstream keeps a popup's drawn edge, not its box, inside the window's
+margin, and those tests pass without it.
 
 The capped-menu patch modifies `src/menu/popup_menu.rs`. Upstream caps a
 scrollable menu's items column (`max_h` with `scrollable`) but leaves its rows

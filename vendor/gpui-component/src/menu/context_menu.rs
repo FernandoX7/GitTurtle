@@ -4,7 +4,7 @@ use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, Element, ElementId, Entity, Focusable,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Point, StyleRefinement, Styled,
-    Subscription, Window, anchored, deferred, div, prelude::FluentBuilder, px,
+    Subscription, Window, anchored, deferred, div, prelude::FluentBuilder,
 };
 
 use crate::menu::PopupMenu;
@@ -191,15 +191,15 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                         .child(
                                             // GitTurtle patch: placed as the
                                             // popup host places a dropdown,
-                                            // inside the window less its
-                                            // margin and above the room the
-                                            // application keeps at its foot.
-                                            // GPUI's anchor moved the menu
-                                            // only once it ran past the
-                                            // window, so it could end over a
-                                            // status bar.
+                                            // its drawn edge inside the
+                                            // window less its margin and
+                                            // above the room the application
+                                            // keeps at its foot. GPUI's
+                                            // anchor moved the menu only once
+                                            // it ran past the window, so it
+                                            // could end over a status bar.
                                             gpui_base::Positioner::corner(anchor, position)
-                                                .margin(px(8.))
+                                                .margin(crate::popup_fill_margin())
                                                 .bottom_inset(gpui_base::popup_bottom_inset(
                                                     window, cx,
                                                 ))

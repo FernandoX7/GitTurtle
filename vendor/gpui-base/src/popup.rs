@@ -8,7 +8,8 @@ use gpui::{
 
 use crate::{ElementExt as _, Positioner, StyledExt as _};
 
-/// Distance kept between a popup and the window edge.
+/// Distance kept between a popup and the window edge, unless the caller
+/// sets its own ([`Popup::margin`]).
 const WINDOW_MARGIN: Pixels = px(8.);
 
 /// Deferred paint priority for interactive surfaces that must appear above dialogs.
@@ -53,6 +54,9 @@ pub struct Popup {
     base: gpui::Stateful<Div>,
     style: StyleRefinement,
     anchor: Anchor,
+    /// GitTurtle patch: how far the content stays inside the window
+    /// ([`Popup::margin`]).
+    margin: Pixels,
     trigger: AnyElement,
     content: Option<AnyElement>,
 }
@@ -65,6 +69,7 @@ impl Popup {
             id,
             style: StyleRefinement::default(),
             anchor: Anchor::TopLeft,
+            margin: WINDOW_MARGIN,
             trigger: trigger.into_any_element(),
             content: None,
         }
@@ -72,6 +77,16 @@ impl Popup {
 
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
+        self
+    }
+
+    /// GitTurtle patch: keeps the content `margin` inside the window's
+    /// sides and top, and its foot, where no larger bottom inset applies
+    /// ([`set_popup_bottom_inset`]), in place of the host's 8 px. A caller
+    /// whose content draws outside its box, as a ring outside a menu's fill,
+    /// keeps that drawing the margin it wants in by adding its width.
+    pub fn margin(mut self, margin: Pixels) -> Self {
+        self.margin = margin;
         self
     }
 
@@ -121,6 +136,7 @@ impl RenderOnce for Popup {
         let state =
             window.use_keyed_state((self.id, "anchor"), cx, |_, _| PopupAnchorState::default());
         let anchor = self.anchor;
+        let margin = self.margin;
         let position = Rc::new(Cell::new(Self::resolved_corner(
             anchor,
             state.read(cx).bounds,
@@ -165,7 +181,7 @@ impl RenderOnce for Popup {
                 // before, an open popup stayed where a width step moved its
                 // trigger from until some other change drew a frame.
                 Positioner::corner_following(anchor, position)
-                    .margin(WINDOW_MARGIN)
+                    .margin(margin)
                     .bottom_inset(popup_bottom_inset(window, cx))
                     // The host blocks the mouse, so no caller has to remember:
                     // what a popup covers belongs to the popup.

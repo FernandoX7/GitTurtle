@@ -558,9 +558,13 @@ impl Render for LowMenusProbe {
 /// The open menu's surface: the last fill of the popover colour painted
 /// around its first item.
 fn open_menu_surface(cx: &mut VisualTestContext) -> Bounds<Pixels> {
-    let item = cx
-        .debug_bounds("menu-item: One · MenuItem")
-        .expect("the menu's first item");
+    menu_surface_around(cx, "menu-item: One · MenuItem")
+}
+
+/// The surface of the open menu that holds the item `selector` names: the
+/// last fill of the popover colour painted around that item.
+fn menu_surface_around(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
+    let item = cx.debug_bounds(selector).expect(selector);
     cx.update(|window, cx| {
         let fill = Background::from(Theme::global(cx).popover);
         let scale = window.scale_factor();
@@ -1111,4 +1115,155 @@ fn menus_draw_nothing_over_their_button_or_row(cx: &mut TestAppContext) {
             && mask.bottom() >= drawn.bottom() - px(0.01),
         "the menu {drawn:?} above its row {row:?} draws within {mask:?}"
     );
+}
+
+/// A long item, wider than a narrow window holds beside another menu.
+const LONG_ITEM: &str = "An item whose text runs well past the side of a narrow window";
+
+/// The app's dropdown (`AppMenu`) on a button at each side of the window,
+/// a row across the window with the app's right-click menu, and the kit's
+/// dropdown on a button at each side, each with a submenu, More, of
+/// [`LONG_ITEM`], as no app menu has yet.
+struct SideMenusProbe;
+
+impl Render for SideMenusProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn items(menu: PopupMenu) -> PopupMenu {
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .fold(menu, |menu, name| menu.item(PopupMenuItem::new(name)))
+        }
+        fn nested(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+            items(menu).submenu("More", window, cx, |menu, _, _| {
+                menu.item(PopupMenuItem::new(LONG_ITEM))
+            })
+        }
+        let side = |name: &'static str| {
+            Button::new(name)
+                .debug_selector(move || name.into())
+                .label("Open")
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p(px(2.))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(side("left-dropdown").app_menu(|menu, _, _| items(menu)))
+                    .child(side("right-dropdown").app_menu(|menu, _, _| items(menu))),
+            )
+            .child(
+                div()
+                    .id("side-row")
+                    .debug_selector(|| "side-row".into())
+                    .h(px(24.))
+                    .w_full()
+                    .child("A row")
+                    .app_context_menu(|menu, _, _| items(menu)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(side("left-nested").dropdown_menu(nested))
+                    .child(side("right-nested").dropdown_menu(nested)),
+            )
+    }
+}
+
+/// How far `drawn`, a menu's drawn edge, stands from the window's side it
+/// lies against, `left` or the right one of a `width` wide window: 8 px,
+/// or up to a pixel more where the host moves it by whole pixels.
+fn assert_side_margin(drawn: Bounds<Pixels>, left: bool, width: Pixels, at: &str) {
+    let margin = if left {
+        drawn.left()
+    } else {
+        width - drawn.right()
+    };
+    assert!(
+        margin >= px(8.) - px(0.01) && margin < px(9.),
+        "{at}: the menu's drawn edge {drawn:?} stands {margin:?} from the window's side, not 8 px"
+    );
+}
+
+/// Every menu's drawn edge, the ring outside its fill, not its fill, stands
+/// 8 px from the window's side it is moved in from, at 13 and 18 pt in a
+/// 461 × 490 window: a dropdown on a button at either side of the window, a
+/// row's right-click menu opened 3 px from either side, and a submenu that
+/// runs past either side. Moved in from a side, a dropdown's and a row
+/// menu's fill stood 8 px in and their edge 7 px, where the input's drawn
+/// menu kept its edge 8 px in, and a submenu kept its fill only 4 px inside
+/// the window, and only once its anchor ran past it.
+#[gpui::test]
+fn menus_keep_their_drawn_edge_8_px_from_the_window_sides(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+    let width = px(461.);
+    let long: &'static str = format!("menu-item: {LONG_ITEM} · MenuItem").leak();
+    for text in [13, 18] {
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| SideMenusProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            appearance::apply_text_sizes(text, 12, window, cx);
+        });
+        cx.simulate_resize(size(width, px(490.)));
+        draw(cx);
+
+        for (button, left) in [("left-dropdown", true), ("right-dropdown", false)] {
+            let at = format!("{text} pt, the {button}");
+            let trigger = cx.debug_bounds(button).expect(button);
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            draw(cx);
+            assert_side_margin(open_menu_surface(cx).dilate(edge), left, width, &at);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+
+        let row = cx.debug_bounds("side-row").expect("the row");
+        for (x, left) in [(px(3.), true), (width - px(3.), false)] {
+            let at = format!("{text} pt, the row's menu {x:?} across");
+            let pointer = point(x, row.center().y);
+            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+            draw(cx);
+            draw(cx);
+            assert_side_margin(open_menu_surface(cx).dilate(edge), left, width, &at);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+
+        // The submenu of a menu at the left opens to its right and runs past
+        // the window's right side; that of a menu at the right opens to its
+        // left and runs past the window's left side.
+        for (button, left) in [("left-nested", false), ("right-nested", true)] {
+            let at = format!("{text} pt, the submenu of the {button}");
+            let trigger = cx.debug_bounds(button).expect(button);
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            draw(cx);
+            let more = cx
+                .debug_bounds("menu-item: More · MenuItem")
+                .unwrap_or_else(|| panic!("{at}: the menu's More"));
+            cx.simulate_mouse_move(more.center(), None, Modifiers::default());
+            draw(cx);
+            draw(cx);
+            assert_side_margin(menu_surface_around(cx, long).dilate(edge), left, width, &at);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
 }

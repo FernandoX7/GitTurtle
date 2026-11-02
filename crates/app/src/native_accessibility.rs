@@ -810,14 +810,16 @@ impl Element for RowMenu {
     }
 }
 
-/// How far a menu stays above the status bar's top edge: the 8 px the kit's
-/// popup hosts keep from the window's edges. A keyboard's menu keeps it from
+/// How far a menu's drawn edge stays from the window's sides and top and
+/// above the status bar's top edge: the 8 px every popup host in the kit
+/// keeps it from the window's edges
+/// (`gpui_kit::component::POPUP_WINDOW_MARGIN`). A row's menu keeps it from
 /// its drawn edge, [`MENU_EDGE`] outside its fill ([`menu_bounds`]).
-const MENU_MARGIN: Pixels = px(8.);
+const MENU_MARGIN: Pixels = gpui_kit::component::POPUP_WINDOW_MARGIN;
 /// The band outside a menu's fill where the kit draws its edge, a ring in
 /// the popup's shadow. A menu whose fill ended [`MENU_MARGIN`] above the
 /// status bar showed its edge 7 px above it.
-const MENU_EDGE: Pixels = px(1.);
+const MENU_EDGE: Pixels = gpui_kit::component::POPOVER_EDGE_WIDTH;
 /// How far a row's menu's fill stands from the row it lies beside, below its
 /// foot or above its top: the gap every menu keeps from what it opened from
 /// ([`appearance::popup_gap`]) past its drawn edge ([`MENU_EDGE`]), as the
@@ -833,18 +835,19 @@ fn menu_offset() -> Pixels {
 /// keyboard's menu there moves above its row instead ([`RowMenu`]).
 const MENU_FLOOR: f32 = 120.;
 
-/// Where a keyboard's menu's fill may lie in `window`, its edge
-/// [`MENU_MARGIN`] inside the window's top edge and above the status bar,
-/// and its fill [`MENU_MARGIN`] inside the window's sides, as the kit's
-/// popup hosts keep it, all inside the client inset.
+/// Where a row's menu's fill may lie in `window`, its drawn edge
+/// [`MENU_MARGIN`] inside the window's sides and top and above the status
+/// bar, all inside the client inset, as the kit's popup hosts keep a
+/// dropdown's and the Main Menu's. Its fill stood 8 px inside the sides,
+/// so a menu moved in from one drew its edge 7 px from it.
 fn menu_bounds(window: &Window) -> Bounds<Pixels> {
     let inset = window.client_inset().unwrap_or_default();
     let viewport = window.viewport_size();
     let edge = MENU_MARGIN + MENU_EDGE;
     Bounds::from_corners(
-        point(inset + MENU_MARGIN, inset + edge),
+        point(inset + edge, inset + edge),
         point(
-            viewport.width - inset - MENU_MARGIN,
+            viewport.width - inset - edge,
             crate::theme_editor::status_bar_top(window) - edge,
         ),
     )

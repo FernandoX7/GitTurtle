@@ -535,7 +535,25 @@ impl Element for Positioner {
                 y => y,
             },
         };
-        let offset = point(offset.x.round(), y);
+        // GitTurtle patch: a popup inside the window's side margins is moved
+        // by whole pixels without crossing either: rounding to the nearest
+        // pixel put a popup moved in from a side up to half a pixel past its
+        // margin, and a ring drawn outside its fill nearer the side.
+        let right = viewport.width - margin;
+        let x = match offset.x.round() {
+            x if position.bounds.right() <= right
+                && position.bounds.right() + (x - offset.x) > right =>
+            {
+                offset.x.floor()
+            }
+            x if position.bounds.left() >= margin
+                && position.bounds.left() + (x - offset.x) < margin =>
+            {
+                offset.x.ceil()
+            }
+            x => x,
+        };
+        let offset = point(x, y);
 
         window.with_element_offset(offset, |window| {
             for child in &mut self.children {

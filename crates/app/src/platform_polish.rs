@@ -197,6 +197,10 @@ impl Render for PrimaryMenu {
         } else {
             crate::views::compact_control_name(button("main-menu", "", "", open), "main-menu", NAME)
         };
+        // Its drawn edge, the ring outside its fill, stands the popup margin
+        // inside the window, as every menu's does
+        // (`gpui_kit::component::POPUP_WINDOW_MARGIN`): moved in from the
+        // window's side at 13 pt, its fill stood 8 px in and its edge 7 px.
         let mut popup = Popup::new(
             "gitturtle-primary-menu",
             trigger
@@ -212,6 +216,7 @@ impl Render for PrimaryMenu {
                     move |bounds, _, _| trigger.set(Some(bounds))
                 }),
         )
+        .margin(gpui_kit::component::popup_fill_margin())
         .when_some(self.menu.clone(), |popup, menu| {
             popup.content(
                 div()
