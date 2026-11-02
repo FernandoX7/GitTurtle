@@ -13145,6 +13145,166 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
     }
 
+    /// Lands every reply the window waits for, its reads, saves, watcher
+    /// setup and path filtering, and each that they ask for in turn, drawing
+    /// no frame of its own: the frames counted meanwhile are the ones the
+    /// replies draw. Each executor answers on a thread of its own, which
+    /// `run_until_parked` cannot wait for, so each is waited for in turn,
+    /// holding the test clock.
+    fn land_every_reply(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..16 {
+            let asked = app.update(cx, |app, _| {
+                app.worker.wait_idle();
+                app.operations.drain();
+                app.preferences_writer.drain();
+                app.file_paths.drain();
+                app.worker.submissions()
+            });
+            cx.run_until_parked();
+            if app.read_with(cx, |app, _| {
+                app.worker.submissions() == asked
+                    && app.automatic.replies_landed()
+                    && !app.working_paths.pending
+                    && !app.file_paths.pending
+            }) {
+                return;
+            }
+        }
+        panic!("the window's replies kept asking for more");
+    }
+
+    /// A Changes tab as it is left: where its list is scrolled, the staged
+    /// and unstaged rows selected, the row the cursor is on, what holds
+    /// focus, and where the cursor's row is drawn.
+    type ChangesState = (
+        Point<Pixels>,
+        (usize, usize),
+        Option<(usize, gitturtle_core::ChangeArea)>,
+        Option<FocusHandle>,
+        Bounds<Pixels>,
+    );
+
+    fn changes_state(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> ChangesState {
+        let (offset, selected, cursor, focus, position) = cx.update(|window, cx| {
+            let app = app.read(cx);
+            let cursor = app.working_selected;
+            let position = app.working_rows.iter().position(|row| {
+                matches!(row, crate::workspace::WorkingRow::File(index, area)
+                    if Some((*index, *area)) == cursor)
+            });
+            (
+                app.working_scroll.0.borrow().base_handle.offset(),
+                app.selection_counts(),
+                cursor,
+                window.focused(cx),
+                position,
+            )
+        });
+        let position = position.expect("the cursor's row is listed");
+        let row = cx
+            .debug_bounds(format!("working-row-{position}").leak())
+            .expect("the cursor's row is drawn");
+        (offset, selected, cursor, focus, row)
+    }
+
+    /// Leaves the shown tab, whose worktree is `root`, on Changes listing
+    /// forty new files, in a 1,480 × 980 window: the list scrolled twelve
+    /// rows down, three rows from its thirteenth file selected, the cursor on
+    /// the last of them and the list focused.
+    async fn leave_changes_tab(
+        app: &Entity<GitTurtle>,
+        root: &std::path::Path,
+        cx: &mut VisualTestContext,
+    ) -> ChangesState {
+        for index in 0..40 {
+            std::fs::write(root.join(format!("new-{index:02}.txt")), "new\n").unwrap();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(app, cx).await;
+        crate::path_filter::filters_land(app, cx);
+        let files: Vec<_> = app.read_with(cx, |app, _| {
+            app.working_rows
+                .iter()
+                .filter_map(|row| match row {
+                    crate::workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+                    _ => None,
+                })
+                .collect()
+        });
+        assert!(
+            files.len() >= 40,
+            "every new file is listed: {}",
+            files.len()
+        );
+        cx.update(|window, cx| {
+            let height =
+                f32::from(window.pixel_snap(px(app.read(cx).settings.density.file_row_height())));
+            app.update(cx, |app, cx| {
+                app.working_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), px(-12. * height)));
+                let (first, area) = files[12];
+                app.choose_working_selection(first, area, false, false, window, cx);
+                let (last, area) = files[14];
+                app.choose_working_selection(last, area, false, true, window, cx);
+                app.file_focus.clone().focus(window, cx);
+            })
+        });
+        settle(app, cx).await;
+        land_every_reply(app, cx);
+        draw(cx);
+        let state = changes_state(app, cx);
+        let focus = app.read_with(cx, |app, _| app.file_focus.clone());
+        assert_eq!(state.1, (0, 3), "three new files are selected");
+        assert_ne!(state.0.y, px(0.), "the list is scrolled");
+        assert_eq!(state.3, Some(focus), "the list is focused");
+        state
+    }
+
+    /// A Changes tab shown again comes back as it was left, nothing drawn
+    /// moved: its list scrolled where it was, the rows selected and the
+    /// cursor on its row, drawn where it was, and the list focused. Each
+    /// return prepared the tab's rows again as a filter query's are, which
+    /// clears the selection and scrolls to the first row, so the tab came
+    /// back at its top with nothing selected (`GitTurtle::restore_warm_tab`).
+    #[gpui::test]
+    async fn a_warm_changes_tab_comes_back_scrolled_and_selected_as_left(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let left = leave_changes_tab(&app, &root, cx).await;
+        let other = tempfile::tempdir().unwrap();
+        fixture_git(
+            other.path(),
+            &["clone", "--quiet", root.to_str().unwrap(), "second"],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().join("second"), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        for round in ["once", "again"] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            land_every_reply(&app, cx);
+            draw(cx);
+            assert_eq!(
+                changes_state(&app, cx),
+                left,
+                "shown {round}: scroll, selection, cursor, focus and the cursor's row as left"
+            );
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            land_every_reply(&app, cx);
+            draw(cx);
+        }
+    }
+
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
     /// one frame where it settles, the changed files' filter shortened to
     /// "Filter" in it at 18 pt.

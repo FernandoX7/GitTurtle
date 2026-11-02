@@ -60,6 +60,12 @@ impl State {
     pub(crate) fn rescan_queued(&self) -> bool {
         self.pending.rescan
     }
+    /// Whether neither a quiet read nor the watcher's setup waits for its
+    /// reply, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn replies_landed(&self) -> bool {
+        self.task.is_none() && self.watch_task.is_none()
+    }
     /// Reports `change` through the repository's subscription, as the
     /// watcher reports a change made outside the app, for tests in other
     /// modules: the window takes it as it takes the watcher's

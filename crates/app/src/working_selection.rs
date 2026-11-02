@@ -167,6 +167,15 @@ impl FilterState {
         (self.staged_count, self.visible_count, self.conflicted)
     }
 
+    /// What the shown rows wait for, where they are not yet the status's
+    /// own for the query and grouping: rows being prepared, for what they
+    /// were asked, or, after a filter error, the filter's again. A tab left
+    /// meanwhile prepares them again as it returns, and otherwise keeps
+    /// them as they are.
+    pub fn unprepared(&self) -> Option<Preparation> {
+        (self.pending || self.error.is_some()).then_some(self.preparation)
+    }
+
     /// Shows a returning tab's counts with its rows until the filter's land.
     pub fn restore_counts(&mut self, (staged, visible, conflicted): Counts) {
         self.staged_count = staged;

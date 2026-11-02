@@ -617,6 +617,11 @@ struct WarmTab {
     /// The counts that go with `working_rows`, shown with them on return
     /// until the filter's rows land.
     working_counts: working_selection::Counts,
+    /// What the rows are prepared again for as the tab returns, where
+    /// `working_rows` are not the status's own rows for its query and
+    /// grouping: rows still being prepared as it was left, or a filter
+    /// error. `None` brings the rows back as they were left.
+    working_unprepared: Option<working_selection::Preparation>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
     working_scroll: UniformListScrollHandle,
     working_selection: working_selection::Selection,
@@ -853,6 +858,7 @@ impl GitTurtle {
         } else {
             self.working_paths.counts()
         };
+        let working_unprepared = self.working_paths.unprepared();
         self.working_paths.reset();
         // A row's travel belongs to the shown list: it neither waits in the
         // retained tab nor lands when the tab returns.
@@ -910,6 +916,7 @@ impl GitTurtle {
             remotes: std::mem::take(&mut self.remotes),
             working_rows: std::mem::take(&mut self.working_rows),
             working_counts,
+            working_unprepared,
             working_selected: self.working_selected.take(),
             working_scroll: std::mem::take(&mut self.working_scroll),
             working_selection: std::mem::take(&mut self.working_selection),
@@ -1008,7 +1015,16 @@ impl GitTurtle {
             window,
             cx,
         );
-        self.filter_working_paths(window, cx);
+        // The rows come back as the tab left them, scrolled where they
+        // were with their selection and cursor; only rows it left being
+        // prepared, or refused by the filter, are prepared again, the shown
+        // ones kept in place until they land. Prepared again as a query
+        // edit's are (`filter_working_paths`), which clears the selection
+        // and scrolls to the top, a Changes tab once came back at its first
+        // row with nothing selected.
+        if let Some(preparation) = warm.working_unprepared {
+            self.schedule_working_filter(None, false, preparation, window, cx);
+        }
         self.hub.update(cx, |hub, cx| {
             hub.set_can_go_back(true, cx);
             hub.set_busy(false, cx);
