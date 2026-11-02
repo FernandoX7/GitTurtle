@@ -612,22 +612,39 @@ mod helper {
         field(status, "Seccomp") == "2" && filters(status) > inherited
     }
 
+    /// `/proc/<pid>/status` once `ready` holds for it, polled for up to
+    /// 10 s, or `None` once the process is gone: it exited and was reaped.
+    fn awaited_status(pid: u32, what: &str, ready: impl Fn(&str) -> bool) -> Option<String> {
+        let started = Instant::now();
+        loop {
+            let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+                Ok(status) => status,
+                // ESRCH: it was reaped between the open and the read.
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        || error.raw_os_error() == Some(libc::ESRCH) =>
+                {
+                    return None;
+                }
+                Err(error) => panic!("/proc/{pid}/status: {error}"),
+            };
+            if ready(&status) {
+                return Some(status);
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the helper never {what}:\n{status}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// `/proc/<pid>/status` once the helper has installed its own filter,
     /// the last step before it reads, on top of the `inherited` filters it
     /// started under.
     fn confined_status(pid: u32, inherited: u32) -> String {
-        let started = Instant::now();
-        loop {
-            let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-            if confined(&status, inherited) {
-                return status;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "the helper never confined itself:\n{status}"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        awaited_status(pid, "confined itself", |status| confined(status, inherited))
+            .expect("the helper exited and was reaped before it was seen confined")
     }
 
     /// Whether `pid` runs: neither reaped nor a zombie.
@@ -892,10 +909,15 @@ mod helper {
 
     #[test]
     fn the_helper_dies_with_its_parent() {
+        // The helper takes the shell's input through fd 3: dash, Ubuntu's
+        // `/bin/sh`, gives a background command `/dev/null` as its input
+        // before the command's own redirections, so `<&0` would hand the
+        // helper `/dev/null` there, which ends at once. Once the helper is
+        // gone, the shell writes its exit code to its error output.
         let mut shell = Command::new("/bin/sh")
             .args([
                 "-c",
-                r#""$0" "$1" "$2" $$ <&0 & echo $!; wait"#,
+                r#"exec 3<&0; "$0" "$1" "$2" $$ <&3 3<&- & echo $!; wait $!; echo $? >&2"#,
                 BINARY,
                 HELPER_FLAG,
                 &version(),
@@ -903,7 +925,7 @@ mod helper {
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let mut line = String::new();
@@ -911,9 +933,26 @@ mod helper {
             .read_line(&mut line)
             .unwrap();
         let helper: u32 = line.trim().parse().unwrap();
-        confined_status(helper, own_filters());
-        // The helper keeps waiting on this input: only its parent's death
-        // can end it.
+        // The helper keeps waiting on this input, open and unwritten: only
+        // its parent's death can end it. Confined, it sleeps in that read.
+        let inherited = own_filters();
+        let waiting =
+            |status: &str| confined(status, inherited) && field(status, "State").starts_with('S');
+        if awaited_status(helper, "waited, confined, on its input", waiting).is_none() {
+            let output = io::read_to_string(shell.stderr.take().unwrap()).unwrap();
+            let code = output.lines().last().unwrap_or_default();
+            // 0 and `exit::REPLY` come only after the read.
+            let read = matches!(code.parse::<i32>(), Ok(0 | exit::REPLY));
+            panic!(
+                "the helper exited with {code:?} before it was seen confined and waiting on \
+                 its input{}",
+                if read {
+                    ": its read ended, so its input was not this test's open pipe"
+                } else {
+                    ""
+                }
+            );
+        }
         let input = shell.stdin.take();
         shell.kill().unwrap();
         let killed = Instant::now();
