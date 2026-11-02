@@ -13373,6 +13373,62 @@ pub(crate) mod tests {
         }
     }
 
+    /// A warm tab gives each field back the selection it was left with:
+    /// the second tab of [`two_history_tabs`] left with "fixture" in
+    /// History's search field, selected forward from its third character
+    /// to its fifth, then backward over the same characters, then with the
+    /// caret between its third and fourth and nothing selected, the first
+    /// tab shown and the second shown again: the field reads "fixture",
+    /// its selection and its caret as they were left each time. Restored
+    /// from its text alone, the field came back with the caret at its end
+    /// and nothing selected.
+    #[gpui::test]
+    async fn a_warm_tab_gives_its_fields_back_their_selection(cx: &mut TestAppContext) {
+        let (_fixtures, app, cx, _tabs) = two_history_tabs(cx).await;
+        let field = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, cx| {
+                let search = app.search.read(cx);
+                (
+                    search.value().to_string(),
+                    search.selected_range(),
+                    search.cursor(),
+                )
+            })
+        };
+        for (anchor, caret, at) in [
+            (2, 5, "selected forward"),
+            (5, 2, "selected backward"),
+            (3, 3, "the caret inside the text"),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.search.update(cx, |search, cx| {
+                        search.set_value("fixture", window, cx);
+                        search.set_selected_range(anchor..caret, cx);
+                    })
+                })
+            });
+            draw(cx);
+            let left = field(cx);
+            assert_eq!(
+                left,
+                (
+                    "fixture".to_owned(),
+                    anchor.min(caret)..anchor.max(caret),
+                    caret
+                ),
+                "{at}: as the tab is left"
+            );
+            let away = switch_warm_tab(&app, 0, cx).await;
+            drop(away);
+            settle(&app, cx).await;
+            assert_eq!(field(cx).0, "", "{at}: the first tab's own field");
+            let back = switch_warm_tab(&app, 1, cx).await;
+            drop(back);
+            assert_eq!(field(cx), left, "{at}: as it was left");
+        }
+    }
+
     /// A field given text while unfocused stays still: History's search
     /// field, unfocused with the commit list focused, given "abc" draws the
     /// frame that shows it, and over the next five seconds the field

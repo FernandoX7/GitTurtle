@@ -551,20 +551,49 @@ pub(super) fn history_bytes(commits: &[Commit], graph: &[graph::GraphRow]) -> us
             .sum::<usize>()
 }
 // The widgets are shared by the window, but their values belong to one tab.
-// Cold tabs always start with empty inputs; warm tabs restore the exact snapshot.
+// Cold tabs always start with empty inputs; warm tabs restore the exact
+// snapshot: each field's text, and its selection with the end its caret is
+// at, so a tab shown again keeps what the person left selected. Restored
+// from its text alone, a field came back with its caret at the end and
+// nothing selected.
 #[derive(Default)]
 struct TabInputs {
     values: [String; 6],
+    /// Each field's selection as the byte offsets where it began and where
+    /// its caret is: the same offset twice where nothing is selected.
+    selections: [(usize, usize); 6],
 }
 impl TabInputs {
     fn capture(inputs: [&Entity<InputState>; 6], cx: &App) -> Self {
         Self {
             values: inputs.map(|input| input.read(cx).value().to_string()),
+            selections: inputs.map(|input| {
+                let input = input.read(cx);
+                let (selected, caret) = (input.selected_range(), input.cursor());
+                let anchor = if caret == selected.start {
+                    selected.end
+                } else {
+                    selected.start
+                };
+                (anchor, caret)
+            }),
         }
     }
     fn restore(self, inputs: [&Entity<InputState>; 6], window: &mut Window, cx: &mut App) {
-        for (input, value) in inputs.into_iter().zip(self.values) {
-            input.update(cx, |input, cx| input.set_value(value, window, cx));
+        for ((input, value), (anchor, caret)) in
+            inputs.into_iter().zip(self.values).zip(self.selections)
+        {
+            input.update(cx, |input, cx| {
+                let end = value.len();
+                input.set_value(value, window, cx);
+                // The text leaves the caret at its end with nothing
+                // selected; a selection or a caret elsewhere is set again,
+                // from where it began to the caret, so a selection made
+                // backwards keeps its caret at its start.
+                if (anchor, caret) != (end, end) {
+                    input.set_selected_range(anchor..caret, cx);
+                }
+            });
         }
     }
 }
