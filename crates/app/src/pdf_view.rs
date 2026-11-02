@@ -21,6 +21,10 @@ use std::{
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const CACHE_PAGES: usize = 4;
 
+/// Why Read page text is unavailable while its page is prepared, in its
+/// tooltip and accessible name.
+const PREPARING: &str = "Preparing the page…";
+
 fn renderer() -> &'static SerialExecutor {
     static RENDERER: OnceLock<SerialExecutor> = OnceLock::new();
     RENDERER.get_or_init(|| SerialExecutor::new("gitturtle-pdf-pages"))
@@ -715,17 +719,32 @@ pub(super) fn render_comparison<T: 'static>(
             let page = state.page;
             (page, state.zoom, state.pending, state.error.clone(), state.cache.get(page))
         };
-        if let Some(cached)=&cached {
-            let prepared=cached.clone();
-            let read = HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", format!("{label}: read extracted text from page {}",page+1), "file-text", labelled_button_width("Read page text", &READ_TEXT, window)).labelled_with_icon().button(line_room);
-            header=header.child(held.track(("pdf-read-text",index), read.on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
-        }
-        if error.is_some() {
+        // The page's own control holds one place at one width whatever the
+        // page's state, so nothing after it moves while a page prepares:
+        // Read page text once the page's text has arrived, Retry page where
+        // the page failed, and in between Read page text disabled with its
+        // reason. Present only once the text arrived, it once left its place
+        // while the next page prepared, and Next, the page number and the
+        // link moved left under the pointer, so a second click on Next
+        // unlinked the pages. Both readings take the form and width of the
+        // wider, Read page text, so a failure that brings Retry page moves
+        // nothing either.
+        let slot = labelled_button_width("Read page text", &READ_TEXT, window).max(labelled_button_width("Retry page", &RETRY_PAGE, window));
+        let labelled = crate::system_preview::Form::fitting(slot, line_room) == crate::system_preview::Form::Labelled;
+        let page_control = if error.is_some() {
             let target=document.clone();
-            let retry = HeaderControl::new(("pdf-retry",index), format!("pdf-retry-{index}"), "Retry page", format!("{label}: retry page {}",page+1), "refresh", labelled_button_width("Retry page", &RETRY_PAGE, window)).labelled_with_icon().button(line_room);
+            let retry = HeaderControl::new(("pdf-retry",index), format!("pdf-retry-{index}"), "Retry page", format!("{label}: retry page {}",page+1), "refresh", slot).labelled_with_icon().button(line_room);
             let retry = retry.on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
-            header=header.child(held.track(("pdf-retry",index), retry, cx));
-        }
+            held.track(("pdf-retry",index), retry, cx)
+        } else {
+            let read = HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", format!("{label}: read extracted text from page {}",page+1), "file-text", slot).labelled_with_icon().button(line_room);
+            let read = match cached.clone() {
+                Some(prepared) => read.on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)),
+                None => read.disabled(true).tooltip(format!("Read page text · {PREPARING}")).accessibility_label(format!("{label}: read extracted text from page {} · {PREPARING}",page+1)),
+            };
+            held.track(("pdf-read-text",index), read, cx)
+        };
+        header=header.child(if labelled { page_control.w(slot) } else { page_control });
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
             let document = document.clone(); let partner = partner.clone();
             let id = if previous {"pdf-back"} else {"pdf-forward"};
@@ -764,7 +783,7 @@ pub(super) fn render_comparison<T: 'static>(
             }));
             header = header.child(held.track(("pdf-zoom",id), zoom, cx));
         }
-        header = header.child(div().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        header = header.child(div().debug_selector(move || format!("pdf-zoom-level-{index}")).text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
         // The position's live region lies outside the header's region, which
         // can scroll it out of view and out of reach of assistive technology
         // while it is still being announced, in a 1 px box at the side's
@@ -829,7 +848,11 @@ pub(crate) mod tests {
 
     /// [`paged`] with `count` pages a side, each side showing page `shown`
     /// (counted from 0), which Before has prepared only where it is the
-    /// first; every other page fails as After's does.
+    /// first; every other page fails as After's does. A page not prepared
+    /// here is asked of the helper now, as the page lane would ask it, so
+    /// the sides are drawn settled: a walk that records what each frame
+    /// drew finds no page still being prepared, whose disabled Read page
+    /// text the failure then replaces with Retry page.
     #[cfg(target_os = "linux")]
     pub(crate) fn paged_at(
         preview: &rich_preview::Comparison,
@@ -840,8 +863,18 @@ pub(crate) mod tests {
             let bytes = side.captured.clone().expect("the side's bytes");
             let mut paged = rich_preview::Side::prepare(bytes.to_vec(), &side.name, || Ok(()))
                 .expect("the side prepares");
-            let document = Document::new(bytes, count, first, || Ok(())).expect("a document");
-            document.state.lock().unwrap().page = shown;
+            let document =
+                Document::new(bytes.clone(), count, first, || Ok(())).expect("a document");
+            {
+                let mut state = document.state.lock().unwrap();
+                state.page = shown;
+                if state.cache.get(shown).is_none() {
+                    match prepare_page(&bytes, shown, &|| Ok(())) {
+                        Ok(prepared) => state.cache.insert(shown, prepared.page),
+                        Err(error) => state.error = Some(format!("{error:#}")),
+                    }
+                }
+            }
             paged.pdf = Some(Arc::new(document));
             Arc::new(paged)
         };
@@ -1371,6 +1404,183 @@ pub(crate) mod tests {
             // Nothing is left loading, and no comparison arrives.
             assert_eq!(app.read_with(cx, |app, _| app.loading), None);
             assert!(app.read_with(cx, |app, _| app.content.is_none()));
+        }
+
+        /// Every control of a side's header, by selector, with where it is
+        /// drawn: the page's own control under whichever reading it shows.
+        fn page_controls(
+            cx: &mut gpui_kit::VisualTestContext,
+        ) -> Vec<(&'static str, Bounds<Pixels>)> {
+            let mut selectors = Vec::new();
+            for side in 0..2 {
+                for name in [
+                    "pdf-system",
+                    "pdf-back",
+                    "pdf-forward",
+                    "pdf-page-number",
+                    "pdf-link",
+                    "pdf-zoom-level",
+                ] {
+                    selectors.push(format!("{name}-{side}"));
+                }
+                selectors.extend((0..3).map(|zoom| format!("pdf-zoom-{}", side * 3 + zoom)));
+            }
+            // The open control is drawn where the bytes establish a PDF; a
+            // control that comes or goes between two readings fails their
+            // comparison.
+            let mut drawn: Vec<_> = selectors
+                .into_iter()
+                .filter_map(|selector| {
+                    let selector: &'static str = selector.leak();
+                    let bounds = cx.debug_bounds(selector);
+                    assert!(
+                        bounds.is_some() || selector.starts_with("pdf-system"),
+                        "{selector} is drawn"
+                    );
+                    Some((selector, bounds?))
+                })
+                .collect();
+            for side in 0..2 {
+                let shown = [format!("pdf-read-text-{side}"), format!("pdf-retry-{side}")]
+                    .map(|selector| cx.debug_bounds(selector.leak()));
+                let ([Some(bounds), None] | [None, Some(bounds)]) = shown else {
+                    panic!("side {side} draws one page control: {shown:?}");
+                };
+                drawn.push((["pdf-page-control-0", "pdf-page-control-1"][side], bounds));
+            }
+            drawn
+        }
+
+        /// Nothing already drawn in a side's header moves while a page is
+        /// prepared, in a linked comparison whose later pages are slow: Read
+        /// page text keeps its place and width, disabled with its reason,
+        /// until the page's text arrives; a failure brings Retry page in the
+        /// same place; and Previous, Next, the page number, the link and the
+        /// zooms keep their bounds throughout, before the page change, while
+        /// the page prepares, once it fails and once a retry brings it, at
+        /// 1480 × 973 and 461 × 490, at 13 and 18 pt. Read page text once
+        /// left its place while the next page prepared, Next moved about
+        /// 75 px left at 13 pt in 1480 × 973 and the link under the pointer,
+        /// so a second click on Next unlinked the pages.
+        #[gpui::test]
+        async fn a_side_s_controls_keep_their_places_while_a_page_prepares(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fakes = tempfile::tempdir().unwrap();
+            let sides = [
+                pdf("controls keep their places: Before"),
+                pdf("controls keep their places: After"),
+            ];
+            // Each side's first page answers at once, with its text.
+            for (index, bytes) in sides.iter().enumerate() {
+                let first = printing(&page_frame(0, 3, Some("the first page")));
+                name_helper(
+                    bytes,
+                    &fakes.path().join(format!("first-{index}")),
+                    &first,
+                    LONG,
+                );
+            }
+            let input = commits(&[&sides[0], &sides[1]]);
+            // A page answers on the render lane's thread, which wakes the
+            // view's task from there.
+            cx.executor().allow_parking();
+            let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, &input).await;
+            cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            crate::views::tests::settle(&app, cx).await;
+            let documents = app.read_with(cx, |app, _| {
+                let Some(crate::worker::Content::Rich(comparison)) = app.content.as_deref() else {
+                    panic!("a changed PDF is a document comparison");
+                };
+                [&comparison.old, &comparison.new]
+                    .map(|side| side.pdf.clone().expect("each side has its pages"))
+            });
+            // Linked, as a click on either side's link does.
+            for document in &documents {
+                flip_link(document);
+            }
+            let redraw = |cx: &mut gpui_kit::VisualTestContext| {
+                app.update(cx, |_, cx| cx.notify());
+                crate::views::tests::draw(cx);
+            };
+            for (width, height) in [(1480., 973.), (461., 490.)] {
+                for text in [13, 18] {
+                    let at = format!("{width} × {height} at {text} pt");
+                    cx.simulate_resize(size(px(width), px(height)));
+                    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                    // Both sides on their first page, the second not yet
+                    // prepared.
+                    documents[0].select(0, Some(&documents[1]));
+                    for document in &documents {
+                        let mut state = document.state.lock().unwrap();
+                        state.cache.pages.retain(|(page, _, _)| *page == 0);
+                        state.cache.bytes = state.cache.pages.iter().map(|page| page.2).sum();
+                    }
+                    redraw(cx);
+                    let before = page_controls(cx);
+                    assert!(
+                        cx.debug_bounds("pdf-read-text-0").is_some(),
+                        "{at}: the first page offers Read page text"
+                    );
+                    // Next on Before, which moves both linked sides, each
+                    // of whose second page is then being prepared: its
+                    // request is pending, as the page lane holds it while
+                    // a slow helper works. The states are set here rather
+                    // than by helpers that block the page lane, which every
+                    // test in the process shares: held while bounds were
+                    // read, it refused other tests' pages as busy.
+                    documents[0].select(1, Some(&documents[1]));
+                    for document in &documents {
+                        document.state.lock().unwrap().pending = true;
+                    }
+                    redraw(cx);
+                    assert_eq!(
+                        page_controls(cx),
+                        before,
+                        "{at}: nothing in either header moves while the page prepares"
+                    );
+                    // Each side's page fails, as a stopped helper's does.
+                    for document in &documents {
+                        let mut state = document.state.lock().unwrap();
+                        state.pending = false;
+                        state.error = Some("The PDF renderer stopped on this page.".into());
+                    }
+                    redraw(cx);
+                    assert!(
+                        cx.debug_bounds("pdf-retry-0").is_some()
+                            && cx.debug_bounds("pdf-retry-1").is_some(),
+                        "{at}: each failed page offers Retry page"
+                    );
+                    assert_eq!(
+                        page_controls(cx),
+                        before,
+                        "{at}: nothing in either header moves when the page fails"
+                    );
+                    // A retry brings each page with its text.
+                    for document in &documents {
+                        let mut state = document.state.lock().unwrap();
+                        state.error = None;
+                        let text = gitturtle_preview::PdfPageText {
+                            text: Some("the second page".into()),
+                            truncated: false,
+                        };
+                        state.cache.insert(1, PreparedPage::new(page(), Ok(text)));
+                    }
+                    redraw(cx);
+                    assert!(
+                        cx.debug_bounds("pdf-read-text-0").is_some()
+                            && cx.debug_bounds("pdf-read-text-1").is_some(),
+                        "{at}: each side's second page offers Read page text"
+                    );
+                    assert_eq!(
+                        page_controls(cx),
+                        before,
+                        "{at}: nothing in either header moves when the page arrives"
+                    );
+                }
+            }
         }
 
         /// A page stopped at its deadline says so in the page's room and

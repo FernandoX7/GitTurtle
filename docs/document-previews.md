@@ -74,8 +74,12 @@ on this page.” and “The PDF renderer returned an unreadable result.” A lat
 page offers Retry page, which asks for that page again; a failed first page
 leaves the side without pages and offers none, as on macOS. Nothing retries
 by itself, since a hostile page would only burn the CPU again. Read page text
-is offered only for a page whose pixels and text result arrived; a page whose
-text alone failed shows its pixels, and its text dialog says why. A reply that
+acts only for a page whose pixels and text result arrived; a page whose text
+alone failed shows its pixels, and its text dialog says why. Until the result
+arrives, Read page text keeps its place in the side's header, disabled, its
+tooltip and accessible name saying “Preparing the page…”, and a failed page's
+Retry page takes the same place at the same width, so the page arrows, the
+page number, the link and the zooms never move while a page is prepared. A reply that
 puts a requested page outside the document is called unreadable rather than
 shown with its own page count, which would contradict the count the view
 already shows (every page the view asks for lies within the count of the
