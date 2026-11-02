@@ -2000,7 +2000,7 @@ impl GitTurtle {
             .items_center()
             .gap_1()
             .px_2()
-            .min_h(tab_strip_min_height(appearance::button_ring_room(cx)))
+            .min_h(tab_strip_height(window, cx))
             .bg(rgb(colors.panel))
             .border_b(TAB_STRIP_BORDER)
             .border_color(rgb(colors.border))
@@ -2327,10 +2327,34 @@ fn tab_label_widths(
 /// are centered above the rule, so the strip grows only by the few pixels the
 /// smallest text scales lack (below 0.875 of the default, where the scaled
 /// 8 px between 36 and 28 fall under the default ring's 3 px twice plus the
-/// 1 px rule) and nothing moves where the room already fits.
+/// 1 px rule) and nothing moves where the room already fits. The strip is
+/// drawn, and its height predicted, at [`tab_strip_height`].
 pub(super) fn tab_strip_min_height(ring_room: Pixels) -> Pixels {
     let controls = appearance::ui_size(28.);
     appearance::ui_size(36.).max(controls + ring_room * 2. + TAB_STRIP_BORDER)
+}
+
+/// The tab strip's minimum height in `window`, where it is drawn
+/// (`render_repository_tabs`) and where the chrome predicts it
+/// (`views::GitTurtle::chrome`): [`tab_strip_min_height`] for the tab
+/// list's room, rounded up to a device pixel ([`tab_list_ring_room`]), and
+/// where that grows the strip past its 36 px, the room above and below a
+/// control as layout snaps the control's 28 px, rounded up to a whole
+/// device pixel. Laid out from the unrounded 3 px, at 11 pt and scale
+/// factor 1.5 or 1.75 the strip left a focused tab's ring a fraction of a
+/// device pixel short above the tab, and from the authored 28 px, rounded
+/// to the nearest pixel, a whole one at desktop text scale 0.5 and 1.75:
+/// the ring's outer pixel fell outside the window. Where the 36 px leave
+/// the room it is those 36 px, so nothing moves there.
+pub(super) fn tab_strip_height(window: &Window, cx: &App) -> Pixels {
+    let room = tab_list_ring_room(window, cx);
+    let least = tab_strip_min_height(room);
+    if least <= appearance::ui_size(36.) {
+        return least;
+    }
+    let scale = window.scale_factor();
+    let grown = window.pixel_snap(appearance::ui_size(28.)) + room * 2. + TAB_STRIP_BORDER;
+    px((f32::from(grown) * scale).ceil() / scale)
 }
 
 struct LibraryView {
@@ -2426,61 +2450,7 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
-    /// The test binary's allocator: the system's, counting each thread's
-    /// allocations, so a test can tell that a path allocates nothing
-    /// ([`allocations`]). Each allocation costs one thread-local increment.
-    struct CountingAllocator;
-
-    #[global_allocator]
-    static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-    thread_local! {
-        static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    }
-
-    /// The allocations this thread has made so far.
-    fn allocations() -> u64 {
-        ALLOCATIONS.with(std::cell::Cell::get)
-    }
-
-    fn count_allocation() {
-        // A const `Cell` has no destructor, so this never allocates and
-        // never fails; `try_with` keeps a late allocation during a thread's
-        // teardown from panicking all the same.
-        let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-    }
-
-    // SAFETY: each method passes its call to the system allocator unchanged,
-    // so the system allocator's guarantees hold.
-    unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
-        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-            count_allocation();
-            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
-            unsafe { std::alloc::System.alloc(layout) }
-        }
-
-        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-            count_allocation();
-            // SAFETY: the caller upholds `GlobalAlloc::alloc_zeroed`'s contract.
-            unsafe { std::alloc::System.alloc_zeroed(layout) }
-        }
-
-        unsafe fn realloc(
-            &self,
-            pointer: *mut u8,
-            layout: std::alloc::Layout,
-            size: usize,
-        ) -> *mut u8 {
-            count_allocation();
-            // SAFETY: the caller upholds `GlobalAlloc::realloc`'s contract.
-            unsafe { std::alloc::System.realloc(pointer, layout, size) }
-        }
-
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
-            // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract.
-            unsafe { std::alloc::System.dealloc(pointer, layout) }
-        }
-    }
+    use crate::test_support::allocations;
 
     async fn settle_tab_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         for _ in 0..8 {
@@ -3717,8 +3687,9 @@ mod tests {
     /// exactly what it lacks. Where they already leave the room, at 12 pt and
     /// above at desktop scale 1.0, its minimum height is the 36 px it always
     /// had, so it lays out at that height with every tab and close button
-    /// centered above its rule, where they always were. A larger installed
-    /// ring grows the strip in turn.
+    /// centered above its rule, where they always were. At 11 and 12 pt at
+    /// scale factors 1.5 and 1.75 the ring stays inside out to its outer
+    /// device pixel. A larger installed ring grows the strip in turn.
     #[gpui::test]
     async fn tab_strip_keeps_every_focus_ring_inside_the_window_at_every_text_size(
         cx: &mut TestAppContext,
@@ -3756,10 +3727,12 @@ mod tests {
                 && outer.right() + slack >= inner.right()
                 && outer.bottom() + slack >= inner.bottom()
         }
-        /// Focuses each control in turn and checks that its ring lies inside
-        /// the window and inside the content mask the control paints in.
+        /// Focuses each control in turn and checks that its ring, out to the
+        /// device pixel its outer edge is drawn on (`tab_list_ring_room`),
+        /// lies inside the window and inside the content mask the control
+        /// paints in.
         fn assert_rings_inside(cx: &mut VisualTestContext, at: &str) {
-            let footprint = cx.update(|_, cx| appearance::button_ring_room(cx));
+            let footprint = cx.update(|window, cx| tab_list_ring_room(window, cx));
             let viewport = cx.update(|window, _| {
                 Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
             });
@@ -3932,6 +3905,26 @@ mod tests {
                 }
             }
         }
+
+        // At scale factors 1.5 and 1.75 the ring's 3 px end inside a device
+        // pixel, which its outer edge is drawn on: below about 0.875 of the
+        // default size the strip grows for the room rounded up to that pixel
+        // (`tab_list_ring_room`), where it grew for the unrounded 3 px and
+        // the ring's outer pixel fell outside the window above a tab.
+        for scale in [1.5, 1.75] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for &desktop in desktop_scales {
+                for interface in [11, 12] {
+                    let at = format!("{interface} pt at desktop scale {desktop}, scale {scale}");
+                    set_text_size(cx, &app, interface, desktop);
+                    settle_tab_test(&app, cx).await;
+                    draw(cx);
+                    assert_rings_inside(cx, &at);
+                }
+            }
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        settle_tab_test(&app, cx).await;
 
         // The room follows the installed ring: a 5 px ring's room exceeds what
         // the strip's 36 px leave at the default size, so the strip grows.

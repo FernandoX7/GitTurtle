@@ -68,6 +68,8 @@ mod shortcuts;
 mod split_diff;
 mod system_preview;
 mod tags;
+#[cfg(test)]
+mod test_support;
 mod text;
 mod text_review;
 mod theme_editor;

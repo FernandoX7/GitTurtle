@@ -4728,9 +4728,7 @@ impl GitTurtle {
         let widths = self.chrome_widths(window);
         let (header, actions) = self.full_chrome_heights(&widths, window, cx);
         let full = header + actions;
-        let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
-            appearance::button_ring_room(cx),
-        ));
+        let tabs = window.pixel_snap(repository_tabs::tab_strip_height(window, cx));
         let status = window.pixel_snap(appearance::ui_size(26.));
         let need = self
             .history_minimum(window)
@@ -13332,9 +13330,7 @@ pub(crate) mod tests {
                 let app = app.read(cx);
                 let widths = app.chrome_widths(window);
                 let (header, actions) = app.full_chrome_heights(&widths, window, cx);
-                let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
-                    appearance::button_ring_room(cx),
-                ));
+                let tabs = window.pixel_snap(repository_tabs::tab_strip_height(window, cx));
                 let status = window.pixel_snap(appearance::ui_size(26.));
                 let need = app
                     .history_minimum(window)
@@ -15449,18 +15445,30 @@ pub(crate) mod tests {
     /// One height per row kind: the header's profile picker is as tall as
     /// Settings beside it and on the same line, labelled in a wide window,
     /// as its icon below the 800 px breakpoint and in the compact header, at
-    /// 13 and 18 pt. In the full header it was a 36 px tile, 50 px at 18 pt,
-    /// beside the 28 px Settings, 39 px at 18 pt.
+    /// 13 and 18 pt: the 461 × 400 window is too short for the full chrome.
+    /// In the full header it was a 36 px tile, 50 px at 18 pt, beside the
+    /// 28 px Settings, 39 px at 18 pt.
     #[gpui::test]
     async fn the_profile_picker_is_as_tall_as_the_headers_controls(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window(cx).await;
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            for width in [1480., 1000., 760., 461.] {
-                cx.simulate_resize(size(px(width), px(800.)));
+            for (width, height) in [
+                (1480., 800.),
+                (1000., 800.),
+                (760., 800.),
+                (461., 800.),
+                (461., 400.),
+            ] {
+                cx.simulate_resize(size(px(width), px(height)));
                 settle(&app, cx).await;
                 draw(cx);
-                let at = format!("{text} pt at {width} px");
+                let at = format!("{text} pt at {width} × {height}");
+                assert_eq!(
+                    predicted_chrome(&app, cx).1.is_compact(),
+                    height < 800.,
+                    "{at}: the compact header only in the short window"
+                );
                 let mut bounds = |selector: &'static str| {
                     cx.debug_bounds(selector)
                         .unwrap_or_else(|| panic!("{at}: {selector}"))
@@ -18942,9 +18950,7 @@ pub(crate) mod tests {
         draw(cx);
         let ((header, actions), chrome) = predicted_chrome(&app, cx);
         let (room, history) = cx.update(|window, cx| {
-            let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
-                appearance::button_ring_room(cx),
-            ));
+            let tabs = window.pixel_snap(repository_tabs::tab_strip_height(window, cx));
             let status = window.pixel_snap(appearance::ui_size(26.));
             (
                 body_size(window).height - tabs - status - header - actions,
