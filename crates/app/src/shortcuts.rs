@@ -1549,8 +1549,10 @@ impl Render for ShortcutHelpView {
                 // draws, as the message and the Reflog's lists do: given up
                 // to a few rows, as three of 61 at 18 pt in a 461 × 490
                 // window, it showed no sign of the rest. The bar hides while
-                // every row fits, and its thumb stands clear of the key chips,
-                // which keep the rows' 12 px inset.
+                // every row fits. Its track rests over the rows' end, so each
+                // key chip ends the rows' trailing inset before the track
+                // rather than the list's side, its margin taking the bar's
+                // width, and the thumb never covers a chip.
                 .relative()
                 .when(count > 0, |view| view.child(list).child(
                     gpui_kit::base::Scrollbar::vertical(&self.scroll)

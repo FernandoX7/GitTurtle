@@ -1159,8 +1159,6 @@ fn toward_extreme(from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32
     toward_extreme_in(32, from, extreme, accepts)
 }
 
-/// The first of `steps` even steps from `from` to `extreme`, `from` included,
-/// that `accepts`, or `extreme`.
 /// `color` as the renderer may draw it over `surface`: each 8-bit channel
 /// one step nearer the surface's, where they differ. A colour passes through
 /// the toolkit's floating-point HSLA and the GPU's rounding on its way to the
@@ -1177,6 +1175,8 @@ fn drawn_nearer(color: u32, surface: u32) -> u32 {
     })
 }
 
+/// The first of `steps` even steps from `from` to `extreme`, `from` included,
+/// that `accepts`, or `extreme`.
 fn toward_extreme_in(steps: u32, from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32 {
     (0..=steps)
         .map(|step| {
