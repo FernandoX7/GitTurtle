@@ -563,7 +563,7 @@ impl GitTurtle {
         // The forms the zooms and the pan take at this width: the pan never
         // takes a row of its own, and each form changes at one width.
         let adjust_line = adjust_line(window);
-        let forms = ToolbarWidths {
+        let widths = ToolbarWidths {
             room,
             gap: window.rem_size() * 0.5,
             modes: (!source).then_some(mode_group),
@@ -580,8 +580,28 @@ impl GitTurtle {
             opens,
             adjust: (!source && state.mode != Mode::SideBySide)
                 .then(|| adjust_width(adjust_line, window)),
-        }
-        .forms(self.zoom > 0.);
+        };
+        let forms = widths.forms(self.zoom > 0.);
+        // Where the zoom menu leads a row, beneath modes it does not fit
+        // beside at its widest, or as a source image's first group, it gives
+        // its inset back to the toolbar's padding as the mode menu does, so
+        // its label starts where the mode menu's and the captions' names do:
+        // at 18 pt in a 461 × 490 window "Fit" started 8 px further in. Its
+        // group keeps its width, so the toolbar keeps its rows. Only the
+        // zoom menu alone leads a row: labelled zooms are no menu, and the
+        // Pan menu stands beside the zooms only where the row holds them.
+        let inset = crate::appearance::ui_size(crate::ICON_INSET);
+        let zoom_row = widths.zooms[1];
+        let modes_drawn = if modes_labelled {
+            mode_group
+        } else {
+            widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window) - inset
+        };
+        // Predicted from the widths alone, the zoom menu gave its inset back
+        // on a row it shared at 13 pt in a 478.5 px window, half a pixel
+        // from the mode menu, its ring over the mode menu's
+        // (`ToolbarForms::zooms_lead`).
+        let zooms_lead = forms.zooms_lead(source, modes_drawn + widths.gap + zoom_row, room);
         // Which ways the zoomed images can still move, in PANS' order: a pan
         // control that cannot move them is unavailable.
         let pan_room = self.pan_room();
@@ -679,7 +699,8 @@ impl GitTurtle {
                 "image-zoom-menu",
             )
             .debug_selector(|| "image-zoom-menu".into())
-            .px(crate::appearance::ui_size(crate::ICON_INSET))
+            .px(inset)
+            .when(zooms_lead, |menu| menu.ml(-inset))
             // As wide as its widest choice, so choosing a zoom moves nothing
             // after it: "100%" once took the modes' row from a "Fit" that had
             // shared it, and the captions moved down a row.
@@ -769,6 +790,7 @@ impl GitTurtle {
             .flex()
             .items_center()
             .gap_2()
+            .when(zooms_lead, |group| group.min_w(zoom_row))
             .child(zooms)
             .children(pan);
         // The overlay's or the wipe's adjustment keeps the toolbar's trailing
@@ -1167,15 +1189,19 @@ impl GitTurtle {
                     .flex()
                     .children([0, 1].into_iter().filter(|i| drawn(*i)).map(|i| {
                         let empty = said[i].then(|| {
-                            // An absent side's two lines where the room holds
-                            // both whole, and otherwise its one short line,
-                            // whole where it fits and only then ending in an
-                            // ellipsis; the tooltip and the side's line read
-                            // keep both sentences.
+                            // An absent side's two lines where each sentence
+                            // keeps one line and the room holds both, and
+                            // otherwise its one short line, whole where it
+                            // fits and only then ending in an ellipsis; the
+                            // tooltip and the side's line read keep both
+                            // sentences. Wrapped, the sentences broke into
+                            // ragged pieces at 13 pt in a 461 × 490 window
+                            // ("No image on / this side / The file was /
+                            // added").
                             let text = details[i].clone();
                             let [whole_lines, short_lines] = empty[i];
                             let drawn = match shorts[i] {
-                                Some(short) if whole_lines > empty_lines => short.to_owned(),
+                                Some(short) if whole_lines > empty_lines.min(2) => short.to_owned(),
                                 _ => text.clone(),
                             };
                             let drawn_lines = if drawn == text {
@@ -1468,7 +1494,15 @@ impl GitTurtle {
                     .border_b_1()
                     .border_color(rgb(p.border))
                     .debug_selector(|| "image-toolbar".into())
-                    .when(!source, |element| element.child(modes))
+                    // Where the zooms lead the next row, the modes take
+                    // theirs whole, so the zooms never share it.
+                    .when(!source, |element| {
+                        element.child(if zooms_lead {
+                            div().w_full().flex().child(modes).into_any_element()
+                        } else {
+                            modes
+                        })
+                    })
                     .child(zoom_group)
                     .children(open_group)
                     // Only overlaid or wiped does the adjustment have controls;
@@ -1663,7 +1697,8 @@ pub(crate) fn absent_side(index: usize) -> &'static str {
 }
 
 /// The one short line side `index` draws where its file is absent and its
-/// two lines ([`absent_side`]) cannot both be drawn whole: the cause is the
+/// two lines ([`absent_side`]) cannot both be drawn whole, each sentence on
+/// one line: the cause is the
 /// point of the second line, so it is said in the fewest words, and only
 /// this line ends in an ellipsis where even it does not fit (two lines once
 /// lost the cause at 461 × 490, "No image on / this side / The file…").
@@ -1913,6 +1948,25 @@ struct ToolbarForms {
     zooms_labelled: bool,
     /// The pan's form, where the images are zoomed past Fit.
     pan: Option<Pan>,
+}
+
+impl ToolbarForms {
+    /// Whether the zoom menu leads a row, where the modes, the gap and the
+    /// zoom menu at its widest take `row` of a toolbar `room` wide inside
+    /// its padding, or where it is a `source` image's first group. These
+    /// widths are the layout's to within a pixel, which breaks the row from
+    /// the column's unsnapped width: within a pixel of fitting it leads, and
+    /// the modes then take their row whole, so it never gives its inset
+    /// back on a row it shares. Beside the Pan menu, which
+    /// [`ToolbarWidths::forms`] chose only where the whole row fits, it
+    /// never leads: with the margin there, choosing 100% at 13 pt in a
+    /// toolbar 355.5 to 356.5 px wide drew the Pan menu and took the modes
+    /// a row of their own where Fit drew one. Within a pixel of fitting
+    /// beside the modes alone, the zoom menu leaves the Pan menu no room, so
+    /// choosing a zoom never changes the rows.
+    fn zooms_lead(self, source: bool, row: Pixels, room: Pixels) -> bool {
+        !self.zooms_labelled && self.pan != Some(Pan::Menu) && (source || row > room - px(1.))
+    }
 }
 
 impl ToolbarWidths {
@@ -2558,7 +2612,9 @@ pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: 
 
 #[cfg(test)]
 mod tests {
-    use super::{BandLines, Beneath, Drag, State, layout, note_lines, source_geometry};
+    use super::{
+        BandLines, Beneath, Drag, Pan, State, ToolbarForms, layout, note_lines, source_geometry,
+    };
     use gpui_kit::{point, px};
 
     /// As the room beneath the toolbar shrinks, labels give way in one order
@@ -2749,6 +2805,50 @@ mod tests {
             }
         );
     }
+    /// The zoom menu leads a row past the room and within a pixel of
+    /// fitting, which the layout's unsnapped row can break where the widths
+    /// fit, and always as a source image's first group; never beside the Pan
+    /// menu, which is chosen only where the whole row fits, nor labelled.
+    #[test]
+    fn the_zoom_menu_leads_a_row_within_a_pixel_of_fitting() {
+        let menu = ToolbarForms {
+            zooms_labelled: false,
+            pan: None,
+        };
+        let room = px(300.);
+        assert!(menu.zooms_lead(false, px(300.5), room), "past the room");
+        assert!(
+            menu.zooms_lead(false, px(299.5), room),
+            "within a pixel of fitting"
+        );
+        assert!(
+            !menu.zooms_lead(false, px(298.5), room),
+            "a pixel and more inside it"
+        );
+        assert!(
+            menu.zooms_lead(true, px(10.), room),
+            "a source's first group"
+        );
+        let in_zoom_menu = ToolbarForms {
+            pan: Some(Pan::InZoomMenu),
+            ..menu
+        };
+        assert!(in_zoom_menu.zooms_lead(false, px(299.5), room));
+        let pan_menu = ToolbarForms {
+            pan: Some(Pan::Menu),
+            ..menu
+        };
+        assert!(
+            !pan_menu.zooms_lead(false, px(299.5), room),
+            "beside the Pan menu, which the row holds"
+        );
+        let labelled = ToolbarForms {
+            zooms_labelled: true,
+            pan: None,
+        };
+        assert!(!labelled.zooms_lead(false, px(400.), room));
+    }
+
     /// The images can move back towards their start where they have left it,
     /// and further where they have room: a pan control that cannot move them
     /// is unavailable.
@@ -2881,6 +2981,10 @@ mod tests {
 /// Rendered regressions of an image comparison's toolbar and captions.
 #[cfg(all(test, target_os = "linux"))]
 mod render_tests {
+    use super::{
+        MODE_GROUP, MODE_MENU, MODES, PAN_MENU, WIDEST_ZOOM, ZOOMS, group_width, menu_width,
+        widest_menu,
+    };
     use crate::views::tests::{draw, history_window_from, settle};
     use crate::*;
     use core::prelude::v1::test;
@@ -2928,6 +3032,8 @@ mod render_tests {
     struct Drawn {
         modes: Bounds<Pixels>,
         zooms: Bounds<Pixels>,
+        /// Whether the modes and the zooms are each one menu.
+        menus: bool,
         opens: [Option<Bounds<Pixels>>; 2],
         toolbar: Bounds<Pixels>,
         image: Bounds<Pixels>,
@@ -2954,6 +3060,8 @@ mod render_tests {
             drawn.push(Drawn {
                 modes: bounds(cx, &["image-modes", "image-mode-menu"]),
                 zooms: bounds(cx, &["image-zooms", "image-zoom-menu"]),
+                menus: cx.debug_bounds("image-mode-menu").is_some()
+                    && cx.debug_bounds("image-zoom-menu").is_some(),
                 opens: [
                     cx.debug_bounds("image-system-preview-0"),
                     cx.debug_bounds("image-system-preview-1"),
@@ -3043,6 +3151,242 @@ mod render_tests {
                     changed.image
                 );
             }
+        }
+    }
+
+    /// Where the zoom menu leads a row of its own beneath the mode menu, as
+    /// at 18 pt in a 461 × 490 window, it gives its inset back to the
+    /// toolbar's padding as the mode menu does, so "Fit" starts where "Side
+    /// by side" and the captions' names do: it started 8 px further in. For
+    /// an added, a deleted and a changed image at 13 and 18 pt in 461 × 490
+    /// and 1000 × 680 windows, a zoom menu on a row beneath the mode menu
+    /// starts at the mode menu's left edge, each label one inset inside it,
+    /// and the walk meets one at 18 pt in 461 × 490 for each image.
+    #[gpui::test]
+    async fn a_zoom_menu_leading_a_row_starts_where_the_mode_menu_does(cx: &mut TestAppContext) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let slack = px(0.5);
+        for (what, steps) in [
+            ("added", vec![Some(after.as_slice())]),
+            ("deleted", vec![Some(before.as_slice()), None]),
+            (
+                "changed",
+                vec![Some(before.as_slice()), Some(after.as_slice())],
+            ),
+        ] {
+            let mut met = false;
+            for ((text, width, height), drawn) in SIZES.iter().zip(drawn(cx, &steps).await) {
+                if !(drawn.menus && drawn.zooms.top() >= drawn.modes.bottom()) {
+                    continue;
+                }
+                met |= *text == 18 && *width == 461.;
+                assert!(
+                    (drawn.zooms.left() - drawn.modes.left()).abs() <= slack,
+                    "{what} at {text} pt in {width} × {height}: the zoom menu {:?} leads its row where the mode menu {:?} starts",
+                    drawn.zooms,
+                    drawn.modes
+                );
+            }
+            assert!(
+                met,
+                "{what}: at 18 pt in 461 × 490 the zoom menu leads a row of its own"
+            );
+        }
+    }
+
+    /// Beside the mode menu the zoom menu keeps the toolbar's gap, and on a
+    /// row of its own it starts where the mode menu does. Predicted from the
+    /// widths alone, it gave its inset back on a row it shared, half a pixel
+    /// from the mode menu, its ring over the mode menu's, at 13 pt in 478.5
+    /// and 478.75 px windows and at 18 pt in 662.5 and 662.75 px ones. At 13
+    /// and 18 pt a changed image is walked in 1/16 px steps through the
+    /// windows whose toolbar is within a pixel and a half of holding the mode
+    /// menu, the gap and the zoom menu as `ToolbarWidths` measures them,
+    /// meeting both.
+    #[gpui::test]
+    async fn the_zoom_menu_keeps_the_gap_beside_the_modes_and_their_edge_beneath(
+        cx: &mut TestAppContext,
+    ) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let input = image_commits(&[Some(&before), Some(&after)]);
+        let (_fixture, app, cx) = history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let slack = px(0.5);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // The mode menu, given its inset back, the gap and the zoom menu
+            // at its widest, as the toolbar measures them.
+            let (gap, rem, row) = cx.update(|window, _| {
+                let gap = window.rem_size() * 0.5;
+                let inset = appearance::ui_size(crate::ICON_INSET);
+                let mode = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window);
+                let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
+                (gap, window.rem_size(), mode - inset + gap + zoom)
+            });
+            let room = |width: f32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width), px(490.)));
+                draw(cx);
+                let toolbar = cx.debug_bounds("image-toolbar").expect("the toolbar");
+                toolbar.size.width - rem * 1.5
+            };
+            // The first whole window whose toolbar holds that row.
+            let mut holds = 400.;
+            while room(holds, cx) < row {
+                holds += 1.;
+                assert!(holds < 1200., "{text} pt: a window holds the row");
+            }
+            let (mut shared, mut led) = (false, false);
+            for step in 0..=56 {
+                let width = holds - 2. + step as f32 / 16.;
+                cx.simulate_resize(size(px(width), px(490.)));
+                draw(cx);
+                let at = format!("{text} pt in {width} × 490");
+                let (Some(modes), Some(zooms)) = (
+                    cx.debug_bounds("image-mode-menu"),
+                    cx.debug_bounds("image-zoom-menu"),
+                ) else {
+                    panic!("{at}: the modes and the zooms are each a menu");
+                };
+                if zooms.top() < modes.bottom() {
+                    shared = true;
+                    assert!(
+                        (zooms.left() - modes.right() - gap).abs() <= slack,
+                        "{at}: beside the mode menu {modes:?}, the zoom menu {zooms:?} keeps the toolbar's {gap:?} gap"
+                    );
+                } else {
+                    led = true;
+                    assert!(
+                        (zooms.left() - modes.left()).abs() <= slack,
+                        "{at}: beneath the mode menu {modes:?}, the zoom menu {zooms:?} starts at its edge"
+                    );
+                }
+            }
+            assert!(
+                shared && led,
+                "{text} pt: about {holds} px the zoom menu shares the modes' row and leads its own"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Choosing a zoom never changes the toolbar's rows where the Pan menu
+    /// fits beside the zooms by less than a pixel: with the zoom menu's
+    /// margin there, at 13 pt in a toolbar 355.5 to 356.5 px wide, Fit drew
+    /// one row and 100%, drawing the Pan menu, took the modes a row of their
+    /// own, the captions and the image moving down. Side by side at 13 pt, a
+    /// changed image is walked in 0.25 px steps through the windows whose
+    /// toolbar is within a pixel of holding the labelled modes, the zoom
+    /// menu and the Pan menu, as `ToolbarWidths` measures them: Fit and 100%
+    /// draw the toolbar equally tall, and 100% draws the Pan menu.
+    #[gpui::test]
+    async fn a_zoom_choice_keeps_the_rows_where_the_pan_menu_just_fits(cx: &mut TestAppContext) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let input = image_commits(&[Some(&before), Some(&after)]);
+        let (_fixture, app, cx) = history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let (rem, row) = cx.update(|window, _| {
+            let gap = window.rem_size() * 0.5;
+            let modes = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
+            let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
+            let pan = menu_width("Pan", &PAN_MENU, window);
+            (window.rem_size(), modes + gap + zoom + gap + pan)
+        });
+        let room = |width: f32, cx: &mut VisualTestContext| {
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            let toolbar = cx.debug_bounds("image-toolbar").expect("the toolbar");
+            toolbar.size.width - rem * 1.5
+        };
+        let zoom = |zoom: f32, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.update(cx, |app, cx| {
+                app.set_image_zoom(zoom);
+                cx.notify();
+            });
+            draw(cx);
+            cx.debug_bounds("image-toolbar").expect("the toolbar")
+        };
+        let mut holds = 400.;
+        while room(holds, cx) < row {
+            holds += 1.;
+            assert!(holds < 1500., "a window holds the row");
+        }
+        let mut met = 0;
+        for step in 0..=12 {
+            let width = holds - 2. + step as f32 * 0.25;
+            let within = room(width, cx);
+            if within < row || within >= row + px(1.) {
+                continue;
+            }
+            met += 1;
+            let at = format!("13 pt in {width} × 490, a {within:?} toolbar");
+            let fit = zoom(0., &app, cx);
+            let hundred = zoom(1., &app, cx);
+            assert!(
+                cx.debug_bounds("image-pan-menu").is_some(),
+                "{at}: at 100% the Pan menu stands beside the zooms"
+            );
+            assert!(
+                (hundred.size.height - fit.size.height).abs() <= px(0.5),
+                "{at}: the toolbar is {:?} tall at Fit and {:?} at 100%",
+                fit.size.height,
+                hundred.size.height
+            );
+            zoom(0., &app, cx);
+        }
+        assert!(
+            met > 0,
+            "the walk meets a toolbar within a pixel of the row"
+        );
+    }
+
+    /// Where its image would be, an absent side says why in its two
+    /// sentences only where each keeps one line, and otherwise in its short
+    /// line: at 13 pt in a 461 × 490 window they wrapped into four ragged
+    /// lines, "No image on / this side / The file was / added". At 13 and
+    /// 18 pt in 461 × 490 an added image's Before and a deleted image's
+    /// After draw the short line, and in a 1000 × 680 window at 13 pt, where
+    /// each sentence keeps its line, both sentences.
+    #[gpui::test]
+    async fn an_absent_side_says_why_in_whole_lines(cx: &mut TestAppContext) {
+        let png = crate::system_preview::tests::png(Some(b"image"));
+        for (absent, steps, short, whole) in [
+            (
+                0,
+                vec![Some(png.as_slice())],
+                "No image: file added",
+                "No image on this side\nThe file was added",
+            ),
+            (
+                1,
+                vec![Some(png.as_slice()), None],
+                "No image: file deleted",
+                "No image on this side\nThe file was deleted",
+            ),
+        ] {
+            let (_fixture, app, cx) = history_window_from(&mut *cx, image_commits(&steps)).await;
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            settle(&app, cx).await;
+            for (text, width, height, drawn) in [
+                (13, 461., 490., short),
+                (18, 461., 490., short),
+                (13, 1000., 680., whole),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let selector: &'static str = format!("image-side-empty-{absent}: {drawn}").leak();
+                assert!(
+                    cx.debug_bounds(selector).is_some(),
+                    "side {absent} at {text} pt in {width} × {height} draws {drawn:?}"
+                );
+            }
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         }
     }
 }

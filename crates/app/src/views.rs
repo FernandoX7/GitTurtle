@@ -11656,9 +11656,9 @@ pub(crate) mod tests {
             // Its room, less its padding, which the drawn line can pass by
             // its snapping to a device pixel.
             let room = ((right - left) - rem * 1.5).max(said.size.width);
-            // An absent side draws its two lines where the room holds them
-            // whole, and otherwise its one short line, whole where that
-            // fits: the cause is said either way.
+            // An absent side draws its two lines where each sentence keeps
+            // one line and the room holds both, and otherwise its one short
+            // line, whole where that fits: the cause is said either way.
             let (whole_lines, _) = wraps(text, room, cx);
             let brief = (text == absent).then_some("No image: file added");
             let drawn = match brief {
@@ -11698,8 +11698,10 @@ pub(crate) mod tests {
             if brief.is_some() {
                 assert!(!cut, "{at}: {drawn:?} says the cause whole");
                 assert!(
-                    drawn == text || line * whole_lines as f32 > area.size.height - rem + slack,
-                    "{at}: the short line only where the {whole_lines} lines do not fit {area:?}"
+                    drawn == text
+                        || whole_lines > 2
+                        || line * whole_lines as f32 > area.size.height - rem + slack,
+                    "{at}: the short line only where the sentences wrap to {whole_lines} lines or do not fit {area:?}"
                 );
             }
             let cut = cut || drawn != text;
