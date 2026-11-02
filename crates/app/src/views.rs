@@ -13584,6 +13584,72 @@ pub(crate) mod tests {
         );
     }
 
+    /// A followed History tab whose history changes outside the app with
+    /// no branch, tag or HEAD moved draws its new rows as it is shown again:
+    /// a reference of its own (`refs/custom/x`) made at a new commit, and then
+    /// deleted, adds the commit to the history and takes it away, which only
+    /// the history installed shows, as the references the landing compares
+    /// stay as they were (`history_updates::State::installed`).
+    #[gpui::test]
+    async fn a_followed_history_tab_draws_rows_a_reference_outside_its_branches_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clones = tempfile::tempdir().unwrap();
+        open_clone(&app, clones.path(), "second", cx).await;
+        let commit = fixture_git_output(
+            &root,
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "HEAD",
+                "-m",
+                "Kept outside",
+            ],
+        );
+        assert!(commit.status.success());
+        let oid = String::from_utf8(commit.stdout).unwrap().trim().to_owned();
+        let shown = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                (
+                    app.history_updates.installed,
+                    app.commits.iter().any(|commit| commit.oid == oid),
+                    app.branches.len(),
+                )
+            })
+        };
+        crate::in_frame::probe::watch();
+        switch_and_land(&app, 0, cx);
+        let (installed, listed, branches) = shown(cx);
+        assert!(!listed, "the commit is not in the history yet");
+        for (args, at, listed) in [
+            (
+                vec!["update-ref", "refs/custom/x", oid.as_str()],
+                "made",
+                true,
+            ),
+            (vec!["update-ref", "-d", "refs/custom/x"], "deleted", false),
+        ] {
+            switch_and_land(&app, 1, cx);
+            fixture_git(&root, &args);
+            assert_eq!(
+                switch_and_land(&app, 0, cx),
+                2,
+                "the reference {at}: the switch's frame, and the rescan's"
+            );
+            let (now, shown_now, branches_now) = shown(cx);
+            assert_ne!(now, installed, "the reference {at}: a history that differs");
+            assert_eq!(shown_now, listed, "the reference {at}: the rows drawn");
+            assert_eq!(
+                branches_now, branches,
+                "the reference {at}: no branch moved"
+            );
+        }
+        crate::in_frame::probe::stop();
+    }
+
     /// A reply a warm tab's return asks for that brings something the tab
     /// does not show draws it, in one frame of its own beside the switch's,
     /// while the tab keeps its place: of the first tab's repository, changed
