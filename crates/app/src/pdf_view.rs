@@ -722,6 +722,24 @@ fn at_widest(control: Button, labelled: Pixels, short: Option<Pixels>, room: Pix
     }
 }
 
+/// Read page text while its page is prepared: disabled, its tooltip saying
+/// why as its accessible name does ([`PREPARING`]), and recorded as it is
+/// drawn for side `index`'s tests (`system_preview::DRAWN_CONTROLS`), which
+/// once held the enabled control's tooltip and name while the drawn control
+/// said why it was unavailable.
+fn preparing(read: Button, index: usize) -> Button {
+    let tooltip = format!("Read page text · {PREPARING}");
+    #[cfg(test)]
+    crate::system_preview::DRAWN_CONTROLS.with_borrow_mut(|drawn| {
+        if let Some(drawn) = drawn.get_mut(&format!("pdf-read-text-{index}")) {
+            drawn.tooltip = Some(tooltip.clone());
+        }
+    });
+    #[cfg(not(test))]
+    let _ = index;
+    read.disabled(true).tooltip(tooltip)
+}
+
 /// The comparison's sides, each with its header of page controls; `width`
 /// is the comparison's in the frame it is drawn
 /// (`rich_preview::render_comparison`), which those controls, the open
@@ -794,10 +812,13 @@ pub(super) fn render_comparison<T: 'static>(
             let retry = retry.on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
             held.track(("pdf-retry",index), retry, cx)
         } else {
-            let read = HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", format!("{label}: read extracted text from page {}",page+1), "file-text", slot).labelled_with_icon().button(line_room);
+            // Named for its page, and while the page is prepared for why it
+            // is unavailable as well, as its tooltip says ([`preparing`]).
+            let name = format!("{label}: read extracted text from page {}",page+1);
+            let read = |name: String| HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", name, "file-text", slot).labelled_with_icon().button(line_room);
             let read = match cached.clone() {
-                Some(prepared) => read.on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)),
-                None => read.disabled(true).tooltip(format!("Read page text · {PREPARING}")).accessibility_label(format!("{label}: read extracted text from page {} · {PREPARING}",page+1)),
+                Some(prepared) => read(name).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)),
+                None => preparing(read(format!("{name} · {PREPARING}")), index),
             };
             held.track(("pdf-read-text",index), read, cx)
         };
@@ -2031,6 +2052,50 @@ pub(crate) mod tests {
                     );
                 }
             }
+        }
+
+        /// While its page is prepared, Read page text is recorded as it is
+        /// drawn (`system_preview::DRAWN_CONTROLS`), labelled and as its
+        /// icon: its accessible name, which the control is made and drawn
+        /// with, and its tooltip both say why it is unavailable. The record
+        /// once held the name and tooltip of the enabled control, which the
+        /// drawn one then replaced, so a test reading it saw neither reason.
+        #[gpui::test]
+        fn read_page_text_is_recorded_as_drawn_while_its_page_prepares(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let (content, document) = before_only(&pdf("Read page text while preparing"), 3, 1);
+            // The page is being prepared, as the page lane holds its request
+            // while a slow helper works; set here, so the lane, which every
+            // test in the process shares, is never asked for it.
+            document.state.lock().unwrap().pending = true;
+            let (view, cx) = window(cx, content);
+            let name = format!("Before: read extracted text from page 2 · {PREPARING}");
+            let mut forms = std::collections::BTreeSet::new();
+            for width in [900., 200.] {
+                view.update(cx, |view, cx| {
+                    view.width = px(width);
+                    cx.notify();
+                });
+                crate::system_preview::DRAWN_CONTROLS.with_borrow_mut(|drawn| drawn.clear());
+                crate::tags::tests::draw(cx);
+                let drawn = crate::system_preview::DRAWN_CONTROLS
+                    .with_borrow(|drawn| drawn["pdf-read-text-0"].clone());
+                assert_eq!(
+                    (drawn.name.as_str(), drawn.tooltip.as_deref()),
+                    (
+                        name.as_str(),
+                        Some(format!("Read page text · {PREPARING}").as_str())
+                    ),
+                    "{width} px: {drawn:?}"
+                );
+                forms.insert(drawn.form);
+            }
+            assert_eq!(
+                forms,
+                ["icon", "labelled"].into(),
+                "drawn labelled and as its icon"
+            );
         }
 
         /// The page number's dialog opens with the current page selected in
