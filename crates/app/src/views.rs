@@ -195,6 +195,55 @@ impl GitTurtle {
             .unwrap_or("GitTurtle".into())
     }
 
+    /// The repository's path as the header's identity reads it, or the
+    /// app's line before one opens.
+    fn repository_path_line(&self) -> String {
+        self.path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or("A clearer view of your code".into())
+    }
+
+    /// The repository's name and path as the header shows them in `room`,
+    /// each line elided in its middle as macOS elides one, so the part that
+    /// tells two tabs apart stays: the name keeping its start and its end
+    /// around "…" ("sysp…mod", [`name_middle`]), and the path its top
+    /// directory and its last component ("/tmp/…/compact", [`path_tail`]),
+    /// each measured in its own font as it is laid out on the window's
+    /// device pixels. Their whole text stays the heading's accessible name
+    /// and its tooltip ([`Self::repository_heading`]). Kept for each text,
+    /// room, font, size and scale factor drawn lately, so a steady frame
+    /// shapes nothing. (Decided 2026-11-02: both ended in an ellipsis,
+    /// "/tmp/gitturtle-evi…" and "sysprev…" for "sysprev-mod", cutting
+    /// what told two tabs apart.)
+    fn shown_identity(&self, room: Pixels, window: &Window) -> (SharedString, SharedString) {
+        let key = (
+            LineKey::current(window),
+            window.scale_factor().to_bits(),
+            f32::from(room).to_bits(),
+            self.repository_name(),
+            self.repository_path_line(),
+        );
+        HEADER_IDENTITY.with_borrow_mut(|cache| {
+            cache
+                .get(key, |(_, _, _, name, path)| {
+                    let width = |size: f32, weight: FontWeight| {
+                        move |text: &str| {
+                            laid_out_text_width(
+                                shaped_width(text, appearance::ui_text(size), weight, window),
+                                window,
+                            )
+                        }
+                    };
+                    (
+                        name_middle(name, room, &width(14., FontWeight::SEMIBOLD)).into(),
+                        path_tail(path, room, width(11., FontWeight::NORMAL)).into(),
+                    )
+                })
+                .clone()
+        })
+    }
+
     /// The header's repository identity, named with its path for assistive
     /// technology and in its tooltip.
     fn repository_heading(&self) -> native_accessibility::StaticText<Stateful<Div>> {
@@ -411,6 +460,14 @@ impl GitTurtle {
             });
         let back_to_projects = self.back_label() == "Back to Projects";
         let ring = appearance::button_ring_room(cx);
+        // The name alone, elided in its middle to its room, which it then
+        // takes whole, as the end-elided name did, so the toggles after it
+        // stand where they stood.
+        let (shown, _) = self.shown_identity(name, window);
+        let elided = shown.as_ref() != self.repository_name();
+        #[cfg(test)]
+        HEADER_SHOWN
+            .with(|kept| *kept.borrow_mut() = Some((shown.clone(), SharedString::default())));
         let history = self.mode != WorkspaceMode::Working;
         let changes = self.changes_label();
         let count = self
@@ -436,10 +493,13 @@ impl GitTurtle {
                 self.repository_heading()
                     .min_w_0()
                     .max_w(name)
-                    .truncate()
+                    .when(elided, |heading| heading.w(name))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis_middle()
                     .text_size(appearance::ui_text(14.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(self.repository_name()),
+                    .child(shown),
             )
             .when(self.repository.is_some(), |header| {
                 header
@@ -611,6 +671,11 @@ impl GitTurtle {
         // The return slot is the labelled Projects' width outside `compact`.
         let widths = self.chrome_widths(window);
         let plan = plan.unwrap_or_else(|| self.header_plan(chrome, window));
+        // Each line inside the identity, short of the pixel its own middle
+        // elision keeps as a guard ([`ellipsis_middle`]).
+        let (name, path) = self.shown_identity(plan.identity - px(ELLIPSIS_SLACK), window);
+        #[cfg(test)]
+        HEADER_SHOWN.with(|shown| *shown.borrow_mut() = Some((name.clone(), path.clone())));
         let (trailing, slot) = plan.full.unwrap_or((Trailing::Shared, false));
         let place = plan.operation;
         let own_row = trailing != Trailing::Shared;
@@ -657,23 +722,16 @@ impl GitTurtle {
                     .flex_col()
                     .gap_0p5()
                     .child(
-                        div()
+                        ellipsis_middle(div().debug_selector(|| "repository-name".into()))
                             .text_size(appearance::ui_text(14.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(self.repository_name()),
+                            .child(name),
                     )
                     .child(
-                        div()
+                        ellipsis_middle(div().debug_selector(|| "repository-path".into()))
                             .text_size(appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
-                            .truncate()
-                            .child(
-                                self.path
-                                    .as_ref()
-                                    .map(|p| p.display().to_string())
-                                    .unwrap_or("A clearer view of your code".into()),
-                            ),
+                            .child(path),
                     ),
             )
             .when(self.repository.is_some(), |header| {
@@ -4182,6 +4240,13 @@ thread_local! {
     /// own; its widths snap to the window's device pixels.
     static CHROME_WIDTHS: RefCell<Measured<(LineKey, u32, ChromeText), ChromeWidths>> =
         const { RefCell::new(Measured::new()) };
+    /// The header's repository name and path as they show in their room
+    /// (`GitTurtle::shown_identity`), for each text, room, font, size and
+    /// scale factor drawn lately.
+    #[allow(clippy::type_complexity)]
+    static HEADER_IDENTITY: RefCell<
+        Measured<(LineKey, u32, u32, String, String), (SharedString, SharedString)>,
+    > = const { RefCell::new(Measured::new()) };
 }
 
 /// How the full header lays out its trailing controls: Projects (or History
@@ -4305,6 +4370,43 @@ fn spacer_width(
     } else {
         free
     }
+}
+
+/// The width the full header's identity, the repository's name above its
+/// path, at `identity` among `items`, takes on its line as layout gives it:
+/// it and the spacer, at `spacer` where it shares the line, grow alike from
+/// nothing into the room the line's other items leave, the identity within
+/// its `bounds`, as [`spacer_width`] gives the spacer the rest.
+fn identity_width(
+    items: &[(Pixels, Pixels)],
+    identity: usize,
+    spacer: Option<usize>,
+    bounds: (Pixels, Pixels),
+    room: Pixels,
+    gap: Pixels,
+) -> Pixels {
+    let firsts: Vec<usize> = wrapped_rows(items, room, gap)
+        .into_iter()
+        .map(|(first, _)| first)
+        .collect();
+    let start = firsts
+        .iter()
+        .copied()
+        .filter(|&first| first <= identity)
+        .max()
+        .unwrap_or(0);
+    let end = firsts
+        .iter()
+        .copied()
+        .find(|&first| first > identity)
+        .unwrap_or(items.len());
+    let shared = spacer.filter(|at| (start..end).contains(at));
+    let fixed = (start..end)
+        .filter(|&item| item != identity && Some(item) != shared)
+        .fold(px(0.), |fixed, item| fixed + items[item].0);
+    let free = room - fixed - gap * (end - start - 1) as f32;
+    let share = if shared.is_some() { free / 2. } else { free };
+    share.max(bounds.0).min(bounds.1)
 }
 
 /// The room a running write's status takes in the header
@@ -4442,6 +4544,11 @@ struct HeaderPlan {
     /// The width the compact row gives the status where it goes there
     /// ([`GitTurtle::compact_operation_width`]).
     width: Option<Pixels>,
+    /// The width the repository's name and path take: the full header's
+    /// identity on its line ([`identity_width`]), or the most the compact
+    /// row's name takes. Each line is elided in its middle to it
+    /// ([`GitTurtle::shown_identity`]).
+    identity: Pixels,
     /// Whether the status bar keeps Cancel's room beside its line
     /// ([`GitTurtle::fit_status_bar`]): wherever, at the window's width and
     /// text size, a write's status could come to the bar with any header
@@ -4469,6 +4576,8 @@ struct HeaderControls {
 struct HeaderLayout {
     /// Each control's width and height, in order.
     items: Vec<(Pixels, Pixels)>,
+    /// Where the spacer stands among `items`, where the header keeps one.
+    spacer: Option<usize>,
     trailing: Trailing,
     /// Where a running write's status goes, whether or not one runs.
     operation: OperationLayout,
@@ -5237,6 +5346,15 @@ impl GitTurtle {
         let layout =
             self.full_header_layout(width, narrow, projects || slot, false, widths, window);
         let bar_room = self.full_bar_room(width, narrow, widths, window);
+        let scaled = |base: f32| window.pixel_snap(appearance::ui_size(base));
+        let identity = identity_width(
+            &layout.items,
+            2,
+            layout.spacer,
+            (scaled(100.), scaled(200.)),
+            layout.room,
+            layout.gap,
+        );
         // Every header's contents were asked, these among them.
         debug_assert!(
             bar_room || !layout.widest_to_bar,
@@ -5246,6 +5364,7 @@ impl GitTurtle {
             full: Some((trailing, slot)),
             operation: layout.operation,
             width: None,
+            identity,
             bar_room,
         }
     }
@@ -5385,6 +5504,7 @@ impl GitTurtle {
                 },
             },
             width: fit.map(|(width, _)| width),
+            identity: name,
             bar_room: true,
         }
     }
@@ -5628,6 +5748,7 @@ impl GitTurtle {
         }
         HeaderLayout {
             items,
+            spacer: spacer_at,
             trailing,
             operation: operation_layout,
             widest_to_bar,
@@ -5897,7 +6018,8 @@ impl PathRow {
 /// either ([`name_middle`]). It cuts only at a separator or between
 /// graphemes, so an accent stays on its letter, a flag stays whole and a
 /// name that is not UTF-8 keeps the replacement characters its display
-/// shows.
+/// shows. An absolute path's root belongs to its top directory, so the
+/// header's repository path keeps "/tmp" ("/tmp/…/compact").
 pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels) -> String {
     use unicode_segmentation::UnicodeSegmentation as _;
     if width(path) <= room {
@@ -5907,7 +6029,12 @@ pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels
         return name_middle(path, room, &width);
     };
     let (directory, name) = path.split_at(slash);
-    let (top, between) = directory.split_at(directory.find('/').unwrap_or(directory.len()));
+    let root = usize::from(directory.starts_with('/'));
+    let (top, between) = directory.split_at(
+        directory[root..]
+            .find('/')
+            .map_or(directory.len(), |at| at + root),
+    );
     // The nearest whole directories after the top one, the most first, then
     // none of them.
     let nearest = between
@@ -6801,6 +6928,10 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// What the header's repository name and path showed in the last frame
+    /// drawn (`GitTurtle::shown_identity`); the compact row shows no path.
+    pub(crate) static HEADER_SHOWN: RefCell<Option<(SharedString, SharedString)>> =
+        const { RefCell::new(None) };
     /// What Compare's path showed in the last frame drawn and its whole
     /// accessible name (`path_tail`).
     pub(crate) static COMPARE_PATH_SHOWN: RefCell<Option<(SharedString, SharedString)>> =
@@ -21724,6 +21855,12 @@ pub(crate) mod tests {
         assert_eq!(tail("assets/turtle.png", 15.), "ass…/turtle.png");
         assert_eq!(tail("assets/turtle.png", 12.), "…/turtle.png");
         assert_eq!(tail("assets/turtle.png", 11.), "turtle.png");
+        // An absolute path's root stays with its top directory, as the
+        // header's repository path keeps "/tmp".
+        let absolute = "/tmp/gitturtle-evidence/compact";
+        assert_eq!(tail(absolute, 14.), "/tmp/…/compact");
+        assert_eq!(tail(absolute, 12.), "/tm…/compact");
+        assert_eq!(tail("/tmp/ab/b/compact", 16.), "/tmp/…/b/compact");
         // A name alone keeps its start, the larger half, and its extension.
         assert_eq!(
             tail("RepositoryNavigationSidebar.tsx", 20.),
@@ -21758,6 +21895,113 @@ pub(crate) mod tests {
             ),
             "\u{1F1EF}\u{1F1F5}….png"
         );
+    }
+
+    /// The header's repository name and path, too long for their room, are
+    /// elided in their middle, so what tells two tabs apart stays: at 461
+    /// and 1000 px wide, at 13 and 18 pt, the name keeps its start and its
+    /// end ("sysp…mod"), and the full header's path its top directory and
+    /// its last component ("/tmp/…/compact"), each measured as laid out and
+    /// fitting the line it is drawn in, so the line's own elision cuts
+    /// nothing more. Both ended in an ellipsis, "sysprev…" and
+    /// "/tmp/gitturtle-evi…", cutting the part that tells tabs apart.
+    #[gpui::test]
+    async fn the_headers_name_and_path_keep_both_ends(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let parent = fixture
+            .path()
+            .join("gitturtle-evidence-2026-11-02-header-elision");
+        std::fs::create_dir_all(&parent).unwrap();
+        let repo = fixture_repository(parent.join("compact"));
+        git(
+            repo.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "First"],
+        );
+        let (app, cx) = window(cx, &repo);
+        let path = app.read_with(cx, |app, _| app.path.clone().expect("the repository"));
+        let whole = path.display().to_string();
+        let top = format!("/{}", whole[1..].split('/').next().unwrap());
+        const NAME: &str = "sysprev-model-compare-fixture";
+        app.update(cx, |app, cx| {
+            app.project_names.insert(path.clone(), NAME.into());
+            cx.notify();
+        });
+        let measure = |cx: &mut VisualTestContext, text: &str, size: f32, weight: FontWeight| {
+            cx.update(|window, _| {
+                laid_out_text_width(
+                    shaped_width(text, appearance::ui_text(size), weight, window),
+                    window,
+                )
+            })
+        };
+        let mut seen = (false, false);
+        for (width, height) in [(461., 490.), (1000., 680.)] {
+            for text in [13, 18] {
+                let at = format!("{text} pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                draw(cx);
+                let (name, shown) = HEADER_SHOWN
+                    .with(|kept| kept.borrow().clone())
+                    .expect("the header is drawn");
+                if name.as_ref() != NAME {
+                    seen.0 = true;
+                    let (front, back) = name
+                        .split_once('…')
+                        .unwrap_or_else(|| panic!("{at}: {name:?} is elided in its middle"));
+                    assert!(
+                        NAME.starts_with(front)
+                            && NAME.ends_with(back)
+                            && !back.is_empty()
+                            && front.len() >= back.len(),
+                        "{at}: {name:?} keeps the name's start, the larger half, and its end"
+                    );
+                }
+                // The compact row shows the name alone, in its room.
+                let Some(line) = cx.debug_bounds("repository-path") else {
+                    let heading = cx.debug_bounds("repository-heading").expect("the name");
+                    let drawn = measure(cx, &name, 14., FontWeight::SEMIBOLD);
+                    assert!(
+                        drawn <= heading.size.width + px(0.01),
+                        "{at}: {name:?}, {drawn:?} wide, fits the compact name {heading:?}"
+                    );
+                    continue;
+                };
+                let room = line.size.width - px(ELLIPSIS_SLACK) + px(0.01);
+                for (text, size, weight, selector) in [
+                    (&name, 14., FontWeight::SEMIBOLD, "repository-name"),
+                    (&shown, 11., FontWeight::NORMAL, "repository-path"),
+                ] {
+                    let drawn = measure(cx, text, size, weight);
+                    let box_width = cx.debug_bounds(selector).unwrap().size.width;
+                    assert!(
+                        drawn <= box_width - px(ELLIPSIS_SLACK) + px(0.01),
+                        "{at}: {text:?}, {drawn:?} wide, fits its line, {box_width:?}"
+                    );
+                }
+                if shown.as_ref() != whole {
+                    seen.1 = true;
+                    let kept = format!("{top}/…/compact");
+                    let fits = measure(cx, &kept, 11., FontWeight::NORMAL) <= room;
+                    assert!(
+                        shown.ends_with("…/compact")
+                            && if fits {
+                                shown.as_ref() == kept
+                            } else {
+                                top.starts_with(shown.trim_end_matches("…/compact"))
+                            },
+                        "{at}: {shown:?} keeps {top} and compact, as {kept:?} where it fits"
+                    );
+                }
+            }
+        }
+        assert!(
+            seen.0 && seen.1,
+            "the walk elides the name and the path: {seen:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Compare's path in a 461 × 490 half tile at 13 and 18 pt: a path too
