@@ -1,8 +1,10 @@
 //! The release measurement of Linux PDF pages through the real helper
 //! (section 5 of `docs/development/2026-11-02-linux-pdf-pages-architecture.md`).
 //!
-//! Opt-in and ignored by default. Every `*.pdf` in the directory named by
-//! `GITTURTLE_PDF_BENCH_DIR` is measured, with two documents the test
+//! Opt-in and ignored by default. Every regular `*.pdf` file in the directory
+//! named by `GITTURTLE_PDF_BENCH_DIR` is measured, never one reached through a
+//! symbolic link, and one past the 32 MiB input limit is refused unread
+//! beyond it, with two documents the test
 //! generates itself: a 300-page dense-text document and a 32 MiB image-heavy
 //! file. Each fixture's first, middle and last page is requested
 //! `GITTURTLE_PDF_BENCH_RUNS` times (default 20) from a new helper, as the app
@@ -10,7 +12,10 @@
 //! reads the helper's peak memory from `wait4`, and through the app's own
 //! client for the whole request. The helper's start, its `VmSize` once it is
 //! confined, and the time from a kill to the reap are measured apart. The
-//! JSON goes to the file named by `GITTURTLE_PDF_BENCH_OUT`.
+//! JSON goes to the file named by `GITTURTLE_PDF_BENCH_OUT`. It names each
+//! fixture by its file name in that directory and the executable by its file
+//! name and the commit built into it, never by an absolute path, and no
+//! helper's reply is read past the largest the client accepts.
 //!
 //! The app crate has no library target, so this test compiles
 //! `src/pdf_helper.rs` as its own module, as `tests/pdf_helper.rs` does.
@@ -32,12 +37,44 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use gitturtle_preview::pdf_helper::{PROTOCOL_VERSION, encode_request, read_reply};
+use gitturtle_preview::MAX_INPUT_BYTES;
+use gitturtle_preview::pdf_helper::{
+    MAX_REPLY_BYTES, PROTOCOL_VERSION, encode_request, read_reply,
+};
 use pdf_helper::{Client, DEADLINE, HELPER_FLAG, HelperCommand, Slots};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_gitturtle");
+/// The commit the build script embeds in this package's targets, the
+/// executable's among them.
+const REVISION: &str = env!("GITTURTLE_BUILD_REVISION");
+
+/// Bytes to the largest any reader here takes: `limit`, and one more, which
+/// tells a source past it from one that ends there.
+fn read_bounded(source: impl Read, limit: usize) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    source
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// A fixture from the directory: only a regular file, never one a symbolic
+/// link names, and only within the input limit, read no further than one
+/// byte past it.
+fn read_fixture(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let regular = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file());
+    if !regular {
+        return Err("not a regular file");
+    }
+    let file = fs::File::open(path).map_err(|_| "unreadable")?;
+    let bytes = read_bounded(file, MAX_INPUT_BYTES).map_err(|_| "unreadable")?;
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err("larger than the 32 MiB input limit");
+    }
+    Ok(bytes)
+}
 
 /// The helper's arguments for this process as its parent.
 fn arguments() -> [String; 3] {
@@ -93,9 +130,9 @@ fn instrumented(pdf: &[u8], page: usize) -> Value {
     let mut output = child.stdout.take().expect("stdout");
     // Reading on a thread of its own keeps a reply larger than the pipe from
     // blocking the write.
+    // No further than one byte past the largest reply the client accepts.
     let reader = std::thread::spawn(move || {
-        let mut reply = Vec::new();
-        let _ = output.read_to_end(&mut reply);
+        let reply = read_bounded(&mut output, MAX_REPLY_BYTES).unwrap_or_default();
         (reply, Instant::now())
     });
     let written = input
@@ -437,6 +474,7 @@ fn measure_pdf_pages_through_the_helper() {
         .and_then(|runs| runs.parse().ok())
         .unwrap_or(20)
         .max(2);
+    let mut skipped = Vec::new();
     let mut fixtures: Vec<(String, &str, Vec<u8>)> = vec![
         (
             "generated-dense-text-300.pdf".into(),
@@ -457,11 +495,15 @@ fn measure_pdf_pages_through_the_helper() {
             .collect();
         listed.sort();
         for path in listed {
+            // Its name in the directory, never the path to it.
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            fixtures.push((name, "directory", fs::read(&path).expect("a fixture")));
+            match read_fixture(&path) {
+                Ok(pdf) => fixtures.push((name, "directory", pdf)),
+                Err(reason) => skipped.push(json!({ "name": name, "skipped": reason })),
+            }
         }
     }
     let slots = Slots::new(2);
@@ -503,11 +545,11 @@ fn measure_pdf_pages_through_the_helper() {
     let record = json!({
         "measured": "Linux PDF pages through the confined helper, one helper per request",
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
-        "executable": BINARY,
-        "executable_bytes": fs::metadata(BINARY).map(|metadata| metadata.len()).ok(),
+        "executable": executable(),
         "host": host(),
         "runs_per_page": runs,
-        "fixture_directory": directory.as_deref().map(Path::display).map(|path| path.to_string()),
+        "fixture_directory_given": directory.is_some(),
+        "skipped_fixtures": skipped,
         "start": {
             "first": starts[0],
             "warm": summary(&starts[1..], &["start_us", "vm_size_kib", "vm_rss_kib", "kill_to_reap_idle_us"]),
@@ -517,6 +559,23 @@ fn measure_pdf_pages_through_the_helper() {
     fs::write(&out, serde_json::to_vec_pretty(&record).expect("JSON"))
         .expect("the record is written");
     eprintln!("wrote {}", out.display());
+}
+
+/// The executable measured: its file name, size and the commit its build
+/// embeds, with whether its bytes hold that commit, never its path.
+fn executable() -> Value {
+    let path = Path::new(BINARY);
+    let bytes = fs::read(path).unwrap_or_default();
+    let embedded = !REVISION.is_empty()
+        && bytes
+            .windows(REVISION.len())
+            .any(|window| window == REVISION.as_bytes());
+    json!({
+        "name": path.file_name().map(|name| name.to_string_lossy().into_owned()),
+        "bytes": bytes.len(),
+        "revision": REVISION,
+        "revision_embedded": embedded,
+    })
 }
 
 /// The document's page count from a request for its first page.
@@ -534,4 +593,46 @@ fn sha256(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// A fixture is read only from a regular file in the directory: a symbolic
+/// link to one, even one in the directory itself, and a directory named
+/// like a PDF are skipped, so the measurement never reads past the directory
+/// it was given.
+#[test]
+fn only_regular_fixture_files_are_read() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let regular = directory.path().join("regular.pdf");
+    fs::write(&regular, b"%PDF-1.7\n").expect("a fixture");
+    let linked = directory.path().join("linked.pdf");
+    std::os::unix::fs::symlink(&regular, &linked).expect("a link");
+    let folder = directory.path().join("folder.pdf");
+    fs::create_dir(&folder).expect("a folder");
+    assert_eq!(read_fixture(&regular), Ok(b"%PDF-1.7\n".to_vec()));
+    assert_eq!(read_fixture(&linked), Err("not a regular file"));
+    assert_eq!(read_fixture(&folder), Err("not a regular file"));
+}
+
+/// A fixture past the 32 MiB input limit is refused, read no further than
+/// one byte past it, and a helper's reply is read no further than one byte
+/// past the largest the client accepts, however much a source holds.
+#[test]
+fn fixtures_and_replies_are_read_within_their_limits() {
+    let directory = tempfile::tempdir().expect("a directory");
+    let large = directory.path().join("large.pdf");
+    let file = fs::File::create(&large).expect("a fixture");
+    file.set_len(u64::try_from(MAX_INPUT_BYTES).unwrap() + 1)
+        .expect("a sparse fixture");
+    // Its length alone, should it be read whole.
+    assert_eq!(
+        read_fixture(&large).map(|bytes| bytes.len()),
+        Err("larger than the 32 MiB input limit")
+    );
+    let endless = std::io::repeat(0);
+    assert_eq!(
+        read_bounded(endless, MAX_REPLY_BYTES)
+            .expect("a read")
+            .len(),
+        MAX_REPLY_BYTES + 1
+    );
 }
