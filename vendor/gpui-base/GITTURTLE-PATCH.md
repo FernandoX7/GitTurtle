@@ -373,7 +373,8 @@ focus back on the trigger after Escape and the item;
 outside. Remove this part of the patch when upstream's dismiss callback no
 longer holds its state strongly, and those tests pass without it.
 
-The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
+The panel-fit patch modifies `src/resizable/mod.rs` and
+`src/resizable/panel.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
 panels were laid out at their sizes for the old size, and only then rescales
 them (`adjust_to_container_size`), so the first frame at a new size draws the
@@ -390,7 +391,8 @@ neither does a panel as it records, while it is prepainted, the bounds and
 the size the frame laid it out at (`update_panel_size`, which no longer
 takes a context): the frame that draws the group lays it out at those
 sizes, and only a later build of the group reads what the panels record.
-Upstream both notified. Made while the frame is drawn, such a notify only
+Upstream's panel record and the group's adjustment notified, and so did
+the fit as first added here. Made while the frame is drawn, such a notify only
 marks a state the window drew in the frame before, but GPUI delivers it to
 the observers of one the window did not draw then once the frame is done,
 and an observer that redraws, as GitTurtle's window observes its groups,
@@ -411,9 +413,10 @@ group's panels out at their rescaled sizes in the first frame at a new size,
 and those tests pass with the three `fit_container` calls removed.
 
 The placeholder-fit patch modifies `src/input/base/state.rs` and
-`src/input/base/element.rs`. An application that fits a single-line field's
-placeholder to the width the field gives its text, as GitTurtle shortens a
-search field's and a filter's in a narrow window, could only read that width
+`src/input/base/element.rs`. An application that fits a field's placeholder
+to the width the field gives its text, single-line or multi-line, as
+GitTurtle shortens a search field's, a filter's and the commit composer's in
+a narrow window, could only read that width
 once the field had been painted (`text_bounds`), so a new width drew the
 earlier width's placeholder and the application's new one only in a second
 frame. `InputBaseState::set_placeholder_fit` gives the field a `PlaceholderFit`:
@@ -427,11 +430,22 @@ field's accessible placeholder is the whole form at every width
 before the frame lays it out, so one that followed the drawn form kept the
 earlier width's form after a width step until something else redrew, and
 no width bounds what a screen reader reads. Without a fit the field shows
-and reports the placeholder it was given, as upstream. GitTurtle sets it through
-`workspace::placeholder_fit`, as the field is laid out; its History search
-field, changed files' filter and navigation filter are covered by
-`cargo test --locked -p gitturtle draws_one_frame_where_it_settles` and by
-`views::tests::history_search_fits_its_placeholder_and_keeps_its_name`,
-`changed_file_filter_fits_in_whole_words_and_keeps_its_name` and
-`working_filter_placeholder_fits_its_field`. Remove the patch when upstream
-chooses a placeholder from the laid-out width in the frame.
+and reports the placeholder it was given, as upstream. The text element
+runs a fit for every field that has one, single-line or multi-line.
+GitTurtle sets one through `workspace::placeholder_fit`, as the field is laid
+out, on each field it fits, each covered by its own regression:
+
+- History's search field: `views::tests::history_search_fits_its_placeholder_and_keeps_its_name`;
+- the changed files' filter: `views::tests::changed_file_filter_fits_in_whole_words_and_keeps_its_name`;
+- the Working filter: `views::tests::working_filter_placeholder_fits_its_field`;
+- the navigation's filter: `views::tests::the_navigation_folds_its_modes_and_hint_before_they_wrap`;
+- the tags filter: `tags::tests::tags_text_starts_at_the_filters_inset`;
+- the commit title and the commit description, a five-row multi-line field:
+  `views::tests::narrow_composer_keeps_its_texts_inside_the_column`.
+
+History's search field and the changed files' filter are also stepped
+between widths, their drawn and accessible placeholders compared with a
+window opened at each width, by
+`cargo test --locked -p gitturtle draws_one_frame_where_it_settles`. Remove
+the patch when upstream chooses a placeholder from the laid-out width in the
+frame.
