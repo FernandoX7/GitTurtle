@@ -925,6 +925,70 @@ impl GitTurtle {
         (staged, self.working_selection.selected.len() - staged)
     }
 
+    /// The selection's Stage, or where `staged` its Unstage, as the
+    /// selection's controls draw it (`render_working_selection`), `compact`
+    /// with only its icon: labelled by how many of the selected files it
+    /// acts on, refused while there are none, and refused at once by a
+    /// write in flight or rows being prepared (`apply_selected_files`),
+    /// dimmed once the spell looks busy. While only the rows being prepared
+    /// refuse it, its name and tooltip say why once it dims (`rows_wait`).
+    pub(super) fn selection_action(
+        &self,
+        staged: bool,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let (selected_staged, selected_unstaged) = self.selection_counts();
+        let (key, verb, icon, detail, count) = if staged {
+            (
+                "unstage-selection",
+                "Unstage",
+                "minus",
+                "Unstage the selected files",
+                selected_staged,
+            )
+        } else {
+            (
+                "stage-selection",
+                "Stage",
+                "plus",
+                "Stage the selected files",
+                selected_unstaged,
+            )
+        };
+        let spell = self.operation_busy.is_some() || self.working_paths.pending;
+        let unavailable = (spell && self.busy_shown()) || self.working_paths.error.is_some();
+        let refused = spell || self.working_paths.error.is_some();
+        let label = format!("{verb} {count}");
+        let (named, tooltip) = self.rows_wait(
+            key,
+            count == 0,
+            &label,
+            compact.then(|| format!("{label} · {detail}")),
+        );
+        if compact {
+            crate::views::compact_control_label(button(key, "", icon, false), key, label)
+        } else {
+            button(key, label, "", false)
+        }
+        .when_some(tooltip, |control, tooltip| {
+            crate::workspace::waiting_tooltip(control, key, tooltip)
+        })
+        .when_some(named, |control, named| control.accessibility_label(named))
+        .debug_selector(move || key.into())
+        .map(|control| {
+            crate::workspace::refusing(
+                control,
+                move || key.into(),
+                count == 0 || refused,
+                count == 0 || unavailable,
+            )
+        })
+        .on_click(
+            cx.listener(move |this, _, window, cx| this.apply_selected_files(staged, window, cx)),
+        )
+    }
+
     /// The filter and the selection's controls. Stage and Unstage stay
     /// together, wrapping below Directories as a pair; `compact`, where the
     /// pair does not fit a row of its own labelled (`WorkingForms`), the
@@ -936,28 +1000,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (staged, unstaged) = self.selection_counts();
-        // A write in flight or rows being prepared leave Stage and Unstage
-        // inert at once (`apply_selected_files`), dimmed once the spell
-        // looks busy.
-        let spell = self.operation_busy.is_some() || self.working_paths.pending;
-        let unavailable = (spell && self.busy_shown()) || self.working_paths.error.is_some();
-        let refused = spell || self.working_paths.error.is_some();
         let grouped = self.working_selection.grouped;
-        let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));
-        // While only the rows being prepared refuse them, their names and,
-        // once they dim, their tooltips say why (`rows_wait`).
-        let (stage_named, stage_tooltip) = self.rows_wait(
-            "stage-selection",
-            unstaged == 0,
-            &stage,
-            compact.then(|| format!("{stage} · Stage the selected files")),
-        );
-        let (unstage_named, unstage_tooltip) = self.rows_wait(
-            "unstage-selection",
-            staged == 0,
-            &unstage,
-            compact.then(|| format!("{unstage} · Unstage the selected files")),
-        );
         let directories = if compact {
             crate::views::compact_control_name(
                 button("group-working", "", "folder", grouped),
@@ -968,33 +1011,6 @@ impl GitTurtle {
         } else {
             button("group-working", "Directories", "", grouped)
         };
-        let (stage_button, unstage_button) = if compact {
-            (
-                crate::views::compact_control_label(
-                    button("stage-selection", "", "plus", false),
-                    "stage-selection",
-                    stage.clone(),
-                ),
-                crate::views::compact_control_label(
-                    button("unstage-selection", "", "minus", false),
-                    "unstage-selection",
-                    unstage.clone(),
-                ),
-            )
-        } else {
-            (
-                button("stage-selection", stage, "", false),
-                button("unstage-selection", unstage, "", false),
-            )
-        };
-        let stage_button = stage_button
-            .when_some(stage_tooltip, |stage, tooltip| stage.tooltip(tooltip))
-            .when_some(stage_named, |stage, named| stage.accessibility_label(named));
-        let unstage_button = unstage_button
-            .when_some(unstage_tooltip, |unstage, tooltip| unstage.tooltip(tooltip))
-            .when_some(unstage_named, |unstage, named| {
-                unstage.accessibility_label(named)
-            });
         div()
             .px_3()
             .py_2()
@@ -1031,36 +1047,8 @@ impl GitTurtle {
                         div()
                             .flex()
                             .gap_1()
-                            .child(
-                                stage_button
-                                    .debug_selector(|| "stage-selection".into())
-                                    .map(|stage| {
-                                        crate::workspace::refusing(
-                                            stage,
-                                            || "stage-selection".into(),
-                                            unstaged == 0 || refused,
-                                            unstaged == 0 || unavailable,
-                                        )
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.apply_selected_files(false, window, cx)
-                                    })),
-                            )
-                            .child(
-                                unstage_button
-                                    .debug_selector(|| "unstage-selection".into())
-                                    .map(|unstage| {
-                                        crate::workspace::refusing(
-                                            unstage,
-                                            || "unstage-selection".into(),
-                                            staged == 0 || refused,
-                                            staged == 0 || unavailable,
-                                        )
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.apply_selected_files(true, window, cx)
-                                    })),
-                            ),
+                            .child(self.selection_action(false, compact, cx))
+                            .child(self.selection_action(true, compact, cx)),
                     ),
             )
             .child(

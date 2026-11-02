@@ -6299,14 +6299,21 @@ mod tests {
     /// While a quiet refresh's rows are prepared, with no status read and
     /// no write, the controls that act on the files listed, Stage all and
     /// Unstage all, the selection's Stage and Unstage, and Commit, say why
-    /// they wait: each accessible name at once ("Stage all, unavailable.
-    /// Wait for the file list to refresh"), and each tooltip, once the busy
-    /// look shows, as a refused Select All shows it, adding the reason
-    /// after what it says, or the reason alone where it says nothing at
-    /// rest; "Wait for the filter to finish" while the filter's rows are
-    /// prepared. A control refused for a reason of its own, as Commit
-    /// without a title, states no wait. Both go as the rows land. A refused
-    /// press once showed these controls dimmed with nothing to say why.
+    /// they wait once the busy look shows, as a refused Select All shows
+    /// it: each accessible name ("Stage all, unavailable. Wait for the file
+    /// list to refresh") and each tooltip, which adds the reason after what
+    /// it says, or is the reason alone where it says nothing at rest; "Wait
+    /// for the filter to finish" while the filter's rows are prepared.
+    /// Through the look's delay each says what it says at rest, so a
+    /// watcher's refresh shorter than the delay changes no word a screen
+    /// reader reads: the names once came at once, and each such refresh
+    /// renamed a focused Commit "Commit 1 file, unavailable. …" and back.
+    /// The selection's Stage and Unstage are read as drawn, by the name the
+    /// node each writes gives it and by the tooltip shown under the
+    /// pointer, as is Commit's tooltip. A control refused for a reason of
+    /// its own, as Commit without a title, states no wait. Both go as the
+    /// rows land. A refused press once showed these controls dimmed with
+    /// nothing to say why.
     #[gpui::test]
     async fn controls_the_rows_refuse_say_why(cx: &mut TestAppContext) {
         use crate::working_selection::Preparation;
@@ -6344,6 +6351,79 @@ mod tests {
                 tooltip
             })
             .collect();
+        let waiting = |reason: &str| -> Vec<(Option<gpui_kit::SharedString>, Option<String>)> {
+            controls
+                .iter()
+                .zip(&rest)
+                .map(|((_, name), rest)| {
+                    (
+                        Some(format!("{name}, unavailable. {reason}").into()),
+                        Some(
+                            rest.as_ref()
+                                .map_or(reason.to_owned(), |rest| format!("{rest} · {reason}")),
+                        ),
+                    )
+                })
+                .collect()
+        };
+        let at_rest: Vec<_> = rest.iter().map(|rest| (None, rest.clone())).collect();
+        let built = || -> Vec<_> {
+            controls
+                .iter()
+                .map(|(key, _)| refusals::waiting(key).unwrap_or_else(|| panic!("{key} is drawn")))
+                .collect()
+        };
+
+        // The selection's Stage and Unstage, as the window draws them: the
+        // name the node each writes gives it, its visible label at rest.
+        let compact = rest[2].is_some();
+        let drawn_names = |cx: &mut VisualTestContext| -> [Option<String>; 2] {
+            let names = [false, true].map(|staged| {
+                let app = app.clone();
+                crate::views::tests::view_node(cx, move |window, cx| {
+                    use gpui::Element as _;
+                    let action =
+                        app.update(cx, |app, cx| app.selection_action(staged, compact, cx));
+                    let element = gpui::RenderOnce::render(action.base(window, cx), window, cx)
+                        .into_element();
+                    let mut node =
+                        gpui::accesskit::Node::new(element.a11y_role().expect("a button"));
+                    element.write_a11y_info(&mut node);
+                    node
+                })
+                .label()
+                .map(str::to_owned)
+            });
+            // The window's own frame, which the nodes' build drew over.
+            next_frame(cx);
+            names
+        };
+        // Whether resting the pointer on `key` shows the tooltip `text`.
+        let tooltip_drawn = |cx: &mut VisualTestContext, key: &'static str, text: &str| -> bool {
+            const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+            let control = cx
+                .debug_bounds(key)
+                .unwrap_or_else(|| panic!("{key} is drawn"));
+            cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            let shown = cx
+                .debug_bounds(format!("{key}/tooltip/{text}").leak())
+                .is_some();
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            shown
+        };
+        let selection = [("stage-selection", 2), ("unstage-selection", 3)];
+        let named_at_rest = [Some("Stage 1".to_owned()), Some("Unstage 1".to_owned())];
+        assert_eq!(drawn_names(cx), named_at_rest, "drawn at rest");
+        for (key, index) in selection.into_iter().chain([("commit-staged", 4)]) {
+            if let Some(rest) = &rest[index] {
+                assert!(tooltip_drawn(cx, key, rest), "{key}: its tooltip at rest");
+            }
+        }
+
         let prepared = |cx: &mut VisualTestContext, preparation: Preparation| {
             let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
             cx.update(|window, cx| {
@@ -6363,55 +6443,50 @@ mod tests {
                 !app.read_with(cx, |app, _| app.busy_shown()),
                 "{reason}: the look waits"
             );
-            for ((key, name), rest) in controls.iter().zip(&rest) {
-                assert_eq!(
-                    refusals::waiting(key),
-                    Some((
-                        Some(gpui_kit::SharedString::from(format!(
-                            "{name}, unavailable. {reason}"
-                        ))),
-                        rest.clone()
-                    )),
-                    "{key}: named by why at once, its tooltip as at rest"
-                );
-            }
+            assert_eq!(built(), at_rest, "{reason}: through the delay, as at rest");
+            assert_eq!(
+                drawn_names(cx),
+                named_at_rest,
+                "{reason}: drawn through the delay"
+            );
             app.update(cx, |app, cx| app.select_all_working(cx));
             next_frame(cx);
             assert!(
                 app.read_with(cx, |app, _| app.busy_shown()),
                 "{reason}: the refused Select All shows the look"
             );
-            for ((key, name), rest) in controls.iter().zip(&rest) {
-                let tooltip = rest
-                    .as_ref()
-                    .map_or(reason.to_owned(), |rest| format!("{rest} · {reason}"));
-                assert_eq!(
-                    refusals::waiting(key),
-                    Some((
-                        Some(gpui_kit::SharedString::from(format!(
-                            "{name}, unavailable. {reason}"
-                        ))),
-                        Some(tooltip)
-                    )),
-                    "{key}: dimmed, its tooltip adds why"
+            let said = waiting(reason);
+            assert_eq!(built(), said, "{reason}: dimmed, each says why");
+            assert_eq!(
+                drawn_names(cx),
+                [2, 3].map(|index| said[index].0.as_ref().map(ToString::to_string)),
+                "{reason}: the drawn names say why"
+            );
+            for (key, index) in selection.into_iter().chain([("commit-staged", 4)]) {
+                let tooltip = said[index].1.as_deref().expect("a tooltip");
+                assert!(
+                    tooltip_drawn(cx, key, tooltip),
+                    "{reason}: {key} shows {tooltip:?}"
                 );
             }
             drop(rows);
             crate::path_filter::filters_land(&app, cx);
             next_frame(cx);
-            for ((key, _), rest) in controls.iter().zip(&rest) {
-                assert_eq!(
-                    refusals::waiting(key),
-                    Some((None, rest.clone())),
-                    "{key}: as at rest once the rows land"
-                );
-            }
+            assert_eq!(built(), at_rest, "{reason}: as at rest once the rows land");
+            assert_eq!(
+                drawn_names(cx),
+                named_at_rest,
+                "{reason}: drawn as at rest once the rows land"
+            );
         }
 
         // Commit without a title waits for one, which the rows' landing
         // would not give it: it states no wait, while Stage all does.
         title(cx, "");
         let rows = prepared(cx, Preparation::Status);
+        app.update(cx, |app, cx| app.select_all_working(cx));
+        next_frame(cx);
+        assert!(app.read_with(cx, |app, _| app.busy_shown()));
         assert_eq!(
             refusals::waiting("commit-staged").and_then(|(named, _)| named),
             None,

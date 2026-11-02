@@ -643,6 +643,25 @@ pub(crate) fn refusing(
         .accessibility_disabled(refused || dimmed)
 }
 
+/// `control` with `tooltip` as its text, drawn as the kit draws a text
+/// tooltip, for a control the rows being prepared refuse
+/// ([`GitTurtle::rows_wait`]): its text is drawn as `‹key›/tooltip/‹text›`,
+/// so a test reads the tooltip shown under the pointer, as Projects' is read
+/// ([`GitTurtle::refusing_with_reason`]).
+pub(crate) fn waiting_tooltip(control: Button, key: &'static str, tooltip: String) -> Button {
+    let tooltip = SharedString::from(tooltip);
+    control.tooltip_view(move |window, cx| {
+        let text = tooltip.clone();
+        Tooltip::element(move |_, _| {
+            let probe = text.clone();
+            div()
+                .debug_selector(move || format!("{key}/tooltip/{probe}"))
+                .child(text.clone())
+        })
+        .build(window, cx)
+    })
+}
+
 /// What a control that waits for a running write says in its tooltip
 /// ([`GitTurtle::refusing_with_reason`]).
 pub(crate) struct WaitingTooltip {
@@ -4191,8 +4210,8 @@ impl GitTurtle {
                                         }
                                     );
                                     // While only the rows being prepared refuse it,
-                                    // its name and, once it dims, its tooltip say
-                                    // why (`rows_wait`); a label that says why it
+                                    // its name and tooltip say why once it dims
+                                    // (`rows_wait`); a label that says why it
                                     // cannot commit is its own reason.
                                     let own = !shown
                                         || staged == 0
@@ -4221,7 +4240,9 @@ impl GitTurtle {
                                     } else {
                                         commit.label(label)
                                     }
-                                    .when_some(tooltip, |commit, tooltip| commit.tooltip(tooltip))
+                                    .when_some(tooltip, |commit, tooltip| {
+                                        waiting_tooltip(commit, "commit-staged", tooltip)
+                                    })
                                     .when_some(named, |commit, named| {
                                         commit.accessibility_label(named)
                                     })
@@ -4357,7 +4378,7 @@ impl GitTurtle {
                 let refused = busy || self.working_paths.pending || empty;
                 let unavailable = ((busy || self.working_paths.pending) && looks_busy) || empty;
                 // While only the rows being prepared refuse it, its name
-                // and, once it dims, its tooltip say why (`rows_wait`).
+                // and tooltip say why once it dims (`rows_wait`).
                 let (named, tooltip) = self.rows_wait(
                     selector,
                     empty,
@@ -4905,16 +4926,21 @@ impl GitTurtle {
     /// What a control the rows being prepared refuse says, `name` and
     /// `tooltip` at rest, unless it is refused for a reason of its own
     /// (`own`) that their landing would not end: while only the rows refuse
-    /// it, the accessible name that says why at once ("Stage all,
-    /// unavailable. Wait for the file list to refresh"), as Review tag's
-    /// does, and once it dims a tooltip that adds why after what it says,
-    /// or is the reason where it says nothing at rest; otherwise no name of
-    /// its own and its tooltip at rest. Both change in place, moving
-    /// nothing. Through a quiet refresh's preparation a refused press once
-    /// showed these controls dimmed with nothing to say why: the header's
-    /// "Refreshing…" follows a status read alone, and a line there would
-    /// move the header on every passive refresh. `key` names the control
-    /// for tests (`refusals::waiting`).
+    /// it, once it dims with the busy look, an accessible name that says
+    /// why ("Stage all, unavailable. Wait for the file list to refresh"),
+    /// and a tooltip that adds why after what it says, or is the reason
+    /// where it says nothing at rest; otherwise no name of its own and its
+    /// tooltip at rest. Both change in place, moving nothing. Through a
+    /// quiet refresh's preparation a refused press once showed these
+    /// controls dimmed with nothing to say why: the header's "Refreshing…"
+    /// follows a status read alone, and a line there would move the header
+    /// on every passive refresh. The name once came at once, so every
+    /// watcher-driven refresh, however short, renamed a focused Commit
+    /// "Commit 2 files, unavailable. …" and back; a refresh shorter than
+    /// the look's delay now changes no word, and a press the list refuses
+    /// shows the look, and the name with it, at once
+    /// ([`Self::show_busy_look`]).
+    /// `key` names the control for tests (`refusals::waiting`).
     pub(super) fn rows_wait(
         &self,
         key: &'static str,
@@ -4922,10 +4948,10 @@ impl GitTurtle {
         name: &str,
         tooltip: Option<String>,
     ) -> (Option<SharedString>, Option<String>) {
-        let reason = self.rows_reason().filter(|_| !own);
+        let reason = self.rows_reason().filter(|_| !own && self.busy_shown());
         let named =
             reason.map(|reason| SharedString::from(format!("{name}, unavailable. {reason}")));
-        let tooltip = match reason.filter(|_| self.busy_shown()) {
+        let tooltip = match reason {
             Some(reason) => {
                 Some(tooltip.map_or(reason.to_owned(), |tooltip| format!("{tooltip} · {reason}")))
             }
