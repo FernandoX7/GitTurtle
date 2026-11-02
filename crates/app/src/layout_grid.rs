@@ -55,6 +55,9 @@ enum Surface {
     Rebase,
     CommandPalette,
     QuickOpen,
+    /// Settings, its four sections each a bordered card, read a scroll
+    /// view at a time from the page's top to its end.
+    Settings,
 }
 
 /// Where a panel's text lies.
@@ -72,6 +75,10 @@ enum Area {
     Column(&'static str, &'static str, &'static str),
     /// The open dialog: the first fill painted above its overlay.
     Dialog,
+    /// The part of the element with the first selector that the element
+    /// with the second, a scrolling body, shows: a card the body scrolls
+    /// past its foot runs on under what lies below the body.
+    Within(&'static str, &'static str),
 }
 
 /// A panel whose text starts at one left edge.
@@ -188,6 +195,35 @@ fn panels(surface: Surface) -> &'static [Panel] {
     const REBASE: &[Panel] = &[panel("interactive rebase", Dialog)];
     const PALETTE: &[Panel] = &[panel("command palette", Dialog)];
     const QUICK_OPEN: &[Panel] = &[panel("Quick Open", Dialog)];
+    // Each section is a bordered card; Your themes, a bordered card inside
+    // Appearance, and the repository's box at the head of Git identity, a
+    // filled one, are nested groups.
+    const SETTINGS: &[Panel] = &[
+        panel(
+            "Your themes",
+            Within("custom-themes-card", "settings-scroll"),
+        ),
+        panel(
+            "repository identity",
+            Within("settings-repository-identity", "settings-scroll"),
+        ),
+        panel(
+            "Appearance",
+            Within("settings-section: Appearance", "settings-scroll"),
+        ),
+        panel(
+            "History columns",
+            Within("settings-section: History columns", "settings-scroll"),
+        ),
+        panel(
+            "Projects",
+            Within("settings-section: Projects", "settings-scroll"),
+        ),
+        panel(
+            "Git identity",
+            Within("settings-section: Git identity", "settings-scroll"),
+        ),
+    ];
     match surface {
         Surface::History => HISTORY,
         Surface::Compare => COMPARE,
@@ -200,6 +236,7 @@ fn panels(surface: Surface) -> &'static [Panel] {
         Surface::Rebase => REBASE,
         Surface::CommandPalette => PALETTE,
         Surface::QuickOpen => QUICK_OPEN,
+        Surface::Settings => SETTINGS,
     }
 }
 
@@ -221,11 +258,24 @@ const INSPECTOR: &[(Surface, &str)] = &[
     (Surface::Compare, "inspector"),
 ];
 
+/// Settings' section cards.
+const SETTINGS_SECTIONS: &[(Surface, &str)] = &[
+    (Surface::Settings, "Appearance"),
+    (Surface::Settings, "History columns"),
+    (Surface::Settings, "Projects"),
+    (Surface::Settings, "Git identity"),
+];
+
 const OFFSETS: &[Offset] = &[
     Offset {
         panel: None,
         by: || appearance::ui_size(crate::LABEL_INSET),
-        reason: "a compact Button at the edge starts its label its label inset in",
+        reason: "a compact Button at the edge starts its label its label inset in; within the \
+                 grid's half pixel this also holds Settings' 0.75 rem insets, 9.75 px at the \
+                 default size: a text size's sample, its text after its canvas box's padding, \
+                 and List density's segmented control, stacked below its description in a \
+                 narrow card, its first label after the control's 0.25 rem padding and the \
+                 small Button's 0.5 rem",
     },
     Offset {
         panel: None,
@@ -237,12 +287,14 @@ const OFFSETS: &[Offset] = &[
             (Surface::History, "inspector"),
             (Surface::Compare, "inspector"),
             (Surface::GitHubPanes, "GitHub panel"),
+            (Surface::Settings, "Git identity"),
         ]),
         by: || appearance::ui_size(crate::LABEL_INSET + 16. + 6.),
         reason: "a compact Button standing at the edge whose 16 px icon leads its label starts \
                  its label past its label inset, the icon and the 6 px gap: the inspector's \
                  Copy message, and in a bordered pane of the GitHub panel, whose Buttons stand \
-                 their frames at its text edge, Refresh conversations on a line of its own",
+                 their frames at its text edge, Refresh conversations on a line of its own; \
+                 Git identity's Reset edits and Manage named profiles…",
     },
     Offset {
         panel: Some(&[
@@ -310,6 +362,37 @@ const OFFSETS: &[Offset] = &[
         reason: "a Button whose icon leads its label, as Pull requests, Refresh PRs and New \
                  pull request do, stands its 16 px icon at the text's edge, where its frame's \
                  label inset puts it, and starts its label after the icon's 6 px gap",
+    },
+    Offset {
+        panel: Some(SETTINGS_SECTIONS),
+        by: || px(32.) + appearance::ui_size(9.75),
+        reason: "a section's 32 px icon tile stands at its card's edge, its title and \
+                 description after the 0.75 rem gap",
+    },
+    Offset {
+        panel: Some(&[(Surface::Settings, "Appearance")]),
+        by: || px(4.) + appearance::ui_size(9.75),
+        reason: "a theme card stands at the section's edge, its caption's name and description \
+                 inside the card's 1 px border, its 2 px padding and its preview box's 1 px \
+                 border, after the caption's 0.75 rem padding",
+    },
+    Offset {
+        panel: Some(&[(Surface::Settings, "Appearance")]),
+        by: || appearance::ui_size(6.5),
+        reason: "a text size's controls, wrapped below its description, stand their small ghost \
+                 − at the edge, its label after the small Button's 0.5 rem padding",
+    },
+    Offset {
+        panel: Some(&[(Surface::Settings, "Git identity")]),
+        by: || px(14.) + appearance::ui_size(8.125 + 6.5),
+        reason: "Save repository identity, the kit's medium primary Button, stands at the edge, \
+                 its label after its 0.625 rem padding, its 14 px check icon and the 0.5 rem gap",
+    },
+    Offset {
+        panel: Some(&[(Surface::Settings, "repository identity")]),
+        by: || px(14.) + appearance::ui_size(6.5),
+        reason: "the repository's 14 px folder icon stands at its box's edge, its name after the \
+                 0.5 rem gap",
     },
 ];
 
@@ -494,6 +577,12 @@ fn area_bounds(
             (shown.size.width > px(0.)).then_some(shown)
         }
         Area::Dialog => dialog,
+        Area::Within(selector, body) => {
+            let shown = cx
+                .debug_bounds(selector)?
+                .intersect(&cx.debug_bounds(body)?);
+            (shown.size.width > px(0.) && shown.size.height > px(0.)).then_some(shown)
+        }
     }
 }
 
@@ -733,6 +822,7 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
             Surface::ProjectPane if !app.settings.project_pane => {
                 app.toggle_project_pane(window, cx)
             }
+            Surface::Settings => app.show_settings(window, cx),
             _ => {}
         })
     });
@@ -794,6 +884,37 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
             frame(cx);
             app.update(cx, |_, cx| cx.notify());
             frame(cx);
+            if surface == Surface::Settings {
+                // The page, a scroll view at a time from its top to its end.
+                let page = app.read_with(cx, |app, _| app.theme_editor.page_scroll().clone());
+                let mut top = px(0.);
+                loop {
+                    page.set_offset(point(px(0.), -top));
+                    // Settings is a cached view, which a frame that changes
+                    // nothing on it replays without its debug bounds
+                    // (`settings::shown`), and a scroll alone does not draw
+                    // it again: a frame that builds every view.
+                    frame(cx);
+                    cx.update(|window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                    });
+                    layouts += 1;
+                    findings.extend(inspect(surface, text, width, &mut measured, cx));
+                    let view = cx
+                        .debug_bounds("settings-scroll")
+                        .expect("Settings is drawn")
+                        .size
+                        .height;
+                    let end = page.max_offset().y.max(px(0.));
+                    if top >= end {
+                        break;
+                    }
+                    top = (top + view).min(end);
+                }
+                page.set_offset(point(px(0.), px(0.)));
+                continue;
+            }
             layouts += 1;
             findings.extend(inspect(surface, text, width, &mut measured, cx));
             if let Some(body) = &body {
@@ -880,4 +1001,9 @@ async fn the_command_palette_starts_its_text_at_one_edge(cx: &mut TestAppContext
 #[gpui::test]
 async fn quick_open_starts_each_panel_at_one_edge(cx: &mut TestAppContext) {
     grid(Surface::QuickOpen, cx).await;
+}
+
+#[gpui::test]
+async fn settings_starts_each_section_at_one_edge(cx: &mut TestAppContext) {
+    grid(Surface::Settings, cx).await;
 }

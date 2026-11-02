@@ -2482,7 +2482,9 @@ impl GitTurtle {
                 .gap_4()
                 .child(
                     native_accessibility::static_text(
-                        div().id("settings-repository-identity"),
+                        div()
+                            .id("settings-repository-identity")
+                            .debug_selector(|| "settings-repository-identity".into()),
                         format!("Repository {repository_identity}"),
                     )
                         .tooltip(move |window, cx| {
@@ -4487,6 +4489,7 @@ fn settings_section(
 ) -> AnyElement {
     let p = palette(cx);
     div()
+        .debug_selector(move || format!("settings-section: {title}"))
         .w_full()
         .min_w_0()
         .p_5()
