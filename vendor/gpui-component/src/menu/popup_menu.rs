@@ -2383,7 +2383,7 @@ impl Render for PopupMenu {
     }
 }
 
-/// GitTurtle patch: a submenu, moved by whole pixels only as far as keeps
+/// GitTurtle patch: a submenu, moved by whole device pixels only as far as keeps
 /// its fill [`crate::popup_fill_margin`] inside the window, so its drawn
 /// edge stands [`crate::POPUP_WINDOW_MARGIN`] in, as every menu's does;
 /// where it lies that far in already, it does not move. It adds no layout
@@ -2395,18 +2395,27 @@ struct InsideWindow(AnyElement);
 
 impl InsideWindow {
     /// How far a popup's fill laid at `bounds` in a `viewport` moves to lie
-    /// `margin` inside it, by whole pixels: along each axis toward the
-    /// window, from the side it runs past, and from the top or the leading
-    /// side where it is too large for both.
-    fn shift(bounds: Bounds<Pixels>, viewport: gpui::Size<Pixels>, margin: Pixels) -> Point<Pixels> {
+    /// `margin` inside it, by whole device pixels at `scale_factor`: along
+    /// each axis toward the window, from the side it runs past, and from the
+    /// top or the leading side where it is too large for both. Laid out on
+    /// device pixels, a fill moved so lies on the device pixel at or inside
+    /// the margin. Moved by whole logical pixels, a submenu that ran half a
+    /// pixel into one at scale 2 lay half a pixel further in, and drew its
+    /// edge 8.5 px from the side.
+    fn shift(
+        bounds: Bounds<Pixels>,
+        viewport: gpui::Size<Pixels>,
+        margin: Pixels,
+        scale_factor: f32,
+    ) -> Point<Pixels> {
         let axis = |start: Pixels, end: Pixels, room: Pixels| {
             let past = end - (room - margin);
             let shift = if past > px(0.) { -past } else { px(0.) };
             let short = margin - (start + shift);
             if short > px(0.) {
-                (shift + short).ceil()
+                gpui_base::device_pixel_at_or_after(shift + short, scale_factor)
             } else {
-                shift.floor()
+                gpui_base::device_pixel_at_or_before(shift, scale_factor)
             }
         };
         gpui::point(
@@ -2461,6 +2470,7 @@ impl gpui::Element for InsideWindow {
             bounds,
             window.viewport_size(),
             crate::popup_fill_margin() + inset,
+            window.scale_factor(),
         );
         window.with_element_offset(shift, |window| self.0.prepaint(window, cx));
     }
@@ -2483,7 +2493,59 @@ impl gpui::Element for InsideWindow {
 mod tests {
     use super::*;
     use crate::theme::Theme;
-    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, point};
+
+    /// GitTurtle patch: a submenu that runs past either side of a 460 px
+    /// window, or past its foot, from a device pixel that is not a whole
+    /// pixel, moves in until the edge GPUI paints outside its fill, over
+    /// every device pixel the band touches (`paint_drop_shadows`), stands
+    /// 8 px from that side, at scale 1, 1.5 and 2: 8, 12 and 16 device
+    /// pixels. Moved by whole pixels, one device pixel past a whole pixel at
+    /// scale 2 its fill lay half a pixel further in and its edge 17 device
+    /// pixels from the side, and two past one at 1.5 its fill lay between
+    /// device pixels, 9 2/3 px in.
+    #[test]
+    fn a_submenu_moved_in_from_a_side_draws_its_edge_8_px_from_it() {
+        let viewport = gpui::size(px(460.), px(300.));
+        let margin = crate::popup_fill_margin();
+        let edge = crate::POPOVER_EDGE_WIDTH;
+        for scale in [1., 1.5, 2.] {
+            let expected = f32::from(crate::POPUP_WINDOW_MARGIN) * scale;
+            let device = |value: Pixels| f32::from(value) * scale;
+            let size = gpui::size(px(120.), px(80.));
+            // One and two device pixels past a whole pixel, 4 px past either
+            // side and past the foot.
+            for (origin, side) in [1., 2.].into_iter().flat_map(|pixels| {
+                let into = pixels / scale;
+                [
+                    (point(px(-4. - into), px(40.)), "left"),
+                    (point(px(460. + 4. + into - 120.), px(40.)), "right"),
+                    (point(px(40.), px(300. + 4. + into - 80.)), "foot"),
+                ]
+            }) {
+                let at = format!("scale {scale}, past the {side} from {origin:?}");
+                let laid = Bounds::new(origin, size);
+                let fill = laid + InsideWindow::shift(laid, viewport, margin, scale);
+                let ring = fill.dilate(edge);
+                let from_side = match side {
+                    "left" => device(ring.left()).floor(),
+                    "right" => device(viewport.width) - device(ring.right()).ceil(),
+                    _ => device(viewport.height) - device(ring.bottom()).ceil(),
+                };
+                assert_eq!(
+                    from_side, expected,
+                    "{at}: the submenu laid at {laid:?} moves to {fill:?} and draws its edge \
+                     {from_side} device pixels from the side, not {expected}"
+                );
+                for value in [fill.left(), fill.right(), fill.top(), fill.bottom()] {
+                    assert!(
+                        (device(value) - device(value).round()).abs() < 1e-3,
+                        "{at}: the submenu moves to {fill:?}, between device pixels"
+                    );
+                }
+            }
+        }
+    }
 
     /// A menu under a heading, as a row's menu opens with its name, of
     /// `items`, each a name and whether it can act.

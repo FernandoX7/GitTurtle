@@ -132,6 +132,34 @@ pub fn point_device_row(y: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
     (px(row / scale_factor), px((row + 1.) / scale_factor))
 }
 
+/// GitTurtle patch: how near a popup's trailing edge lies to the window's
+/// right margin to stand on it: the clamp that moves it there subtracts, and
+/// can leave it a rounding error short.
+const SIDE_TOLERANCE: Pixels = px(0.01);
+
+/// GitTurtle patch: the first device pixel boundary at or after `x` on a
+/// display of `scale_factor`, in logical pixels: where a popup's fill
+/// starts so that it lies wholly on device pixels at or inside a leading
+/// margin of `x`. A boundary within a thousandth of a device pixel of `x`
+/// is `x`'s own, as a margin of 9 px times a scale can come back a hair
+/// past a whole device pixel.
+pub fn device_pixel_at_or_after(x: Pixels, scale_factor: f32) -> Pixels {
+    const TOLERANCE: f32 = 1e-3;
+    let scale_factor = scale_factor.max(f32::EPSILON);
+    px((f32::from(x) * scale_factor - TOLERANCE).ceil() / scale_factor)
+}
+
+/// GitTurtle patch: the last device pixel boundary at or before `x` on a
+/// display of `scale_factor`, in logical pixels: where a popup's fill ends
+/// so that it lies wholly on device pixels at or inside a trailing margin
+/// at `x`. A boundary within a thousandth of a device pixel of `x` is
+/// `x`'s own.
+pub fn device_pixel_at_or_before(x: Pixels, scale_factor: f32) -> Pixels {
+    const TOLERANCE: f32 = 1e-3;
+    let scale_factor = scale_factor.max(f32::EPSILON);
+    px((f32::from(x) * scale_factor + TOLERANCE).floor() / scale_factor)
+}
+
 /// The bounds a popup resolved to, and the side it ended up on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedPosition {
@@ -565,18 +593,33 @@ impl Element for Positioner {
         // pixel put a popup moved in from a side up to half a pixel past its
         // margin, and a ring drawn outside its fill nearer the side.
         let right = viewport.width - margin;
-        let x = match offset.x.round() {
-            x if position.bounds.right() <= right
-                && position.bounds.right() + (x - offset.x) > right =>
-            {
-                offset.x.floor()
+        let scale_factor = window.scale_factor();
+        let x = if position.bounds.left() <= margin {
+            // GitTurtle patch: a popup on a side margin, moved in from that
+            // side or placed at it, lies on the device pixel at or inside the
+            // margin, counted from the window's side. Whole pixels from where
+            // this positioner was laid out, half a pixel into one at scale 2
+            // beside a trigger that starts there, put its fill half a pixel
+            // further in, and the ring outside it 8.5 px from the side.
+            device_pixel_at_or_after(margin, scale_factor) - bounds.origin.x
+        } else if right - position.bounds.right() < SIDE_TOLERANCE {
+            device_pixel_at_or_before(right, scale_factor)
+                - position.bounds.size.width
+                - bounds.origin.x
+        } else {
+            match offset.x.round() {
+                x if position.bounds.right() <= right
+                    && position.bounds.right() + (x - offset.x) > right =>
+                {
+                    offset.x.floor()
+                }
+                x if position.bounds.left() >= margin
+                    && position.bounds.left() + (x - offset.x) < margin =>
+                {
+                    offset.x.ceil()
+                }
+                x => x,
             }
-            x if position.bounds.left() >= margin
-                && position.bounds.left() + (x - offset.x) < margin =>
-            {
-                offset.x.ceil()
-            }
-            x => x,
         };
         let offset = point(x, y);
 
@@ -1000,6 +1043,83 @@ mod tests {
                         "{y}: the ring {ring:?} reaches device row {pointer_row}"
                     );
                 }
+            }
+        }
+    }
+
+    /// GitTurtle patch: a popup moved in from either side of a 460 px window,
+    /// from a positioner laid out part way into a pixel, as a popup host is
+    /// beside a trigger that starts there, or at a whole one, lies on the
+    /// device pixel at or inside its 9 px margin, at scale 1, 1.5 and 2.
+    /// Moved by whole pixels from where it was laid out, and placed there by
+    /// GPUI, which rounds an element's offset to the device pixel with halves
+    /// toward zero: at scale 2 beside a trigger 6.5 px in it lay half a pixel
+    /// further in, and at 1.5 from the window's side its 9 px offset, 13.5
+    /// device pixels, rounded to 13, its ring then from device pixel 11, and
+    /// from 4/3 px in it lay a device pixel further in on the right.
+    #[gpui::test]
+    fn a_popup_moved_in_from_a_side_lies_on_the_device_pixel_at_its_margin(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        const WIDTH: f32 = 460.;
+        const MARGIN: Pixels = px(9.);
+
+        struct Harness {
+            lead: Pixels,
+            anchor: Anchor,
+            corner: Point<Pixels>,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().pl(self.lead).child(
+                    Positioner::corner(self.anchor, self.corner)
+                        .margin(MARGIN)
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "side-popup".into())
+                                .w(px(120.))
+                                .h(px(60.)),
+                        ),
+                )
+            }
+        }
+
+        for scale in [1., 1.5, 2.] {
+            let device = |value: Pixels| f32::from(value) * scale;
+            let at_left = (device(MARGIN) - 1e-3).ceil();
+            let at_right = (device(px(WIDTH) - MARGIN) + 1e-3).floor();
+            for (lead, anchor, corner, left) in [
+                (6.5, Anchor::TopLeft, 6.5, true),
+                (WIDTH - 46.5, Anchor::TopRight, WIDTH - 6.5, false),
+                // Laid out at the window's side, and 4/3 px in, two device
+                // pixels at scale 1.5, where GPUI's rounding of the old
+                // whole-pixel offsets put the popup off the margin.
+                (0., Anchor::TopLeft, 6.5, true),
+                (4. / 3., Anchor::TopRight, WIDTH - 6.5, false),
+            ] {
+                let at = format!("scale {scale}, {anchor:?} at {corner}, laid out {lead} px in");
+                let (_, cx) = cx.add_window_view(move |_, _| Harness {
+                    lead: px(lead),
+                    anchor,
+                    corner: point(px(corner), px(50.)),
+                });
+                cx.simulate_resize(Size::new(px(WIDTH), px(300.)));
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    window.draw(cx).clear(cx);
+                    window.draw(cx).clear(cx);
+                });
+                let popup = cx.debug_bounds("side-popup").expect("the popup");
+                let (edge, expected) = if left {
+                    (device(popup.left()), at_left)
+                } else {
+                    (device(popup.right()), at_right)
+                };
+                assert!(
+                    (edge - expected).abs() < 1e-3,
+                    "{at}: the popup {popup:?} ends on device pixel {edge}, not {expected}"
+                );
             }
         }
     }

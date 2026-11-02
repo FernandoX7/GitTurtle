@@ -1231,7 +1231,7 @@ menu or `dropdown_popup`.
 opens, at 13 and 18 pt in a 461 × 490 window, an app dropdown on a button at
 either side of the window, a row's right-click menu 3 px from either side, and
 a kit dropdown's submenu that runs past either side, and reads each drawn
-edge 8 px from that side, or less than a pixel more;
+edge 8 px from that side;
 `the_main_menu_keeps_its_drawn_edge_8_px_from_the_windows_side`, on Linux,
 reads the Main Menu's 8 px from the window's left side, where its button
 leads the tab strip; and
@@ -1243,6 +1243,44 @@ a bar's Edit menu past a 150 px window's right side
 view has a menu bar. Remove this part
 when upstream keeps a popup's drawn edge, not its box, inside the window's
 margin, and those tests pass without it.
+
+The edge-pixel patch modifies `src/menu/popup_menu.rs` and `src/popover.rs`
+(a test), with the base patch's side-pixel rule
+([base patch](../gpui-base/GITTURTLE-PATCH.md)). A popup's ring is a
+shadow with no blur and a spread of `POPOVER_EDGE_WIDTH`, painted under the
+fill over every device pixel the band outside the fill touches (GPUI's
+`paint_drop_shadows`, `cover_bounds`), so its outer side stands 8 px from
+the window's side only where the fill starts on a device pixel 9 px or
+less than a device pixel more from it. The popup hosts moved a popup by
+whole logical pixels from where they were laid out, which GPUI places on
+the device pixel with halves toward zero: beside a trigger part way into a
+pixel the fill lay half a pixel further in at scale 2, and at 1.5 a fill
+could lie a device pixel nearer the side than its margin. Native QA
+(2026-11-02) read the Linux Main Menu's edge at device x 17 to 18 and the
+Settings profile menu's 17 device pixels from the window's right side,
+8.5 px, where `menus_keep_their_drawn_edge_8_px_from_the_window_sides` and
+`a_bar_menu_keeps_its_drawn_edge_8_px_from_the_windows_side` let up to a
+pixel more pass. The base host now puts a popup on a side margin on the
+device pixel at or inside it, and `InsideWindow` moves a submenu by whole
+device pixels, `device_pixel_at_or_after` and `device_pixel_at_or_before`
+from the base, so each fill moved in from a side lies on the device pixel
+at or inside `popup_fill_margin` and its ring stands 8 px out from it at
+scale 1, 1.5 and 2: 8, 12 and 16 device pixels. A popup inside the
+margins, and its content, keep their places; a fill moved in from a side
+moves by at most one device pixel, the move that takes its ring there.
+`AppMenuBar`'s menus keep GPUI's anchor and its nearest pixel, and no app
+view has a menu bar.
+`scripts/vendor-crate-test.sh vendor/gpui-component a_popover_moved_in a_submenu_moved_in`
+runs `a_popover_moved_in_from_a_side_draws_its_edge_8_px_from_it`, which
+opens a popover from a trigger 6.5 px and 2 px from either side of a 460 px
+window at each scale and reads its painted fill on the device pixels it was
+laid out on and its ring's outer side by GPUI's shadow rule, and
+`a_submenu_moved_in_from_a_side_draws_its_edge_8_px_from_it`, which moves
+a submenu one and two device pixels past a whole pixel beyond either side
+and the foot; the old placement fails each at scale 1.5 and 2. The app's
+`menus_keep_their_drawn_edge_8_px_from_the_window_sides` reads each drawn
+edge 8 px from its side, a dropdown beside a button half a pixel in among
+them. Remove this part with the window-margin patch.
 
 The capped-menu patch modifies `src/menu/popup_menu.rs`. Upstream caps a
 scrollable menu's items column (`max_h` with `scrollable`) but leaves its rows

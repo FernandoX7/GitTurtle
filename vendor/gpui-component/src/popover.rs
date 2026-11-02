@@ -568,4 +568,119 @@ mod tests {
              settled surface, but the first frame was already at {reopening:?}",
         );
     }
+
+    /// How far from a window's edge [`SidesHarness`]'s triggers start and
+    /// end: 6.5 px, as the Linux Main Menu's button starts at 13 pt, and
+    /// 2 px, three device pixels at scale 1.5.
+    const TRIGGER_INSETS: [f32; 2] = [6.5, 2.];
+
+    /// GitTurtle patch: two open popovers, each a surface 120 px wide too
+    /// wide for its side of the window from a 40 px trigger `inset` from
+    /// that side: one opening from its trigger's leading corner at the
+    /// left, one from its trailing corner at the right, as the Main Menu
+    /// and the Settings profile menu open.
+    struct SidesHarness {
+        inset: Pixels,
+    }
+
+    impl Render for SidesHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let side = |id: &'static str, anchor: Anchor| {
+                Popover::new(id)
+                    .anchor(anchor)
+                    .default_open(true)
+                    .appearance(false)
+                    .trigger(Button::new(id).label("Open").w(px(40.)))
+                    .content(move |_, _, cx| {
+                        div()
+                            .debug_selector(move || id.into())
+                            .popover_style(cx)
+                            .w(px(120.))
+                            .h(px(60.))
+                            .into_any_element()
+                    })
+            };
+            div()
+                .size_full()
+                .flex()
+                .justify_between()
+                .pl(self.inset)
+                .pr(self.inset)
+                .child(side("left-surface", Anchor::TopLeft))
+                .child(side("right-surface", Anchor::TopRight))
+        }
+    }
+
+    /// GitTurtle patch: a popover moved in from either side of the window
+    /// draws its edge, the ring outside its fill, 8 px from that side, on
+    /// the device pixel, at scale 1, 1.5 and 2: 8, 12 and 16 device pixels.
+    /// Each fill is painted where it is laid out, wholly on device pixels,
+    /// and its ring is read as GPUI paints a shadow, over every device pixel
+    /// the band outside the fill touches (`paint_drop_shadows`). The popup
+    /// host moved a popover by whole pixels from where it was laid out,
+    /// beside a trigger half a pixel into one, so at scale 2 its fill lay
+    /// 9.5 px in and its edge 8.5 px, 17 device pixels, from either side;
+    /// and GPUI places an element's offset on the device pixel with halves
+    /// toward zero, so at 1.5 beside a trigger 2 px in the old 7 px offset,
+    /// 10.5 device pixels, put the fill 13 device pixels in and its edge 11
+    /// from the side.
+    #[gpui::test]
+    fn a_popover_moved_in_from_a_side_draws_its_edge_8_px_from_it(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        // 460 px is a whole number of device pixels at each scale.
+        let width = px(460.);
+        for (scale, inset) in [1., 1.5, 2.]
+            .into_iter()
+            .flat_map(|scale| TRIGGER_INSETS.map(|inset| (scale, inset)))
+        {
+            let (_, cx) = cx.add_window_view(move |_, _| SidesHarness { inset: px(inset) });
+            cx.simulate_resize(size(width, px(300.)));
+            cx.update(|window, cx| {
+                window.set_scale_factor(scale);
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
+            });
+            let margin = f32::from(crate::POPUP_WINDOW_MARGIN) * scale;
+            for (id, left) in [("left-surface", true), ("right-surface", false)] {
+                let at = format!("scale {scale}, {id} from a trigger {inset} px in");
+                let fill = cx.debug_bounds(id).unwrap_or_else(|| panic!("{at}: open"));
+                let painted = cx.update(|window, cx| {
+                    let popover = gpui::Background::from(crate::ActiveTheme::theme(cx).popover);
+                    window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| quad.background == popover)
+                        .map(|quad| quad.bounds)
+                        .find(|quad| {
+                            let center = fill.center();
+                            quad.contains(&point(
+                                gpui::ScaledPixels(f32::from(center.x) * scale),
+                                gpui::ScaledPixels(f32::from(center.y) * scale),
+                            ))
+                        })
+                        .unwrap_or_else(|| panic!("{at}: the fill {fill:?} is painted"))
+                });
+                for (laid, drawn) in [
+                    (fill.left(), painted.left()),
+                    (fill.right(), painted.right()),
+                ] {
+                    assert!(
+                        (f32::from(laid) * scale - drawn.as_f32()).abs() < 1e-3,
+                        "{at}: the fill {fill:?} is painted at {painted:?}, between device pixels"
+                    );
+                }
+                let ring = fill.dilate(crate::POPOVER_EDGE_WIDTH);
+                let from_side = if left {
+                    (f32::from(ring.left()) * scale).floor()
+                } else {
+                    f32::from(width) * scale - (f32::from(ring.right()) * scale).ceil()
+                };
+                assert_eq!(
+                    from_side, margin,
+                    "{at}: the fill {fill:?} draws its edge {from_side} device pixels from the \
+                     side, not {margin}"
+                );
+            }
+        }
+    }
 }

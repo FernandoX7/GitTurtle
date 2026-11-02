@@ -177,6 +177,33 @@ patch, which lists the consumers and tests:
 Menu sets the margin on this host itself). Remove this part with the
 component's window-margin patch.
 
+The side-pixel patch also modifies `src/positioner.rs` and `src/lib.rs`.
+The positioner moves a popup by whole pixels from where it was itself laid
+out, and GPUI places that offset on the device pixel, rounding halves
+toward zero. A host laid out beside a trigger part way into a pixel, as
+the Linux Main Menu's button starts 6.5 px in at 13 pt, put a popup the
+margin moved in from a side half a pixel further in at scale 2, so the
+ring the component draws outside its fill stood 8.5 px from the side, 17
+device pixels; at scale 1.5 a host at the window's side moved it 9 px,
+13.5 device pixels, which GPUI placed at 13, the ring from device pixel
+11, 7.3 px in. A popup on a side margin, moved in from that side or
+placed at it, now lies on the device pixel at or inside the margin,
+counted from the window's side (`device_pixel_at_or_after` and
+`device_pixel_at_or_before`, public for the component's submenu and the
+application's row menus); a popup inside both margins moves as before. Its
+fill moves by at most a device pixel, the move that takes its ring to
+8 px. `scripts/vendor-crate-test.sh vendor/gpui-base positioner::` runs
+`a_popup_moved_in_from_a_side_lies_on_the_device_pixel_at_its_margin`,
+which reads a popup moved in from either side of a window at scale 1, 1.5
+and 2 from a positioner laid out part way into a pixel and at the
+window's side; the old placement fails it at 1.5 and 2. The component's
+`a_popover_moved_in_from_a_side_draws_its_edge_8_px_from_it` reads the
+ring itself. Left open: the clamps at the window's top margin and above
+the bottom inset still move a popup by whole pixels from where it was
+laid out, so a popup moved in there can stand up to a pixel off that
+margin, as one moved in from a side did. Remove this part with the
+component's window-margin patch.
+
 The popup-frame patch also modifies `src/popup.rs` and `src/positioner.rs`.
 Upstream a `Popup` asks for the next frame (`request_animation_frame`) the
 first time its trigger is prepainted, so content it holds back until the

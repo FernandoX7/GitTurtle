@@ -1173,12 +1173,24 @@ impl Render for SideMenusProbe {
                     .child(side("left-nested").dropdown_menu(nested))
                     .child(side("right-nested").dropdown_menu(nested)),
             )
+            // Buttons half a pixel further in, 2.5 px from either side, as
+            // the Main Menu's button starts part way into a pixel.
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .px(px(0.5))
+                    .child(side("left-half-dropdown").app_menu(|menu, _, _| items(menu)))
+                    .child(side("right-half-dropdown").app_menu(|menu, _, _| items(menu))),
+            )
     }
 }
 
 /// How far `drawn`, a menu's drawn edge, stands from the window's side it
-/// lies against, `left` or the right one of a `width` wide window: 8 px,
-/// or up to a pixel more where the host moves it by whole pixels.
+/// lies against, `left` or the right one of a `width` wide window: 8 px, on
+/// the device pixel. The popup hosts moved a menu by whole pixels from where
+/// they were laid out, so beside a button half a pixel into one, at this
+/// window's scale of 2, its edge stood 8.5 px in.
 fn assert_side_margin(drawn: Bounds<Pixels>, left: bool, width: Pixels, at: &str) {
     let margin = if left {
         drawn.left()
@@ -1186,19 +1198,21 @@ fn assert_side_margin(drawn: Bounds<Pixels>, left: bool, width: Pixels, at: &str
         width - drawn.right()
     };
     assert!(
-        margin >= px(8.) - px(0.01) && margin < px(9.),
+        (margin - px(8.)).abs() < px(0.01),
         "{at}: the menu's drawn edge {drawn:?} stands {margin:?} from the window's side, not 8 px"
     );
 }
 
 /// Every menu's drawn edge, the ring outside its fill, not its fill, stands
 /// 8 px from the window's side it is moved in from, at 13 and 18 pt in a
-/// 461 × 490 window: a dropdown on a button at either side of the window, a
-/// row's right-click menu opened 3 px from either side, and a submenu that
-/// runs past either side. Moved in from a side, a dropdown's and a row
-/// menu's fill stood 8 px in and their edge 7 px, where the input's drawn
-/// menu kept its edge 8 px in, and a submenu kept its fill only 4 px inside
-/// the window, and only once its anchor ran past it.
+/// 461 × 490 window: a dropdown on a button at either side of the window, on
+/// a whole pixel and half a pixel into one, a row's right-click menu opened
+/// 3 px from either side, and a submenu that runs past either side. Moved in
+/// from a side, a dropdown's and a row menu's fill stood 8 px in and their
+/// edge 7 px, where the input's drawn menu kept its edge 8 px in, and a
+/// submenu kept its fill only 4 px inside the window, and only once its
+/// anchor ran past it. Moved by whole pixels from a button half a pixel into
+/// one, a dropdown's edge then stood 8.5 px in.
 #[gpui::test]
 fn menus_keep_their_drawn_edge_8_px_from_the_window_sides(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -1220,7 +1234,12 @@ fn menus_keep_their_drawn_edge_8_px_from_the_window_sides(cx: &mut TestAppContex
         cx.simulate_resize(size(width, px(490.)));
         draw(cx);
 
-        for (button, left) in [("left-dropdown", true), ("right-dropdown", false)] {
+        for (button, left) in [
+            ("left-dropdown", true),
+            ("right-dropdown", false),
+            ("left-half-dropdown", true),
+            ("right-half-dropdown", false),
+        ] {
             let at = format!("{text} pt, the {button}");
             let trigger = cx.debug_bounds(button).expect(button);
             cx.simulate_click(trigger.center(), Modifiers::default());
