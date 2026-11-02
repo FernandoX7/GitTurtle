@@ -9542,6 +9542,7 @@ pub(crate) mod tests {
     /// the other's. Whether the walk met controls on the names' line, in the
     /// toolbar, and both sides' dimensions drawn beneath the names with the
     /// controls in the toolbar.
+    #[cfg(target_os = "linux")]
     fn caption_controls_take_one_place(
         cx: &mut VisualTestContext,
         what: &str,
@@ -11434,6 +11435,7 @@ pub(crate) mod tests {
 
     /// Shows the first tracked file `query` finds as a source, as Quick Open
     /// does, once its read lands.
+    #[cfg(target_os = "linux")]
     async fn show_source(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, query: &str) {
         use gitturtle_core::{HistoryCancellation, PathScope};
         cx.update(|window, cx| {
@@ -11458,6 +11460,7 @@ pub(crate) mod tests {
     }
 
     /// Whether hovering `selector` shows a tooltip; the pointer then leaves.
+    #[cfg(target_os = "linux")]
     fn shows_tooltip(cx: &mut VisualTestContext, selector: &'static str) -> bool {
         let popover =
             cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
@@ -11491,6 +11494,7 @@ pub(crate) mod tests {
     /// Linux, the AT-SPI adapter: each name with its role. Each node stands
     /// where it was drawn, among them the image's node where it carries the
     /// words that gave way.
+    #[cfg(target_os = "linux")]
     fn image_sides_read(
         cx: &mut VisualTestContext,
         at: &str,

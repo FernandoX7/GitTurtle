@@ -2472,12 +2472,14 @@ pub(crate) mod tests {
 
     /// Queues what the next click on an open control reports, in place of
     /// launching anything.
+    #[cfg(target_os = "linux")]
     pub(crate) fn queue(outcome: Result<(), NotOpened>) {
         QUEUED.with(|queued| queued.borrow_mut().push_back(outcome));
     }
 
     /// The text of the newest line beneath an open control, and whether it
     /// is a failure.
+    #[cfg(target_os = "linux")]
     pub(crate) fn latest_note(cx: &App) -> Option<(String, bool)> {
         let note = cx.try_global::<Notes>()?.notes.back()?;
         Some((note.text.to_string(), note.failed))
@@ -2518,6 +2520,7 @@ pub(crate) mod tests {
 
     /// The refusal the launcher reports when GIO types a copy offered as
     /// `kind` ("a PNG image") as an SVG document, with its category.
+    #[cfg(target_os = "linux")]
     pub(crate) fn seen_as_svg(kind: &str) -> NotOpened {
         NotOpened::Failed(Failure::new(
             Category::SeenAs("an SVG document".into()),

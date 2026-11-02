@@ -3308,6 +3308,7 @@ pub(crate) mod written {
 
     /// The ID path the element holding the [`super::node_path_probe`] under
     /// `key` was last drawn at.
+    #[cfg(target_os = "linux")]
     pub(crate) fn node_path(key: &str) -> Option<String> {
         NODE_PATHS.with(|paths| paths.borrow().get(key).cloned())
     }
@@ -3420,6 +3421,7 @@ pub(crate) mod written {
 
     /// The wrappers the wrapper `id` was last drawn inside, by element ID
     /// with what each wrote, innermost first.
+    #[cfg(target_os = "linux")]
     pub(crate) fn ancestors(id: &str) -> Vec<(String, Written)> {
         let mut found = Vec::new();
         let mut parent = get(id).and_then(|written| written.parent);

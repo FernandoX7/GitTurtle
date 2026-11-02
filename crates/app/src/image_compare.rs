@@ -94,7 +94,7 @@ fn source_geometry(sides: [Option<[u32; 4]>; 2]) -> Geometry {
 }
 impl State {
     /// The focus handles the sides' open controls track, once drawn.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn open_focus(&self) -> Option<[FocusHandle; 2]> {
         self.open_focus.get().cloned()
     }

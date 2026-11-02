@@ -684,6 +684,7 @@ pub(crate) mod tests {
 
     /// Waits until every page requested so far has answered; drawing then
     /// handles the answers.
+    #[cfg(target_os = "linux")]
     pub(crate) fn drain_pages() {
         renderer().drain();
     }
@@ -691,6 +692,7 @@ pub(crate) mod tests {
     /// Links `document`'s pages to its partner's where they are independent,
     /// and otherwise makes them independent, as its link's click does on
     /// both sides.
+    #[cfg(target_os = "linux")]
     pub(crate) fn flip_link(document: &Document) {
         document.linked.fetch_xor(true, Ordering::Relaxed);
     }
