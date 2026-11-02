@@ -5261,6 +5261,11 @@ impl GitTurtle {
                     ),
                 };
                 let mark = confirmations::sync(id, &self.path, &target);
+                // A surface fills only the action its state leads to: in
+                // Working Changes that is Commit, so Push there is the
+                // bordered secondary in the filled one's bounds
+                // (`tags::bordered_in_place`), and fills elsewhere.
+                let push = (id == "push").then_some(self.mode != WorkspaceMode::Working);
                 let control = if compact {
                     let tooltip = format!("{label} · {tooltip}");
                     crate::views::compact_control_label(
@@ -5268,12 +5273,13 @@ impl GitTurtle {
                         id,
                         name.clone(),
                     )
-                    .map(|button| {
-                        if id == "push" {
-                            button.primary()
-                        } else {
-                            button.secondary()
-                        }
+                    .map(|button| match push {
+                        Some(true) => button.primary(),
+                        Some(false) => crate::tags::bordered_in_place(
+                            button,
+                            appearance::ui_size(crate::ICON_INSET),
+                        ),
+                        None => button.secondary(),
                     })
                 } else {
                     // Its rest width decides where the bar wraps, so the
@@ -5288,7 +5294,11 @@ impl GitTurtle {
                         tooltip,
                         cx,
                     )
-                    .when(id == "push", |button| button.primary())
+                    .map(|button| match push {
+                        Some(true) => button.primary(),
+                        Some(false) => crate::tags::bordered_in_place(button, action_inset()),
+                        None => button,
+                    })
                 };
                 // Disabled, each rests on the neutral `subtle`, 1.046:1 off
                 // Midnight's toolbar, and keeps its shape with the toolkit's
@@ -6182,6 +6192,120 @@ mod background_clone_tests {
             drawn, status,
             "the line keeps the status whole up to its ellipsis, the path in it"
         );
+        drop(fixture);
+    }
+}
+
+#[cfg(test)]
+mod filled_action_tests {
+    use crate::views::tests::{
+        draw, fixture_git, fixture_identity, history_window, painted_edges, painted_fills, settle,
+    };
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// A surface fills only the action its state leads to (decision,
+    /// 2026-11-02). In Working Changes that is Commit, so Push there is the
+    /// bordered secondary, edged in the toolkit's secondary edge (the
+    /// dialog's), in the bounds it fills in History and with its icon and
+    /// label where they were, full and compact, at 13 and 18 pt, in Midnight
+    /// and Daylight. Working Changes drew Commit and Push as two filled
+    /// primaries.
+    #[gpui::test]
+    async fn working_changes_fills_commit_alone_and_push_moves_nothing(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window(cx).await;
+        let worktree = fixture.path().join("narrow");
+        let remote = fixture.path().join("remote.git");
+        fixture_git(
+            fixture.path(),
+            &[
+                "init",
+                "--bare",
+                "--quiet",
+                "--initial-branch=main",
+                remote.to_str().unwrap(),
+            ],
+        );
+        fixture_git(&worktree, &["reset", "--hard", "--quiet"]);
+        fixture_git(
+            &worktree,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fixture_git(
+            &worktree,
+            &["push", "--quiet", "--set-upstream", "origin", "main"],
+        );
+        fixture_identity(&worktree);
+        std::fs::write(worktree.join("another.txt"), "another\n").unwrap();
+        fixture_git(&worktree, &["add", "another.txt"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.commit_title
+                    .update(cx, |title, cx| title.set_value("Another", window, cx))
+            })
+        });
+        let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let mut failures = Vec::new();
+        for (window, compact) in [
+            (size(px(1480.), px(980.)), false),
+            (size(px(461.), px(400.)), true),
+        ] {
+            cx.simulate_resize(window);
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for theme in [
+                    appearance::ThemeChoice::Midnight,
+                    appearance::ThemeChoice::Daylight,
+                ] {
+                    let palette = theme.palette();
+                    cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+                    let at = format!("{} at {text} pt in {window:?}", theme.label());
+                    let accent =
+                        gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette.accent)));
+
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+                    settle(&app, cx).await;
+                    draw(cx);
+                    let filled = (bounds(cx, "push"), bounds(cx, "push/rest"));
+                    // The compact Push is its icon's square, snapped to
+                    // whole pixels.
+                    assert_eq!(
+                        (filled.0.size.width - appearance::ui_size(28.)).abs() < px(1.),
+                        compact,
+                        "{at}: compact {compact}: {filled:?}"
+                    );
+                    if !painted_fills(cx, "push").contains(&accent) {
+                        failures.push(format!("{at}: History's Push is not filled"));
+                    }
+
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+                    settle(&app, cx).await;
+                    draw(cx);
+                    let bordered = (bounds(cx, "push"), bounds(cx, "push/rest"));
+                    if bordered != filled {
+                        failures.push(format!("{at}: Push moved from {filled:?} to {bordered:?}"));
+                    }
+                    let fills = painted_fills(cx, "push");
+                    if fills.contains(&accent) {
+                        failures.push(format!("{at}: Working's Push is filled: {fills:?}"));
+                    }
+                    let edges = painted_edges(cx, "push");
+                    if edges != [gpui_kit::Hsla::from(rgb(palette.dialog_edge()))] {
+                        failures.push(format!("{at}: Working's Push edges {edges:?}"));
+                    }
+                    if !painted_fills(cx, "commit-staged").contains(&accent) {
+                        failures.push(format!("{at}: Commit is not filled"));
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
         drop(fixture);
     }
 }

@@ -298,24 +298,40 @@ pub(crate) fn dialog_footer(
         )
 }
 
-/// A dialog's footer whose one action only dismisses it, `label` (Stashes'
-/// Close), where the dialog's body holds its own filled primary action, as
-/// Stashes' Review restore…: the footer's action takes Cancel's bordered
-/// style ([`dialog_cancel`]) rather than a second filled primary, since a
-/// macOS window has one default button. It still dispatches the kit's
-/// `Confirm`, so Enter and the dialog's `on_ok` act as before, and keeps
-/// the compact frame's 28 px, so nothing moves. Tests find it as
-/// `dialog-ok: {label}`. (Decided 2026-11-02: Stashes drew Review restore…
-/// and Close as two filled primaries.)
+/// A dialog's footer whose one action only dismisses it, `label`, where the
+/// dialog's body holds its own filled primary action, as Stashes' Review
+/// restore… beside Close, or where the body's choices are equal, so none is
+/// the default, as the mainline dialog's "Parent n" beside Cancel: the
+/// footer's action takes Cancel's bordered style ([`dialog_cancel`]) rather
+/// than a fill, since a macOS window has at most one default button and a
+/// surface fills only the action its state leads to. It still dispatches
+/// the kit's `Confirm`, so Enter and the dialog's `on_ok` act as before, and
+/// stands in the filled frame's bounds ([`bordered_in_place`]), so nothing
+/// moves. Tests find it as `dialog-ok: {label}`. (Decided 2026-11-02:
+/// Stashes drew Review restore… and Close as two filled primaries, and the
+/// mainline dialog filled its Cancel.)
 pub(crate) fn dialog_dismiss_footer(label: &'static str) -> DialogFooter {
     use gpui_kit::component::dialog::Confirm;
     DialogFooter::new().child(
-        dialog_cancel("ok", label)
-            .debug_selector(move || format!("dialog-ok: {label}"))
-            .on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
-            }),
+        bordered_in_place(
+            button("ok", label, "", false),
+            appearance::ui_size(LABEL_INSET),
+        )
+        .debug_selector(move || format!("dialog-ok: {label}"))
+        .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+        }),
     )
+}
+
+/// `control`, which stood filled, in Cancel's bordered secondary style
+/// ([`dialog_cancel`]) where its surface leads to another action: its 1 px
+/// edge comes out of `inset`, the side padding its frame gives it, so its
+/// bounds and its icon and label keep the filled Button's place. The border
+/// alone widened a labelled Button by 2 px, which moved a footer's action
+/// and the toolbar's Push between History and Working Changes.
+pub(crate) fn bordered_in_place(control: Button, inset: Pixels) -> Button {
+    control.secondary().border_1().px(inset - px(1.))
 }
 
 /// A dialog's Cancel, `id`, reading `label`, on the compact frame: the

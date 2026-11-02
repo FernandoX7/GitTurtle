@@ -811,6 +811,7 @@ impl GitTurtle {
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
                             let owner = owner.clone(); let repository = repository.clone(); let oid = commit.oid.clone();
                             button(("recovery-mainline", index), format!("Parent {} · {}", index + 1, short_oid(parent)), "", false)
+                                .debug_selector(move || format!("recovery-mainline-{index}"))
                                 .w_full().on_click(move |_, window, cx| {
                                     let _ = owner.update(cx, |this, cx| {
                                         if this.path == repository && this.page == AppPage::Repository {
@@ -820,7 +821,9 @@ impl GitTurtle {
                                     });
                                 })
                         }))))
-                    .footer(crate::tags::dialog_footer("Cancel", None))
+                    // The parents are equal choices, so none is filled, and
+                    // Cancel is bordered rather than the dialog's default.
+                    .footer(crate::tags::dialog_dismiss_footer("Cancel"))
             });
         } else {
             self.prepare_commit_recovery(kind, commit.oid.clone(), None, window, cx);
@@ -3634,6 +3637,96 @@ mod tests {
                 "{name}: Close keeps the compact frame's height: {close:?} beside {restore:?}"
             );
         }
+    }
+
+    /// A merge's "Parent n" choices are equal, so the mainline dialog fills
+    /// none of them, and its Cancel, which only dismisses it, is bordered in
+    /// the dialog's edge (`tags::dialog_dismiss_footer`), in the bounds a
+    /// filled Cancel takes in the same dialog, at 13 and 18 pt, in Midnight
+    /// and Daylight. The dialog filled Cancel as though dismissing were the
+    /// merge's default.
+    #[gpui::test]
+    async fn the_mainline_dialog_fills_no_choice_and_borders_cancel(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        use crate::views::tests::{painted_edges, painted_fills};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let merge = Arc::new(CommitTarget {
+            oid: "1".repeat(40),
+            parents: vec!["2".repeat(40), "3".repeat(40)],
+        });
+        const CANCEL: &str = "dialog-ok: Cancel";
+        let cancel = |cx: &mut VisualTestContext| cx.debug_bounds(CANCEL).expect("Cancel");
+        let mut failures = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for theme in [
+                appearance::ThemeChoice::Midnight,
+                appearance::ThemeChoice::Daylight,
+            ] {
+                let palette = theme.palette();
+                cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+                let at = format!("{} at {text} pt", theme.label());
+                let accent = gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette.accent)));
+                // The same dialog's frame with the filled Cancel it had.
+                cx.update(|window, cx| {
+                    window.open_alert_dialog(cx, |dialog, window, _| {
+                        dialog
+                            .title("Choose the mainline parent")
+                            .width(appearance::dialog_width(px(560.), window))
+                            .footer(crate::tags::dialog_footer("Cancel", None))
+                    })
+                });
+                draw(cx);
+                assert!(
+                    painted_fills(cx, CANCEL).contains(&accent),
+                    "{at}: the reference Cancel is filled"
+                );
+                let filled = cancel(cx);
+                cx.update(|window, cx| window.close_dialog(cx));
+                draw(cx);
+
+                let merge = merge.clone();
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.choose_commit_recovery(RecoveryKind::Revert, merge, window, cx)
+                    })
+                });
+                draw(cx);
+                draw(cx);
+                for parent in ["recovery-mainline-0", "recovery-mainline-1"] {
+                    let fills = painted_fills(cx, parent);
+                    if fills.contains(&accent) {
+                        failures.push(format!("{at}: {parent} is filled: {fills:?}"));
+                    }
+                }
+                let fills = painted_fills(cx, CANCEL);
+                if fills.contains(&accent) {
+                    failures.push(format!("{at}: Cancel is filled: {fills:?}"));
+                }
+                let edges = painted_edges(cx, CANCEL);
+                if edges != [gpui_kit::Hsla::from(rgb(palette.dialog_edge()))] {
+                    failures.push(format!("{at}: Cancel's edges {edges:?}"));
+                }
+                // The two dialogs' bodies differ, so only their footers'
+                // vertical places do.
+                let bordered = cancel(cx);
+                if bordered.size != filled.size || bordered.left() != filled.left() {
+                    failures.push(format!(
+                        "{at}: Cancel {bordered:?}, where the filled one was {filled:?}"
+                    ));
+                }
+                cx.update(|window, cx| window.close_dialog(cx));
+                draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// At 18 pt in a 1000 × 680 window the Stashes detail shows Restore
