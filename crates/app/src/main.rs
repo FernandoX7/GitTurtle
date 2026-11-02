@@ -575,6 +575,9 @@ struct GitTurtle {
     history_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
     history_list_layout: Option<(Size<Pixels>, Pixels)>,
+    /// The Working inspector's layout as last laid out
+    /// (`working_inspector_layout`).
+    working_layout: std::cell::Cell<Option<Entity<workspace::WorkingInspectorLayout>>>,
     file_list_layout: Option<(Size<Pixels>, Pixels)>,
     nav_scroll: UniformListScrollHandle,
     loading: Option<&'static str>,
@@ -929,6 +932,7 @@ impl GitTurtle {
             history_scroll: UniformListScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),
             history_list_layout: None,
+            working_layout: Default::default(),
             file_list_layout: None,
             nav_scroll: UniformListScrollHandle::new(),
             loading: None,

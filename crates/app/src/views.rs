@@ -7723,9 +7723,9 @@ impl GitTurtle {
         // at a new width drew the inspector, and the column beside it, at
         // their widths for the old one, until the next input; fitted to the
         // width first, that frame lays them out where they settle.
-        // The Working inspector's layout state is kept here, as the window
-        // renders, so its key takes none of the ancestors the frame's build
-        // has, which the project pane changes. Until the inspector is laid
+        // The Working inspector's layout is taken here, as the window renders,
+        // from the tab that keeps it, so the frame's build, which the project
+        // pane changes, cannot start it again. Until the inspector is laid
         // out it expects the width the window's width gives it.
         let working_layout = (self.mode == WorkspaceMode::Working).then(|| {
             let page = self.repository_width(window, cx);
@@ -13305,6 +13305,133 @@ pub(crate) mod tests {
         }
     }
 
+    /// What a tab shows as it is left, in whichever mode: the mode, what
+    /// holds focus, History's scroll offset, selected commit and first lane
+    /// shown, the file compared, and Changes' scroll offset, staged and
+    /// unstaged rows selected and cursor.
+    #[derive(Debug, PartialEq)]
+    struct LeftTab {
+        mode: &'static str,
+        focus: Option<FocusHandle>,
+        history: (Point<Pixels>, Option<usize>, usize),
+        file: Option<usize>,
+        working: (Point<Pixels>, (usize, usize), Option<WorkingCursor>),
+    }
+    type WorkingCursor = (usize, gitturtle_core::ChangeArea);
+
+    fn left_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> LeftTab {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            LeftTab {
+                mode: match app.mode {
+                    WorkspaceMode::History => "History",
+                    WorkspaceMode::Compare => "Compare",
+                    WorkspaceMode::Working => "Changes",
+                },
+                focus: window.focused(cx),
+                history: (
+                    app.history_scroll.0.borrow().base_handle.offset(),
+                    app.selected_commit,
+                    app.graph_offset,
+                ),
+                file: app.selected_file,
+                working: (
+                    app.working_scroll.0.borrow().base_handle.offset(),
+                    app.selection_counts(),
+                    app.working_selected,
+                ),
+            }
+        })
+    }
+
+    /// Opens a clone of the shown repository, `name` in `clones`, in a tab
+    /// of its own, every reply landed, and returns its worktree.
+    async fn open_clone(
+        app: &Entity<GitTurtle>,
+        clones: &std::path::Path,
+        name: &str,
+        cx: &mut VisualTestContext,
+    ) -> std::path::PathBuf {
+        let origin = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(
+            clones,
+            &["clone", "--quiet", origin.to_str().unwrap(), name],
+        );
+        let root = clones.join(name);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle(app, cx).await;
+        land_every_reply(app, cx);
+        root
+    }
+
+    /// Three tabs in a 1,480 × 980 window, each left in a mode of its own,
+    /// the third shown, and what each showed as it was left. The first on
+    /// History, its fifth
+    /// commit selected, the list a row down and focused; the second, a
+    /// clone of the first, on Changes as [`leave_changes_tab`] leaves it, its
+    /// list focused; the third, another clone, comparing its newest commit's
+    /// file, the diff focused. None is left in a field, whose caret starts to
+    /// blink in a frame of the field's own as it takes focus.
+    async fn tabs_in_each_mode(
+        cx: &mut TestAppContext,
+    ) -> (
+        [tempfile::TempDir; 2],
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        [LeftTab; 3],
+    ) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(4, window, cx)));
+        settle(&app, cx).await;
+        scroll_history_rows(&app, 1, cx);
+        cx.update(|window, cx| app.read(cx).focus.clone().focus(window, cx));
+        land_every_reply(&app, cx);
+        draw(cx);
+        let history = left_tab(&app, cx);
+        let clones = tempfile::tempdir().unwrap();
+        let root = open_clone(&app, clones.path(), "changes", cx).await;
+        leave_changes_tab(&app, &root, cx).await;
+        let changes = left_tab(&app, cx);
+        open_clone(&app, clones.path(), "compare", cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| {
+            let diff = app
+                .read(cx)
+                .patch_view
+                .as_ref()
+                .expect("the comparison shows its patch")
+                .read(cx)
+                .focus_handle(cx);
+            diff.focus(window, cx);
+        });
+        land_every_reply(&app, cx);
+        draw(cx);
+        let compare = left_tab(&app, cx);
+        assert_eq!(
+            (history.mode, changes.mode, compare.mode),
+            ("History", "Changes", "Compare")
+        );
+        for (one, other) in [
+            (&history, &changes),
+            (&changes, &compare),
+            (&compare, &history),
+        ] {
+            assert_ne!(
+                one.focus, other.focus,
+                "each tab is left with focus of its own"
+            );
+        }
+        ([fixture, clones], app, cx, [history, changes, compare])
+    }
+
     /// Shows tab `index` again with nothing held and counts the frames the
     /// window draws until every reply its return asks for has landed, and
     /// the frame callbacks after them, three times, have run.
@@ -13325,26 +13452,36 @@ pub(crate) mod tests {
     }
 
     /// Showing a warm tab again draws one frame with nothing held, every
-    /// reply it asks for landed, when nothing changed on disk: each way
-    /// between the two tabs of [`two_history_tabs`], each tab as it was
-    /// left. The replies a return asks for each drew a frame as they landed,
-    /// all alike: the commit draft's save, the watcher's setup, the rescan
-    /// the return asks for and the one the watcher asks for once registered,
+    /// reply it asks for landed, when nothing changed on disk: each of three
+    /// tabs, left on History, Changes and Compare, shown again from each of
+    /// the others, comes back as it was left, focus where it was. The
+    /// replies a return asks for each drew a frame as they landed, all
+    /// alike: the commit draft's save, the watcher's setup, the rescan the
+    /// return asks for and the one the watcher asks for once registered,
     /// and the watcher's check after each rescan.
     #[gpui::test]
     async fn a_warm_tab_switch_draws_one_frame_as_its_replies_land(cx: &mut TestAppContext) {
-        let (_fixtures, app, cx, tabs) = two_history_tabs(cx).await;
+        let (_fixtures, app, cx, left) = tabs_in_each_mode(cx).await;
         crate::in_frame::probe::watch();
-        for (index, (state, _), at) in [
-            (0, &tabs[0], "the first tab shown again"),
-            (1, &tabs[1], "the second tab shown again"),
-        ] {
+        let mut shown = 2;
+        for index in [0, 1, 2, 1, 0, 2] {
+            let at = format!("{} shown again from {}", left[index].mode, left[shown].mode);
+            shown = index;
             assert_eq!(
                 switch_and_land(&app, index, cx),
                 1,
                 "{at}: one frame, every reply landed"
             );
-            assert_eq!(&tab_state(&app, cx), state, "{at}: as it was left");
+            assert_eq!(left_tab(&app, cx), left[index], "{at}: as it was left");
+            assert!(
+                cx.update(|window, cx| {
+                    let app = app.read(cx);
+                    window
+                        .focused(cx)
+                        .is_some_and(|focus| app.app_focus.contains(&focus, window))
+                }),
+                "{at}: the frame drew the focused control"
+            );
         }
         crate::in_frame::probe::stop();
     }

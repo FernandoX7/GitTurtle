@@ -3166,6 +3166,12 @@ impl GitTurtle {
     /// (`render_repository`), before the inspector is built in its frame,
     /// where the key would take the frame's ancestors: those change with the
     /// project pane, and showing or hiding it lost the layout.
+    /// The Working inspector's layout as last laid out, which the shown tab
+    /// keeps while another tab, mode or page is drawn, so that Changes shown
+    /// again lays its list and composer out where they were drawn. As
+    /// element state it lasted only while drawn: a Changes tab shown again
+    /// laid them out from the estimates below and drew a second frame where
+    /// they measured themselves.
     pub(super) fn working_inspector_layout(
         &self,
         width: Pixels,
@@ -3173,16 +3179,19 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> Entity<WorkingInspectorLayout> {
         let previous_list = self.working_scroll.0.borrow().last_item_size;
+        let viewport = window.viewport_size().height;
         // Measure the list/composer body after Targets, feedback, the Changes
         // header and wrapping path/selection controls have taken their space.
-        window.use_keyed_state("working-inspector-layout", cx, |window, _| {
-            WorkingInspectorLayout {
-                height: (window.viewport_size().height - px(400.)).max(px(160.)),
+        let layout = self.working_layout.take().unwrap_or_else(|| {
+            cx.new(|_| WorkingInspectorLayout {
+                height: (viewport - px(400.)).max(px(160.)),
                 width,
                 list_size: previous_list.map(|size| size.item),
-                inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
-            }
-        })
+                inspector: (viewport - px(200.)).max(px(160.)),
+            })
+        });
+        self.working_layout.set(Some(layout.clone()));
+        layout
     }
 
     /// Whether menus refuse writes: one runs, or one has ended and the quiet

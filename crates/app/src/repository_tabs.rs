@@ -603,6 +603,7 @@ struct WarmTab {
     // Resize detection must compare with this tab's measured viewport, never
     // with the preceding tab's independently retained panel geometry.
     history_list_layout: Option<(Size<Pixels>, Pixels)>,
+    working_layout: Option<Entity<workspace::WorkingInspectorLayout>>,
     file_list_layout: Option<(Size<Pixels>, Pixels)>,
     nav_scroll: UniformListScrollHandle,
     horizontal: ScrollHandle,
@@ -898,6 +899,7 @@ impl GitTurtle {
             history_scroll: std::mem::take(&mut self.history_scroll),
             file_scroll: std::mem::take(&mut self.file_scroll),
             history_list_layout: self.history_list_layout.take(),
+            working_layout: self.working_layout.take(),
             file_list_layout: self.file_list_layout.take(),
             nav_scroll: std::mem::take(&mut self.nav_scroll),
             horizontal: std::mem::take(&mut self.history_horizontal),
@@ -965,6 +967,7 @@ impl GitTurtle {
         self.history_scroll = warm.history_scroll;
         self.file_scroll = warm.file_scroll;
         self.history_list_layout = warm.history_list_layout;
+        self.working_layout.set(warm.working_layout);
         self.file_list_layout = warm.file_list_layout;
         self.nav_scroll = warm.nav_scroll;
         self.history_horizontal = warm.horizontal;
