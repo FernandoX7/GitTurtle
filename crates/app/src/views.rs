@@ -12017,7 +12017,11 @@ pub(crate) mod tests {
     );
 
     /// The layout [`StepLayout`] reads, as the last frame drew it.
-    fn step_layout(app: &Entity<GitTurtle>, history: bool, cx: &mut VisualTestContext) -> StepLayout {
+    fn step_layout(
+        app: &Entity<GitTurtle>,
+        history: bool,
+        cx: &mut VisualTestContext,
+    ) -> StepLayout {
         const REGIONS: [&str; 13] = [
             "history-sidebar",
             "history-scope-toolbar",
@@ -12040,7 +12044,11 @@ pub(crate) mod tests {
                 .map(|region| (region, cx.debug_bounds(region)))
                 .collect(),
             app.read_with(cx, |app, cx| {
-                app.file_filter.read(cx).presentation().placeholder().clone()
+                app.file_filter
+                    .read(cx)
+                    .presentation()
+                    .placeholder()
+                    .clone()
             }),
             history.then(|| {
                 app.read_with(cx, |app, cx| {
@@ -12123,7 +12131,9 @@ pub(crate) mod tests {
             }
             let panels = app.read_with(cx, |app, _| app.content_panels.clone());
             cx.update(|window, cx| {
-                panels.update(cx, |panels, cx| panels.resize_panel(1, px(320.), window, cx))
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(1, px(320.), window, cx)
+                })
             });
             draw(cx);
             frames();
@@ -12208,9 +12218,7 @@ pub(crate) mod tests {
     /// once the frame was done, as the frame before had not drawn the group,
     /// and asked for a second frame (`ResizableState::fit_container`).
     #[gpui::test]
-    async fn history_navigation_drawn_again_by_a_widening_notifies_no_one(
-        cx: &mut TestAppContext,
-    ) {
+    async fn history_navigation_drawn_again_by_a_widening_notifies_no_one(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window(cx).await;
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
@@ -12230,7 +12238,11 @@ pub(crate) mod tests {
             cx.debug_bounds("history-sidebar").is_some(),
             "980 px draws History's navigation"
         );
-        assert_eq!(notified.get(), 0, "the group's fit and layout notified no one");
+        assert_eq!(
+            notified.get(),
+            0,
+            "the group's fit and layout notified no one"
+        );
     }
 
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
