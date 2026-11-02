@@ -1728,6 +1728,19 @@ mod hostile {
         matches!(result, Err(Failure::Stopped { signal: Some(signal) }) if signals.contains(signal))
     }
 
+    /// Every hostile input ends within the client's deadline and a second,
+    /// in the way its case names, and none meets the seccomp filter
+    /// (SIGSYS). The flate bomb ends either way a bound stops it: by SIGABRT
+    /// or an error kind where its inflated content meets the 1 GiB data
+    /// limit, or by the client's deadline kill where inflating it takes
+    /// longer than the deadline. It once had to abort, which it does in
+    /// about 0.9 s in a debug build on the AArch64 host, but a loaded hosted
+    /// x86-64 runner was still inflating it at the 3 s deadline (run
+    /// 41513461121), as this host is every time at a 10% CPU quota. A kill
+    /// is the bound the endless JBIG2 inputs meet and the app's timeout
+    /// sentence; what the bomb must never do is finish, meet the filter or
+    /// outlast the deadline. #1588's oversized allocation keeps the data
+    /// limit's own evidence, an abort in milliseconds at any speed.
     #[test]
     fn hostile_inputs_end_within_the_deadline_and_never_meet_the_filter() {
         // https://github.com/LaurenzV/hayro/issues/1610: finding the end of
@@ -1787,11 +1800,16 @@ mod hostile {
             ("#1550", jbig2(155, 101, JBIG2_1550), aborted),
             ("#1598", jbig2(163, 109, JBIG2_1598), timed_out),
             ("#1700", jbig2(163, 109, JBIG2_1700), timed_out),
-            // 1.25 GiB of content from 8.5 MB of FlateDecode data.
+            // 1.25 GiB of content from 8.5 MB of FlateDecode data: the data
+            // limit aborts it once inflated, unless the deadline kills it
+            // first (see the test's comment).
             (
                 "flate bomb",
                 custom_page("", "/Filter /FlateDecode", &zeros_zlib(5 << 28)),
-                aborted,
+                |result| {
+                    signaled(result, &[libc::SIGABRT])
+                        || matches!(result, Err(Failure::Document { .. } | Failure::TimedOut))
+                },
             ),
             // The bomb's encoder decodes: a black 10 × 10 image.
             (
