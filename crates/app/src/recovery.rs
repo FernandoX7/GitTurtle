@@ -1724,6 +1724,20 @@ pub(crate) fn open_stash_list(
     Some((browser, list))
 }
 
+/// The width walk (`width_walk`) reads Stashes, as the focus sweep
+/// (`focus_ring::sweep`) walks a dialog, once its saved stashes have landed.
+/// They are read on the browser's own thread, which neither the drain of the
+/// app's executor nor `settle` waits for: a walk that began while the read
+/// ran laid out no rows, as a slow read did on a hosted macOS runner.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<StashBrowser>> {
+    fn finish(self, cx: &mut VisualTestContext) {
+        if let Some(browser) = self {
+            StashBrowser::lands(&browser, cx);
+        }
+    }
+}
+
 impl StashBrowser {
     /// Returns once every read the browser has started, the saved stashes
     /// or a selected stash's inspection, has landed and been drawn. They run

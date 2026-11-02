@@ -1656,9 +1656,13 @@ impl Dialog {
             Dialog::Tags => {
                 open_dialog(app, cx, &name, |app, window, cx| app.open_tags(window, cx)).await
             }
+            // Through the browser, whose saved stashes `open_dialog` waits
+            // for: they are read on its own thread, which neither the drain
+            // of the app's executor nor `settle` waits for, and a walk that
+            // read Stashes before they landed laid out no rows.
             Dialog::Stashes => {
                 open_dialog(app, cx, &name, |app, window, cx| {
-                    app.open_stashes(window, cx)
+                    app.open_stash_browser(window, cx)
                 })
                 .await
             }

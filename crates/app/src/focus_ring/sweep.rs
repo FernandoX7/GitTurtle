@@ -345,8 +345,10 @@ pub(crate) fn close_dialogs(
 /// What opening a dialog leaves running that a walk waits for: nothing, as
 /// for most dialogs, whose reads go through the app's own tasks and its
 /// operation executor, which [`open_dialog`] drains, or the reads a dialog
-/// runs on a thread of its own, such as the Reflog's, which
-/// `run_until_parked` cannot wait for.
+/// runs on a thread of its own, such as the Reflog's and Stashes', which
+/// neither `run_until_parked` nor that drain waits for. A dialog that reads
+/// on its own thread opens through an opener that returns it, so the walk
+/// reads it as it stands once loaded.
 pub(crate) trait Opened {
     /// Returns once what opening the dialog started has landed.
     fn finish(self, cx: &mut VisualTestContext);
