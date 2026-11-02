@@ -88,7 +88,9 @@ shown with its own page count, which would contradict the count the view
 already shows (every page the view asks for lies within the count of the
 first page's validated reply). A side without pages, an absent side or a
 document whose first page failed (a password-protected PDF), says why as
-static text on the generic document surface, as a page's message is. System preview is an explicit user
+static text, as a page's message is: where the other side has pages, in its
+own room beneath its header in the page view, and on the generic document
+surface only where neither side has pages. System preview is an explicit user
 action on an isolated copy of captured bytes.
 
 ## Native Markdown and local resources
