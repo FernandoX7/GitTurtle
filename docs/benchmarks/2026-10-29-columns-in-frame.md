@@ -393,3 +393,243 @@ python3 tools/summary.py > raw/summary.txt; python3 tools/tables.py > raw/tables
 ```
 
 As in the first run, the tools ran from a working directory outside the repository (`.local/bench-columns-rerun-2026-10-30`), with `GITTURTLE_RELEASES` and `GITTURTLE_QA_TOOLS` set to the release and native-QA tool directories. The versioned copies are byte-identical to what ran.
+
+## Rerun 2026-11-01: WS1 and the rounds since
+
+This measures `a50eae8e` (the branch head: WS1, NT3, NT4, PC3, WS2, WS3 and the vendored menu fixes, 60 commits after the base) against `2f0ac97f`, the head before WS1 landed. It has four parts: the width steps of the 2026-10-30 rerun; the three `#[ignore]` release benchmarks those rounds added; the full interaction protocol of the first run at 1480 × 980, 13 pt, which covers PC1's image-comparison redraws and PC2's commit selection; and a live resize with a refused write's hook report on screen, for NT4. Every launch of the last two parts also counted the UI thread's heap allocation calls, for NT3's and CH2's allocation removals. The data is in `.local/bench-ws1-2026-11-01/` on the measuring host (file list under Commands).
+
+### Result
+
+- **WS1's claim holds: every History width step now draws one frame.** The base draws 2 frames on every one of its 96 History and narrow-Compare steps, and 1 on each of its 64 Compare steps at 1480 ↔ 1000. The candidate draws 1 frame on all 160 of its steps. That covers History at 1480 ↔ 1000 and 461 ↔ 980, at 13 and 18 pt, and text and image Compare at both widths. The narrow tiled Compare steps, 2 frames in both builds in the 2026-10-30 rerun, are 1 frame in the candidate too. Every one of the 320 steps ended settled (settle check 0) and got exactly one configure.
+  - *Where the base drew two frames:* the last frame comes sooner in the candidate in all 14 of those rows at p50, by 3.4 to 35.9 ms. Four intervals exclude zero: History 1000 → 1480 at 13 pt, −24.1 [−50.6, −2.2] ms, and at 18 pt, −35.7 [−52.0, −9.7]; History 980 → 461 at 13 pt, −9.1 [−25.1, −2.4], and at 18 pt, −8.3 [−16.9, −0.2]. The removed frame was the base's paced second draw: 4.3–7.8 ms at p50 per row, and up to 13.0 ms counting draws one to two ticks after their `done`.
+  - *The single frame does more work.* On the narrow steps its configure-to-first-request p50 is higher than the base's first frame: 980 → 461, 29.4 against 20.1 ms (History, 13 pt), 33.0 against 25.0 (History, 18 pt), 24.6 against 17.4 (text) and 25.6 against 17.3 (image). That is the work the base split over two frames, now in one. UI CPU per step moved −23.5 to +11.1 ms at p50, with no interval excluding zero.
+  - *Compare at 1480 ↔ 1000, one frame in both builds:* no resolved change in last frame or UI CPU (Δp50 −14.1 to +8.8 ms, every interval including zero).
+- **Benchmarks, candidate only.** Every timed width step drew 1 frame and left no frame for the next callback, in all 2,400 steps: History, text and image Compare at 13 and 18 pt, 5 rounds. The handler p50 was 1.80–3.47 ms, p95 1.83–4.42 ms and max 4.72 ms. Every one of 800 warm-tab switches drew 1 frame with nothing left over, at a handler p50 of 3.03–3.51 ms and a max of 4.08 ms. **`quiet_landing_release_benchmark` does not run at the head.** Its `5000_rows` series panics before it writes any output (`views.rs:14084`, "5000_rows: the rows shown", left 500, right 5000), in 2 of 2 runs, so it has no result.
+- **PC1 and PC2 interactions: no resolved change.** Paced-draw Δp50: History +0.09 [−0.85, +0.85] ms, text Compare −0.26 [−1.26, +0.77], image Compare +0.08 [−0.65, +0.50].
+  - *PC2's commit selection.* A held arrow key in History draws its input-led frames at 4.94 against 5.03 ms p50 (Δ +0.09 [−0.43, +0.91]). Its UI CPU per 1 s hold is 408.5 against 413.9 ms (+5.4 [−47.2, +70.1]).
+  - *PC1's caption cache.* Pan drags at 200% cost 235.1 against 231.2 ms of UI CPU (−3.9 [−22.3, +28.3]) and draw 109–128 frames per drag in both builds.
+  - *Neither commit is in this comparison.* PC1 (`845c646f`, `aa9483f6`) and PC2 (`802ccec1`) landed before `2f0ac97`. These rows show that the rounds since did not regress them; they do not measure PC1's or PC2's own effect.
+- **NT3 and CH2 allocations: no visible difference per frame.** A History wheel-notch frame makes 11,506 main-thread allocation calls in the base and 11,504 in the candidate (Δ −2 [−39, +35]). A text notch makes 8,960 against 8,953 calls per window (Δ −7 [−38, +44]), and an image notch 8,492 against 8,500 (Δ +8 [−4, +15]). NT3's once-per-frame `LineKey` read is in the candidate. It removes at most a few calls per frame, below this noise of about ±40 calls. CH2's tab-label buffer (`dac88888`, `667859ed`) predates both builds. Compare width-step windows make 5–10 more calls in the candidate, some resolved but tiny: image 1480 → 1000, +9 [+8, +10]; text 1000 → 1480, +5 [+5, +6]. History width-step windows make about 10,800 fewer, because one frame replaced two.
+- **NT4: no regression; the report never reaches the Create tag form's error line.** The `reference-transaction` hook refuses the write only after the form has closed. `TagForm` sets its error line only from a failed plan preparation (`tags.rs:1189`). The write's failure goes to the window-wide notice (`integration.rs:58-63`), which shows "Git operation failed: remote: declined …" (one line, cut) or "…: remote: hook line 1 declined", with Details… and Dismiss. The live resizes therefore measure that notice.
+  - *Frames:* the candidate draws 1 frame per 7-configure resize in all 144 resizes; the base draws 2, and 4 in 4 resizes.
+  - *Allocation calls:* 8,500–9,100 fewer per resize in the candidate, resolved in every row, which is the base's extra frame.
+  - *The report's own cost* (notice shown minus dismissed) is +239 / +250 calls per resize in the base and +145 / +156 in the candidate for the 16 KiB line; for 550 lines it is +153 / +155 and +73 / +79.
+  - *Time:* UI CPU per resize moves −31.9 to +9.1 ms at p50, no interval excluding zero. The last frame is sooner in all 8 rows, by 4.2 to 54.7 ms; two are resolved: 550 lines, 600 → 461, −40.7 [−62.5, −3.1]; dismissed, 461 → 600, −54.7 [−69.9, −12.7].
+  - *Not measurable here:* the error line NT4 changed (`tag-preparation-error`) cannot show a hook's report in either build. A preparation error is short (at most a 4,096-byte target), so the 16 KiB and 550-line case exists only in `a_long_report_is_measured_in_bounded_work_through_a_live_resize`.
+
+### Verdict
+
+No regression. WS1 does what it claims: every width step on every surface, at both widths and both text sizes, draws one frame and ends settled. Where the base drew two frames, the last frame now comes 3–36 ms sooner at p50, resolved in 4 of 14 rows. The 2026-10-30 rerun's remaining two-frame case, narrow tiled Compare, is gone too. WS2's warm-tab switch draws one frame in all 800 timed switches. The interaction protocol, the PC1 and PC2 rows and the allocation counts show no resolved change in per-frame cost (intervals about ±0.5–1.3 ms at p50 on paced draws, about ±40 allocation calls per frame). One benchmark finding needs the owner: `quiet_landing_release_benchmark` panics at the head in its `5000_rows` series, so WS3's landing timing has no release figure. A likely cause, inferred and not traced: `9a8d3574` itself, the commit that added the benchmark, made a landing that finds the repository unchanged skip rereading the history. Raising `app.limit` and rescanning would then no longer install 5,000 rows. The smallest fix is in the test: make the `5000_rows` case install its rows through a path that reads the history again, such as an explicit refresh or a changed tip, before it asserts the row count. Product source was not changed.
+
+### Setup
+
+- **Host:** as above, the Apple M2 Pro running Asahi Linux (Omarchy) on Linux 7.1.12-2-7-ARCH, `schedutil`, Hyprland, native Wayland. Display: eDP-1, 3456 × 2160 at 120 Hz, scale 2; one tick is 8.33 ms.
+- **Quiet host:** the build hold (`.local/build-slots/quiet`) was in place from 04:50:56 to 11:22:56 UTC on 2026-11-02, including an idle gap from 05:31:24 to 10:20:25 while the session was suspended; no launch ran in the gap.
+  - Every launch and benchmark run waited until `pgrep -x rustc` and `pgrep cargo` found nothing, and all recorded `builds 0`.
+  - AT-SPI was off, `IsEnabled false`, read before every launch. The Orca screen reader was not running (no `orca.pid`).
+  - Notifications were silenced with `omarchy-shell notifications setDnd on`; DND was off before and was restored to off at 11:22:56.
+  - The IDE hosting the session (two `orca-ide` processes) used about 5% of a core each.
+- **Load and frequency:**
+  - *Width steps* (32 launches, 04:52:46–05:31:24): one-minute load 0.10–0.75 at starts and ends; cores 4–11 were 97–99% idle (median 98%) over the 2 s before each launch. The UI thread's window-start frequency was 1.45 GHz at p50 in both builds, below 3.0 GHz in 157 of 160 base and 158 of 160 candidate step windows.
+  - *Benchmarks* (10:20:25–10:24:03): load 0.85–2.00; cores 4–11 87–97% idle.
+  - *Interaction phase* (24 launches, 10:36:55–11:22:46): load 0.74–1.60; cores 4–11 83–98% idle (median 94%). Window-start frequency 1.19 GHz at p50 in both builds, below 3.0 GHz in 582 of 596 base and 558 of 596 candidate windows.
+  - Absolute times are therefore not comparable with earlier sessions; only the same-session base is.
+- **Builds:** release executables from clean trees (`--build-info`: release, aarch64-unknown-linux-gnu, rustc 1.99.0 (b940084d7 2026-09-28)). Each embeds its own full revision and not the other's: `strings | grep -c`, 2 against 0 for each. The base was designated in writing before the first measured launch (`raw/designation.txt`).
+  - Base `2f0ac97fa50fe397fe5df2a5d967cdc4a7698cab`, build_unix_seconds 1793586803, sha256 `9a717cae3692f25324f64cf0179137955e72afeb3e5bebfa68a864e438a759a4`.
+  - Candidate `a50eae8e6bd651264d66f1112fa3bf30358f59bd`, build_unix_seconds 1793594696, sha256 `ac0fc3086b81773999092b2e442e2a000524cf6fd7fde51e066adfca000fd747`.
+  - Candidate test binary (`cargo test --locked --release -p gitturtle --bin gitturtle --no-run` at `a50eae8e`): sha256 `c38ca313625f3d123bd89ef2152317140cae59651bf76ae13cb6ae97e8ee1c59`, `strings` 3 matches of `a50eae8e…` and 0 of `2f0ac97f…`.
+- **Fixtures** (disposable; a fresh copy per launch):
+  - *cols*: as above, HEAD `27503ee`, HEAD~1 `7d2a777`, 3,003 commits, 121 references, copied from the 2026-10-30 rerun's pristine copy.
+  - *hook1* and *hook550* (`tools2/make-hook-fixtures.sh`): 20 commits each. Their `.git/hooks/reference-transaction` drains stdin, and in the `prepared` state writes a report to stderr and exits 1. The report is 16,371 bytes on one line ("remote: declined " × 963, as NT4's test) or 550 lines of "remote: hook line N declined" (16,942 bytes).
+- **Cache state:** warm. The executables and fixtures had run before, and every launch is a new process with an empty preview cache.
+- **Order:** fixed in writing before each phase's first launch.
+  - *Width steps:* `tools/run-all.sh 1 4`, as the 2026-10-30 rerun: four rounds of cells L13, L18, S13 and S18, both builds per cell, base first in rounds 1 and 3. 32 launches.
+  - *Benchmarks:* `tools2/run-bench.sh`, rounds 1–5. Each round ran width steps, warm-tab switch and, in round 1 only, quiet landing.
+  - *Interaction phase:* `tools2/run-phase3.sh 1 4`. Each round ran the full driver at L13, then the hook driver on hook1 and on hook550, with both builds, base first in rounds 1 and 3. 8 full and 16 hook launches.
+  - No measured launch failed, was dropped or was repeated. Not results: one width-step trial of the candidate (`trial-a50eae8-L13`), four hook trials of the candidate while the driver's form navigation was fixed, and one of the base.
+
+### Method and boundaries
+
+- **Width steps:** `tools/` is the 2026-10-30 rerun's `tools/` with the builds renamed (`run-all.sh`, `summary.py`, `tables.py`). The protocol, the settle check and every boundary are as in that rerun.
+  - *Last frame after the command* spans from the driver's sample before `hyprctl`'s resize to the last main-surface attach. GPUI draws a configure without waiting for a callback, so a one-frame step has no tick floor. A two-frame step cannot end before its first attach plus the wait for the next tick (up to 8.33 ms) plus the second draw. The base's two-frame rows are bounded below that way by construction, and the candidate's saving on them includes that term.
+  - *Configure to first frame request* spans from libwayland's dispatch of `xdg_toplevel.configure` to the first `wl_surface.frame` request. It starts at an event, so the tick grid puts no floor under it.
+- **Benchmarks:** the tests' own boundaries, as their JSON records them.
+  - *Width steps:* one `simulate_resize` on the UI thread, from before the call to its return, frames included, on the test platform (no GPU, compositor or display link).
+  - *Warm-tab switch:* one `switch_repository_tab`, with the reader and the executors held, so no reply is timed.
+  - `next_frame_ms` times the callbacks a step or switch left, separately.
+  - Run as `GITTURTLE_<NAME>_BENCH_OUTPUT=<out.json> taskset -c 4-11 testbin-a50eae8 --ignored --exact views::tests::<name>_release_benchmark`.
+  - No base figure exists for these. WS1, WS2 and WS3 added the tests, and they call code the base does not have, such as `take_history_width`, `switch_warm_tab`, `repository_frames` and `many_refs_script`, none of which exist at `2f0ac97`, so the base product code cannot run them.
+- **Interaction phase, full driver** (`tools2/drive.py`, unchanged from the first run's driver): History wheel, held arrows and width steps; text wheel, Split/Diff and width steps; image zoom, pan drags, wheel, modes and width steps. 1480 × 980, 13 pt only. The boundaries are the first run's.
+  - *Paced draw:* from a main-surface `wl_callback.done` to the next frame request, when that comes 0.5 ms to one tick later. It starts at a tick, so the grid puts no floor under it. The ceiling is one tick, or two in the view with 1–2-tick draws.
+  - *Input-led draw:* from the input event to the first frame request.
+  - With the UI thread at about 1.2 GHz, 227–272 History draws and 93–103 image draws per build fell one to two ticks after their `done`. The "with 1–2-tick draws" columns carry those.
+- **Allocation counter** (`tools/alloccount/alloccount.c`, preloaded with `LD_PRELOAD` on every launch of the interaction phase):
+  - *What it counts:* `malloc`, `calloc`, `realloc`, `memalign`, `aligned_alloc` and `posix_memalign` calls, and their requested bytes, made on the process's main thread (tid = pid). The counts go into a shared page that the driver reads at each sample. It forwards to glibc's `__libc_*`. The app uses the system allocator; the only `#[global_allocator]` in the tree is in a vendor bench.
+  - *What a window spans:* from the driver's start sample to its end sample, every frame and every handled reply included.
+  - *Exclusions:* frees and other threads.
+  - *Side effects:* the preload's environment reaches the app's child Git processes, which count into their own pages and add the same small cost in both builds. The `/dev/shm` pages were deleted afterwards. libwayland's debug formatting (`WAYLAND_DEBUG=1`) allocates in both builds and is inside every count.
+- **Hook driver** (`tools2/drive-hook.py`): 600 × 680, tiled beside one `foot` filler and above another, 13 pt.
+  - *Getting the report on screen:* Ctrl+Shift+P, "tags", Enter. Tab and Space reach Create tag… (Enter would choose the dialog's Done). A click in the name field (found by OCR), "v1", Lightweight (OCR), Enter, then Enter on the confirmation runs the write, and the hook refuses it.
+  - *Live resize:* 12 resizes with the notice shown, alternating 600 → 461 and 461 → 600. Each is seven relative `hyprctl` resizes of the tiled window in 20 px steps, sent back to back as a drag sends them, each delivered as one configure (all 288 resizes got 7). The window runs from the driver's sample before the first command to its sample 1.0 s after the last.
+  - *Control:* Dismiss (OCR), then 6 more resizes without the notice.
+  - *Last frame after the first command:* it includes seven `hyprctl` round trips, the compositor and every draw. One frame per resize means GPUI drew once for the burst, so the value is bounded below by the burst's delivery, not by the tick grid.
+- **Statistics:** pooled nearest-rank percentiles. Deltas are candidate minus base with the two-level bootstrap: launches with replacement within each build, then windows within each drawn launch; 4,000 resamples, seed 1, 95% interval.
+
+### Width steps
+
+| Cell | Surface | Step | Build | n | Frames p50 / max | Frames (count of steps) | Final without further input | UI CPU p50 / p95 / max (ms) | Command to first frame request p50 / max (ms) | Configure to first frame request p50 / p95 (ms) | Last frame after the command p50 / p95 / max (ms) | Δ UI CPU p50 (ms) | Δ last frame p50 (ms) |
+| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1480 × 980, 13 pt | History | 1480 → 1000 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 51.3 / 75.9 / 75.9 | 42.8 / 75.5 | 37.2 / 70.6 | 78.1 / 94.7 / 94.7 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 38.9 / 68.9 / 68.9 | 41.8 / 72.3 | 38.5 / 69.5 | 43.3 / 73.6 / 73.6 | -12.4 [-45.1, +29.9] | -34.9 [-63.6, +19.7] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 41.4 / 60.2 / 60.2 | 34.8 / 55.2 | 30.6 / 50.0 | 71.9 / 88.4 / 88.4 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 41.4 / 49.7 / 49.7 | 46.7 / 54.8 | 41.0 / 49.8 | 47.9 / 56.2 / 56.2 | +0.0 [-30.4, +16.4] | -24.1 [-50.6, -2.2] |
+|  | Text Compare | 1480 → 1000 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 37.8 / 43.7 / 43.7 | 42.1 / 49.6 | 38.7 / 43.8 | 43.8 / 50.8 / 50.8 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 24.5 / 46.6 / 46.6 | 29.4 / 51.9 | 23.7 / 46.0 | 30.9 / 53.1 / 53.1 | -13.2 [-25.7, +13.5] | -12.9 [-23.9, +12.3] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 41.9 / 46.7 / 46.7 | 45.1 / 52.0 | 41.2 / 46.6 | 46.6 / 53.4 / 53.4 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 28.0 / 41.1 / 41.1 | 31.7 / 45.9 | 28.0 / 41.3 | 32.5 / 47.8 / 47.8 | -13.9 [-24.2, +9.8] | -14.1 [-28.6, +7.9] |
+|  | Image Compare | 1480 → 1000 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 27.9 / 44.9 / 44.9 | 32.4 / 48.6 | 27.6 / 44.9 | 33.4 / 49.9 / 49.9 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 28.4 / 44.9 / 44.9 | 33.6 / 50.1 | 28.4 / 45.5 | 34.4 / 51.5 / 51.5 | +0.6 [-19.1, +19.1] | +1.0 [-19.1, +18.8] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 47.5 / 59.4 / 59.4 | 49.8 / 63.0 | 46.9 / 59.7 | 51.1 / 64.1 / 64.1 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 35.5 / 59.9 / 59.9 | 41.0 / 65.5 | 35.3 / 59.5 | 42.1 / 66.8 / 66.8 | -12.0 [-22.5, +24.8] | -9.0 [-23.6, +25.3] |
+| 1480 × 980, 18 pt | History | 1480 → 1000 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 47.7 / 61.3 / 61.3 | 42.5 / 60.3 | 36.8 / 56.5 | 67.1 / 89.1 / 89.1 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 24.2 / 64.5 / 64.5 | 30.0 / 67.7 | 24.2 / 64.3 | 31.2 / 69.1 / 69.1 | -23.5 [-33.5, +14.9] | -35.9 [-54.5, +3.1] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 40.6 / 58.9 / 58.9 | 34.3 / 51.8 | 31.0 / 46.2 | 64.0 / 80.4 / 80.4 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 22.0 / 49.3 / 49.3 | 27.4 / 52.6 | 22.2 / 48.4 | 28.3 / 54.1 / 54.1 | -18.6 [-32.3, +8.7] | -35.7 [-52.0, -9.7] |
+|  | Text Compare | 1480 → 1000 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 29.7 / 42.5 / 42.5 | 31.8 / 45.0 | 28.7 / 41.8 | 33.2 / 46.6 / 46.6 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 25.7 / 42.6 / 42.6 | 28.2 / 47.4 | 25.0 / 42.4 | 29.5 / 49.1 / 49.1 | -4.0 [-18.3, +18.6] | -3.7 [-21.3, +18.5] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 32.7 / 48.0 / 48.0 | 37.2 / 52.8 | 31.6 / 47.8 | 39.0 / 54.5 / 54.5 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 43.7 / 48.0 / 48.0 | 46.3 / 54.2 | 43.1 / 47.4 | 47.8 / 56.0 / 56.0 | +11.1 [-14.8, +23.8] | +8.8 [-14.5, +24.6] |
+|  | Image Compare | 1480 → 1000 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 26.4 / 41.6 / 41.6 | 30.3 / 46.9 | 25.6 / 41.2 | 31.5 / 48.6 / 48.6 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 25.2 / 40.6 / 40.6 | 31.3 / 44.4 | 25.4 / 41.0 | 32.2 / 46.0 / 46.0 | -1.2 [-23.1, +11.6] | +0.7 [-22.1, +12.7] |
+|  |  | 1000 → 1480 | `2f0ac97` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 34.7 / 57.2 / 57.2 | 39.6 / 60.8 | 33.9 / 57.6 | 41.0 / 62.1 / 62.1 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 45.9 / 57.7 / 57.7 | 48.0 / 63.8 | 44.9 / 58.0 | 49.3 / 65.0 / 65.0 | +11.1 [-8.9, +29.0] | +8.3 [-11.1, +31.3] |
+| 461 × 490, 13 pt | History | 461 → 980 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 46.3 / 77.2 / 77.2 | 55.5 / 70.7 | 48.5 / 61.4 | 79.1 / 101.1 / 101.1 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 45.0 / 64.0 / 64.0 | 53.0 / 67.1 | 43.5 / 57.6 | 63.3 / 75.0 / 75.0 | -1.3 [-25.3, +17.5] | -15.8 [-33.7, +16.9] |
+|  |  | 980 → 461 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 25.7 / 32.8 / 32.8 | 29.3 / 44.3 | 20.1 / 34.9 | 49.9 / 64.2 / 64.2 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 21.7 / 23.7 / 23.7 | 40.0 / 44.6 | 29.4 / 36.5 | 40.8 / 45.7 / 45.7 | -4.0 [-20.9, +1.8] | -9.1 [-25.1, -2.4] |
+| 461 × 490, 18 pt | History | 461 → 980 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 45.4 / 67.7 / 67.7 | 55.1 / 61.2 | 42.3 / 54.4 | 84.5 / 88.0 / 88.0 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 38.7 / 72.3 / 72.3 | 56.2 / 72.3 | 46.2 / 65.1 | 66.0 / 81.0 / 81.0 | -6.6 [-21.5, +29.5] | -18.4 [-39.0, +18.0] |
+|  |  | 980 → 461 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 25.7 / 31.3 / 31.3 | 32.2 / 39.5 | 25.0 / 30.8 | 49.2 / 58.0 / 58.0 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 22.5 / 23.0 / 23.0 | 39.7 / 45.4 | 33.0 / 36.0 | 40.9 / 46.8 / 46.8 | -3.2 [-8.3, +7.1] | -8.3 [-16.9, -0.2] |
+|  | Text Compare | 461 → 980 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 34.4 / 55.6 / 55.6 | 48.5 / 61.5 | 39.8 / 53.6 | 67.9 / 91.0 / 91.0 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 33.4 / 45.7 / 45.7 | 48.2 / 64.4 | 41.2 / 54.3 | 56.4 / 77.0 / 77.0 | -1.0 [-24.3, +16.4] | -11.5 [-37.4, +6.0] |
+|  |  | 980 → 461 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 16.8 / 33.1 / 33.1 | 28.7 / 45.3 | 17.4 / 38.4 | 45.1 / 64.3 / 64.3 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 15.6 / 24.9 / 24.9 | 34.0 / 46.5 | 24.6 / 37.9 | 34.9 / 47.6 / 47.6 | -1.2 [-16.3, +5.2] | -10.2 [-26.1, +2.3] |
+|  | Image Compare | 461 → 980 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 22.6 / 41.6 / 41.6 | 31.9 / 49.1 | 25.4 / 38.6 | 52.2 / 72.2 / 72.2 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 14.9 / 34.0 / 34.0 | 33.3 / 62.5 | 23.4 / 51.4 | 33.8 / 63.5 / 63.5 | -7.7 [-19.7, +7.8] | -18.4 [-40.1, +3.6] |
+|  |  | 980 → 461 | `2f0ac97` | 8 | 2 / 2 | 2 (8) | 8 of 8 | 18.4 / 30.0 / 30.0 | 24.7 / 43.0 | 17.3 / 33.6 | 39.1 / 57.9 / 57.9 |  |  |
+|  |  |  | `a50eae8` | 8 | 1 / 1 | 1 (8) | 8 of 8 | 20.6 / 25.1 / 25.1 | 35.1 / 45.5 | 25.6 / 36.4 | 35.8 / 46.3 / 46.3 | +2.3 [-11.7, +6.4] | -3.4 [-27.1, +5.8] |
+
+### Release benchmarks (candidate only)
+
+| Benchmark | Series | Rounds | n | Handler p50 / p95 / p99 / max (ms) | Round p50s (ms) | Frames per step | Frames left for the next callback |
+| --- | --- | ---: | ---: | --- | --- | --- | --- |
+| `width_steps_release_benchmark` | History, 13 pt | 5 | 400 | 2.148 / 2.178 / 2.210 / 2.350 | 2.142–2.155 | 1 (400) | 0 (400) |
+|  | Text Compare, 13 pt | 5 | 400 | 2.000 / 2.035 / 2.048 / 2.117 | 1.995–2.002 | 1 (400) | 0 (400) |
+|  | Image Compare, 13 pt | 5 | 400 | 3.466 / 4.422 / 4.552 / 4.718 | 3.419–3.597 | 1 (400) | 0 (400) |
+|  | History, 18 pt | 5 | 400 | 1.797 / 1.995 / 2.005 / 2.021 | 1.793–1.806 | 1 (400) | 0 (400) |
+|  | Text Compare, 18 pt | 5 | 400 | 1.804 / 1.830 / 1.838 / 1.850 | 1.802–1.806 | 1 (400) | 0 (400) |
+|  | Image Compare, 18 pt | 5 | 400 | 2.615 / 3.373 / 3.426 / 3.451 | 2.613–2.615 | 1 (400) | 0 (400) |
+| `warm_tab_switch_release_benchmark` | 461 × 490, 13 pt | 5 | 200 | 3.201 / 3.355 / 3.390 / 3.432 | 2.861–3.253 | 1 (200) | 0 (200) |
+|  | 1480 × 980, 13 pt | 5 | 200 | 3.506 / 3.921 / 3.966 / 4.084 | 3.474–3.553 | 1 (200) | 0 (200) |
+|  | 461 × 490, 18 pt | 5 | 200 | 3.031 / 3.382 / 3.582 / 3.590 | 2.727–3.047 | 1 (200) | 0 (200) |
+|  | 1480 × 980, 18 pt | 5 | 200 | 3.388 / 3.766 / 3.828 / 3.909 | 3.289–3.476 | 1 (200) | 0 (200) |
+| `quiet_landing_release_benchmark` | `500_rows_followed`, `5000_rows` | — | — | not measured: panics in `5000_rows` before writing output (2 of 2 runs) | — | — | — |
+
+`next_frame_ms` was at most 0.004 ms in every series: callback delivery with no frame drawn.
+
+### Interaction phase
+
+#### Per-frame draw, 1480 × 980, 13 pt
+
+| Surface | Build | Paced draws n | Paced p50 / p95 / max (ms) | With 1–2-tick draws p95 / p99 (ms) | Over one tick | Input-led draws n | Input-led p50 / p95 / max (ms) | Paced Δp50 | Δp95 with 1–2-tick draws | Input-led Δp50 |
+| --- | --- | ---: | --- | --- | ---: | ---: | --- | --- | --- | --- |
+| History | `2f0ac97` | 324 | 5.708 / 8.040 / 8.329 | 12.981 / 13.595 | 227 | 221 | 4.935 / 9.969 / 13.522 |  | | |
+|  | `a50eae8` | 263 | 5.794 / 8.062 / 8.286 | 13.170 / 13.850 | 272 | 191 | 5.028 / 10.200 / 19.303 | +0.086 [-0.846, +0.849] | +0.189 [-1.669, +2.478] | +0.093 [-0.425, +0.906] |
+| Text Compare | `2f0ac97` | 68 | 5.315 / 7.535 / 7.963 | 11.559 / 14.595 | 97 | 8 | 6.742 / 13.070 / 13.070 |  | | |
+|  | `a50eae8` | 101 | 5.056 / 7.926 / 8.325 | 11.564 / 12.307 | 75 | 8 | 4.815 / 11.054 / 11.054 | -0.259 [-1.261, +0.771] | +0.005 [-1.363, +0.413] | -1.927 [-6.837, +5.520] |
+| Image Compare | `2f0ac97` | 50 | 7.032 / 7.908 / 8.157 | 15.351 / 16.172 | 103 | 36 | 7.747 / 19.886 / 20.829 |  | | |
+|  | `a50eae8` | 45 | 7.115 / 7.744 / 8.272 | 15.138 / 15.812 | 93 | 36 | 8.886 / 20.904 / 20.949 | +0.083 [-0.651, +0.496] | -0.213 [-0.905, +0.399] | +1.139 [-4.002, +4.589] |
+
+#### Frames, UI CPU, input to first frame request and main-thread allocations per interaction, 1480 × 980, 13 pt
+
+| Interaction | Build | n | Frames (count of windows) | UI CPU p50 / p95 / max (ms) | Input to first frame request p50 / p95 (ms) | Allocation calls per window p50 / p95 | Allocation calls per frame p50 | Δ UI CPU p50 (ms) | Δ first request p50 (ms) | Δ calls per window p50 |
+| --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
+| History wheel notch | `2f0ac97` | 240 | 1 (240) | 10.1 / 15.8 / 19.0 | 8.70 / 13.75 | 11506 / 11642 | 11506 |  | | |
+|  | `a50eae8` | 240 | 1 (240) | 11.8 / 15.9 / 18.0 | 9.87 / 13.88 | 11504 / 11638 | 11504 | +1.7 [-5.0, +5.3] | +1.17 [-4.61, +4.76] | -2 [-39, +35] |
+| History held arrow, 1 s (commit selection) | `2f0ac97` | 16 | 43 (1), 44 (1), 45 (2), 46 (1), 47 (3), 48 (1), 49 (1), 50 (3), 51 (1), 53 (1), 55 (1) | 408.5 / 461.5 / 461.5 | 5.49 / 12.89 | 553116 / 638064 | 11669 |  | | |
+|  | `a50eae8` | 16 | 43 (1), 44 (2), 45 (1), 46 (4), 47 (2), 48 (3), 51 (2), 100 (1) | 413.9 / 472.4 / 472.4 | 5.42 / 19.30 | 537772 / 593053 | 11670 | +5.4 [-47.2, +73.7] | -0.06 [-3.67, +5.15] | -15344 [-58080, +21306] |
+| Text wheel notch | `2f0ac97` | 80 | 1 (62), 2 (14), 18 (1), 19 (1), 20 (2) | 7.8 / 23.7 / 181.0 | 5.84 / 11.60 | 8960 / 16878 | 8919 |  | | |
+|  | `a50eae8` | 80 | 1 (60), 2 (16), 19 (1), 20 (1), 21 (1), 24 (1) | 9.3 / 24.4 / 182.1 | 6.19 / 11.44 | 8953 / 16894 | 8745 | +1.5 [-2.2, +4.3] | +0.35 [-0.95, +2.50] | -7 [-38, +44] |
+| Text mode (Split, Diff) | `2f0ac97` | 8 | 2 (4), 19 (2), 20 (1), 24 (1) | 20.5 / 223.6 / 223.6 | 6.74 / 13.07 | 29296 / 231194 | 9881 |  | | |
+|  | `a50eae8` | 8 | 2 (4), 20 (1), 21 (1), 23 (1), 24 (1) | 23.8 / 214.4 / 214.4 | 4.82 / 11.05 | 29311 / 231364 | 9828 | +3.4 [-199.4, +191.8] | -1.93 [-7.04, +5.52] | +15 [-167109, +193367] |
+| Image zoom (100%, 200%) | `2f0ac97` | 8 | 2 (8) | 25.0 / 39.9 / 39.9 | 12.07 / 18.17 | 16831 / 16921 | 8416 |  | | |
+|  | `a50eae8` | 8 | 2 (8) | 24.4 / 35.7 / 35.7 | 7.11 / 15.29 | 16845 / 16944 | 8422 | -0.7 [-13.2, +12.3] | -4.96 [-7.07, +5.13] | +14 [-76, +104] |
+| Image pan drag at 200% | `2f0ac97` | 16 | 110 (1), 115 (1), 117 (1), 121 (2), 122 (2), 124 (2), 125 (2), 126 (3), 128 (2) | 235.1 / 256.0 / 256.0 | 9.38 / 20.83 | 155904 / 166715 | 1278 |  | | |
+|  | `a50eae8` | 16 | 109 (1), 111 (1), 112 (1), 115 (1), 116 (2), 120 (3), 121 (1), 122 (1), 124 (1), 125 (2), 126 (1), 127 (1) | 231.2 / 263.2 / 263.2 | 10.29 / 20.95 | 145619 / 163243 | 1227 | -3.9 [-22.1, +28.3] | +0.92 [-6.95, +6.91] | -10285 [-21475, +2417] |
+| Image wheel notch at 200% | `2f0ac97` | 24 | 1 (24) | 17.9 / 22.0 / 22.1 | 17.37 / 20.92 | 8492 / 8509 | 8492 |  | | |
+|  | `a50eae8` | 24 | 1 (24) | 11.2 / 22.2 / 22.7 | 10.52 / 21.03 | 8500 / 8516 | 8500 | -6.7 [-11.6, +3.2] | -6.85 [-11.03, +2.88] | +8 [-4, +15] |
+| Image mode (Overlay, Side by side) | `2f0ac97` | 8 | 2 (8) | 22.4 / 35.9 / 35.9 | 7.01 / 13.13 | 17189 / 17433 | 8594 |  | | |
+|  | `a50eae8` | 8 | 2 (8) | 19.8 / 43.0 / 43.0 | 8.55 / 20.90 | 17202 / 17447 | 8601 | -2.6 [-11.3, +11.1] | +1.54 [-0.24, +11.87] | +13 [-231, +258] |
+| Image pan drag, Overlay | `2f0ac97` | 4 | 118 (1), 123 (1), 126 (2) | 211.5 / 262.5 / 262.5 | 7.30 / 7.75 | 149323 / 177585 | 1265 |  | | |
+|  | `a50eae8` | 4 | 119 (2), 131 (2) | 182.4 / 235.3 / 235.3 | 7.76 / 10.53 | 166390 / 204639 | 1372 | -29.1 [-80.1, +23.8] | +0.46 [-0.12, +3.23] | +17067 [-19478, +55316] |
+
+#### Live resizes with a refused write's report on screen, 600 ↔ 461 × 680 tiled, 13 pt
+
+| Report | Phase | Step | Build | n | Frames (count of resizes) | UI CPU p50 / p95 / max (ms) | Last frame after the first command p50 / p95 (ms) | Allocation calls per resize p50 / p95 | Allocated MiB per resize p50 | Δ UI CPU p50 (ms) | Δ last frame p50 (ms) | Δ calls p50 |
+| --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
+| 16 KiB, one line | notice shown | 600 → 461 | `2f0ac97` | 24 | 2 (24) | 78.8 / 114.4 / 117.1 | 145.6 / 182.6 | 38029 / 38633 | 48.8 |  | | |
+|  |  |  | `a50eae8` | 24 | 1 (24) | 77.1 / 110.0 / 110.4 | 127.0 / 172.9 | 29417 / 30115 | 43.9 | -1.7 [-25.2, +27.5] | -18.6 [-49.7, +22.2] | -8612 [-8613, -8603] |
+|  |  | 461 → 600 | `2f0ac97` | 24 | 2 (22), 4 (2) | 92.6 / 119.3 / 119.6 | 154.6 / 188.3 | 39307 / 57523 | 49.8 |  | | |
+|  |  |  | `a50eae8` | 24 | 1 (24) | 78.2 / 110.1 / 116.1 | 135.2 / 170.2 | 30242 / 30270 | 44.5 | -14.4 [-39.6, +14.5] | -19.4 [-52.8, +9.0] | -9065 [-9067, -9054] |
+|  | dismissed (control) | 600 → 461 | `2f0ac97` | 12 | 2 (12) | 72.7 / 116.6 / 116.6 | 146.9 / 208.7 | 37790 / 37791 | 48.5 |  | | |
+|  |  |  | `a50eae8` | 12 | 1 (12) | 79.9 / 108.7 / 108.7 | 127.4 / 186.5 | 29272 / 29373 | 43.8 | +7.1 [-38.8, +36.6] | -19.5 [-52.3, +42.1] | -8518 [-8525, -8422] |
+|  |  | 461 → 600 | `2f0ac97` | 12 | 2 (12) | 94.7 / 119.3 / 119.3 | 170.8 / 189.1 | 39057 / 39058 | 49.5 |  | | |
+|  |  |  | `a50eae8` | 12 | 1 (12) | 62.8 / 97.7 / 97.7 | 116.1 / 145.6 | 30086 / 30089 | 44.3 | -31.9 [-63.0, +2.5] | -54.7 [-69.9, -12.7] | -8971 [-8979, -8960] |
+| 550 lines | notice shown | 600 → 461 | `2f0ac97` | 24 | 2 (24) | 91.3 / 115.2 / 117.0 | 166.7 / 193.0 | 37940 / 38547 | 48.8 |  | | |
+|  |  |  | `a50eae8` | 24 | 1 (24) | 65.5 / 102.5 / 108.8 | 126.0 / 175.4 | 29348 / 30050 | 43.9 | -25.8 [-37.6, +1.6] | -40.7 [-62.5, -3.1] | -8592 [-8600, -8588] |
+|  |  | 461 → 600 | `2f0ac97` | 24 | 2 (22), 4 (2) | 79.9 / 112.9 / 113.5 | 136.7 / 182.4 | 39210 / 57041 | 49.7 |  | | |
+|  |  |  | `a50eae8` | 24 | 1 (24) | 76.4 / 102.3 / 106.9 | 132.6 / 156.5 | 30165 / 30193 | 44.4 | -3.5 [-22.2, +21.6] | -4.2 [-35.9, +22.7] | -9045 [-9047, -9035] |
+|  | dismissed (control) | 600 → 461 | `2f0ac97` | 12 | 2 (12) | 83.1 / 111.7 / 111.7 | 149.4 / 202.0 | 37787 / 37790 | 48.5 |  | | |
+|  |  |  | `a50eae8` | 12 | 1 (12) | 83.0 / 102.4 / 102.4 | 141.6 / 192.5 | 29275 / 29371 | 43.8 | -0.2 [-30.6, +22.1] | -7.9 [-41.7, +7.6] | -8512 [-8516, -8425] |
+|  |  | 461 → 600 | `2f0ac97` | 12 | 2 (12) | 78.9 / 110.3 / 110.3 | 139.9 / 180.0 | 39055 / 39058 | 49.5 |  | | |
+|  |  |  | `a50eae8` | 12 | 1 (12) | 88.0 / 111.4 / 111.4 | 134.1 / 171.3 | 30086 / 30089 | 44.3 | +9.1 [-36.3, +36.6] | -5.8 [-59.7, +42.9] | -8969 [-8979, -8959] |
+
+### Outliers kept
+
+- Every frame and window is kept.
+- One candidate held-arrow window (`f2-a50eae8-L13`, Up, the fourth hold) drew 100 frames, with its last frame 1,384.7 ms after the key. A scroll animation was still running at the end of the hold. It is that row's frame maximum and p95 UI CPU (456.2 ms).
+- Text Split drew 19–24 frames in both builds, and Diff 2. One text wheel window per launch drew 18–24 frames in both builds: the scroll's own animation.
+- In 2 of 24 base resizes per report at 461 → 600, 4 frames were drawn with the notice shown; the candidate drew 1 in all of them.
+
+### Limits
+
+- One host, one display at 120 Hz, Midnight only, warm cache. 4 launches per build and cell for the width steps, 4 per build for the full protocol (L13 only), and 4 per build and report for the hook resizes.
+- The UI thread ran at 1.2–1.5 GHz at p50, below 3.0 GHz in 94–99% of windows in both builds. Launches were pinned to all eight performance cores (4–11).
+- The session was suspended for 4 h 49 min between the width steps and the rest. The benchmarks and the interaction phase therefore ran in a later window than the width steps, each phase comparing both builds within itself.
+- PC1, PC2 and CH2 landed before the base, so their rows check for regressions since and do not measure those commits. NT3's allocation saving is below this run's noise of about ±40 calls per frame. Its own counting-allocator test is the finer evidence.
+- NT4's `tag-preparation-error` line was not exercised with a long report, because no user path puts a hook's report there. The live resizes measure the window-wide notice that does show it. A native resize burst of seven `hyprctl` commands is not a pointer drag on a border, though both deliver a configure per step.
+- `quiet_landing_release_benchmark` has no result. No base figure exists for any of the three benchmarks.
+- The allocation counter counts calls, not frees or peak heap, and only the main thread.
+- The per-launch Wayland logs, marks, screenshots and fixture copies stayed on the measuring host. Screenshots hold local paths and were not privacy-checked for publication.
+- Product source was not changed.
+
+### Commands
+
+```sh
+cd .local/bench-ws1-2026-11-01
+# width steps (tools/ = the 2026-10-30 rerun's tools with base 2f0ac97 / candidate a50eae8)
+GITTURTLE_RELEASES=$PWD/../item8-2026-10-27 tools/run-all.sh 1 4
+python3 tools/analyse.py r*-*; gzip raw/frames.csv
+python3 tools/summary.py > raw/summary.txt; python3 tools/tables.py > raw/tables.md
+# benchmarks (round 1 with quiet landing, rounds 2-5 without it)
+BENCH_QL=1 tools2/run-bench.sh 1; tools2/run-bench.sh 2 ... 5; python3 tools2/bench-summary.py > raw/bench/summary.txt
+# interaction phase (ALLOCCOUNT=1 preloads tools/alloccount/alloccount.so, built with gcc -O2 -shared -fPIC)
+tools2/make-hook-fixtures.sh
+GITTURTLE_RELEASES=$PWD/../item8-2026-10-27 tools2/run-phase3.sh 1 4
+ANALYSE_OUT=raw/phase3 python3 tools2/analyse.py f*-* h*-*
+SUMMARY_RAW=raw/phase3 python3 tools2/summary.py > raw/phase3/summary.txt
+python3 tools2/phase3-summary.py raw/phase3 > raw/phase3/phase3-table.md; python3 tools2/section-tables.py > raw/phase3/section-tables.md
+```
+
+The run used `run-bench.sh` with the round as its argument. `BENCH_QL` was a later edit that put round 1's quiet-landing run behind a switch; round 1 ran it unconditionally.
