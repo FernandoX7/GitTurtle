@@ -492,7 +492,7 @@ fn page_picker(
             .default_value(current.to_string())
             .placeholder("Page number")
     });
-    let focus = input.read(cx).focus_handle(cx);
+    let opened = input.clone();
     let accept = Arc::new(
         move |window: &mut Window, cx: &mut App, input: &Entity<InputState>| -> bool {
             if let Ok(page) = input.read(cx).value().trim().parse::<usize>()
@@ -561,7 +561,15 @@ fn page_picker(
                 false
             })
     });
-    window.on_next_frame(move |window, cx| focus.focus(window, cx));
+    // The field opens focused with the current page selected, as a native
+    // page field does, so the number typed replaces it: with the caret
+    // before it, typing 9 on page 4 read 94.
+    window.on_next_frame(move |window, cx| {
+        opened.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        })
+    });
 }
 
 thread_local! {
@@ -1230,11 +1238,17 @@ pub(crate) mod tests {
                 );
                 // Drawn as Compare draws it, which draws a side without
                 // pages, as a locked PDF's, on the generic document surface.
-                div().w(self.width).h(px(600.)).flex().flex_col().child(
-                    rich_preview::render_comparison(
+                div()
+                    .w(self.width)
+                    .h(px(600.))
+                    .flex()
+                    .flex_col()
+                    .child(rich_preview::render_comparison(
                         comparison, false, opener, self.width, window, cx,
-                    ),
-                )
+                    ))
+                    // The page number's dialog, drawn as the app's root view
+                    // draws it.
+                    .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
             }
         }
 
@@ -1735,6 +1749,44 @@ pub(crate) mod tests {
                 }
             }
             assert!(moved, "at some width the run starts a line of its own");
+        }
+
+        /// The page number's dialog opens with the current page selected in
+        /// its field, so the number typed replaces it, as in a native page
+        /// field: on page 4 of 12, typing 9 and Enter goes to page 9. The
+        /// caret once opened before the number, so typing 9 read 94 and
+        /// Enter refused it.
+        #[gpui::test]
+        fn the_page_number_typed_replaces_the_current_one(cx: &mut gpui_kit::TestAppContext) {
+            let (content, document) = before_only(&pdf("a page number typed"), 12, 3);
+            // Drawn with its pages prepared, so the page lane, which every
+            // test in the process shares, is never asked for one.
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(3, PreparedPage::from(page()));
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(8, PreparedPage::from(page()));
+            let (_view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            click(cx, "pdf-page-number-0");
+            crate::tags::tests::draw(cx);
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            cx.simulate_keystrokes("9");
+            crate::tags::tests::draw(cx);
+            cx.simulate_keystrokes("enter");
+            crate::tags::tests::draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "Enter accepts the page typed"
+            );
+            assert_eq!(document.state.lock().unwrap().page, 8, "page 9 is shown");
         }
 
         /// Why a side shows no pages is static text that an AT-SPI client
