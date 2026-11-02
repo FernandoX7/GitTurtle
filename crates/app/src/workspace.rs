@@ -768,9 +768,28 @@ pub(crate) mod refusals {
         pub dimmed: bool,
     }
 
+    /// What a control the rows being prepared refuse was last built
+    /// saying: the name of its own, if any, and its tooltip
+    /// (`GitTurtle::rows_wait`).
+    pub(crate) type Waiting = (Option<gpui_kit::SharedString>, Option<String>);
+
     thread_local! {
         static LAST: RefCell<HashMap<String, Refusal>> = Default::default();
         static TOOLTIPS: RefCell<HashMap<String, gpui_kit::SharedString>> = Default::default();
+        static WAITING: RefCell<HashMap<&'static str, Waiting>> = Default::default();
+    }
+
+    pub(crate) fn record_waiting(
+        key: &'static str,
+        name: Option<gpui_kit::SharedString>,
+        tooltip: Option<String>,
+    ) {
+        WAITING.with(|last| last.borrow_mut().insert(key, (name, tooltip)));
+    }
+
+    /// What the control `key` was last built saying ([`Waiting`]).
+    pub(crate) fn waiting(key: &str) -> Option<Waiting> {
+        WAITING.with(|last| last.borrow().get(key).cloned())
     }
 
     pub(crate) fn record(key: String, announced: bool, dimmed: bool) {
@@ -4140,20 +4159,41 @@ impl GitTurtle {
                                             ""
                                         }
                                     );
+                                    // While only the rows being prepared refuse it,
+                                    // its name and, once it dims, its tooltip say
+                                    // why (`rows_wait`); a label that says why it
+                                    // cannot commit is its own reason.
+                                    let own = !shown
+                                        || staged == 0
+                                        || conflicted
+                                        || !identity_ready
+                                        || self.commit_title.read(cx).value().trim().is_empty();
+                                    let (named, tooltip) = self.rows_wait(
+                                        "commit-staged",
+                                        own,
+                                        &label,
+                                        Some(if forms.compact_commit {
+                                            format!("{label} · {detail}")
+                                        } else {
+                                            detail
+                                        }),
+                                    );
                                     // Where its label does not fit, it reads "Commit" and
                                     // keeps the label as its name and leading its tooltip.
                                     if forms.compact_commit {
-                                        let tooltip = format!("{label} · {detail}");
                                         crate::views::compact_control_label(
                                             commit,
                                             "commit-staged",
                                             label,
                                         )
                                         .label("Commit")
-                                        .tooltip(tooltip)
                                     } else {
-                                        commit.label(label).tooltip(detail)
+                                        commit.label(label)
                                     }
+                                    .when_some(tooltip, |commit, tooltip| commit.tooltip(tooltip))
+                                    .when_some(named, |commit, named| {
+                                        commit.accessibility_label(named)
+                                    })
                                     .map(|commit| {
                                         refusing(
                                             commit,
@@ -4285,15 +4325,29 @@ impl GitTurtle {
                     || !self.working_filter.read(cx).value().is_empty();
                 let refused = busy || self.working_paths.pending || empty;
                 let unavailable = ((busy || self.working_paths.pending) && looks_busy) || empty;
+                // While only the rows being prepared refuse it, its name
+                // and, once it dims, its tooltip say why (`rows_wait`).
+                let (named, tooltip) = self.rows_wait(
+                    selector,
+                    empty,
+                    action,
+                    Some(if forms.section_action_label {
+                        detail.into()
+                    } else {
+                        format!("{action} · {detail}")
+                    }),
+                );
+                let tooltip = tooltip.unwrap_or_default();
                 let control = if forms.section_action_label {
-                    feedback(mark, confirmation, action, detail.into(), cx)
+                    feedback(mark, confirmation, action, tooltip, cx)
                 } else {
                     crate::views::compact_control_name(
-                        feedback(mark, confirmation, "", format!("{action} · {detail}"), cx),
+                        feedback(mark, confirmation, "", tooltip, cx),
                         selector,
                         action,
                     )
-                };
+                }
+                .when_some(named, |control, named| control.accessibility_label(named));
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
@@ -4794,6 +4848,58 @@ impl GitTurtle {
                     Preparation::Status => REFRESHING_ROWS,
                 })
         })
+    }
+
+    /// Why the Working rows being prepared refuse the controls that act on
+    /// the files they list, Stage all and Unstage all, the selection's Stage
+    /// and Unstage, and Commit, where nothing else refuses them: a newer
+    /// status's rows ([`REFRESHING_ROWS_REASON`]) or the filter's
+    /// ([`FILTERING_ROWS_REASON`]). `None` while a write runs, whose progress
+    /// label and Cancel say why, or while no rows are prepared.
+    pub(super) fn rows_reason(&self) -> Option<&'static str> {
+        use crate::working_selection::Preparation;
+        (self.working_paths.pending && self.operation_busy.is_none()).then_some(
+            match self.working_paths.preparation {
+                Preparation::Filter => FILTERING_ROWS_REASON,
+                Preparation::Status => REFRESHING_ROWS_REASON,
+            },
+        )
+    }
+
+    /// What a control the rows being prepared refuse says, `name` and
+    /// `tooltip` at rest, unless it is refused for a reason of its own
+    /// (`own`) that their landing would not end: while only the rows refuse
+    /// it, the accessible name that says why at once ("Stage all,
+    /// unavailable. Wait for the file list to refresh"), as Review tag's
+    /// does, and once it dims a tooltip that adds why after what it says,
+    /// or is the reason where it says nothing at rest; otherwise no name of
+    /// its own and its tooltip at rest. Both change in place, moving
+    /// nothing. Through a quiet refresh's preparation a refused press once
+    /// showed these controls dimmed with nothing to say why: the header's
+    /// "Refreshing…" follows a status read alone, and a line there would
+    /// move the header on every passive refresh. `key` names the control
+    /// for tests (`refusals::waiting`).
+    pub(super) fn rows_wait(
+        &self,
+        key: &'static str,
+        own: bool,
+        name: &str,
+        tooltip: Option<String>,
+    ) -> (Option<SharedString>, Option<String>) {
+        let reason = self.rows_reason().filter(|_| !own);
+        let named =
+            reason.map(|reason| SharedString::from(format!("{name}, unavailable. {reason}")));
+        let tooltip = match reason.filter(|_| self.busy_shown()) {
+            Some(reason) => {
+                Some(tooltip.map_or(reason.to_owned(), |tooltip| format!("{tooltip} · {reason}")))
+            }
+            None => tooltip,
+        };
+        #[cfg(test)]
+        refusals::record_waiting(key, named.clone(), tooltip.clone());
+        #[cfg(not(test))]
+        let _ = key;
+        (named, tooltip)
     }
 
     /// Closes the file list's keyboard menu. A press outside it leaves focus
@@ -5332,6 +5438,13 @@ pub(super) const REFRESHING_ROWS: &str = "Refreshing…";
 /// grouping shows are prepared, as the list says "Filtering working paths…"
 /// until the first of them land.
 pub(super) const FILTERING_ROWS: &str = "Filtering…";
+/// Why a control acting on the listed files waits while a newer status's
+/// rows are prepared, in its accessible name at once and its tooltip once
+/// it dims (`GitTurtle::rows_wait`).
+pub(super) const REFRESHING_ROWS_REASON: &str = "Wait for the file list to refresh";
+/// Why it waits while the rows of the filter's query or the Directories
+/// grouping are prepared.
+pub(super) const FILTERING_ROWS_REASON: &str = "Wait for the filter to finish";
 
 /// A Working Changes file row's menu, which a right-click on the row and
 /// Shift-F10 or the Menu key on the list's cursor row open alike. Without its

@@ -6296,6 +6296,137 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// While a quiet refresh's rows are prepared, with no status read and
+    /// no write, the controls that act on the files listed, Stage all and
+    /// Unstage all, the selection's Stage and Unstage, and Commit, say why
+    /// they wait: each accessible name at once ("Stage all, unavailable.
+    /// Wait for the file list to refresh"), and each tooltip, once the busy
+    /// look shows, as a refused Select All shows it, adding the reason
+    /// after what it says, or the reason alone where it says nothing at
+    /// rest; "Wait for the filter to finish" while the filter's rows are
+    /// prepared. A control refused for a reason of its own, as Commit
+    /// without a title, states no wait. Both go as the rows land. A refused
+    /// press once showed these controls dimmed with nothing to say why.
+    #[gpui::test]
+    async fn controls_the_rows_refuse_say_why(cx: &mut TestAppContext) {
+        use crate::working_selection::Preparation;
+        use crate::workspace::{FILTERING_ROWS_REASON, REFRESHING_ROWS_REASON, refusals};
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        crate::views::tests::fixture_identity(&repository);
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        fixture_git(&repository, &["add", "another.txt"]);
+        quietly_refreshed(&app, cx);
+        let title = |cx: &mut VisualTestContext, value: &'static str| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.commit_title
+                        .update(cx, |title, cx| title.set_value(value, window, cx))
+                })
+            });
+            next_frame(cx);
+        };
+        title(cx, "Notes");
+        app.update(cx, |app, cx| app.select_all_working(cx));
+        next_frame(cx);
+        let controls = [
+            ("stage-all", "Stage all"),
+            ("unstage-all", "Unstage all"),
+            ("stage-selection", "Stage 1"),
+            ("unstage-selection", "Unstage 1"),
+            ("commit-staged", "Commit 1 file"),
+        ];
+        let rest: Vec<Option<String>> = controls
+            .iter()
+            .map(|(key, _)| {
+                let (named, tooltip) =
+                    refusals::waiting(key).unwrap_or_else(|| panic!("{key} is drawn"));
+                assert_eq!(named, None, "{key}: at rest it has no name of its own");
+                tooltip
+            })
+            .collect();
+        let prepared = |cx: &mut VisualTestContext, preparation: Preparation| {
+            let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.schedule_working_filter(None, false, preparation, window, cx)
+                })
+            });
+            next_frame(cx);
+            rows
+        };
+        for (preparation, reason) in [
+            (Preparation::Status, REFRESHING_ROWS_REASON),
+            (Preparation::Filter, FILTERING_ROWS_REASON),
+        ] {
+            let rows = prepared(cx, preparation);
+            assert!(
+                !app.read_with(cx, |app, _| app.busy_shown()),
+                "{reason}: the look waits"
+            );
+            for ((key, name), rest) in controls.iter().zip(&rest) {
+                assert_eq!(
+                    refusals::waiting(key),
+                    Some((
+                        Some(gpui_kit::SharedString::from(format!(
+                            "{name}, unavailable. {reason}"
+                        ))),
+                        rest.clone()
+                    )),
+                    "{key}: named by why at once, its tooltip as at rest"
+                );
+            }
+            app.update(cx, |app, cx| app.select_all_working(cx));
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.busy_shown()),
+                "{reason}: the refused Select All shows the look"
+            );
+            for ((key, name), rest) in controls.iter().zip(&rest) {
+                let tooltip = rest
+                    .as_ref()
+                    .map_or(reason.to_owned(), |rest| format!("{rest} · {reason}"));
+                assert_eq!(
+                    refusals::waiting(key),
+                    Some((
+                        Some(gpui_kit::SharedString::from(format!(
+                            "{name}, unavailable. {reason}"
+                        ))),
+                        Some(tooltip)
+                    )),
+                    "{key}: dimmed, its tooltip adds why"
+                );
+            }
+            drop(rows);
+            crate::path_filter::filters_land(&app, cx);
+            next_frame(cx);
+            for ((key, _), rest) in controls.iter().zip(&rest) {
+                assert_eq!(
+                    refusals::waiting(key),
+                    Some((None, rest.clone())),
+                    "{key}: as at rest once the rows land"
+                );
+            }
+        }
+
+        // Commit without a title waits for one, which the rows' landing
+        // would not give it: it states no wait, while Stage all does.
+        title(cx, "");
+        let rows = prepared(cx, Preparation::Status);
+        assert_eq!(
+            refusals::waiting("commit-staged").and_then(|(named, _)| named),
+            None,
+            "Commit, refused for its title, states no wait"
+        );
+        assert!(
+            refusals::waiting("stage-all").is_some_and(|(named, _)| named.is_some()),
+            "Stage all states its wait"
+        );
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A click on the selected conflicted file's row, or Enter, while the
     /// Working list refuses a choice, as while a discard review is prepared
     /// (a write in the window's busy spell that leaves the preview open) or

@@ -944,6 +944,20 @@ impl GitTurtle {
         let refused = spell || self.working_paths.error.is_some();
         let grouped = self.working_selection.grouped;
         let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));
+        // While only the rows being prepared refuse them, their names and,
+        // once they dim, their tooltips say why (`rows_wait`).
+        let (stage_named, stage_tooltip) = self.rows_wait(
+            "stage-selection",
+            unstaged == 0,
+            &stage,
+            compact.then(|| format!("{stage} · Stage the selected files")),
+        );
+        let (unstage_named, unstage_tooltip) = self.rows_wait(
+            "unstage-selection",
+            staged == 0,
+            &unstage,
+            compact.then(|| format!("{unstage} · Unstage the selected files")),
+        );
         let directories = if compact {
             crate::views::compact_control_name(
                 button("group-working", "", "folder", grouped),
@@ -960,14 +974,12 @@ impl GitTurtle {
                     button("stage-selection", "", "plus", false),
                     "stage-selection",
                     stage.clone(),
-                )
-                .tooltip(format!("{stage} · Stage the selected files")),
+                ),
                 crate::views::compact_control_label(
                     button("unstage-selection", "", "minus", false),
                     "unstage-selection",
                     unstage.clone(),
-                )
-                .tooltip(format!("{unstage} · Unstage the selected files")),
+                ),
             )
         } else {
             (
@@ -975,6 +987,14 @@ impl GitTurtle {
                 button("unstage-selection", unstage, "", false),
             )
         };
+        let stage_button = stage_button
+            .when_some(stage_tooltip, |stage, tooltip| stage.tooltip(tooltip))
+            .when_some(stage_named, |stage, named| stage.accessibility_label(named));
+        let unstage_button = unstage_button
+            .when_some(unstage_tooltip, |unstage, tooltip| unstage.tooltip(tooltip))
+            .when_some(unstage_named, |unstage, named| {
+                unstage.accessibility_label(named)
+            });
         div()
             .px_3()
             .py_2()
