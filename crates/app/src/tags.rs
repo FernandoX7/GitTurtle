@@ -67,14 +67,22 @@ const ERROR_TOOLTIP_BYTES: usize = 1024;
 /// accessible value, as the alert that says it ([`set_error_line`]) says it
 /// whole. Only a line that is cut has a tooltip, which shows the report's
 /// first lines ([`error_tooltip`]); a whole line has none, as a whole label
-/// has none. Whether it is cut is decided as the tooltip is asked for, from
-/// the width the line was laid out at in the frame the pointer rests on,
-/// so a resize that cuts the line, or makes it whole, in one step answers
-/// the next hover without another frame; decided while the frame was
+/// has none. Whether it is cut is decided as each frame lays the line out,
+/// from that frame's width, text size and report together, in the line's
+/// own font ([`LaidOut`]), and the tooltip, asked for as a hover's delay ends, shows
+/// what the latest frame decided: a resize that cuts the line, or makes it
+/// whole, in one step answers the next hover without another frame, and a
+/// text size or report that changes during the delay is never measured
+/// against the width another frame laid out. Decided while the frame was
 /// built, from the frame before, it answered for the old width until
-/// something else drew the form again. Drawn whole, a long Git report, as
-/// a hook's or a remote's stderr, grew the form by each of its lines, past
-/// its fields and actions.
+/// something else drew the form again; decided as the tooltip was asked
+/// for, it paired the latest width with the hovered frame's size and
+/// report, and measured in GPUI's default font, outside any frame's text
+/// style. A tooltip shown while the pointer rests on the line stays as it
+/// was shown through a resize, as macOS keeps a shown tooltip until the
+/// pointer moves off: the next hover answers for the new cut. Drawn whole,
+/// a long Git report, as a hook's or a remote's stderr, grew the form by
+/// each of its lines, past its fields and actions.
 pub(crate) fn error_line(
     id: &'static str,
     text: &str,
@@ -83,24 +91,41 @@ pub(crate) fn error_line(
     cx: &mut App,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let whole = native_accessibility::bounded_accessible_text(text);
-    // The width the line was laid out at last, which its prepaint records,
-    // kept across frames so the hover a frame began reads the latest.
+    // How the line was laid out last, which its prepaint records, kept
+    // across frames so the hover a frame began reads the latest.
     let laid_out = window
         .use_keyed_state(
-            ElementId::from(SharedString::from(format!("{id}/width"))),
+            ElementId::from(SharedString::from(format!("{id}/laid-out"))),
             cx,
-            |_, _| std::rc::Rc::new(std::cell::Cell::new(None::<Pixels>)),
+            |_, _| std::rc::Rc::new(std::cell::RefCell::new(None::<LaidOut>)),
         )
         .read(cx)
         .clone();
     let recorded = laid_out.clone();
-    let measured =
-        size.unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
     let report = whole.clone();
     native_accessibility::static_text(
         div()
-            .on_children_prepainted(move |bounds, _, _| {
-                recorded.set(bounds.first().map(|line| line.size.width));
+            .on_children_prepainted(move |bounds, window, _| {
+                // Inside the line's own text style, so its font measures it
+                // and its size is the one it is drawn at.
+                let measured = size
+                    .unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
+                let mut laid = recorded.borrow_mut();
+                let Some(width) = bounds.first().map(|line| line.size.width) else {
+                    *laid = None;
+                    return;
+                };
+                if !laid
+                    .as_ref()
+                    .is_some_and(|laid| laid.is(&report, width, measured))
+                {
+                    *laid = Some(LaidOut {
+                        cut: report_cut(&report, measured, width, window),
+                        report: report.clone(),
+                        width,
+                        size: measured,
+                    });
+                }
             })
             .id(id)
             .debug_selector(move || id.into())
@@ -108,22 +133,90 @@ pub(crate) fn error_line(
             .line_clamp(ERROR_LINES)
             .text_ellipsis()
             .tooltip(move |window, cx| {
-                let cut = laid_out.get().is_some_and(|width| {
-                    crate::image_compare::wrapped_lines(&report, measured, width, window)
-                        > ERROR_LINES
-                });
-                if cut {
-                    gpui_kit::component::tooltip::Tooltip::new(error_tooltip(&report))
-                        .build(window, cx)
-                } else {
+                let cut = laid_out
+                    .borrow()
+                    .as_ref()
+                    .filter(|laid| laid.cut)
+                    .map(|laid| laid.report.clone());
+                match cut {
+                    Some(report) => {
+                        gpui_kit::component::tooltip::Tooltip::new(error_tooltip(&report))
+                            .build(window, cx)
+                    }
                     // Nothing to add to a whole line: an empty view, drawn
                     // as nothing.
-                    cx.new(|_| gpui::EmptyView).into()
+                    None => cx.new(|_| gpui::EmptyView).into(),
                 }
             })
             .child(whole.clone()),
         whole,
     )
+}
+
+/// How the latest frame that drew an error line laid it out
+/// ([`error_line`]): the report it drew, the width and text size it laid
+/// the report out at, and whether the report needs more than
+/// [`ERROR_LINES`] lines there, measured as that frame prepainted the line,
+/// in the line's own font. Kept together, so a hover never pairs one
+/// frame's width with another's size or report, and measured again only
+/// when one of them changes, so a steady frame shapes nothing. The font is
+/// not part of the key: the interface font is chosen as the app starts and
+/// does not change while it runs.
+struct LaidOut {
+    report: SharedString,
+    width: Pixels,
+    size: Pixels,
+    cut: bool,
+}
+
+impl LaidOut {
+    /// Whether this is `report` laid out `width` wide at `size`.
+    fn is(&self, report: &str, width: Pixels, size: Pixels) -> bool {
+        self.width == width && self.size == size && self.report == report
+    }
+}
+
+/// Whether `report` needs more than [`ERROR_LINES`] lines laid out `width`
+/// wide at `size` in the window's text style, as an error line's prepaint
+/// measures it ([`LaidOut`]), in work bounded however long the report is: a
+/// report of more lines than that is cut at any width and is not shaped,
+/// and the rest is wrapped only one line past the bound (GPUI's wrap budget
+/// runs across a text's lines), from the report itself rather than a copy.
+/// Measured whole, a live resize copied, shaped and wrapped a report of up
+/// to 16 KiB in every frame whose width changed, where the line draws
+/// three lines of it.
+fn report_cut(report: &SharedString, size: Pixels, width: Pixels, window: &Window) -> bool {
+    if report.split('\n').nth(ERROR_LINES).is_some() {
+        return true;
+    }
+    let style = window.text_style();
+    let Ok(lines) = window.text_system().shape_text(
+        report.clone(),
+        size,
+        &[style.to_run(report.len())],
+        Some(width),
+        Some(ERROR_LINES + 1),
+    ) else {
+        return true;
+    };
+    let laid: usize = lines
+        .iter()
+        .map(|line| line.wrap_boundaries().len() + 1)
+        .sum();
+    #[cfg(test)]
+    REPORT_LINES_LAID.with(|counted| {
+        let (measured, lines) = counted.get();
+        counted.set((measured + 1, lines + laid));
+    });
+    laid > ERROR_LINES
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the reports [`report_cut`] has shaped, and the lines it
+    /// has laid out for them.
+    static REPORT_LINES_LAID: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
 }
 
 /// What a cut error line's tooltip shows of `report`: its first
@@ -1338,6 +1431,24 @@ pub(crate) mod tests {
         read.expect("a tag read was started").await;
     }
 
+    /// The kit's tooltip delay, after which a hover shows its tooltip.
+    pub(crate) const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// The popups the last frame painted, by the kit's popover fill.
+    fn painted_popups(cx: &mut VisualTestContext) -> Vec<Bounds<ScaledPixels>> {
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        cx.update(|window, _| {
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == popover)
+                .map(|quad| quad.bounds)
+                .collect()
+        })
+    }
+
     /// The tooltips hovering `selector` newly paints, by the kit's popover
     /// fill; the pointer then leaves the window until they have gone.
     pub(crate) fn hovered_tooltips(cx: &mut VisualTestContext, selector: &'static str) -> usize {
@@ -2211,20 +2322,22 @@ pub(crate) mod tests {
         );
     }
 
-    /// Whether an error line is cut is read as its tooltip is asked for,
-    /// from the width it was laid out at in the frame the pointer rests on:
-    /// at 13 pt, a three-line report whole under Create tag in a 1480 × 980
-    /// window shows no tooltip; resized in one step to 461 × 980, below the
-    /// dialog's 560 px, where its lines wrap past three, and one frame
-    /// drawn, a hover shows its tooltip; and resized back in one step, a
-    /// hover shows none. Decided while each frame was built, from the frame
-    /// before, the tooltip answered for the old width until something else
-    /// drew the form again, which a Hyprland re-tile alone does not.
+    /// Whether an error line is cut is decided as each frame lays it out,
+    /// and a hover shows what the frame it rests on decided: at 13 pt, a
+    /// three-line report whole under Create tag in a 1480 × 980 window shows
+    /// no tooltip; resized in one step to 461 × 980, below the dialog's
+    /// 560 px, where its lines wrap past three, a hover shows its tooltip;
+    /// and resized back in one step, a hover shows none. Each resize draws
+    /// one frame, as a single configure from the compositor does, and
+    /// nothing draws another before the pointer moves onto the line, so the
+    /// hover rests on the resize's own frame. Decided while each frame was
+    /// built, from the frame before, the tooltip answered for the old width
+    /// until something else drew the form again, which a Hyprland re-tile
+    /// alone does not.
     #[gpui::test]
     async fn a_one_step_resize_answers_the_error_lines_next_hover(cx: &mut TestAppContext) {
-        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
         let fixture = tempfile::tempdir().unwrap();
-        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let (app, form, cx) = create_lightweight_tag(cx, fixture.path());
         let report = (1..=3)
             .map(|line| {
                 format!("remote: hook line {line} refused the tag for its annotation policy")
@@ -2238,36 +2351,22 @@ pub(crate) mod tests {
             })
         });
         draw(cx);
-        // A test window draws itself once at the end of an update that made
-        // it dirty: a resize draws its one frame, as a single configure from
-        // the compositor does, and nothing below draws another.
-        let popover = cx.read(|cx| {
-            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
-        });
-        let popups = |cx: &mut VisualTestContext| {
-            cx.update(|window, _| {
-                window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|quad| quad.background == popover)
-                    .map(|quad| quad.bounds)
-                    .collect::<Vec<_>>()
-            })
-        };
+        // The frames the window has drawn.
+        let frames = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.draws.len());
         // The tooltips a hover on the line shows once its delay has passed;
         // the pointer then leaves.
         let hovered = |cx: &mut VisualTestContext| {
-            let before = popups(cx);
+            let before = painted_popups(cx);
             let line = rendered(cx, "tag-preparation-error");
             cx.simulate_mouse_move(line.center(), None, Modifiers::default());
-            cx.executor().advance_clock(SHOW_DELAY);
+            cx.executor().advance_clock(TOOLTIP_DELAY);
             cx.run_until_parked();
-            let shown = popups(cx)
+            let shown = painted_popups(cx)
                 .into_iter()
                 .filter(|popup| !before.contains(popup))
                 .count();
             cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
-            cx.executor().advance_clock(SHOW_DELAY);
+            cx.executor().advance_clock(TOOLTIP_DELAY);
             cx.run_until_parked();
             shown
         };
@@ -2282,22 +2381,297 @@ pub(crate) mod tests {
                 )
             })
         };
+        // Resized in one step, in one frame.
+        let resize = |cx: &mut VisualTestContext, width: f32| {
+            let before = frames(cx);
+            cx.simulate_resize(size(px(width), px(980.)));
+            assert_eq!(
+                frames(cx) - before,
+                1,
+                "the resize to {width} px draws one frame"
+            );
+        };
         assert_eq!(lines(cx), ERROR_LINES, "whole in the wide window");
         assert_eq!(hovered(cx), 0, "whole, no tooltip");
-        cx.simulate_resize(size(px(461.), px(980.)));
+        resize(cx, 461.);
         assert!(lines(cx) > ERROR_LINES, "cut in the narrow window");
         assert_eq!(
             hovered(cx),
             1,
             "cut in one step, the next hover shows its tooltip"
         );
-        cx.simulate_resize(size(px(1480.), px(980.)));
+        resize(cx, 1480.);
         assert_eq!(lines(cx), ERROR_LINES, "whole again");
         assert_eq!(
             hovered(cx),
             0,
             "whole in one step, the next hover shows none"
         );
+    }
+
+    /// An error line measures a long report in bounded work through a live
+    /// resize: at 13 pt under Create tag, a 16 KiB report in one line, and
+    /// one of 550 lines, each stepped one width at a time from 600 to 461
+    /// px, below the dialog's 560 px, where each step lays the line out at
+    /// a new width. The one-line report lays out at most one line past
+    /// [`ERROR_LINES`] for each width, the 550-line one is cut at any width
+    /// and shaped at none, and each shows its tooltip at the end. Measured
+    /// whole, each step shaped and wrapped all of a report, about 600 lines
+    /// of the first in a 400 px line.
+    #[gpui::test]
+    async fn a_long_report_is_measured_in_bounded_work_through_a_live_resize(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let one_line = "remote: declined ".repeat(16 * 1024 / 17);
+        let many_lines = (1..=550)
+            .map(|line| format!("remote: hook line {line} declined"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(one_line.len() > 16_000 && many_lines.len() > 16_000);
+        const WIDTHS: [f32; 7] = [600., 580., 560., 540., 520., 500., 461.];
+        for (report, most) in [(&one_line, ERROR_LINES + 1), (&many_lines, 0)] {
+            cx.simulate_resize(size(px(1480.), px(980.)));
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    set_error_line(&mut form.error, report.clone(), window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            REPORT_LINES_LAID.set((0, 0));
+            for width in WIDTHS {
+                cx.simulate_resize(size(px(width), px(980.)));
+            }
+            let (measured, laid) = REPORT_LINES_LAID.get();
+            let lines = report.lines().count();
+            assert!(
+                laid <= measured * most,
+                "{lines} lines: {laid} lines laid out for {measured} widths"
+            );
+            assert!(
+                most == 0 || measured >= WIDTHS.len() - 1,
+                "{lines} lines: measured at {measured} of the {} widths",
+                WIDTHS.len()
+            );
+            assert_eq!(
+                hovered_tooltips(cx, "tag-preparation-error"),
+                1,
+                "{lines} lines: cut, its tooltip"
+            );
+        }
+    }
+
+    /// A hover's tooltip answers for the frame drawn last, its width, text
+    /// size and report together, whatever changed during the hover's delay:
+    /// in a 1480 × 980 window, a three-line report whole under Create tag at
+    /// 13 pt, the pointer rests on it, and before the delay ends the
+    /// interface text grows to 18 pt, where the report needs six lines: its
+    /// tooltip shows. Back at 13 pt, a one-line report rests under the
+    /// pointer, and before the delay ends a forty-line report replaces it:
+    /// its tooltip shows. Decided as the tooltip was asked for, the latest
+    /// width was measured at the hovered frame's size and with its report,
+    /// and neither tooltip showed.
+    #[gpui::test]
+    async fn a_change_during_the_hover_delay_is_answered_by_the_frame_drawn_last(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let set = |cx: &mut VisualTestContext, report: &str| {
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    set_error_line(&mut form.error, report, window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        let lines = |cx: &mut VisualTestContext, report: &str| {
+            let width = rendered(cx, "tag-preparation-error").size.width;
+            cx.update(|window, _| {
+                crate::image_compare::wrapped_lines(
+                    report,
+                    crate::appearance::ui_text(12.),
+                    width,
+                    window,
+                )
+            })
+        };
+        // The tooltips a hover shows once its delay has passed, `change`
+        // made as the pointer has come to rest on the line: the popups then,
+        // past those the window paints once the pointer has left.
+        let hovered = |cx: &mut VisualTestContext, change: &dyn Fn(&mut VisualTestContext)| {
+            let line = rendered(cx, "tag-preparation-error");
+            cx.simulate_mouse_move(line.center(), None, Modifiers::default());
+            change(cx);
+            cx.executor().advance_clock(TOOLTIP_DELAY);
+            cx.run_until_parked();
+            let shown = painted_popups(cx).len();
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(TOOLTIP_DELAY);
+            cx.run_until_parked();
+            shown as isize - painted_popups(cx).len() as isize
+        };
+        let text = |cx: &mut VisualTestContext, size: u8| {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(size, 12, window, cx));
+            draw(cx);
+        };
+
+        let three = (1..=3)
+            .map(|line| format!("remote: line {line} {}", "x".repeat(50)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        set(cx, &three);
+        assert_eq!(lines(cx, &three), ERROR_LINES, "whole at 13 pt");
+        assert_eq!(hovered(cx, &|_| ()), 0, "whole at 13 pt, no tooltip");
+        text(cx, 18);
+        assert!(lines(cx, &three) > ERROR_LINES, "cut at 18 pt");
+        text(cx, 13);
+        assert_eq!(
+            hovered(cx, &|cx| text(cx, 18)),
+            1,
+            "grown to 18 pt during the delay, the hover shows its tooltip"
+        );
+
+        text(cx, 13);
+        let forty = (1..=40)
+            .map(|line| format!("remote: hook line {line} declined the tag"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        set(cx, "Tag v9.0 already exists");
+        assert_eq!(hovered(cx, &|_| ()), 0, "a one-line report, no tooltip");
+        assert_eq!(
+            hovered(cx, &|cx| set(cx, &forty)),
+            1,
+            "replaced by a cut report during the delay, the hover shows its tooltip"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A tooltip shown while the pointer rests on an error line stays as it
+    /// was shown through a resize, as macOS keeps a shown tooltip until the
+    /// pointer moves off, and the next hover answers for the new cut: at
+    /// 13 pt, a three-line report whole under Create tag in a 560 × 980
+    /// window, the pointer rests on it past the delay, and nothing shows;
+    /// resized in one step to 540 × 980, where the report needs six lines
+    /// and the line still lies under the pointer, nothing shows however
+    /// long the pointer rests there; moved off and back, its tooltip shows.
+    /// Resized back as the pointer rests on it, its tooltip stays; moved off
+    /// and back, none shows.
+    #[gpui::test]
+    async fn a_tooltip_shown_through_a_resize_stays_until_the_pointer_moves_off(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let report = (1..=3)
+            .map(|line| format!("remote: line {line} {}", "x".repeat(50)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                set_error_line(&mut form.error, report.clone(), window, cx);
+                cx.notify();
+            })
+        });
+        // Where the pointer rests through a resize. A resize reads the
+        // pointer's place from the platform, which the test platform puts
+        // at the window's corner, so before the resize's frame draws, the
+        // pointer is put back where it rests, as the desktop reports it.
+        let rests = std::rc::Rc::new(std::cell::Cell::new(None::<Point<Pixels>>));
+        let _kept = cx.update(|window, cx| {
+            let rests = rests.clone();
+            let watcher = cx.new(|_| ());
+            let observing = watcher.update(cx, |_, cx| {
+                cx.observe_window_bounds(window, move |_, window, cx| {
+                    if let Some(position) = rests.get() {
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                position,
+                                modifiers: Modifiers::default(),
+                                pressed_button: None,
+                            }),
+                            cx,
+                        );
+                    }
+                })
+            });
+            (watcher, observing)
+        });
+        let resize = |cx: &mut VisualTestContext, width: f32| {
+            cx.simulate_resize(size(px(width), px(980.)));
+            rendered(cx, "tag-preparation-error")
+        };
+        let cut = |cx: &mut VisualTestContext, line: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                crate::image_compare::wrapped_lines(
+                    &report,
+                    crate::appearance::ui_text(12.),
+                    line.size.width,
+                    window,
+                ) > ERROR_LINES
+            })
+        };
+        // The popups the window paints as the pointer rests where it is,
+        // past the delay, in frames drawn then.
+        let resting = |cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(TOOLTIP_DELAY * 2);
+            cx.run_until_parked();
+            draw(cx);
+            painted_popups(cx).len()
+        };
+        let wide = resize(cx, 560.);
+        draw(cx);
+        let narrow = resize(cx, 540.);
+        draw(cx);
+        assert!(
+            !cut(cx, wide) && cut(cx, narrow),
+            "{wide:?} whole, {narrow:?} cut"
+        );
+        // A point on the line in both layouts.
+        let shared = wide.intersect(&narrow);
+        let pointer = point(shared.left() + px(40.), shared.center().y);
+        assert!(
+            shared.contains(&pointer),
+            "{wide:?} and {narrow:?} share {pointer:?}"
+        );
+        let away = point(px(-1.), px(-1.));
+        let rest = |cx: &mut VisualTestContext, at: Point<Pixels>| {
+            rests.set((at == pointer).then_some(at));
+            cx.simulate_mouse_move(at, None, Modifiers::default());
+        };
+
+        resize(cx, 560.);
+        draw(cx);
+        let none = painted_popups(cx).len();
+        rest(cx, pointer);
+        assert_eq!(resting(cx), none, "whole, nothing shows");
+        resize(cx, 540.);
+        assert_eq!(
+            resting(cx),
+            none,
+            "cut under the resting pointer, nothing shows however long it rests"
+        );
+        rest(cx, away);
+        resting(cx);
+        rest(cx, pointer);
+        assert_eq!(
+            resting(cx),
+            none + 1,
+            "moved off and back, its tooltip shows"
+        );
+        resize(cx, 560.);
+        assert_eq!(
+            resting(cx),
+            none + 1,
+            "whole under the resting pointer, its tooltip stays"
+        );
+        rest(cx, away);
+        assert_eq!(resting(cx), none, "moved off, it goes");
+        rest(cx, pointer);
+        assert_eq!(resting(cx), none, "and back, none shows");
     }
 
     /// A cut error line's tooltip shows the report's first twelve lines,
