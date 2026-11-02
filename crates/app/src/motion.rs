@@ -6240,6 +6240,62 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// An arrow or Shift-arrow that the Working list refuses, as while a
+    /// write runs, selects nothing and scrolls nothing: the list stays
+    /// where it was scrolled, its selection as it was, here its cursor on a
+    /// row scrolled out of view. The refused arrow once still scrolled the
+    /// list to the row it would have selected, the selection staying where
+    /// it was, out of view.
+    #[gpui::test]
+    async fn an_arrow_the_working_list_refuses_scrolls_nothing(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        // Enough files that the list scrolls.
+        for n in 1..=40 {
+            std::fs::write(repository.join(format!("m{n:02}.txt")), "more\n").unwrap();
+        }
+        quietly_refreshed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_selected.is_some()),
+            "a row is selected"
+        );
+        let last = app.read_with(cx, |app, _| app.working_rows.len() - 1);
+        app.update(cx, |app, _| {
+            app.working_scroll.scroll_to_item(last, ScrollStrategy::Top)
+        });
+        next_frame(cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        let state = |cx: &mut VisualTestContext| {
+            (
+                app.read_with(cx, |app, _| {
+                    app.working_scroll.0.borrow().base_handle.offset()
+                }),
+                working_choice(&app, cx),
+            )
+        };
+        let before = state(cx);
+        assert!(before.0.y < px(0.), "the list is scrolled: {:?}", before.0);
+        let write = held_write(&app, cx);
+        for keys in ["down", "shift-down", "up", "shift-up"] {
+            cx.simulate_keystrokes(keys);
+            next_frame(cx);
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.working_list_refuses()),
+                "{keys}: the list refuses"
+            );
+            assert_eq!(state(cx), before, "{keys}: nothing scrolls or is selected");
+        }
+        release(&app, write, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A click on the selected conflicted file's row, or Enter, while the
     /// Working list refuses a choice, as while a discard review is prepared
     /// (a write in the window's busy spell that leaves the preview open) or

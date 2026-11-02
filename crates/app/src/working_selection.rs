@@ -639,6 +639,12 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // As a plain arrow: refused, it extends and scrolls nothing, and
+        // the busy look says why at once (`move_working_selection`). It once
+        // scrolled to the row it would have added, showing no look.
+        if !self.working_files_drawn() || self.refuse_working_press(cx) {
+            return;
+        }
         let files: Vec<_> = self
             .actionable_working_rows()
             .iter()

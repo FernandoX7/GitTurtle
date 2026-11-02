@@ -2503,12 +2503,12 @@ impl GitTurtle {
     ) {
         // With no file drawn the arrow has nowhere to go and refuses
         // nothing, so it shows no busy look: one there once showed it at
-        // once during a write. Refused, the arrow still selects nothing
-        // (`choose_working_selection`), and the busy look says why at once.
-        if !self.working_files_drawn() {
+        // once during a write. Refused, it selects and scrolls nothing, and
+        // the busy look says why at once: it once scrolled the list to the
+        // row it would have selected, the selection left behind.
+        if !self.working_files_drawn() || self.refuse_working_press(cx) {
             return;
         }
-        self.refuse_working_press(cx);
         let files: Vec<_> = self
             .actionable_working_rows()
             .iter()
