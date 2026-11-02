@@ -46,6 +46,14 @@ mod operations;
 mod page_navigation;
 mod partial_view;
 mod path_filter;
+// The confined PDF helper process and its client; `pdf_view` calls the client
+// from the next slice.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[allow(dead_code, reason = "pdf_view calls the client from the next slice")]
+mod pdf_helper;
 mod pdf_view;
 mod platform_polish;
 mod preferences;
