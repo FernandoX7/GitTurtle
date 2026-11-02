@@ -1739,8 +1739,9 @@ mod hostile {
     /// 41513461121), as this host is every time at a 10% CPU quota. A kill
     /// is the bound the endless JBIG2 inputs meet and the app's timeout
     /// sentence; what the bomb must never do is finish, meet the filter or
-    /// outlast the deadline. #1588's oversized allocation keeps the data
-    /// limit's own evidence, an abort in milliseconds at any speed.
+    /// outlast the deadline. #1588's oversized allocation stays the memory
+    /// limits' evidence, an abort in milliseconds at any speed, and
+    /// `/proc/<pid>/limits` pins the data limit's value.
     #[test]
     fn hostile_inputs_end_within_the_deadline_and_never_meet_the_filter() {
         // https://github.com/LaurenzV/hayro/issues/1610: finding the end of
