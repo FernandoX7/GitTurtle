@@ -1447,6 +1447,18 @@ impl GitTurtle {
                 self.restore_tab_file(window, cx);
             }
             Output::Preview(content, elapsed) => {
+                // A reply for a comparison that is no longer shown is
+                // dropped, with the document bookmark that waited for it.
+                // Its generation can still match: Back cancels only the
+                // comparison's own read (`PREVIEW_LABEL`), never one
+                // restored with its tab. Landed, it wrote "… · content
+                // read" over History's status line and kept a comparison
+                // nothing showed. Another page shown over Compare keeps it,
+                // for the return.
+                if !matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working) {
+                    self.repository_tabs.document_restore = None;
+                    return;
+                }
                 // A working preview's `files` is the one previewed file.
                 let summary = if self.mode == WorkspaceMode::Working {
                     self.working_summary()
@@ -1480,9 +1492,9 @@ impl GitTurtle {
                     Content::Notice(_) | Content::Conflict(_) | Content::Rich(_) => {}
                 }
                 self.content = Some(content);
-                if self.page == AppPage::Repository
-                    && matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working)
-                {
+                // Compare or Working, as checked above; on the repository
+                // page, an editor for it is built now.
+                if self.page == AppPage::Repository {
                     // Only the read the person's choice of the file started
                     // activates it. A write's status read selecting the row
                     // again took focus into a conflict's draft, closing a
@@ -1832,9 +1844,10 @@ impl GitTurtle {
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());
         markdown_view::pause(self.content.as_deref());
-        // A preview still being read is abandoned: its late reply was already
-        // ignored, and cancelling the read now also stops what it prepares,
-        // such as the PDF helper rendering a first page, at its next check.
+        // A preview still being read is abandoned: `receive` drops its late
+        // reply once History shows, and cancelling the read now also stops
+        // what it prepares, such as the PDF helper rendering a first page,
+        // at its next check.
         if self.loading == Some(PREVIEW_LABEL) {
             self.invalidate_read();
         }
@@ -2605,6 +2618,85 @@ fn shaped_code_font(
     let (_, cx) = cx.add_window_view(move |_, _| probe);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     seen.borrow().clone().expect("the probe painted")
+}
+
+#[cfg(test)]
+mod late_preview_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The bookmark a session file keeps for `file` of `commit` shown in
+    /// Compare, as that file holds it.
+    fn compared(commit: &Commit, file: &FileChange) -> repository_tabs::Bookmark {
+        let text = |path: &Option<PathBuf>| {
+            path.as_deref()
+                .and_then(std::path::Path::to_str)
+                .map(str::to_owned)
+        };
+        serde_json::from_value(serde_json::json!({
+            "selected_oid": commit.oid,
+            "comparison": {
+                "old_path": text(&file.old_path),
+                "new_path": text(&file.new_path),
+                "old_oid": file.old_oid,
+                "new_oid": file.new_oid,
+                "old_mode": file.old_mode,
+                "new_mode": file.new_mode,
+                "status": file.status.letter(),
+            },
+            "origins": [commit.parents.first(), commit.oid],
+            "selected_file": text(&file.new_path),
+            "compare": true,
+        }))
+        .expect("a saved comparison")
+    }
+
+    /// A comparison restored with its tab reads its preview under its own
+    /// label, which Back does not cancel, and its reply after Back is
+    /// dropped: History keeps the status line Back left, no comparison is
+    /// kept and the document bookmark that waited for the reply goes with
+    /// it. The reply once wrote "1 changed file · content read N ms" over
+    /// History's status line and kept the comparison nothing showed. Not
+    /// left, the same restore shows its comparison.
+    #[gpui::test]
+    async fn a_restored_comparisons_preview_after_back_is_dropped(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let (bookmark, status) = app.read_with(cx, |app, _| {
+            let commit = &app.commits[app.selected_commit.expect("a selected commit")];
+            (compared(commit, &app.files[0]), app.status.clone())
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.repository_tabs.restoring = Some(bookmark.clone());
+                app.restore_tab_selection(window, cx);
+                assert!(app.mode == WorkspaceMode::Compare);
+                assert_eq!(app.loading, Some("Restoring captured comparison…"));
+                app.back_to_history(window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History);
+            assert_eq!(app.loading, None, "the restored read ran to its reply");
+            assert_eq!(app.status, status, "History's status line is Back's");
+            assert!(app.content.is_none(), "no comparison is kept");
+            assert!(app.images.iter().all(Option::is_none));
+            assert!(app.repository_tabs.document_restore.is_none());
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.repository_tabs.restoring = Some(bookmark);
+                app.restore_tab_selection(window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare);
+            assert!(app.content.is_some(), "the restored comparison shows");
+            assert!(app.status.contains("content read"), "{}", app.status);
+            assert!(app.repository_tabs.document_restore.is_none());
+        });
+    }
 }
 
 #[cfg(test)]

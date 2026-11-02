@@ -4,7 +4,7 @@ Read this when changing or reviewing page/mode transitions, focus, selection, wo
 
 ## Selection and asynchronous replies
 
-Commit selection in History requests `Job::Changes`; a highlighted file is not an activation. Explicit activation enters Compare. `receive(Output::Preview)` may retain current content after Back, but cannot reopen Compare or initialize a hidden editor. Preserve generation checks and both the `AppPage::Repository` and workspace-mode guards when changing asynchronous code.
+Commit selection in History requests `Job::Changes`; a highlighted file is not an activation. Explicit activation enters Compare. Back keeps the comparison already shown. `receive(Output::Preview)` drops a reply that lands once the mode is neither Compare nor Working: Back cancels only `PREVIEW_LABEL` reads, so a comparison restored with its tab still answers after it. A reply that lands while another page is shown over Compare is kept, without building its editor. Preserve generation checks and both the `AppPage::Repository` and workspace-mode guards when changing asynchronous code.
 
 Back from Compare restores the retained scope, query, loaded history, selection, scroll position, and inspector without another Git request. Working Changes keeps history files separately in `retained_history_files`; do not reuse mutable working files as the history inspector. History-changing writes use `refresh_after_write` to queue a quiet refresh, preserving the valid selected scope, pinned query, and immutable comparison. Re-resolve mutable branch/worktree identities; session reuse must not freeze tips. Parent changes keep the displayed comparison and selected file consistent. Rebuild selections from stable commit/file identity rather than virtualized row indices.
 

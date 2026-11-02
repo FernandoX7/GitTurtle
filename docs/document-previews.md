@@ -39,8 +39,10 @@ comparison's own preview read, the one labelled “Loading preview…”
 (`PREVIEW_LABEL` in [`main.rs`](../crates/app/src/main.rs)): a captured
 comparison restored with its tab (“Restoring captured comparison…”,
 [`repository_tabs.rs`](../crates/app/src/repository_tabs.rs)) keeps reading
-after Back until it completes or the helper reaches its 10-second deadline;
-its result never reopens Compare. A later page
+after Back until it completes or the helper reaches its 10-second deadline,
+and its result is then dropped: it does not reopen Compare, change History's
+status line or keep the comparison, so the file is read again when it is
+chosen. A later page
 is prepared on the render lane, whose request a page change, Retry page, Back,
 another file, a tab switch or leaving the repository page for Settings or
 Projects supersedes; leaving the page keeps a first page's read, whose
