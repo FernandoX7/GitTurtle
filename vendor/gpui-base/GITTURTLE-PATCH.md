@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -486,3 +486,55 @@ window opened at each width, by
 `cargo test --locked -p gitturtle draws_one_frame_where_it_settles`. Remove
 the patch when upstream chooses a placeholder from the laid-out width in the
 frame.
+
+The caret-start patch modifies `src/input/base/blink_cursor.rs` and changes
+runtime code only, beside a test of its own. Upstream `BlinkCursor::start`
+toggled the caret rather than showing it, and an input starts its cursor
+as focus is reported, which GPUI does after the frame that moved focus.
+A field given focus as a frame is drawn, as GitTurtle gives a warm
+repository tab its focus back in the frame that draws the tab
+(`repository_tabs::return_tab_focus`), so drew that frame with the caret
+as its blink had left it and then a second frame that only showed the
+caret, or hid it: a tab left in a text field drew two frames on its
+return, against one frame per input. A programmatic focus
+(`InputState::focus`) starts the cursor and then reports the focus that
+starts it again, so it hid the caret at once. `start` now shows the caret,
+notifying only where it was hidden, and schedules its first blink one
+interval later, so a second start changes nothing; `stop`, on blur, and a
+new cursor leave the caret shown for the next focus, which draws it in its
+first frame (an unfocused input draws no caret). Blinking after that is
+upstream's: hidden one interval after the start, shown the next, and held
+shown while typing or moving pauses it.
+
+Leaving the caret shown has one side effect, which `pause` now guards.
+An edit pauses a shown caret (`replace_text_in_range`), focused or not,
+and upstream's pause schedules a blink as it ends; with the caret left
+shown, text set in an unfocused field (`set_value`, which a warm
+repository tab's return calls on each of its six fields) set the field
+blinking for good, notifying it, and so redrawing the window, twice a
+second while idle. A cursor that is not blinking, a new one or one stopped
+on blur (epoch 0, `BlinkCursor::started`), now pauses nothing and
+schedules nothing. So a click into an unfocused field, which places the
+caret before the focus is reported, no longer holds the caret through a
+300 ms pause: the caret shows as the click focuses the field and first
+blinks off one interval after the focus starts it, as a field focused by
+its keys or a warm tab's return does. A focused field still holds its
+caret through a pause while typing and blinks again after it. `stop` also
+ends a pause: a warm tab's switch sets a still-focused field's text, which
+pauses it, just before the blur stops it, and that pause's own end finds a
+later epoch and blinks nothing, so a start that waited for it left the
+caret shown for good on the tab's return.
+
+The consumers are every text field: History's search field, the filters
+and the commit composer among them. The kit tests are
+`input::blink_cursor::tests::a_start_shows_the_caret_at_once_and_blinks_an_interval_later`
+and `input::blink_cursor::tests::a_cursor_not_blinking_pauses_nothing`
+(`scripts/vendor-crate-test.sh vendor/gpui-base blink_cursor`); the
+application's are `views::tests::an_unfocused_field_given_text_stays_still`,
+`views::tests::a_focused_field_holds_its_caret_while_typing_and_blinks_after`,
+`views::tests::a_warm_tab_left_in_a_field_draws_one_frame_with_its_caret`,
+a tab left with its caret shown and with it hidden in its blink, each
+drawing one frame on its return with the caret in it, and
+`views::tests::a_field_focused_by_its_keys_or_a_click_blinks_its_caret`.
+Remove the patch when upstream shows the caret as a focus starts it,
+pauses no cursor it has not started, and those tests pass without it.
