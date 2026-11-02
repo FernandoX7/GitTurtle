@@ -467,7 +467,13 @@ pub(crate) enum Failure {
     TimedOut,
     /// The helper died on `signal`, stopped in the renderer or exited without
     /// a valid reply. The signal is for tests and diagnostics, never wording.
-    Stopped { signal: Option<i32> },
+    Stopped {
+        #[allow(
+            dead_code,
+            reason = "never worded; only tests/pdf_helper.rs reads which signal ended the helper"
+        )]
+        signal: Option<i32>,
+    },
     /// The reply was malformed, out of bounds, short, larger than the cap or
     /// followed by more bytes.
     Unreadable,

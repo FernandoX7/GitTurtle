@@ -1,4 +1,5 @@
-//! Captured-byte document and media information, with static native PDF pages.
+//! Captured-byte document and media information, with a PDF's first page
+//! prepared through `pdf_view::prepare_page`.
 use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
 use std::{
@@ -128,20 +129,14 @@ impl Side {
         {
             side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
         }
+        // A PDF's first page and its text, prepared here on the repository
+        // worker as the page view prepares every later page.
+        let mut first_page = None;
         if bytes.starts_with(b"%PDF-") {
-            match gitturtle_preview::decode_pdf(&bytes, &check) {
-                Ok(document) => {
-                    side.page_count = document.page_count;
-                    for page in document.pages {
-                        check()?;
-                        side.pages.push(Page {
-                            render: Some(worker::render_image(&page)?),
-                            width: page.width,
-                            height: page.height,
-                            caption: None,
-                            error: None,
-                        });
-                    }
+            match crate::pdf_view::prepare_page(&bytes, 0, &check) {
+                Ok(prepared) => {
+                    side.page_count = prepared.count;
+                    first_page = Some(prepared.page);
                 }
                 Err(error) => side.error = Some(format!("{error:#}")),
             }
@@ -174,10 +169,9 @@ impl Side {
             side.pdf = Some(Arc::new(crate::pdf_view::Document::new(
                 captured.clone(),
                 side.page_count,
-                side.pages.pop(),
+                first_page,
                 &check,
             )?));
-            side.pages.clear();
         }
         side.capture(captured, &check)?;
         Ok(side)

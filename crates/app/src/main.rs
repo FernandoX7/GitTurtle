@@ -46,13 +46,12 @@ mod operations;
 mod page_navigation;
 mod partial_view;
 mod path_filter;
-// The confined PDF helper process and its client. Nothing calls the client
-// until `pdf_view` does in the next slice (T3), which drops this allow.
+// The confined PDF helper process and its client, which `pdf_view` renders
+// Linux PDF pages through.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-#[allow(dead_code, reason = "pdf_view calls the client from the next slice")]
 mod pdf_helper;
 mod pdf_view;
 mod platform_polish;
@@ -162,6 +161,8 @@ gpui_kit::actions!(
 #[folder = "../../assets/icons/"]
 struct EmbeddedAssets;
 const APP_ICON_PATH: &str = "branding/app-icon.png";
+/// The status of a History file's preview read, which Back abandons.
+const PREVIEW_LABEL: &str = "Loading preview…";
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
@@ -1831,6 +1832,12 @@ impl GitTurtle {
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());
         markdown_view::pause(self.content.as_deref());
+        // A preview still being read is abandoned: its late reply was already
+        // ignored, and cancelling the read now also stops what it prepares,
+        // such as the PDF helper rendering a first page, at its next check.
+        if self.loading == Some(PREVIEW_LABEL) {
+            self.invalidate_read();
+        }
         if self.close_blame(window, cx) {
             return;
         }
@@ -1971,7 +1978,7 @@ impl GitTurtle {
                     repo: repo.clone(),
                     file: self.files[index].clone(),
                 },
-                "Loading preview…",
+                PREVIEW_LABEL,
                 window,
                 cx,
             );

@@ -403,9 +403,23 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 - GitHub account connection cannot persist credentials on Linux yet; it refuses
   storage instead of writing plaintext credentials. Git's own configured
   authentication for explicit fetch/pull/push is separate.
-- Native PDF page rendering/text extraction and ImageIO-based AVIF, HEIC and
-  JPEG 2000 decoding require macOS. PNG/JPEG/GIF/WebP, supported SVG, rendered
-  Markdown and finite mesh/GLB/STEP previews have portable decoders; the
+- PDF pages and their text render on x86-64 and AArch64 in GitTurtle's own
+  helper process: the app starts its own executable once per page, the helper
+  confines itself (resource limits, `no_new_privs` and a seccomp filter that
+  allows no file, network or process calls) and renders with
+  [hayro](https://github.com/LaurenzV/hayro), and the app kills it after 10
+  seconds, within 25 ms of Back, another file or page, Retry page or a tab
+  switch, and when the app exits. **It needs a kernel with
+  seccomp filters** (`CONFIG_SECCOMP_FILTER`, on in every mainstream
+  distribution kernel, Asahi's included); without them every page says
+  “The PDF renderer could not start.” A running helper is named
+  `gitturtle-pdf`. Other architectures keep PDF metadata and an unavailable
+  result. The confinement's tests ran on AArch64 (Asahi) and on x86-64 in the
+  hosted [quality run 41480657885](https://github.com/FernandoX7/GitTurtle/actions/runs/41480657885)
+  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`).
+- ImageIO-based AVIF, HEIC and JPEG 2000 decoding require macOS.
+  PNG/JPEG/GIF/WebP, supported SVG, rendered Markdown and finite
+  mesh/GLB/STEP previews have portable decoders; the
   [format matrix](file-previews.md) defines bounds and unsupported variants.
   Recognizing metadata is not the same as rendering a format.
 - System preview is **Open in default app** on Linux: an explicit click hands a

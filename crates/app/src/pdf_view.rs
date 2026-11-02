@@ -1,5 +1,10 @@
-//! On-demand captured-byte PDF navigation. Native references remain on one
-//! serialized render lane; each side retains at most four pages / 16 MiB.
+//! On-demand captured-byte PDF navigation. [`prepare_page`] prepares one
+//! page and its text off the UI thread: on macOS with CoreGraphics and PDFKit,
+//! whose references stay on the preparing thread, and on Linux (x86-64 and
+//! AArch64) in GitTurtle's confined helper process (`crate::pdf_helper`).
+//! The first page is prepared on the repository worker and every later one
+//! on one serialized render lane; each side retains at most four pages /
+//! 16 MiB.
 use crate::native_accessibility::LiveRegion as _;
 use crate::system_preview::HeaderControl;
 use crate::*;
@@ -61,7 +66,9 @@ impl Cache {
         self.pages.push_back((index, Arc::new(page), bytes));
     }
 }
-struct PreparedPage {
+/// A page's pixels ready to draw, its text, and what the text dialog says
+/// about it.
+pub(crate) struct PreparedPage {
     image: rich_preview::Page,
     text: Option<Arc<str>>,
     text_notice: String,
@@ -89,6 +96,136 @@ impl PreparedPage {
         match text {
             Ok(text)=>Self {image,text_notice:if text.truncated {"Extracted text is limited to 256 KiB. Reading order can differ from the page layout."}else if text.text.is_none() {"This page has no extractable text. Scanned images require an external OCR tool."}else{"Extracted PDF text; reading order can differ from the page layout."}.into(),text:text.text.map(Arc::from)},
             Err(error)=>Self {image,text:None,text_notice:format!("Page text is unavailable: {error:#}")},
+        }
+    }
+}
+
+/// A prepared page and the page count of the document it came from.
+pub(crate) struct Prepared {
+    pub(crate) count: usize,
+    pub(crate) page: PreparedPage,
+}
+
+/// Prepares zero-based `page` of `bytes`, its pixels converted for drawing
+/// and its text, for both call sites: the first page on the repository
+/// worker (`rich_preview::Side::prepare`) and every later one on the render
+/// lane ([`Document::request`]). Call it only from those threads, which
+/// outlive the call: on Linux the helper's parent-death signal follows the
+/// thread that started it. `check` runs between phases, and on Linux at
+/// least every 25 ms while the helper runs, which kills it as soon as the
+/// check fails. Errors are worded for a person.
+pub(crate) fn prepare_page(
+    bytes: &[u8],
+    page: usize,
+    check: &dyn Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Prepared> {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        let reply = helper::client(bytes)
+            .render(bytes, page, check)
+            .map_err(helper::worded)?;
+        check()?;
+        let render = worker::render_image(&reply.image)?;
+        check()?;
+        let text = reply.text.map_err(|kind| {
+            helper::worded(crate::pdf_helper::Failure::Document {
+                kind,
+                page: reply.page,
+            })
+        });
+        Ok(Prepared {
+            count: reply.page_count,
+            page: PreparedPage::new(
+                rich_preview::Page {
+                    width: reply.image.width,
+                    height: reply.image.height,
+                    render: Some(render),
+                    caption: None,
+                    error: None,
+                },
+                text,
+            ),
+        })
+    }
+    // macOS renders with CoreGraphics and reads text with PDFKit; any other
+    // platform refuses with the preview crate's wording.
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    {
+        let mut preview = gitturtle_preview::decode_pdf_page(bytes, page, check)?;
+        check()?;
+        let image = preview
+            .pages
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("PDF page is unavailable"))?;
+        let render = worker::render_image(&image)?;
+        check()?;
+        let text = gitturtle_preview::decode_pdf_page_text(bytes, page, check);
+        check()?;
+        Ok(Prepared {
+            count: preview.page_count,
+            page: PreparedPage::new(
+                rich_preview::Page {
+                    width: image.width,
+                    height: image.height,
+                    render: Some(render),
+                    caption: None,
+                    error: None,
+                },
+                text,
+            ),
+        })
+    }
+}
+
+/// The Linux helper's client as the page view uses it.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod helper {
+    use crate::pdf_helper::{Client, Failure};
+    use gitturtle_preview::pdf_helper::ErrorKind;
+    use std::sync::Arc;
+
+    /// The client that renders `bytes`' pages: this executable as the
+    /// confined helper, with the app's two helper slots. In tests, the
+    /// helper a test named for these bytes, or else one that cannot start.
+    pub(super) fn client(bytes: &[u8]) -> Arc<Client<'static>> {
+        #[cfg(test)]
+        {
+            super::tests::linux::helper_for(bytes)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = bytes;
+            static CLIENT: std::sync::OnceLock<Arc<Client<'static>>> = std::sync::OnceLock::new();
+            CLIENT.get_or_init(|| Arc::new(Client::new())).clone()
+        }
+    }
+
+    /// `failure` in the words a person reads, which only `Failure`'s
+    /// `Display` gives: its `Debug` form carries error kinds and signals and
+    /// never reaches a page, a log or a label. A cancelled request keeps its
+    /// check's own error.
+    pub(super) fn worded(failure: Failure) -> anyhow::Error {
+        match failure {
+            Failure::Cancelled(error) => error,
+            // The view asks only for pages within the count a validated first
+            // reply gave it, so a reply that puts the page outside the
+            // document contradicts that count. Its own count would contradict
+            // the page number beside it ("Page 4 / 5"), so the view shows
+            // neither and calls the reply unreadable.
+            Failure::Document {
+                kind: ErrorKind::PageOutOfRange { .. },
+                ..
+            } => anyhow::anyhow!("{}", Failure::Unreadable),
+            failure => anyhow::anyhow!("{failure}"),
         }
     }
 }
@@ -147,24 +284,19 @@ impl Document {
         };
         self.linked.store(bookmark.linked, Ordering::Relaxed);
     }
+    /// A document of `count` pages, its first page already prepared with its
+    /// text where `first` holds it ([`prepare_page`]).
     pub fn new(
         bytes: Arc<[u8]>,
         count: usize,
-        first: Option<rich_preview::Page>,
+        first: Option<PreparedPage>,
         check: impl Fn() -> anyhow::Result<()>,
     ) -> anyhow::Result<Self> {
         check()?;
         let mut cache = Cache::default();
         if let Some(page) = first {
-            cache.insert(
-                0,
-                PreparedPage::new(
-                    page,
-                    gitturtle_preview::decode_pdf_page_text(&bytes, 0, &check),
-                ),
-            );
+            cache.insert(0, page);
         }
-        check()?;
         Ok(Self {
             bytes,
             count,
@@ -217,6 +349,10 @@ impl Document {
         let document = Arc::downgrade(self);
         let bytes = self.bytes.clone();
         let response = renderer().submit_read(move || {
+            // Fails once the page changes, the view pauses (Back, a hidden
+            // tab or another file) or the document is dropped. On Linux the
+            // helper's client runs it while the helper works and kills the
+            // helper as soon as it fails.
             let check = || {
                 anyhow::ensure!(
                     document.upgrade().is_some_and(|document| document
@@ -229,26 +365,7 @@ impl Document {
                 Ok(())
             };
             check()?;
-            let mut preview = gitturtle_preview::decode_pdf_page(&bytes, page, check)?;
-            check()?;
-            let image = preview
-                .pages
-                .pop()
-                .ok_or_else(|| anyhow::anyhow!("PDF page is unavailable"))?;
-            let render = worker::render_image(&image)?;
-            check()?;
-            let text = gitturtle_preview::decode_pdf_page_text(&bytes, page, check);
-            check()?;
-            Ok(PreparedPage::new(
-                rich_preview::Page {
-                    width: image.width,
-                    height: image.height,
-                    render: Some(render),
-                    caption: None,
-                    error: None,
-                },
-                text,
-            ))
+            Ok(prepare_page(&bytes, page, &check)?.page)
         });
         let document = Arc::downgrade(self);
         cx.spawn_in(window, async move |owner, cx| {
@@ -588,7 +705,8 @@ pub(super) fn render_comparison<T: 'static>(
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
-            let body = body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()));
+            // Why the side has no pages, read as static text.
+            let body = body.child(native_accessibility::text(SharedString::from(format!("pdf-side-message-{index}")), side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into())));
             return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding, held }), vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
@@ -665,7 +783,8 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(page) = cached && let Some(render) = &page.render {
             body = body.child(div().id(("pdf-rendered-page",index)).role(Role::Image).aria_label(format!("{label}: PDF page {} of {}. {rendered}",page_number,document.count)).w(relative(zoom)).min_w(px(100.)).aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(crate::gif_playback::static_image(render.clone())));
         } else {
-            body=body.child(div().text_color(rgb(colors.muted)).child(error.unwrap_or_else(|| if pending {"Preparing selected page…"}else{"Page preparation pending…"}.into())));
+            // Why the page is not drawn, in the page's room, read as static text.
+            body=body.child(div().text_color(rgb(colors.muted)).child(native_accessibility::text(SharedString::from(format!("pdf-page-message-{index}")), error.unwrap_or_else(|| if pending {"Preparing selected page…"}else{"Page preparation pending…"}.into()))));
         }
         if let Some(other) = &other.pdf && document.linked.load(Ordering::Relaxed) && other.count != document.count {
             body = body.child(div().mt_2().text_size(appearance::ui_text(11.)).child("The revisions have different page counts. Linked navigation stops each side at its own last page."));
@@ -697,11 +816,12 @@ pub(crate) mod tests {
         document.linked.fetch_xor(true, Ordering::Relaxed);
     }
 
-    /// `preview`, a changed PDF's comparison, as the page view draws it
-    /// where a build renders pages (macOS, with PDFKit): each side has three
-    /// pages, Before's first prepared, so it offers Read page text, and
-    /// After's failed, as Linux renders none, so it offers Retry page. Each
-    /// side offers to link their pages.
+    /// `preview`, a changed PDF's comparison, as the page view draws it once
+    /// a first page has been prepared: each side has three pages, Before's
+    /// first prepared with its text, so it offers Read page text, and
+    /// After's failed through the page lane, whose helper the tests cannot
+    /// start ([`linux::helper_for`]; a build without the helper refuses), so
+    /// it offers Retry page. Each side offers to link their pages.
     #[cfg(target_os = "linux")]
     pub(crate) fn paged(preview: &rich_preview::Comparison) -> crate::worker::Content {
         paged_at(preview, 3, 0)
@@ -709,7 +829,7 @@ pub(crate) mod tests {
 
     /// [`paged`] with `count` pages a side, each side showing page `shown`
     /// (counted from 0), which Before has prepared only where it is the
-    /// first.
+    /// first; every other page fails as After's does.
     #[cfg(target_os = "linux")]
     pub(crate) fn paged_at(
         preview: &rich_preview::Comparison,
@@ -725,8 +845,15 @@ pub(crate) mod tests {
             paged.pdf = Some(Arc::new(document));
             Arc::new(paged)
         };
+        let first = PreparedPage::new(
+            page(),
+            Ok(gitturtle_preview::PdfPageText {
+                text: Some("Before's first page".into()),
+                truncated: false,
+            }),
+        );
         crate::worker::Content::Rich(rich_preview::Comparison {
-            old: side(&preview.old, Some(page())),
+            old: side(&preview.old, Some(first)),
             new: side(&preview.new, None),
         })
     }
@@ -865,5 +992,547 @@ pub(crate) mod tests {
         assert!(!before.state.lock().unwrap().accepts(0, 0));
         before.pause();
         assert!(!before.state.lock().unwrap().pending);
+    }
+
+    /// Pages through GitTurtle's PDF helper on Linux, with shell fakes as the
+    /// helper: each writes its pid to a file first, then plays its part.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    pub(crate) mod linux {
+        use super::*;
+        use crate::pdf_helper::{Client, DEADLINE, HelperCommand, Slots};
+        use gitturtle_preview::pdf_helper::PROTOCOL_VERSION;
+        use std::{
+            path::Path,
+            time::{Duration, Instant},
+        };
+
+        /// A deadline longer than a test's drains wait (`operations::test_wait`,
+        /// 30 s at the least): a helper still running when it should have
+        /// been stopped holds its thread, and the drain fails rather than
+        /// see the deadline stop it.
+        const LONG: Duration = Duration::from_secs(60);
+
+        /// A fake that never answers and ends with the test process: it
+        /// waits while its parent, the test, lives. A failing run's fake
+        /// then lasts until the client's deadline or the test's end, not
+        /// beyond.
+        const BLOCKS: &str = "while kill -0 $PPID 2>/dev/null; do sleep 0.05; done";
+
+        /// The helpers tests named for documents' bytes ([`name_helper`]),
+        /// the latest last.
+        static NAMED: Mutex<Vec<(Vec<u8>, Arc<Client<'static>>)>> = Mutex::new(Vec::new());
+        static UNSTARTABLE_SLOTS: Slots = Slots::new(2);
+
+        /// The helper a test named for `bytes`, or else one that cannot
+        /// start: a program that does not exist, so that no test runs this
+        /// test binary as a helper and every page no test named fails at
+        /// once with "The PDF renderer could not start."
+        pub(crate) fn helper_for(bytes: &[u8]) -> Arc<Client<'static>> {
+            if let Some((_, client)) = NAMED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .rev()
+                .find(|(named, _)| named == bytes)
+            {
+                return client.clone();
+            }
+            static UNSTARTABLE: OnceLock<Arc<Client<'static>>> = OnceLock::new();
+            UNSTARTABLE
+                .get_or_init(|| {
+                    Arc::new(Client::with(
+                        HelperCommand::new("/nonexistent/gitturtle-pdf-helper", [] as [&str; 0]),
+                        DEADLINE,
+                        &UNSTARTABLE_SLOTS,
+                    ))
+                })
+                .clone()
+        }
+
+        /// From now on, `bytes`' pages come from a shell fake that writes
+        /// its pid to `pid` and then runs `script`, stopped at `deadline`,
+        /// with two helper slots of its own.
+        fn name_helper(bytes: &[u8], pid: &Path, script: &str, deadline: Duration) {
+            let script = format!(
+                "PATH=/usr/bin:/bin; printf %s $$ > '{}'; {script}",
+                pid.display()
+            );
+            let slots: &'static Slots = Box::leak(Box::new(Slots::new(2)));
+            let client = Client::with(
+                HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+                deadline,
+                slots,
+            );
+            NAMED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((bytes.to_vec(), Arc::new(client)));
+        }
+
+        /// A script that prints `frame`, a reply, byte for byte.
+        fn printing(frame: &[u8]) -> String {
+            let octal: String = frame.iter().map(|byte| format!("\\{byte:03o}")).collect();
+            format!("exec printf '{octal}'")
+        }
+
+        fn reply(status: u8) -> Vec<u8> {
+            let mut frame = b"GTPr".to_vec();
+            frame.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+            frame.push(status);
+            frame
+        }
+
+        /// A 1 × 1 page reply for zero-based `page` of `count` pages: its
+        /// text is `text`, or a renderer failure where `text` is `None`.
+        fn page_frame(page: u32, count: u32, text: Option<&str>) -> Vec<u8> {
+            let mut frame = reply(0);
+            for value in [page, count, 1, 1, 1, 1] {
+                frame.extend_from_slice(&value.to_le_bytes());
+            }
+            let words = text.unwrap_or_default();
+            // Text present; or failed, with the renderer-failure kind (13).
+            frame.extend_from_slice(if text.is_some() {
+                &[1, 0, 0]
+            } else {
+                &[2, 13, 0]
+            });
+            for value in [words.len() as u32, 1, 2, 3] {
+                frame.extend_from_slice(&value.to_le_bytes());
+            }
+            frame.extend_from_slice(&[9, 8, 7, 255]);
+            frame.extend_from_slice(words.as_bytes());
+            frame
+        }
+
+        /// An error reply of kind `code` with `detail`.
+        fn error_frame(code: u8, detail: u32) -> Vec<u8> {
+            let mut frame = reply(1);
+            frame.push(code);
+            frame.extend_from_slice(&detail.to_le_bytes());
+            frame
+        }
+
+        /// The pid a fake wrote, once it has.
+        fn pid_in(path: &Path) -> libc::pid_t {
+            let started = Instant::now();
+            loop {
+                if let Some(pid) = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|pid| pid.parse().ok())
+                {
+                    return pid;
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "the fake never started"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        /// The process is gone and reaped: not even a zombie is left.
+        fn reaped(pid: libc::pid_t) -> bool {
+            // SAFETY: signal 0 only checks that the process exists.
+            let result = unsafe { libc::kill(pid, 0) };
+            result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        }
+
+        /// A small PDF whose bytes name the test, so that its helper is the
+        /// one the test named.
+        fn pdf(name: &str) -> Vec<u8> {
+            format!("%PDF-1.4\n% {name}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+                .into_bytes()
+        }
+
+        /// A comparison whose Before is a `count`-page document of `bytes`
+        /// showing page `shown` (counted from 0), none of its pages
+        /// prepared, and whose After is absent.
+        fn before_only(
+            bytes: &[u8],
+            count: usize,
+            shown: usize,
+        ) -> (crate::worker::Content, Arc<Document>) {
+            let document =
+                Arc::new(Document::new(Arc::from(bytes), count, None, || Ok(())).unwrap());
+            document.state.lock().unwrap().page = shown;
+            let name = Path::new("document.pdf");
+            let mut before = rich_preview::Side::unavailable(name, true, None);
+            before.pdf = Some(document.clone());
+            let content = crate::worker::Content::Rich(rich_preview::Comparison {
+                old: Arc::new(before),
+                new: Arc::new(rich_preview::Side::unavailable(name, false, None)),
+            });
+            (content, document)
+        }
+
+        struct Pages {
+            content: crate::worker::Content,
+        }
+
+        impl Render for Pages {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let crate::worker::Content::Rich(comparison) = &self.content else {
+                    panic!("a document comparison");
+                };
+                let opener = crate::system_preview::Opener::new(
+                    WeakEntity::new_invalid(),
+                    crate::system_preview::Showing::next(),
+                );
+                div()
+                    .w(px(900.))
+                    .h(px(600.))
+                    .flex()
+                    .flex_col()
+                    .child(render_comparison(
+                        comparison,
+                        false,
+                        opener,
+                        px(900.),
+                        window,
+                        cx,
+                    ))
+            }
+        }
+
+        fn window(
+            cx: &mut gpui_kit::TestAppContext,
+            content: crate::worker::Content,
+        ) -> (Entity<Pages>, &mut gpui_kit::VisualTestContext) {
+            // A page answers on the render lane's thread, which wakes the
+            // view's task from there, as the app's windows allow.
+            cx.executor().allow_parking();
+            cx.update(gpui_kit::init);
+            // A drawn page's pixels are registered for release.
+            cx.update(crate::image_lifetime::init);
+            cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+            let (view, cx) = cx.add_window_view(|_, _| Pages { content });
+            cx.simulate_resize(size(px(1000.), px(700.)));
+            (view, cx)
+        }
+
+        /// What the side says where its page would be drawn, read as static
+        /// text, if it says anything.
+        fn page_message(cx: &mut gpui_kit::VisualTestContext, id: &str) -> Option<String> {
+            crate::native_accessibility::written::forget();
+            crate::tags::tests::draw(cx);
+            crate::native_accessibility::written::labels()
+                .into_iter()
+                .find(|(written, _)| written == id)
+                .and_then(|(_, name)| name)
+        }
+
+        fn click(cx: &mut gpui_kit::VisualTestContext, selector: &'static str) {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            cx.simulate_click(bounds.center(), Modifiers::none());
+        }
+
+        /// A page that answers after the person moved to another page is
+        /// dropped, and its helper is killed then rather than at its
+        /// deadline: the page lane's check, which the page change fails,
+        /// runs while the helper works. The next page is drawn with its
+        /// text offered, and nothing of the late page is shown.
+        #[gpui::test]
+        fn a_late_page_after_a_page_change_is_dropped_and_its_helper_killed(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("a late page after a page change");
+            // The first page's helper never answers.
+            let first = fakes.path().join("first");
+            name_helper(&bytes, &first, BLOCKS, LONG);
+            let (content, document) = before_only(&bytes, 3, 0);
+            let (_view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            let first = pid_in(&first);
+            // The second page's answers at once.
+            let frame = page_frame(1, 3, Some("the second page"));
+            name_helper(
+                &bytes,
+                &fakes.path().join("second"),
+                &printing(&frame),
+                LONG,
+            );
+            click(cx, "pdf-forward-0");
+            // Asks for the second page behind the first page's request.
+            crate::tags::tests::draw(cx);
+            drain_pages();
+            crate::tags::tests::draw(cx);
+            assert!(
+                reaped(first),
+                "the first page's helper is killed and reaped once the page changes"
+            );
+            assert!(
+                cx.debug_bounds("pdf-read-text-0").is_some(),
+                "the second page arrived with its text, so it offers Read page text"
+            );
+            assert!(
+                cx.debug_bounds("pdf-retry-0").is_none(),
+                "the first page's late failure is dropped: nothing offers Retry page"
+            );
+            assert_eq!(page_message(cx, "pdf-page-message-0"), None);
+            let mut state = document.state.lock().unwrap();
+            assert_eq!((state.page, state.pending, &state.error), (1, false, &None));
+            assert!(state.cache.get(0).is_none() && state.cache.get(1).is_some());
+        }
+
+        /// Back pauses the view's documents (`pdf_view::pause`, as a hidden
+        /// tab and another file do): the helper at work is killed then, its
+        /// late answer is dropped and leaves no error, and the page is asked
+        /// for again when the view is drawn again.
+        #[gpui::test]
+        fn a_late_page_after_a_pause_is_dropped_and_its_helper_killed(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("a late page after Back");
+            let slow = fakes.path().join("slow");
+            name_helper(&bytes, &slow, BLOCKS, LONG);
+            let (content, document) = before_only(&bytes, 3, 1);
+            let (view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            let slow = pid_in(&slow);
+            view.update(cx, |view, _| pause(Some(&view.content)));
+            drain_pages();
+            // The late answer reaches the view's task, which drops it.
+            cx.run_until_parked();
+            assert!(
+                reaped(slow),
+                "the paused page's helper is killed and reaped"
+            );
+            {
+                let mut state = document.state.lock().unwrap();
+                assert_eq!((state.page, state.pending, &state.error), (1, false, &None));
+                assert!(state.cache.get(1).is_none());
+            }
+            // Drawn again, as Compare is on its return, the page is asked for again.
+            let frame = page_frame(1, 3, Some("the second page"));
+            name_helper(&bytes, &fakes.path().join("again"), &printing(&frame), LONG);
+            crate::tags::tests::draw(cx);
+            drain_pages();
+            crate::tags::tests::draw(cx);
+            assert!(cx.debug_bounds("pdf-read-text-0").is_some());
+            assert!(document.state.lock().unwrap().cache.get(1).is_some());
+        }
+
+        /// A `git fast-import` stream of one commit per document on `main`,
+        /// oldest first, each writing it as `document.pdf`.
+        fn commits(documents: &[&[u8]]) -> Vec<u8> {
+            let mut input = Vec::new();
+            for (index, document) in documents.iter().enumerate() {
+                input.extend_from_slice(
+                    format!(
+                        "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata 8\nrevision\nM 100644 inline document.pdf\ndata {}\n",
+                        1_700_000_000 + index,
+                        document.len()
+                    )
+                    .as_bytes(),
+                );
+                input.extend_from_slice(document);
+                input.push(b'\n');
+            }
+            input.extend_from_slice(b"done\n");
+            input
+        }
+
+        /// Back while a changed PDF's first page is still being prepared,
+        /// on the repository worker before any page view exists, cancels
+        /// that read: Before's helper is killed and reaped then rather than
+        /// at its deadline, and After's helper never starts. Back once only
+        /// paused the documents, which did not exist yet, and both helpers
+        /// ran on to their deadlines in turn, each holding one of the app's
+        /// two helper slots.
+        #[gpui::test]
+        async fn back_during_a_first_page_kills_its_helper_and_starts_no_other(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fakes = tempfile::tempdir().unwrap();
+            let before = pdf("Back during a first page: Before");
+            let after = pdf("Back during a first page: After");
+            let (started, other) = (fakes.path().join("before"), fakes.path().join("after"));
+            name_helper(&before, &started, BLOCKS, LONG);
+            name_helper(&after, &other, BLOCKS, LONG);
+            let input = commits(&[&before, &after]);
+            let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, &input).await;
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            let first = pid_in(&started);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+            // The read ends once its check fails, which kills the helper.
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            assert!(
+                reaped(first),
+                "Before's helper is killed and reaped on Back"
+            );
+            assert!(!other.exists(), "After's helper never starts");
+            // Nothing is left loading, and no comparison arrives.
+            assert_eq!(app.read_with(cx, |app, _| app.loading), None);
+            assert!(app.read_with(cx, |app, _| app.content.is_none()));
+        }
+
+        /// A page stopped at its deadline says so in the page's room and
+        /// offers Retry page, not Read page text; Retry page asks for that
+        /// page again (the fake's answer is for that page alone), and the
+        /// page then arrives with its text.
+        #[gpui::test]
+        fn a_page_past_its_deadline_says_so_and_retry_page_asks_for_it_again(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("a page past its deadline");
+            // A deadline of zero has passed as soon as the helper starts.
+            let stopped = fakes.path().join("stopped");
+            name_helper(&bytes, &stopped, BLOCKS, Duration::ZERO);
+            let (content, document) = before_only(&bytes, 3, 1);
+            let (_view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            drain_pages();
+            assert_eq!(
+                page_message(cx, "pdf-page-message-0").as_deref(),
+                Some("The PDF page took longer than 10 seconds and was stopped.")
+            );
+            assert!(cx.debug_bounds("pdf-retry-0").is_some());
+            assert!(
+                cx.debug_bounds("pdf-read-text-0").is_none(),
+                "no text arrived for the stopped page"
+            );
+            let frame = page_frame(1, 3, Some("the second page"));
+            name_helper(
+                &bytes,
+                &fakes.path().join("retried"),
+                &printing(&frame),
+                LONG,
+            );
+            click(cx, "pdf-retry-0");
+            crate::tags::tests::draw(cx);
+            drain_pages();
+            crate::tags::tests::draw(cx);
+            assert!(cx.debug_bounds("pdf-retry-0").is_none());
+            assert!(cx.debug_bounds("pdf-read-text-0").is_some());
+            assert_eq!(page_message(cx, "pdf-page-message-0"), None);
+            let mut state = document.state.lock().unwrap();
+            let page = state.cache.get(1).expect("the retried page");
+            assert_eq!(page.text.as_deref(), Some("the second page"));
+        }
+
+        /// A helper that cannot confine itself, as on a kernel without
+        /// seccomp, exits with its confinement code: the first page's side
+        /// says the renderer could not start and offers no Retry page, as a
+        /// failed first page offers none on macOS, and a later page says
+        /// the same in its room with Retry page.
+        #[gpui::test]
+        fn a_renderer_that_could_not_start_says_so(cx: &mut gpui_kit::TestAppContext) {
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("a helper without seccomp");
+            let script = format!("exit {}", crate::pdf_helper::exit::CONFINEMENT);
+            name_helper(&bytes, &fakes.path().join("pid"), &script, LONG);
+            let first =
+                rich_preview::Side::prepare(bytes.clone(), Path::new("document.pdf"), || Ok(()))
+                    .unwrap();
+            assert!(first.pdf.is_none());
+            let (later, _) = before_only(&bytes, 3, 1);
+            let content = crate::worker::Content::Rich(rich_preview::Comparison {
+                old: Arc::new(first),
+                new: match &later {
+                    crate::worker::Content::Rich(later) => later.old.clone(),
+                    _ => unreachable!(),
+                },
+            });
+            let (_view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            drain_pages();
+            let sentence = Some("The PDF renderer could not start.".to_owned());
+            assert_eq!(page_message(cx, "pdf-side-message-0"), sentence);
+            assert_eq!(page_message(cx, "pdf-page-message-1"), sentence);
+            assert!(cx.debug_bounds("pdf-retry-0").is_none());
+            assert!(cx.debug_bounds("pdf-retry-1").is_some());
+        }
+
+        /// The app's client starts this very executable as the helper with
+        /// exactly the helper's arguments, stops it at 10 seconds and shares
+        /// the app's two helper slots; and however the helper ends, its
+        /// signal never reaches the words: a refused call (SIGSYS) or a kill
+        /// the client did not send reads as the renderer stopping, its own
+        /// CPU limit or alarm as the timeout.
+        #[test]
+        fn the_app_s_client_runs_this_executable_and_words_every_ending() {
+            use std::os::unix::process::ExitStatusExt;
+            let client = Client::new();
+            let (command, deadline, slots) = client.parts();
+            let (version, parent) = (PROTOCOL_VERSION.to_string(), std::process::id().to_string());
+            assert_eq!(
+                command.argv(),
+                [
+                    "/proc/self/exe",
+                    crate::pdf_helper::HELPER_FLAG,
+                    &version,
+                    &parent
+                ]
+                .map(std::ffi::OsStr::new)
+            );
+            assert_eq!(deadline, Duration::from_secs(10));
+            assert!(std::ptr::eq(slots, &crate::pdf_helper::HELPERS));
+            let stopped = "The PDF renderer stopped on this page.";
+            let timed_out = "The PDF page took longer than 10 seconds and was stopped.";
+            for (signal, sentence) in [
+                (libc::SIGSYS, stopped),
+                (libc::SIGKILL, stopped),
+                (libc::SIGSEGV, stopped),
+                (libc::SIGXCPU, timed_out),
+                (libc::SIGALRM, timed_out),
+            ] {
+                let status = std::process::ExitStatus::from_raw(signal);
+                let Err(failure) = crate::pdf_helper::classify_exit(status, &[], 0) else {
+                    panic!("signal {signal} gave a page");
+                };
+                assert_eq!(
+                    format!("{:#}", super::super::helper::worded(failure)),
+                    sentence
+                );
+            }
+        }
+
+        /// What the helper reports is worded only through `Failure`'s
+        /// `Display`: a page that lost its text keeps its pixels and says
+        /// why in the text dialog; a helper that dies says the renderer
+        /// stopped; and a reply that puts a page the view asked for outside
+        /// the document contradicts the count the view shows beside it, so
+        /// the view shows neither count and calls it unreadable.
+        #[test]
+        fn the_helper_s_answers_are_worded_by_their_display() {
+            let fakes = tempfile::tempdir().unwrap();
+            let pid = fakes.path().join("pid");
+            let prepare = |name: &str, script: &str, page| {
+                let bytes = pdf(name);
+                name_helper(&bytes, &pid, script, LONG);
+                prepare_page(&bytes, page, &|| Ok(()))
+            };
+            let textless = prepare("text lost", &printing(&page_frame(0, 2, None)), 0).unwrap();
+            assert_eq!(textless.count, 2);
+            assert!(textless.page.render.is_some() && textless.page.text.is_none());
+            assert_eq!(
+                textless.page.text_notice,
+                "Page text is unavailable: The PDF renderer stopped on this page."
+            );
+            let worded = |result: anyhow::Result<Prepared>| match result {
+                Ok(_) => panic!("a page"),
+                Err(error) => format!("{error:#}"),
+            };
+            assert_eq!(
+                worded(prepare("helper died", "exit 1", 0)),
+                "The PDF renderer stopped on this page."
+            );
+            assert_eq!(
+                worded(prepare("page outside", &printing(&error_frame(9, 1)), 2)),
+                "The PDF renderer returned an unreadable result."
+            );
+            assert_eq!(
+                worded(prepare("locked", &printing(&error_frame(6, 0)), 2)),
+                "PDF is password protected; use explicit external inspection to unlock it"
+            );
+        }
     }
 }

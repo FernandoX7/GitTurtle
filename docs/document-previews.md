@@ -23,6 +23,27 @@ API is invoked. See Apple's [data initializer](https://developer.apple.com/docum
 [page lookup](https://developer.apple.com/documentation/pdfkit/pdfdocument/page(at:))
 and [page text API](https://developer.apple.com/documentation/pdfkit/pdfpage/string).
 
+On Linux (x86-64 and AArch64), [hayro](https://github.com/LaurenzV/hayro)
+renders the page and extracts its text inside GitTurtle's own helper process,
+never in the app: [`pdf_view::prepare_page`](../crates/app/src/pdf_view.rs)
+starts one helper per page through the client in
+[`pdf_helper.rs`](../crates/app/src/pdf_helper.rs), writes the captured bytes
+to its standard input and reads one bounded reply of pixels, page count and
+text. The helper confines itself before it reads a byte (resource limits,
+`no_new_privs` and a seccomp allow-list with no file, network or process
+calls). The client kills it at a 10-second deadline, and within 25 ms once
+the page is no longer wanted. A first page is prepared by the repository
+worker's read, which a newer read (another file or commit), Back from
+Compare, a tab switch or close, or closing the window cancels. A later page
+is prepared on the render lane, whose request a page change, Retry page, Back,
+another file, a tab switch or leaving the repository page for Settings or
+Projects supersedes; leaving the page keeps a first page's read, whose
+comparison waits for the return. The parent-death signal ends a helper when
+the app exits. At most two helpers run at once. The
+[architecture review](development/2026-11-02-linux-pdf-pages-architecture.md)
+records the design and its security review. Other Linux targets and other
+platforms keep metadata and an explicit unsupported result.
+
 | Behavior | Bound or limitation |
 | --- | --- |
 | Captured input | At most 32 MiB with a PDF header. Locked, corrupt and unsupported documents retain an explicit unavailable result. |
@@ -30,13 +51,29 @@ and [page text API](https://developer.apple.com/documentation/pdfkit/pdfpage/str
 | Page pixels | At most a 1,000-pixel output edge, preserving aspect ratio and page rotation. Source geometry must also pass the shared edge/pixel bounds. Fit and 25–400% display zoom reuse the bounded raster; zoom does not request a higher-resolution decode. |
 | Retention | [The native page cache](../crates/app/src/pdf_view.rs) retains up to four pages and 16 MiB per side, whichever limit is reached first. Render pixels, extracted text and text notices share that budget. The enclosing immutable preview cache reserves the full per-side allowance before demand-loaded pages arrive. |
 | Text alternative | “Read page text” opens a read-only, selectable native text editor for the selected captured page. Returned UTF-8 is capped at 256 KiB; truncation is explicit and never splits a Unicode character. Text absence is explicit. No OCR is requested, and text-layer reading order can differ from visual layout. Extracted text is never a Git patch. |
-| Scheduling | Initial preparation uses the cancellable repository worker. Subsequent pages use one serialized render lane with a bounded queue. Generation/page checks reject stale results; cancellation is checked between parsing, drawing, extraction and conversion phases. |
-| Platform | PDF page rendering and text extraction currently require macOS frameworks. Other platforms retain metadata and an explicit unsupported result. |
+| Scheduling | Both call sites prepare a page through `prepare_page`: the first page on the cancellable repository worker, later pages on one serialized render lane with a bounded queue. Generation/page checks reject stale results; cancellation is checked between parsing, drawing, extraction and conversion phases, and on Linux at least every 25 ms while the helper runs, killing it once the request is superseded. |
+| Platform | macOS renders with CoreGraphics and reads text with PDFKit; Linux on x86-64 and AArch64 renders and reads text with hayro in the confined helper, which needs a kernel with seccomp filters (without them the page says “The PDF renderer could not start.”). Other platforms retain metadata and an explicit unsupported result. |
 
-Native framework calls cannot be interrupted mid-call. Input, returned text,
-retained pixels and queue limits are independent; they do not form a hard
-wall-clock deadline or process-memory sandbox. A page can still be displayed
-when its text layer cannot be extracted. System preview is an explicit user
+macOS framework calls cannot be interrupted mid-call: on macOS, input,
+returned text, retained pixels and queue limits are independent and do not
+form a hard wall-clock deadline or process-memory sandbox. The Linux helper
+is both, within its limits. A page can still be displayed when its text layer
+cannot be extracted.
+
+A page that fails says why where the page would be drawn, worded by the app,
+never with text from the helper: the document's own errors use the macOS
+sentences, and the helper's are “The PDF renderer could not start.”, “The PDF
+page took longer than 10 seconds and was stopped.”, “The PDF renderer stopped
+on this page.” and “The PDF renderer returned an unreadable result.” A later
+page offers Retry page, which asks for that page again; a failed first page
+leaves the side without pages and offers none, as on macOS. Nothing retries
+by itself, since a hostile page would only burn the CPU again. Read page text
+is offered only for a page whose pixels and text result arrived; a page whose
+text alone failed shows its pixels, and its text dialog says why. A reply that
+puts a requested page outside the document is called unreadable rather than
+shown with its own page count, which would contradict the count the view
+already shows (every page the view asks for lies within the count of the
+first page's validated reply). System preview is an explicit user
 action on an isolated copy of captured bytes.
 
 ## Native Markdown and local resources
