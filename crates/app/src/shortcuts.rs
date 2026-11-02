@@ -892,7 +892,7 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
                 )
                 .mb(-room),
             )
-            .width(appearance::dialog_width(appearance::ui_size(650.), window))
+            .width(help_dialog_width(window))
             .max_h(appearance::dialog_max_height(window))
             .bg(rgb(surface.raised()))
             .border_color(rgb(surface.raised_edge()))
@@ -926,10 +926,26 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     window.refresh();
 }
 
+/// Keyboard Shortcuts' width in this window: 650 px at the interface size,
+/// narrowed to keep the dialog's margin from the window's sides.
+fn help_dialog_width(window: &Window) -> Pixels {
+    appearance::dialog_width(appearance::ui_size(650.), window)
+}
+
+/// The kit dialog's 16 px padding and 1 px border on either side of what it
+/// holds, which do not grow with the text.
+const HELP_DIALOG_INSET: Pixels = px(17.);
+
+/// The width Keyboard Shortcuts lays its view out in, the dialog's width
+/// ([`help_dialog_width`]) inside the kit's padding and border.
+pub(crate) fn help_width(window: &Window) -> Pixels {
+    help_dialog_width(window) - HELP_DIALOG_INSET * 2.
+}
+
 /// The line above the shortcut list: how many shortcuts it holds, the count
 /// agreeing with its noun ("1 shortcuts" once read for a search that left
-/// one), and the platform's modifier keys. The list's status draws it and is
-/// named by it.
+/// one), and the platform's modifier keys. The list's status draws it, as
+/// [`fitted_count_line`] fits it to the dialog, and is named by it.
 pub(crate) fn count_line(count: usize) -> String {
     format!(
         "{} · {}",
@@ -940,6 +956,28 @@ pub(crate) fn count_line(count: usize) -> String {
             "Ctrl, Alt and Shift"
         }
     )
+}
+
+/// [`count_line`] as Keyboard Shortcuts draws it `width` wide: whole where
+/// the interface font lays it out on one line there, and otherwise the count
+/// alone ("61 shortcuts"), the modifier legend giving way as words beside a
+/// count do (DESIGN.md, "One responsive order"). Decided from the font
+/// before layout, so the line is one line in the frame that draws it. The
+/// macOS legend, wrapped to a second line at 18 pt in a 461 px window, took
+/// the 27 px the hint needed below a list already at its floor, and the
+/// hint ran under Close.
+pub(crate) fn fitted_count_line(count: usize, width: Pixels, window: &Window) -> String {
+    let line = count_line(count);
+    let weight = window.text_style().font_weight;
+    let laid_out = crate::views::laid_out_text_width(
+        crate::views::shaped_width(&line, appearance::ui_text(12.), weight, window),
+        window,
+    );
+    if laid_out <= width {
+        line
+    } else {
+        crate::counted(count, "shortcut", "shortcuts")
+    }
 }
 
 /// The shortcut list's height at the default interface size, where the
@@ -1366,7 +1404,7 @@ impl ShortcutHelpView {
 }
 
 impl Render for ShortcutHelpView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder;
         let p = palette(cx);
         let count = self
@@ -1499,7 +1537,7 @@ impl Render for ShortcutHelpView {
             // A status read by the line it draws: it was named "61 matching
             // shortcuts" while it drew "61 shortcuts · Ctrl, Alt and Shift".
             .child({
-                let line = count_line(count);
+                let line = fitted_count_line(count, help_width(window), window);
                 native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
                     .polite(), line.clone())
                     .text_color(rgb(p.muted)).child(line)
