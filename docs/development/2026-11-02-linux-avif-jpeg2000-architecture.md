@@ -149,3 +149,360 @@ Prerequisite: PDF-T3 landed (the client enabled on both architectures). A2 is th
 10. libdav1d is linked dynamically through pkg-config, never built internally, with a 1.4.1 floor checked in the helper.
 11. Checked-in fixtures are generated; public samples serve only local measurement and native evidence.
 12. HEIF/HEIC keeps Open in default app with the sentence "HEIF / HEIC images are not decoded on Linux.".
+
+## 7. Security review of the design (2026-11-02)
+
+This is an independent [security review](security-review.md) of this design at `9454e246`, done before any code. It holds the design to the [PDF helper's review](2026-11-02-linux-pdf-pages-architecture.md#6-security-review-of-the-design-2026-11-02) and to that review's implementation (`crates/app/src/pdf_helper.rs`, `crates/preview/src/pdf_helper.rs`, `crates/app/tests/pdf_helper.rs`). Verdict: **acceptable with the corrections and requirements below**, which A1–A4 build and prove.
+
+The confinement argument carries over unchanged. Whatever runs in the helper (libdav1d's C and assembly, dav1d-rs's 49 `unsafe` sites, `mp4parse`, `hayro-jpeg2000`) gets:
+- 10 s of time and 1 GiB of data;
+- fd 0 to read, and fd 1 and `/dev/null` to write;
+- no file, socket, process or signal call;
+- a reply the client checks before it allocates anything.
+
+The only helper-controlled bytes that reach the interface are the pixels of an image the attacker already wrote.
+
+No finding blocks the design; the open facts at the end are evidence the slices produce. This is not a certification, and each slice's diff gets its own review. The research archives and dav1d 1.5.4 sources were read as data, never built.
+
+**Corrections to sections 1–5.**
+- C1: #126's root cause also reaches `Dav1dPicture`.
+  - dav1d 1.5.4 (`picture.h:84-104`) puts `size_t n_itut_t35` right after `itut_t35` and before `reserved[4]`. `dav1d-sys` 0.8.3 (`src/lib.rs:536-556`) puts `n_itut_t34` after `itut_t35_ref`.
+  - The sizes are equal, so `dav1d_get_picture` writing into dav1d-rs's zeroed value overflows nothing. In Rust, though, `frame_hdr_ref` to `itut_t35_ref` and `n_itut_t34` each sit one word off.
+  - dav1d-rs 0.11.1 reads only `seq_hdr`, `data`, `stride`, `p`, `m`, `content_light`, `mastering_display` and `allocator_data`. These all come before the shift or at the matching tail offset, and dav1d-rs hands the struct back to C unchanged, so this is harmless today.
+  - The guard is therefore "only fields whose offsets a probe proves" (requirements 6 and 8), not "nothing after `operating_points`".
+- C2: The tile count is formula B-5 over the reference grid.
+  - The count is `ceil((Xsiz − XTOsiz) / XTsiz) × ceil((Ysiz − YTOsiz) / YTsiz)`, exactly as `hayro-jpeg2000` allocates it (`j2c/codestream.rs:495-514`). The vector is built in `decode` (`j2c/decode.rs:38`, `tile.rs:137-140`).
+  - The design's `ceil(w / tw) × ceil(h / th)` undercounts by up to one row and one column.
+  - hayro enforces B-3 and B-4 (`codestream.rs:545-571`) but not `XOsiz < Xsiz` or `YOsiz < Ysiz`: `image_width` subtracts without a check (`:517-521`). GitTurtle's own SIZ parse must refuse both.
+- C3: #1409 fixed three reduced-resolution panics, and "1 × 1 sampling, no palette" avoids only the subsampled one.
+  - Empty resolution levels, and tile-parts that lower the level count, are still reachable in 0.4.1.
+  - These are safe-Rust panics that the helper turns into an error kind; the preflight does not close them.
+- C4: Images add no new crate to the helper, but they do add new code paths:
+  - palette resolution (`resolve_palette_indices`), which hayro's `JPXDecode` never requests (this is why T2 could not reach #1649);
+  - the `image` integration (`integration.rs`);
+  - `moxcms` for JP2 ICC and CMYK.
+- C5: With its `image` feature, `hayro-jpeg2000` 0.4.1 exports `register_decoding_hook` (`integration.rs:320-343`).
+  - It installs a process-wide `image` hook that decodes JP2/J2K through `Jp2Decoder` with default settings for any guessed-format decode.
+  - Called anywhere, it would put an unbounded JPEG 2000 decoder behind every `image` reader in that process (requirement 7).
+- C6: The premise of question 3 needs two corrections.
+  - `RLIMIT_NPROC` counts every task of the real user (and root is exempt), so it can never cap one helper's threads.
+  - The request's magic cannot choose a filter, because the filter is installed before the first byte is read.
+- C7: The libdav1d floor checks a version string, not a patch level.
+  - Distributions backport fixes without changing `dav1d_version()`.
+  - `NEEDED libdav1d.so.7` already implies 1.3.0 or later: that is the soname and `dav1d-sys`'s own pkg-config floor.
+  - Keep the floor as a fail-closed policy, not as a CVE control.
+  - dav1d-rs does not wrap `dav1d_version()`, so reading it needs one `unsafe` call through `dav1d-sys` (requirement 9).
+- C8: The logger cannot be removed through dav1d-rs, because the only field of `Settings` is private (`dav1d-0.11.1/src/lib.rs:328-330`). Removing it would mean GitTurtle calling `dav1d_open` itself over `dav1d-sys`, which moves the binding's layout risk and many `unsafe` lines into GitTurtle. The default logger stays (question 2).
+- C9: dav1d-rs's `Picture::bit_depth()` returns `p.bpc`, which is 8, 10 or 12, not "8 or 16" as its documentation says (`lib.rs:940-947`). Samples take two bytes whenever the value is above 8.
+
+**Answers to section 3.**
+
+1. **One process for pages and images.** Yes. Keep the same entry, argv grammar, setup order, `ALLOWED`, `LIMITS`, alarm, 10 s deadline and the two `HELPERS` slots, on two conditions:
+   - the allow-list stays identical for both frames (question 2 shows it can);
+   - the measured peak of the largest AVIF fits half of `RLIMIT_DATA` (question 8).
+
+   Each helper serves one request in a fresh address space, so a hostile image cannot affect a later page. Confinement is fixed before the magic is read, so a frame cannot weaken it.
+
+   If images ever need anything else (threads, more data), they get their own argv-selected mode with its own filter and review; the request bytes never select confinement. Sharing the slots keeps the worst case at 2 × 1 GiB. Requirement 17 bounds the one new way to hold a slot for a long time (Markdown).
+
+2. **The allow-list and libdav1d.** At 1.5.4, with `n_threads` 1 and `max_frame_delay` 1, nothing on the paths read needs a call outside the allow-list:
+   - `pthread_once` (`lib.c:142`) is uncontended and at most wakes waiters with `futex`.
+   - CPU detection reads glibc's saved auxiliary vector (`arm/cpu.c:46-47`) or runs `cpuid` and `xgetbv`; neither is a syscall.
+   - `dav1d_init_thread` is empty on Linux (`thread.h:144`).
+   - `pthread_attr_init`, `setstacksize` and `destroy`, and the `dlsym(RTLD_DEFAULT, "__pthread_get_minstack")` lookup (`lib.c:100`), only search objects that are already loaded.
+   - `dav1d_num_logical_processors` (which calls `sched_getaffinity`) runs only when `n_threads` is 0 (`lib.c:122`). `pthread_create` runs only when there are several task contexts (`lib.c:282`).
+   - Memory comes from `malloc` and `posix_memalign` on the main arena: `brk`, anonymous read-write `mmap`, `munmap`, `mremap` and `madvise`, all allowed.
+   - The default logger is `vfprintf(stderr)` (`log.c:43`). glibc's stderr is unbuffered, so this is one `write` on fd 2, which the filter already allows for Rust's allocation-failure message.
+
+   The allow-list does not grow. If a settings mismatch left `n_threads` at 0, or reached `pthread_create`, the helper would die by SIGSYS; it would never run unconfined.
+
+   The only build-dependent path found: a libdav1d built without `getauxval` reads `/proc/cpuinfo` (`arm/cpu.c:164`), which the filter kills. That fails closed, and running the tests against each supported package covers it.
+
+   Keep the logger writing to `/dev/null` rather than removing it (C8). The proof is SIGSYS-free real-binary runs on both architectures, including a fixture that makes dav1d log (requirement 13). An `strace -f` list is welcome where `strace` exists but is not required, because the filter fails closed.
+
+3. **Threads.** If threads are ever requested, the request must prove all of the following:
+   - It uses a separate argv mode, so PDF requests never run under it.
+   - `clone` is allowed only with glibc's exact thread flag set, checked on argument 0. `clone3` is answered with `ENOSYS` so glibc falls back to `clone`: its argument is a pointer the filter cannot read, and this needs a new `SECCOMP_RET_ERRNO` action.
+   - Each extra per-thread call is argued on its own: `set_robust_list`, `rseq`, and `prctl` from `dav1d_set_thread_name` (`thread.h:150-153`), limited to `PR_SET_NAME`.
+   - `n_threads` and `max_frame_delay` are set explicitly and never to 0 (0 calls `sched_getaffinity`).
+   - `RLIMIT_NPROC` is lifted, since it cannot cap (C6); the thread cap comes from dav1d's settings.
+   - `RLIMIT_CPU` counts every thread, so it is either scaled by the thread count or left below the wall-clock deadline as the bound.
+   - Thread stacks (1 MiB plus glibc's minimum, `lib.c:161`) and per-thread arenas are measured inside `RLIMIT_DATA`.
+   - The speed-up is measured against section 5's budget.
+
+   dav1d's earlier thread race (CVE-2023-32570) is a reminder that this needs its own review.
+
+4. **Load-time code.** Keep the dynamic link (`NEEDED libdav1d.so.7`); do not `dlopen`.
+   - Every call that depends on the input runs only in the helper, either way.
+   - What runs early in the app is load-time code that does not depend on the input, from a package root installed. It is in the same trust class as the 141 `.init_array` entries the PDF review already accepted, and dav1d's own sources declare no constructor.
+   - A `dlopen` loader would have to drop dav1d-rs, which links its symbols at build time. That would put a hand-written FFI layer, with the #126 and C1 layout risk, into GitTurtle, only to confine code an attacker cannot reach.
+   - The helper's empty environment resolves the same system library.
+
+   Conditions:
+   - requirement 15 records the init entries of each build;
+   - requirement 6 keeps every dav1d call behind `serve`;
+   - `docs/linux.md` says libdav1d is now a hard runtime dependency, and the app does not start without it (requirement 19).
+
+5. **Binding layout.** A guard is required, and it is wider than proposed (C1). It has three parts:
+   - Structure (requirements 6–8): no `unsafe` and only listed dav1d-rs calls in the decoding modules, and never `dav1d_parse_sequence_header`.
+   - An ABI probe of every struct that crosses the boundary, on both architectures and both supported libdav1d builds (requirement 8).
+   - A behavioural proof of `frame_size_limit`: a 64 × 64 `ispe` over a 16384 × 16384 frame header ends in its error kind, not "stopped", with the helper's `ru_maxrss` under 64 MiB (requirements 12 and 13).
+
+6. **Monochrome planes.** Required, and it covers more than grey images: libavif encodes alpha as 4:0:0 AV1, so every alpha AVIF decodes an I400 picture. Requirement 10 sets the rule:
+   - the converter matches `pixel_layout()` first;
+   - it reads only Y for I400, and for every alpha item whatever its layout;
+   - it uses only dav1d's default allocator.
+
+   Fixtures: 4:0:0 at 8, 10 and 12 bits, and alpha at each depth.
+
+7. **Library provenance.** Both checks are needed.
+   - The packages carry the dependency.
+   - The helper refuses a libdav1d older than 1.4.1, read from `dav1d_version()` with a strict parse. It takes the leading decimal `major.minor.patch`, refuses anything else, and runs before `mp4parse`, with its fixed sentence (C7, requirement 9).
+   - Packaging and CI check that `NEEDED` lists `libdav1d.so.7` and that the executable defines no `dav1d_*` symbol (no static copy).
+   - They also check that no `SYSTEM_DEPS_*` variable is set. The internal build in `dav1d-sys`'s `build.rs` would `git clone` dav1d 1.5.0 and link it statically.
+   - They record `pkg-config --modversion dav1d` and its `libdir` (requirements 3 and 15).
+
+8. **Memory.** Keep `RLIMIT_DATA` at 1 GiB for images, and do not raise it in this mode.
+   - If section 5's largest accepted AVIF peaks above 512 MiB (half the limit, as the PDF review required), lower the AVIF pixel cap in the helper, or convert straight into the scaled output instead of a full-size RGBA buffer (128 MB at 32 MP). Record which (requirement 18).
+   - Anything larger aborts as "stopped". That costs availability, not confinement.
+
+9. **`mp4parse` age.** Acceptable on those terms:
+   - crates.io `=0.17.0`, unmodified, with no features and `ParseStrictness::Normal`;
+   - no `unsafe` in `src/` (none in `lib.rs`, `boxes.rs`, `macros.rs` or `unstable.rs`);
+   - fallible allocation;
+   - helper only, under `catch_unwind`.
+
+   Release builds do not check integer overflow (the workspace's `[profile.release]` leaves it off), so overflows like the one fixed in `f2d96807` wrap to wrong values inside safe code. GitTurtle checks every value it uses: `ispe`, the alpha `ispe`, and item lengths within the input. Parsing the `moov` of an `avis` file in `read_avif` is accepted surface.
+
+   If a RustSec advisory appears with no crates.io fix, switch to `avif-parse` (MPL-2.0), as section 1 records. `deny.toml` keeps refusing git dependencies.
+
+10. **`hayro-jpeg2000` 0.4.1.** The preflights plus the helper are enough for safety.
+    - The crate forbids `unsafe` (`lib.rs:68`).
+    - In the helper, a panic becomes an error kind, a memory blow-up becomes an abort within 1 GiB, and a slow file is killed at 10 s.
+    - The preflights give honest errors and avoid most aborts; they do not close the whole class (C3).
+
+    Requirement 11 adds:
+    - tile counting by B-5 (C2) and the offset checks;
+    - decoding only through `Image::new` with GitTurtle's settings;
+    - checking the decoded size and length before use (#1405 decodes one column too wide);
+    - fixtures for #1409's other two panics.
+
+    #1680 affects colour only.
+
+11. **Reply.** Add the following:
+    - Image replies get their own magic (`GTIr`), and only the image client accepts it.
+    - The cap is computed from the request's edge: prefix + header + edge² × 4, so 4,000,000 pixel bytes for Markdown's 1,000, not the 1,600 maximum.
+    - Image error kinds form a closed set, each with detail 0 (no version or count on the wire).
+    - A kind or flag that the echoed format cannot produce (for example an AVIF-only flag on JP2) makes the reply unreadable.
+    - The `scaled_dimensions` check uses the client's own requested edge.
+    - Captions and wording are built from the format echo and the flags only.
+    - There is no in-process decode after any helper failure, "could not start" included (requirement 14).
+
+12. **Request.** Yes:
+    - read `min(length, 4,096)` bytes first, the same bound `iso_image_format` already uses for `ftyp` (`metadata.rs:16`);
+    - run `confined_image_format` on them and refuse a mismatch;
+    - then allocate the body and copy the prefix in, as the PDF frame does with `%PDF-` (`pdf_helper.rs:229-245`).
+
+    This is not a security boundary: the client routed with the same function, and 32 MiB fits within the limit. But it keeps "refuse before allocating" uniform, at no cost.
+
+13. **x86-64 evidence.** Yes. A3 is not accepted without an executed hosted ubuntu-24.04 run (x86-64, libdav1d 1.4.1, the floor) of `tests/image_helper.rs` and `tests/pdf_helper.rs` under the filter, with the ABI probe run there too.
+    - Record the runner's CPU flags, because dav1d chooses its SSE, AVX2 or AVX-512 code at run time.
+    - Run the Arch x86-64 job (1.5.4) as well if it runs tests.
+    - The PDF filter's own x86-64 evidence is already met (hosted run `41480657885`, recorded in the handoff), so this asks only for the image paths.
+    - A configured job is not evidence.
+
+**Requirements for A1** (dependencies).
+
+1. **Scope.**
+   - `mp4parse =0.17.0`, `dav1d =0.11.1` and `hayro-jpeg2000 =0.4.1` are declared only under the helper's target `cfg`.
+   - `hayro-jpeg2000` gets exactly the features `std`, `simd` and `image` (not `logging`); `mp4parse` gets none.
+   - `cargo tree -i` shows `gitturtle-preview` as the only dependent of `dav1d`, `dav1d-sys`, `mp4parse` and `hayro-jpeg2000`, and the app crate names none of them.
+   - `cargo tree -e features -i image` is unchanged and has no `avif` or `avif-native` feature, so `image` can never decode AVIF in either process.
+
+2. **Licences under the owner's rule** (`omarchy-full-support.md:737-740`).
+   - `mp4parse` (MPL-2.0) is used unmodified: no `[patch]`, vendoring or edits.
+     - Its lockfile checksum equals the crates.io archive's (`63a35203…`).
+     - The complete source of that archive is in `docs/licenses/sources/` with its SHA-256, and `THIRD_PARTY_NOTICES.md` says where it is (MPL-2.0 §3.2(a)).
+     - No code from `mp4parse` or `avif-parse` is copied into a GitTurtle file.
+   - `dav1d` and `dav1d-sys`: MIT notices.
+   - libdav1d (BSD-2-Clause) is recorded by hand as a system library that GitTurtle links but does not ship; if a bundle ever ships it, its notice ships too.
+   - `hayro-jpeg2000` (`Apache-2.0 OR MIT`), `moxcms` and `image` are already in the inventory.
+   - `cargo deny check` passes and lists the exact added packages, build-only ones included. No GPL, AGPL or LGPL.
+   - Codec rule: only AV1 (AOMedia's royalty-free licence) and JPEG 2000 Part 1 are decoded.
+     - HEVC cannot be decoded: `read_avif` refuses items that are neither `av01` nor `grid` (`mp4parse` `src/lib.rs:607`), and dav1d decodes only AV1.
+     - JPX that is not JP2-compatible is refused.
+
+3. **Provenance.**
+   - `libdav1d-dev` and `dav1d` come only from the distributions' signed repositories.
+   - The CI steps and `scripts/package-linux.sh` fail if any `SYSTEM_DEPS_` variable is set.
+   - They log `pkg-config --modversion dav1d` and `pkg-config --variable=libdir dav1d`.
+
+**Requirements for A2** (decoders, request frame, `serve`).
+
+4. **Request order.** Every refusal happens before the body is allocated, in this order:
+   - the 4-byte magic, then that frame's fixed header;
+   - the version;
+   - the format (1–3);
+   - the edge (1..=1,600);
+   - the length (≤ 32 MiB);
+   - the prefix sniff (question 12), which must agree with the format.
+
+   HEIF is never confined. An unknown magic gets a fixed failure frame.
+
+5. **dav1d settings**, on a fresh `Settings::new()`, exactly:
+   - `n_threads` 1 and `max_frame_delay` 1;
+   - `frame_size_limit` = `ispe` width × height;
+   - `all_layers` false and `operating_point` 0;
+   - `apply_grain` true and `output_invisible_frames` false.
+
+   Use one decoder per item. The send/get loop follows dav1d-rs's contract: after `Again`, call `send_pending_data`, never `send_data` again (it asserts). The loop has a fixed iteration bound and ends in an error kind.
+
+6. **Structure.**
+   - `avif.rs`, `jpeg2000_hayro.rs` and `image_helper.rs` are private, and each declares `#![forbid(unsafe_code)]`.
+   - No dav1d, `mp4parse` or `hayro-jpeg2000` type appears in the crate's public API, and `serve` is the only way in.
+   - `decode_image` keeps refusing AVIF, JP2 and J2K on Linux, with a test.
+   - dav1d-rs calls are limited to:
+     - `Settings::new` and the setters in requirement 5;
+     - `Decoder::with_settings`, `send_data`, `send_pending_data` and `get_picture`;
+     - `Picture::width`, `height`, `pixel_layout`, `bits_per_component`, `bit_depth`, `stride`, `plane`, `matrix_coefficients`, `color_range`, `color_primaries` and `transfer_characteristic`.
+   - Never use a custom picture allocator (`with_settings_and_allocator`, `with_allocator`). It runs Rust callbacks under C frames, and `Plane`'s length (`stride × height`, `lib.rs:882-888`) is only backed by dav1d's default allocation.
+   - Never call `content_light`, `mastering_display` or anything else outside the list. The crate guide records the list.
+
+7. **JPEG 2000 entry and forbidden methods.**
+   - Decode only through `Image::new(bytes, &settings)` and `decode` (or `Image` as an `ImageDecoder`), with GitTurtle's `DecodeSettings`.
+   - Never use `Jp2Decoder` or `register_decoding_hook` (C5).
+   - A workspace `clippy.toml` `disallowed-methods` list (enforced by the gate's `-D warnings`), or an equivalent source test, refuses:
+     - `register_decoding_hook` in `hayro-jpeg2000`;
+     - `image::hooks::register_decoding_hook` and `image::hooks::register_format_detection_hook`;
+     - `dav1d::Decoder::with_settings_and_allocator` and `dav1d::Decoder::with_allocator`;
+     - `dav1d_sys::dav1d_parse_sequence_header`.
+
+8. **ABI probe**, checked in. For example, a script that compiles a C file against the installed `dav1d/*.h` and compares it with `size_of` and `offset_of!` from a test-only `dav1d-sys =0.8.3` dev-dependency, or an equivalent. It requires:
+   - Equal sizes for every struct C writes into Rust memory:
+     - `Dav1dSettings`, written by `dav1d_default_settings`;
+     - `Dav1dData`, `Dav1dDataProps` and `Dav1dUserData`, written by `dav1d_data_wrap` and `dav1d_send_data`;
+     - `Dav1dPicture`, written by `dav1d_get_picture`.
+   - Equal offsets for:
+     - every `Dav1dSettings` field;
+     - `Dav1dPicture`'s `seq_hdr`, `frame_hdr`, `data`, `stride`, `p`, `m`, `content_light`, `mastering_display`, `itut_t35`, `ref` and `allocator_data`;
+     - every field of `Dav1dPictureParameters`;
+     - `Dav1dSequenceHeader`'s `layout`, `pri`, `trc`, `mtrx`, `chr`, `hbd` and `color_range`.
+   - #126 and C1 are recorded as the expected mismatches.
+   - Any other mismatch, or any change of the `dav1d` or `dav1d-sys` version or the libdav1d soname, blocks until reviewed.
+
+9. **Version floor.**
+   - One function calls `dav1d_sys::dav1d_version()` and copies the static string. It is the only `unsafe` in the new preview code.
+   - The parse takes the leading decimal `major.minor.patch`. `1.5.4` and `1.4.1-0-g…` pass; `1.4.0` and anything that does not parse are refused.
+   - The parser has unit tests.
+   - The refusal is a fixed kind, returned before `mp4parse` runs.
+   - `dav1d-sys` becomes a direct dependency (`=0.8.3`) for this one call only.
+
+10. **AVIF conversion.**
+    - The picture size must equal `ispe` for both items before any plane is touched.
+    - The layout must be I400, I420, I422 or I444, at 8, 10 or 12 bits.
+    - Samples take two bytes above 8 bits (C9).
+    - `stride` must be at least width × bytes per sample, and the plane length at least `stride × (rows − 1) + width × bytes per sample`; otherwise the result is an error kind.
+    - I400 pictures and every alpha item read Y only.
+    - Indexing is safe Rust only.
+
+11. **JPEG 2000 preflight.** The checks run before `decode`; the tile vector is allocated there, not in `Image::new`.
+    - GitTurtle's own SIZ parse refuses `XOsiz ≥ Xsiz` or `YOsiz ≥ Ysiz`.
+    - Tiles are counted by B-5 with checked arithmetic, at most 65,535.
+    - 1–4 components, at most 16 bits each.
+    - The `pclr` and `cmap` checks, and the budget, apply.
+    - Reduced resolution is used only with 1 × 1 sampling and no palette.
+    - After decoding, width, height and `total_bytes()` must equal GitTurtle's own computation for the chosen resolution.
+    - The output is resized to exactly `scaled_dimensions(original, edge)`, with `original` taken from SIZ.
+
+12. **Fixtures through `serve`.** Everything in A2's acceptance list, plus:
+    - #1409's empty-resolution-level panic and its level-lowering tile-part panic, at reduced resolution with 1 × 1 sampling (each ends in an error kind);
+    - one real `hayro-jpeg2000` panic that passes the preflight, kept for A3;
+    - the frame-larger-than-`ispe` file, ending in its error kind;
+    - `read_image_reply` refusing everything listed in question 11.
+
+**Requirements for A3** (helper wiring and client).
+
+13. **Confinement unchanged, proven under the real filter.**
+    - `ALLOWED`, `LIMITS`, `ALARM_SECONDS`, `DEADLINE`, the slot count, the argv grammar and the setup order stay byte-for-byte the same. A diff that touches them is outside A3 and needs its own review.
+    - Under the real filter, on AArch64 and in the x86-64 run:
+      - every benign fixture exits 0;
+      - `/proc/<pid>/status` of an image helper shows `Seccomp: 2`, `NoNewPrivs: 1` and `Threads: 1`;
+      - started by the test with stderr on a pipe, a fixture that makes dav1d log delivers its message there, which proves the logger's `write` passes the filter;
+      - the frame-larger-than-`ispe` fixture ends in its error kind, with the helper's `ru_maxrss` under 64 MiB, recorded;
+      - the 4:0:0, alpha, film-grain and 12-bit fixtures decode;
+      - the #1549 and 1 × 1-tile files end in their error kinds;
+      - A2's real `hayro-jpeg2000` panic ends in its error kind;
+      - a truncated OBU is refused;
+      - each run ends within the deadline plus 1 s, and no test ever sees SIGSYS.
+
+14. **Client.**
+    - One crate-private runner is shared with PDF pages.
+    - The reply cap is a per-request parameter (question 11).
+    - Image replies are classified the way PDF replies are: success needs exit status 0 and a valid frame, and signals and exit codes map as today.
+    - `image_helper::decode` never calls `decode_image` for a confined format, whatever the failure.
+
+15. **Build evidence**, for each tested build (Arch 1.5.4 on AArch64, Ubuntu 1.4.1 on x86-64):
+    - `readelf -d` lists `libdav1d.so.7`;
+    - `readelf --dyn-syms` shows every `dav1d_*` symbol as undefined;
+    - libdav1d's `DT_INIT` and `.init_array` entries are resolved to symbols. The expected result is toolchain stubs such as `_init` and `frame_dummy`; an entry in dav1d's own code reopens question 4;
+    - the helper's `VmSize` at confinement is still at most 512 MiB (the existing assertion).
+
+16. **Shell fakes.** Everything in the design's acceptance items (3) and (4), plus four cases that each give "unreadable" and leave no zombie:
+    - a PDF reply to an image request;
+    - an image reply to a PDF request;
+    - an AVIF-only flag on a JP2 echo;
+    - a reply one byte over the cap for its edge.
+
+**Requirements for A4** (app view).
+
+17. **Markdown bounds its helper time per document.**
+    - After one confined image of a document ends in a timeout or "stopped", the document's remaining confined images are not sent to a helper and show a fixed sentence. An alternative is an aggregate 10 s helper budget per document; A4's review decides which.
+    - Without this, a committed Markdown file with 32 local images (`MAX_PREVIEW_ASSETS`, `crates/git-core/src/preview_assets.rs:66`), each reaching the deadline, holds a slot and a core for about 320 s while it is open.
+    - The 16 MiB pixel budget (`markdown_view.rs:416-447`) counts only pixels that come back.
+    - `Slots::acquire` (`pdf_helper.rs:542-556`) does not serve requests in arrival order, so two such windows can keep PDF pages and image sides waiting.
+    - Test it with a fake helper that sleeps past a short deadline.
+
+18. **Peak memory.** The release measurement records the largest accepted AVIF's peak against 512 MiB, and question 8's action if it is above.
+
+19. **`docs/linux.md`** states:
+    - seccomp is required;
+    - libdav1d is a hard runtime dependency, with the 1.4.1 floor (a version check, C7);
+    - HEIF and HEIC are not decoded.
+
+**Evidence each slice must produce.**
+- A1:
+  - requirement 1's `cargo tree` output, for Linux and for `aarch64-apple-darwin`;
+  - `cargo deny check` with the list of added packages;
+  - the collector output and the notices;
+  - executed Ubuntu 24.04 and Arch runs, with package versions logged and no `SYSTEM_DEPS_*` variable set.
+- A2:
+  - the tests for requirements 4–12 on AArch64;
+  - the ABI probe's output on AArch64 (Arch 1.5.4);
+  - `cargo test -p gitturtle-preview`, and clippy with the disallowed list.
+- A3:
+  - the real-binary and shell-fake tests on AArch64 and in an executed ubuntu-24.04 x86-64 run, with CPU flags recorded (and the Asahi host's lack of SVE noted);
+  - the ABI probe on x86-64 (Ubuntu 1.4.1);
+  - requirement 15's `readelf` records;
+  - the frame-larger-than-`ispe` `ru_maxrss`.
+- A4:
+  - requirement 17's test;
+  - the release measurement;
+  - native evidence, including `/proc/<pid>/status` of an image helper started by the app, and `ps` showing no helper left after Back.
+
+**Open facts, closed by that evidence and not blocking.**
+- The C layouts of `Dav1dData`, `Dav1dDataProps` and `Dav1dUserData`, whose headers were not in the research set, and Ubuntu 1.4.1's layouts in general (requirement 8).
+- Which fixture makes dav1d log at 1.4.1 and 1.5.4: `obu.c` was not read. Requirement 13's stderr pipe shows it either way.
+- What libdav1d's two `.init_array` entries are (requirement 15).
+- The largest AVIF's peak memory (requirement 18).
+
+**Residual risks.**
+- A memory-safety bug can still occur in libdav1d's C and assembly, in dav1d-rs's `unsafe`, or in the SIMD crates. Inside the helper it gets 10 s, 1 GiB, the allow-list's kernel surface and a checked reply. The attacker controls the displayed pixels, as the file's author already does, and can keep one slot busy.
+- The system libdav1d is patched at the distribution's pace (Ubuntu's copy is in universe). The floor cannot see backports or their absence.
+- libdav1d's load-time code runs unconfined in the app and in every helper. It is trusted and does not depend on the input.
+- libdav1d is now required for GitTurtle to start at all.
+- Some assembly paths go unexercised. The Asahi host has no SVE, and a runner without AVX-512 never runs that path. A libdav1d built without `getauxval` would fail closed as "stopped".
+- The `dav1d-sys` layouts are written by hand (#126, C1). Any version bump, or a libdav1d soname change, reopens the probe.
+- `mp4parse` has unreleased fixes. `hayro-jpeg2000` still has #1549, the gap in #1558, #1409, #1649 and #1680 open. Their panics and aborts stay in the helper.
+- Two helpers can briefly hold 2 GiB.
+- Under requirement 17's first option, up to 32 legitimate but slow images in one document still run one after another.
+- A third-party pool asserts AV1 patents. Whether that falls under "no patent-encumbered codec" is the owner's legal judgement, already taken for AVIF on 2026-10-28; this review makes no legal finding.
