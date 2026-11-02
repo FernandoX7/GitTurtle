@@ -268,8 +268,13 @@ impl Selection {
                     // A click clears the selection but keeps the painted runs:
                     // the same press resolves its new anchor from them.
                     let mut state = model.borrow_mut();
+                    let selected = state.anchor.is_some() || state.cursor.is_some() || state.all;
                     state.clear();
-                    let view = state.view;
+                    // The window also clears a message it no longer paints,
+                    // after each frame that leaves it out, as a tab switch
+                    // does the last tab's: with nothing selected nothing
+                    // drawn changes, and a refresh then drew that frame again.
+                    let view = state.view.filter(|_| selected);
                     drop(state);
                     if let Some(view) = view {
                         cx.notify(view);

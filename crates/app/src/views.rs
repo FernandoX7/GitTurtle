@@ -7884,6 +7884,7 @@ impl Render for GitTurtle {
         }
         self.update_modal_focus(window, cx);
         self.return_focus_after_delete(window, cx);
+        self.return_tab_focus(window, cx);
         // After the focus repairs above, before any list is built.
         self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);

@@ -358,6 +358,13 @@ pub struct Tab {
 type SessionSaveCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, std::result::Result<(), String>>>;
 
+/// Where a warm tab shown again puts focus: the control it was left with,
+/// for as long as its repository is the one shown.
+struct FocusReturn {
+    path: Option<PathBuf>,
+    focus: Option<FocusHandle>,
+}
+
 #[derive(Default)]
 pub struct State {
     pub tabs: Vec<Tab>,
@@ -367,6 +374,9 @@ pub struct State {
     pub switching: bool,
     pub restoring: Option<Bookmark>,
     pub document_restore: Option<Bookmark>,
+    /// The focus a warm tab shown again gives back as the frame that draws
+    /// it is built ([`GitTurtle::return_tab_focus`]).
+    focus_return: Option<FocusReturn>,
     panel_observers: Vec<Subscription>,
     pub save_pending: Option<Task<()>>,
     saver: commit_drafts::CoalescingSaver<(), Session>,
@@ -973,45 +983,16 @@ impl GitTurtle {
         }
         self.page = AppPage::Repository;
         self.restore_inspection_context(warm.context, window, cx);
-        // A retained keyboard target can be a tab button that has since been
-        // removed. Keep application shortcuts attached during the transition,
-        // then recover the exact editor/control only after this tree is drawn.
-        let retained_focus = window.focused(cx);
-        self.app_focus.focus(window, cx);
-        let path = self.path.clone();
-        let owner = cx.entity().downgrade();
-        window.on_next_frame(move |window, _| {
-            // Frame callbacks run before drawing. The second callback sees
-            // the restored workspace rather than the previous tab's tree.
-            window.on_next_frame(move |window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.page != AppPage::Repository
-                        || this.path != path
-                        || !this.app_focus.is_focused(window)
-                        || window.has_active_dialog(cx)
-                        || window.has_active_sheet(cx)
-                    {
-                        return;
-                    }
-                    let fallback = if this.mode == WorkspaceMode::History {
-                        &this.focus
-                    } else {
-                        &this.file_focus
-                    };
-                    let focus = retained_focus
-                        .as_ref()
-                        .filter(|focus| this.app_focus.contains(focus, window))
-                        .or_else(|| {
-                            this.app_focus
-                                .contains(fallback, window)
-                                .then_some(fallback)
-                        })
-                        .unwrap_or(&this.app_focus);
-                    focus.focus(window, cx);
-                    window.refresh();
-                });
-            });
+        // The tab's focus goes back to the control it was left with as the
+        // frame that draws the tab is built (`return_tab_focus`), so that
+        // frame draws it focused. Until then application shortcuts stay
+        // attached through the window's root: the control may not be in the
+        // tree the last tab drew, where a key would reach no shortcut.
+        self.repository_tabs.focus_return = Some(FocusReturn {
+            path: self.path.clone(),
+            focus: window.focused(cx),
         });
+        self.app_focus.focus(window, cx);
         self.repository_tabs.switching = false;
         if let Some(path) = self.path.clone() {
             self.branch_input_scope.opened(&path);
@@ -1032,7 +1013,64 @@ impl GitTurtle {
             hub.set_can_go_back(true, cx);
             hub.set_busy(false, cx);
         });
-        self.repaint_page(window, cx);
+        // One whole frame draws the tab, its focus, rows and lanes settled
+        // in it. `repaint_page` asked for one more at the next frame, which
+        // drew the same tab again.
+        cx.notify();
+        window.refresh();
+    }
+
+    /// Gives a warm tab shown again its focus back, as the window builds the
+    /// frame that draws the tab and before anything in it reads focus: the
+    /// control the tab was left with, which that frame draws focused, so no
+    /// frame follows to show it. Focus moved while a frame is drawn asks for
+    /// no frame of its own. The window's render calls it after its other
+    /// focus repairs. A newer focus change, another repository or page shown,
+    /// or a modal open since the switch supersedes the return
+    /// (`restore_warm_tab` left focus on the window's root).
+    ///
+    /// Whether the control is in the tab's tree is known only once the frame
+    /// is built: one that has gone, as a tab button since closed, gives way
+    /// as the frame ends to the shown mode's list, or the window's root, and
+    /// that is drawn in a frame of its own. The switch once gave focus back
+    /// only two frames after it drew the tab, from frame callbacks, and drew
+    /// a frame to show it there too.
+    pub(super) fn return_tab_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(FocusReturn { path, focus }) = self.repository_tabs.focus_return.take() else {
+            return;
+        };
+        if self.page != AppPage::Repository
+            || self.path != path
+            || !self.app_focus.is_focused(window)
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+        {
+            return;
+        }
+        let fallback = if self.mode == WorkspaceMode::History {
+            self.focus.clone()
+        } else {
+            self.file_focus.clone()
+        };
+        let focus = focus.unwrap_or_else(|| fallback.clone());
+        focus.focus(window, cx);
+        // A modal opened before the next frame returns here, not to the root
+        // this frame's `update_modal_focus` saw focused.
+        self.modal_return_focus = Some(focus.clone());
+        cx.defer_in(window, move |this, window, cx| {
+            if this.page != AppPage::Repository
+                || this.path != path
+                || !focus.is_focused(window)
+                || this.app_focus.contains(&focus, window)
+            {
+                return;
+            }
+            if this.app_focus.contains(&fallback, window) {
+                fallback.focus(window, cx);
+            } else {
+                this.app_focus.focus(window, cx);
+            }
+        });
     }
 }
 
