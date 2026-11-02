@@ -301,6 +301,9 @@ pub(crate) mod tests {
         use crate::native_accessibility::written;
         use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
         let (_fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        // The form otherwise slides in on a wall-clock animation, and a click
+        // read from a frame mid-slide misses its checkbox.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         let root = app
             .read_with(cx, |app, _| app.path.clone())
             .expect("a repository");
