@@ -83,7 +83,9 @@ page number, the link and the zooms never move while a page is prepared. A reply
 puts a requested page outside the document is called unreadable rather than
 shown with its own page count, which would contradict the count the view
 already shows (every page the view asks for lies within the count of the
-first page's validated reply). System preview is an explicit user
+first page's validated reply). A side without pages, an absent side or a
+document whose first page failed (a password-protected PDF), says why as
+static text on the generic document surface, as a page's message is. System preview is an explicit user
 action on an isolated copy of captured bytes.
 
 ## Native Markdown and local resources

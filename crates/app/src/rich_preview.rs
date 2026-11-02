@@ -506,12 +506,18 @@ pub(super) fn render_comparison<T: 'static>(
             .flex()
             .flex_col()
             .gap_3();
+        // Why a side shows nothing, an absent file or the document's error,
+        // is read as static text, as the page view's messages are
+        // (`pdf_view`): drawn as plain text, a password-protected PDF's
+        // sentence and the absent side's line reached no assistive
+        // technology.
         if !side.present {
-            body = body.child(
-                div()
-                    .text_color(rgb(colors.muted))
-                    .child("No file on this side"),
-            );
+            body = body.child(div().text_color(rgb(colors.muted)).child(
+                native_accessibility::text(
+                    SharedString::from(format!("rich-side-absent-{index}")),
+                    "No file on this side",
+                ),
+            ));
         }
         if let Some(page) = side.pages.get(selected) {
             if let Some(caption) = &page.caption {
@@ -553,7 +559,10 @@ pub(super) fn render_comparison<T: 'static>(
                     div()
                         .text_color(rgb(colors.modified))
                         .text_size(appearance::ui_text(12.))
-                        .child(error.clone()),
+                        .child(native_accessibility::text(
+                            SharedString::from(format!("rich-page-message-{index}")),
+                            error.clone(),
+                        )),
                 );
             }
         }
@@ -562,7 +571,10 @@ pub(super) fn render_comparison<T: 'static>(
                 div()
                     .text_color(rgb(colors.modified))
                     .text_size(appearance::ui_text(12.))
-                    .child(error.clone()),
+                    .child(native_accessibility::text(
+                        SharedString::from(format!("rich-side-message-{index}")),
+                        error.clone(),
+                    )),
             );
         }
         for detail in &side.metadata.details {

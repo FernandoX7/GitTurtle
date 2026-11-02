@@ -1214,19 +1214,18 @@ pub(crate) mod tests {
                     WeakEntity::new_invalid(),
                     crate::system_preview::Showing::next(),
                 );
-                div()
-                    .w(px(900.))
-                    .h(px(600.))
-                    .flex()
-                    .flex_col()
-                    .child(render_comparison(
+                // Drawn as Compare draws it, which draws a side without
+                // pages, as a locked PDF's, on the generic document surface.
+                div().w(px(900.)).h(px(600.)).flex().flex_col().child(
+                    rich_preview::render_comparison(
                         comparison,
                         false,
                         opener,
                         px(900.),
                         window,
                         cx,
-                    ))
+                    ),
+                )
             }
         }
 
@@ -1241,8 +1240,17 @@ pub(crate) mod tests {
             // A drawn page's pixels are registered for release.
             cx.update(crate::image_lifetime::init);
             cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
-            let (view, cx) = cx.add_window_view(|_, _| Pages { content });
+            // The kit's Root first, as the app's windows have it, which holds
+            // the page number's dialog.
+            let pages = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let made = pages.clone();
+            let (_, cx) = cx.add_window_view(move |window, cx| {
+                let view = cx.new(|_| Pages { content });
+                *made.borrow_mut() = Some(view.clone());
+                gpui_kit::component::Root::new(view, window, cx)
+            });
             cx.simulate_resize(size(px(1000.), px(700.)));
+            let view = pages.borrow_mut().take().expect("the view is made");
             (view, cx)
         }
 
@@ -1659,6 +1667,58 @@ pub(crate) mod tests {
             assert_eq!(page_message(cx, "pdf-page-message-1"), sentence);
             assert!(cx.debug_bounds("pdf-retry-0").is_none());
             assert!(cx.debug_bounds("pdf-retry-1").is_some());
+        }
+
+        /// Why a side shows no pages is static text that an AT-SPI client
+        /// reaches: a password-protected PDF's sentence, which its helper
+        /// reports for the first page, and an absent side's "No file on this
+        /// side". Neither side has pages, so Compare draws them on the
+        /// generic document surface, which drew both as plain text that no
+        /// assistive technology reached, while the page view's messages were
+        /// static text.
+        #[gpui::test]
+        fn a_locked_pdf_and_an_absent_side_say_why_to_assistive_technology(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use crate::native_accessibility::{
+                atspi_state_tests::{next_frame, reached},
+                written,
+            };
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("a password-protected PDF");
+            // The helper's answer for a locked document (kind 6).
+            name_helper(
+                &bytes,
+                &fakes.path().join("pid"),
+                &printing(&error_frame(6, 0)),
+                LONG,
+            );
+            let name = Path::new("locked.pdf");
+            let after = rich_preview::Side::prepare(bytes, name, || Ok(())).unwrap();
+            assert!(after.pdf.is_none(), "a locked PDF has no pages");
+            let locked = "PDF is password protected; use explicit external inspection to unlock it";
+            let content = crate::worker::Content::Rich(rich_preview::Comparison {
+                old: Arc::new(rich_preview::Side::unavailable(name, false, None)),
+                new: Arc::new(after),
+            });
+            let (_view, cx) = window(cx, content);
+            let found = reached(next_frame(cx));
+            for sentence in ["No file on this side", locked] {
+                assert!(
+                    found.iter().any(|node| node.name == sentence),
+                    "an AT-SPI client reaches {sentence:?}"
+                );
+            }
+            let labels = written::labels();
+            for (id, sentence) in [
+                ("rich-side-absent-0", "No file on this side"),
+                ("rich-side-message-1", locked),
+            ] {
+                assert!(
+                    labels.contains(&(id.to_owned(), Some(sentence.to_owned()))),
+                    "{id} reads {sentence:?} as static text: {labels:?}"
+                );
+            }
         }
 
         /// The app's client starts this very executable as the helper with
