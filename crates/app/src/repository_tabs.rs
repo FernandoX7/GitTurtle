@@ -4483,9 +4483,13 @@ mod tests {
     /// tab's label, copied its project's name and read the key, three
     /// allocations per tab, and collected the widths, one more per frame;
     /// then read the key on its own, which builds the window's text style,
-    /// whose default font features GPUI allocates. The labels it measures
-    /// are the tabs' own: a renamed project's name, and a folder's name with
-    /// a running write's "· working".
+    /// whose default font features GPUI allocates. In a frame the window
+    /// draws, the root render reads the key once and the strip, measuring
+    /// and drawing its tabs, reads none of its own: without the root
+    /// render's key the strip read two each frame, which the measurements
+    /// below, each under a key the test opens, would not see. The labels it
+    /// measures are the tabs' own: a renamed project's name, and a folder's
+    /// name with a running write's "· working".
     #[gpui::test]
     async fn the_tab_strip_measures_its_tabs_without_allocating(cx: &mut TestAppContext) {
         let (_fixture, app, cx, paths) = strip_window(cx).await;
@@ -4501,6 +4505,25 @@ mod tests {
             cx.notify();
         });
         crate::tags::tests::draw(cx);
+        // One frame the window draws, every view built: the strip's line
+        // keys as the strip's own source reads them.
+        crate::views::line_key_reads::watch("repository_tabs.rs");
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let reads = crate::views::line_key_reads::take();
+        crate::views::line_key_reads::stop();
+        assert_eq!(
+            reads,
+            crate::views::line_key_reads::Reads {
+                frames: 1,
+                shared: 2,
+                read: 0
+            },
+            "the root render reads the line key once, and the strip's measurement and its \
+             tabs share it"
+        );
         // Reading the line key within the window's root render, which reads
         // it once as it begins.
         let key = cx.update(|window, _| {

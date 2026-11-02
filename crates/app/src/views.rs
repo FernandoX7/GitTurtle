@@ -6412,6 +6412,17 @@ fn graph_title_fits(width: f32, window: &Window) -> bool {
 
 /// What a line of interface text is laid out with besides its text: the
 /// inherited font, and the interface and rem sizes its text size comes from.
+///
+/// Within the window's root render every key is the one the render read as
+/// it began ([`LineKey::frame`]), which holds only while nothing laid out
+/// inside the render's body sets another font: GPUI keeps its text-style
+/// stack private, so the shared key cannot be checked against the stack's
+/// depth. An element the render lays out as a root of its own to measure
+/// it (`in_frame::measured_height`, as the inspector's message extent
+/// does) pushes its own text style as it is laid out, and a component it
+/// builds then, whose render runs inside that layout, would read the
+/// render's key: none of those components reads one, and one that lays out
+/// text by its key there must take the font it is given instead.
 #[derive(Clone, PartialEq)]
 pub(crate) struct LineKey {
     font: Font,
@@ -6430,21 +6441,24 @@ impl LineKey {
     /// The key a line laid out now takes. Within the window's root render
     /// it is the one that render read as it began ([`Self::frame`]):
     /// nothing a render does nests the text style it reads, which only its
-    /// elements' layout does, and reading that style builds GPUI's default
-    /// font features, an allocation, at every read, which the tab strip
-    /// once made on every frame however little changed. Anywhere else, as
-    /// in a view drawn inside the window or an element's prepaint, whose
-    /// ancestors may set another font, it reads the window's text style.
+    /// elements' layout does (the limit is the type's), and reading that
+    /// style builds GPUI's default font features, an allocation, at every
+    /// read, which the tab strip once made on every frame however little
+    /// changed. Anywhere else, as in a view drawn inside the window or an
+    /// element's prepaint, whose ancestors may set another font, it reads
+    /// the window's text style.
+    #[cfg_attr(test, track_caller)]
     pub(crate) fn current(window: &Window) -> Self {
         let window_id = window.window_handle().window_id();
-        FRAME_LINE
-            .with_borrow(|frame| {
-                frame
-                    .as_ref()
-                    .filter(|(drawn, _)| *drawn == window_id)
-                    .map(|(_, key)| key.clone())
-            })
-            .unwrap_or_else(|| Self::read(window))
+        let shared = FRAME_LINE.with_borrow(|frame| {
+            frame
+                .as_ref()
+                .filter(|(drawn, _)| *drawn == window_id)
+                .map(|(_, key)| key.clone())
+        });
+        #[cfg(test)]
+        line_key_reads::current(shared.is_some(), std::panic::Location::caller());
+        shared.unwrap_or_else(|| Self::read(window))
     }
 
     /// The key the window's text style gives now.
@@ -6462,7 +6476,81 @@ impl LineKey {
     /// comes back as it drops.
     pub(crate) fn frame(window: &Window) -> FrameLine {
         let key = Self::read(window);
+        #[cfg(test)]
+        line_key_reads::frame();
         FrameLine(FRAME_LINE.replace(Some((window.window_handle().window_id(), key))))
+    }
+}
+
+/// Test-only: how the line keys a stretch of frames took were read, for the
+/// [`LineKey::current`] calls in one source file a test watches: the root
+/// renders' reads ([`LineKey::frame`]), and the watched calls that shared
+/// a root render's key or read the window's text style for their own, an
+/// allocation each. It counts without allocating, so a test that counts
+/// allocations can count reads too.
+#[cfg(test)]
+pub(crate) mod line_key_reads {
+    use std::cell::Cell;
+
+    /// What [`take`] returns.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Reads {
+        /// The root renders' reads.
+        pub(crate) frames: usize,
+        /// The watched calls that shared a root render's key.
+        pub(crate) shared: usize,
+        /// The watched calls that read their own.
+        pub(crate) read: usize,
+    }
+
+    thread_local! {
+        static WATCHED: Cell<Option<&'static str>> = const { Cell::new(None) };
+        static READS: Cell<Reads> = const {
+            Cell::new(Reads { frames: 0, shared: 0, read: 0 })
+        };
+    }
+
+    /// Counts from now the reads of the calls in the source file whose path
+    /// ends with `file`, and the root renders'.
+    pub(crate) fn watch(file: &'static str) {
+        WATCHED.set(Some(file));
+        READS.set(Reads::default());
+    }
+
+    /// The reads counted since [`watch`] or the last take, which stops
+    /// nothing.
+    pub(crate) fn take() -> Reads {
+        READS.replace(Reads::default())
+    }
+
+    /// Stops counting.
+    pub(crate) fn stop() {
+        WATCHED.set(None);
+        READS.set(Reads::default());
+    }
+
+    pub(super) fn frame() {
+        if WATCHED.get().is_some() {
+            READS.set(Reads {
+                frames: READS.get().frames + 1,
+                ..READS.get()
+            });
+        }
+    }
+
+    pub(super) fn current(shared: bool, caller: &std::panic::Location<'_>) {
+        if WATCHED
+            .get()
+            .is_some_and(|file| caller.file().ends_with(file))
+        {
+            let mut reads = READS.get();
+            if shared {
+                reads.shared += 1;
+            } else {
+                reads.read += 1;
+            }
+            READS.set(reads);
+        }
     }
 }
 
