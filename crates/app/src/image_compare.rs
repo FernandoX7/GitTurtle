@@ -3108,10 +3108,20 @@ mod render_tests {
     /// The comparison of `image.png` in the last commit `steps` write, as
     /// drawn at each of [`SIZES`], in Midnight.
     async fn drawn(cx: &mut TestAppContext, steps: &[Option<&[u8]>]) -> Vec<Drawn> {
+        drawn_with(cx, steps, |_, _| {}).await
+    }
+
+    /// [`drawn`], with `edit` applied once the comparison is shown.
+    async fn drawn_with(
+        cx: &mut TestAppContext,
+        steps: &[Option<&[u8]>],
+        edit: impl Fn(&Entity<GitTurtle>, &mut VisualTestContext),
+    ) -> Vec<Drawn> {
         let (_fixture, app, cx) = history_window_from(cx, image_commits(steps)).await;
         cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
+        edit(&app, cx);
         let bounds = |cx: &mut VisualTestContext, selectors: &[&'static str]| {
             selectors
                 .iter()
@@ -3429,6 +3439,101 @@ mod render_tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A source image's zoom menu, its toolbar's first group, gives its
+    /// inset back to the toolbar's padding as a comparison's zoom menu does
+    /// where it leads a row, so "Fit" starts where the source's name does:
+    /// at 13 and 18 pt in 461 × 490 and 1000 × 680 windows, wherever the
+    /// zooms are a menu, the menu starts one inset before the name, and the
+    /// walk meets one. The comparison's test covered a source's first group
+    /// by no case.
+    #[gpui::test]
+    async fn a_source_image_s_zoom_menu_starts_where_its_name_does(cx: &mut TestAppContext) {
+        let png = crate::system_preview::tests::png(Some(b"source"));
+        let (_fixture, app, cx) = history_window_from(cx, image_commits(&[Some(&png)])).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        crate::views::tests::show_source(&app, cx, "image").await;
+        let slack = px(0.5);
+        let mut met = false;
+        for (text, width, height) in SIZES {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let Some(menu) = cx.debug_bounds("image-zoom-menu") else {
+                continue;
+            };
+            met = true;
+            let name = cx
+                .debug_bounds("image-side-name-1")
+                .expect("the source's name");
+            let inset = cx.update(|_, _| appearance::ui_size(crate::ICON_INSET));
+            assert!(
+                (menu.left() + inset - name.left()).abs() <= slack,
+                "at {text} pt in {width} × {height}: the zoom menu {menu:?} starts one inset \
+                 ({inset:?}) before the source's name {name:?}"
+            );
+        }
+        assert!(met, "the walk meets a source's zoom menu");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A changed image whose After alone offers its open control, as where
+    /// Before's bytes establish no type the system can open, places it from
+    /// both captions' rooms, Before's wider name included, so it stands
+    /// where a changed image's After control does with both offered. At 13
+    /// and 18 pt in 461 × 490 and 1000 × 680 windows, After's control has
+    /// the bounds a changed image's has, Before offers none, the zooms keep
+    /// their row and the toolbar its height, and the image's box is no lower
+    /// or shorter. Only an added image's After stood alone in the tests.
+    #[gpui::test]
+    async fn an_after_only_changed_image_s_open_control_stands_where_both_do(
+        cx: &mut TestAppContext,
+    ) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let steps = [Some(before.as_slice()), Some(after.as_slice())];
+        let both = drawn(cx, &steps).await;
+        let alone = drawn_with(cx, &steps, |app, cx| {
+            crate::views::tests::edit_image_sides(app, cx, |side, image| {
+                if side == 0 {
+                    image.system_preview = None;
+                }
+            })
+        })
+        .await;
+        let slack = px(0.5);
+        for (((text, width, height), alone), both) in SIZES.iter().zip(&alone).zip(&both) {
+            let at = format!("{text} pt in {width} × {height}");
+            assert!(alone.opens[0].is_none(), "{at}: Before offers none");
+            let (control, theirs) = (
+                alone.opens[1].expect("After offers its control"),
+                both.opens[1].expect("a changed image offers both"),
+            );
+            assert!(
+                (control.left() - theirs.left()).abs() <= slack
+                    && (control.top() - theirs.top()).abs() <= slack
+                    && (control.size.width - theirs.size.width).abs() <= slack,
+                "{at}: After's control {control:?} stands where it does with both offered \
+                 ({theirs:?}), in its form"
+            );
+            assert!(
+                (alone.zooms.top() - both.zooms.top()).abs() <= slack
+                    && (alone.toolbar.size.height - both.toolbar.size.height).abs() <= slack,
+                "{at}: the zooms {:?} and the toolbar {:?} stay as with both offered ({:?}, {:?})",
+                alone.zooms,
+                alone.toolbar,
+                both.zooms,
+                both.toolbar
+            );
+            assert!(
+                alone.image.top() <= both.image.top() + slack
+                    && alone.image.size.height >= both.image.size.height - slack,
+                "{at}: the image's box {:?} is no lower or shorter than with both offered ({:?})",
+                alone.image,
+                both.image
+            );
+        }
     }
 
     /// Choosing a zoom never changes the toolbar's rows where the Pan menu

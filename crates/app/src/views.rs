@@ -11473,7 +11473,7 @@ pub(crate) mod tests {
 
     /// Rebuilds the image comparison's sides with `edit`'s changes, as a
     /// worker's answer carrying them would arrive.
-    fn edit_image_sides(
+    pub(crate) fn edit_image_sides(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
         edit: impl Fn(usize, &mut crate::worker::ImageSide),
@@ -11509,7 +11509,11 @@ pub(crate) mod tests {
     /// Shows the first tracked file `query` finds as a source, as Quick Open
     /// does, once its read lands.
     #[cfg(target_os = "linux")]
-    async fn show_source(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, query: &str) {
+    pub(crate) async fn show_source(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        query: &str,
+    ) {
         use gitturtle_core::{HistoryCancellation, PathScope};
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
