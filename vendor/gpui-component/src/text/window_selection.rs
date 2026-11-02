@@ -1867,6 +1867,12 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (Entity<ModalScopeTestView>, &mut VisualTestContext) {
         cx.update(crate::init);
+        // GitTurtle patch: modals open at rest. GPUI times an animation
+        // that is not synced from the wall clock, not the test clock, so a
+        // dialog's 250 ms slide (`dialog.rs`, `slide-down`) went on in real
+        // time between the frame whose bounds a test read and the frames
+        // its drag hit, and a loaded host moved the dialog under the press.
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (root, cx) = cx.add_window_view(|window, cx| {
             let view = cx.new(ModalScopeTestView::new);
             Root::new(view, window, cx)
@@ -1884,9 +1890,10 @@ mod tests {
         (view, cx)
     }
 
-    /// Advance past the modal open animation so it reaches its resting position,
-    /// then redraw so its TextViews register and their bounds are stable for the
-    /// subsequent drag.
+    /// Redraw so a modal's TextViews register and their bounds are stable for
+    /// the subsequent drag. The modal is at rest in its first frame, since
+    /// [`setup_modal`] reduces motion; advancing the test clock does not move
+    /// GPUI's wall-clock animations.
     fn settle(cx: &mut VisualTestContext) {
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.update(|window, cx| {

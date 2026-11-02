@@ -1932,3 +1932,18 @@ rather than the placeholder it draws, and falls back to it for a missing
 whole form at every width; otherwise the two are the same, as upstream.
 GitTurtle's width-step regressions compare it with a window opened at each
 width (`cargo test --locked -p gitturtle draws_one_frame_where_it_settles`).
+
+The modal-test patch modifies only the test module of
+`src/text/window_selection.rs` and changes no built code. Its
+`setup_modal` sets `App::set_reduce_motion` before opening the window, so
+a dialog or sheet a test opens draws at rest in its first frame. GPUI
+times an animation that is not synced from the wall clock
+(`gpui-pre` `elements/animation.rs`, `AnimationState::start`), not the
+test clock that `settle` advanced, so the dialog's 250 ms `slide-down`
+(`src/dialog/dialog.rs`) went on in real time between the frame whose
+bounds `drag_inside_dialog_still_selects_its_text` read and the frames
+its drag hit; on a loaded host the dialog moved under the press and the
+test failed, upstream's code and GitTurtle's alike (2 and 4 of 20 runs
+under full CPU load at `40b6bd43` and after it; with 100 ms slept between
+the bounds and the drag, 20 of 20, and none with the patch). Remove it
+when upstream's tests open their modals at rest.
