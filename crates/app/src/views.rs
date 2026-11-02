@@ -26030,11 +26030,11 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// At 461 × 490 the Linux Main Menu fits above the status bar at 13 pt
-    /// and is taller than the room there at 18 pt. Either way its rows keep
-    /// the height and spacing they have in 1280 × 800, and at 18 pt it ends
-    /// after its last whole row, scrolling the rest with its scrollbar shown.
-    /// A capped menu once squeezed its rows.
+    /// At 461 × 490 the Linux Main Menu, with Browse stashes… among its
+    /// rows, is taller than the room above the status bar at 13 and 18 pt.
+    /// Its rows keep the height and spacing they have in 1280 × 800, where
+    /// every row fits, and it ends after its last whole row, scrolling the
+    /// rest with its scrollbar shown. A capped menu once squeezed its rows.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_capped_main_menu_keeps_its_rows(cx: &mut TestAppContext) {
@@ -26046,6 +26046,7 @@ pub(crate) mod tests {
             CommandId::Changes,
             CommandId::QuickOpen,
             CommandId::Compare,
+            CommandId::Stashes,
             CommandId::Editor,
             CommandId::Terminal,
             CommandId::Reveal,
@@ -26083,11 +26084,7 @@ pub(crate) mod tests {
             let rows = open(cx, size(px(461.), px(490.)));
             assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
             let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
-            assert_eq!(
-                folded,
-                text == 18,
-                "{at}: rows past the fold at {surface:?}"
-            );
+            assert!(folded, "{at}: rows past the fold at {surface:?}");
             cx.simulate_keystrokes("escape");
             draw(cx);
         }

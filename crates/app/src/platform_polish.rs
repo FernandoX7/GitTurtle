@@ -80,6 +80,8 @@ impl PrimaryMenu {
             .focused(cx)
             .unwrap_or_else(|| owner.read(cx).app_focus.clone());
         self.return_focus = Some(focus.clone());
+        // Browse stashes… follows the View menu's repository inspectors, as
+        // the palette lists it among the repository's tools.
         let rows = [
             Some(CommandId::Open),
             Some(CommandId::Projects),
@@ -88,6 +90,7 @@ impl PrimaryMenu {
             Some(CommandId::Changes),
             Some(CommandId::QuickOpen),
             Some(CommandId::Compare),
+            Some(CommandId::Stashes),
             None,
             Some(CommandId::Editor),
             Some(CommandId::Terminal),
@@ -106,7 +109,19 @@ impl PrimaryMenu {
                     .iter()
                     .find(|spec| spec.id == id)
                     .expect("menu command is registered");
-                (spec, owner.read(cx).menu_command_reason(id, window, cx))
+                let app = owner.read(cx);
+                let reason = app.menu_command_reason(id, window, cx);
+                // Browse stashes… waits for a write as the Working Changes
+                // Actions menu's item does, through the reload after it, and
+                // says so as that item does: the write's label at the row's
+                // end and "available when … finishes" in its name. Its
+                // reason is the palette's, the write's while one refuses it.
+                let wait = app.menu_wait().filter(|_| {
+                    id == CommandId::Stashes
+                        && (reason == Some(crate::workspace::REFRESHING_ROWS_REASON)
+                            || (app.operation_busy.is_some() && reason == Some(app.busy_reason())))
+                });
+                (spec, reason, wait)
             })
         });
         let target = self.owner.clone();
@@ -126,7 +141,7 @@ impl PrimaryMenu {
                 .min_w(appearance::ui_size(305.))
                 .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)));
             for row in &rows {
-                let Some((spec, reason)) = row else {
+                let Some((spec, reason, wait)) = row else {
                     menu = menu.separator();
                     continue;
                 };
@@ -134,7 +149,12 @@ impl PrimaryMenu {
                 let target = target.clone();
                 let path = path.clone();
                 let return_focus = focus.clone();
-                let mut item = PopupMenuItem::new(spec.label).disabled(reason.is_some());
+                let mut item = match wait {
+                    Some(wait) => {
+                        native_accessibility::waiting_item(spec.label, false, Some(*wait))
+                    }
+                    None => PopupMenuItem::new(spec.label).disabled(reason.is_some()),
+                };
                 if let Some(action) = spec.shortcut.and_then(shortcuts::action) {
                     item = item.action(action);
                 }
@@ -845,5 +865,175 @@ mod launcher_tests {
             std::fs::read_to_string(&record).unwrap(),
             format!("--dir={0}\n{0}\n", repository.display())
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod main_menu_tests {
+    use crate::command_palette::{COMMANDS, CommandId};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// The label `id` reads in the palette and the Main Menu.
+    fn label(id: CommandId) -> &'static str {
+        COMMANDS
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("the command is registered")
+            .label
+    }
+
+    /// Where the open menu draws the item named `name`.
+    fn item(cx: &mut VisualTestContext, name: &str) -> Option<Bounds<Pixels>> {
+        cx.debug_bounds(format!("menu-item: {name} · MenuItem").leak())
+    }
+
+    /// Opens the Main Menu from its button.
+    fn open(cx: &mut VisualTestContext) {
+        crate::tags::tests::draw(cx);
+        let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The Linux Main Menu offers Browse stashes…, as the palette and the
+    /// Working Changes Actions menu do, right after Compare revisions…
+    /// among the repository's inspectors, before the separator above the
+    /// editor and terminal handoff: in a repository with a stash, at 13 and
+    /// 18 pt in a 461 × 490 window, choosing it opens Stashes with focus in
+    /// its list. While a write runs, and through the reload after it, it
+    /// waits as the Actions menu's item does: its reason is the palette's,
+    /// the row states the write's label ("Fetching…", then
+    /// "Refreshing…"), its name says when it is available, and a click
+    /// opens nothing. The Main Menu had no way to Stashes.
+    #[gpui::test]
+    async fn the_main_menu_browses_stashes_as_the_palette_does(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "kept for later",
+            ],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let (stashes, quick, compare, editor) = (
+            label(CommandId::Stashes),
+            label(CommandId::QuickOpen),
+            label(CommandId::Compare),
+            label(CommandId::Editor),
+        );
+        let slack = px(0.5);
+        for text in [13, 18] {
+            let at = format!("{text} pt in 461 × 490");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            open(cx);
+            let (Some(row), Some(first), Some(before), Some(after)) = (
+                item(cx, stashes),
+                item(cx, quick),
+                item(cx, compare),
+                item(cx, editor),
+            ) else {
+                panic!("{at}: the Main Menu draws {quick}, {compare}, {stashes} and {editor}");
+            };
+            // One row's pitch after Compare revisions…, as it follows Quick
+            // Open; more than one before the editor, past the separator.
+            let pitch = before.top() - first.top();
+            assert!(
+                (row.top() - before.top() - pitch).abs() <= slack
+                    && after.top() - row.top() > pitch + slack,
+                "{at}: {stashes} {row:?} follows {compare} {before:?} a row's pitch \
+                 ({pitch:?}) apart, before the separator above {editor} {after:?}"
+            );
+            cx.simulate_click(row.center(), Modifiers::default());
+            draw(cx);
+            let (browser, list) = app
+                .read_with(cx, crate::recovery::open_stash_list)
+                .unwrap_or_else(|| panic!("{at}: choosing {stashes} opens Stashes"));
+            crate::recovery::StashBrowser::lands(&browser, cx);
+            assert!(
+                cx.debug_bounds("saved-stash-row-0").is_some(),
+                "{at}: Stashes shows the saved stash"
+            );
+            assert!(
+                cx.update(|window, cx| window
+                    .focused(cx)
+                    .is_some_and(|focused| focused == list || focused.contains(&list, window))),
+                "{at}: focus is in Stashes"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes Stashes"
+            );
+
+            for (state, reason, wait) in [
+                (
+                    "during a write",
+                    crate::workspace::BUSY_REASON,
+                    "available when fetching finishes",
+                ),
+                (
+                    "through the reload after a write",
+                    crate::workspace::REFRESHING_ROWS_REASON,
+                    "available when refreshing finishes",
+                ),
+            ] {
+                app.update(cx, |app, _| {
+                    if reason == crate::workspace::BUSY_REASON {
+                        app.operation_busy = Some("Fetching…");
+                    } else {
+                        app.status_task = Some(Task::ready(()));
+                        app.status_after_write = Some(app.work_generation);
+                    }
+                });
+                assert_eq!(
+                    cx.update(|window, cx| app.read(cx).menu_command_reason(
+                        CommandId::Stashes,
+                        window,
+                        cx
+                    )),
+                    Some(reason),
+                    "{at}: {state}, its reason is the palette's"
+                );
+                open(cx);
+                let name = format!("{stashes}, {wait}");
+                assert_eq!(
+                    crate::native_accessibility::waiting_names::of(stashes).as_deref(),
+                    Some(name.as_str()),
+                    "{at}: {state}, the row is named for its wait"
+                );
+                let row = cx
+                    .debug_bounds(format!("menu-item: {name} · MenuItem disabled").leak())
+                    .unwrap_or_else(|| {
+                        panic!("{at}: {state}, the row {name:?} is drawn unavailable")
+                    });
+                cx.simulate_click(row.center(), Modifiers::default());
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("saved-stash-row-0").is_none()
+                        && !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: {state}, a click on {row:?} opens no Stashes: {:?} {}",
+                    cx.debug_bounds("saved-stash-row-0"),
+                    cx.update(|window, cx| window.has_active_dialog(cx))
+                );
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                app.update(cx, |app, _| {
+                    app.operation_busy = None;
+                    app.status_task = None;
+                    app.status_after_write = None;
+                });
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }
