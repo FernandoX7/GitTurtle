@@ -118,6 +118,13 @@ pub(super) struct State {
     /// ([`GitTurtle::integration_ended`]). The dialog holds it; closed, it
     /// goes.
     browser: Option<WeakEntity<StashBrowser>>,
+    /// The working-state reads asked for before the latest refusal of a
+    /// recovery review landed (`GitTurtle::request_status_read`): only a
+    /// later read can find its cause gone ([`GitTurtle::conflicts_ended`]).
+    /// One asked for before it may have read the working state before the
+    /// conflict the core refused for came, as an outside `git stash apply`
+    /// leaves one.
+    refused_after: u64,
 }
 
 pub(super) struct CommitTarget {
@@ -296,8 +303,23 @@ impl GitTurtle {
     /// (`gitturtle_core::paused_recovery_refusal(None)`); one that names a
     /// paused operation stays until that ends. The forms' and Stashes'
     /// copies once stayed after the window's error had gone, saying
-    /// conflicts remained after they were resolved.
-    pub(super) fn conflicts_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// conflicts remained after they were resolved. Only a read asked for
+    /// after the latest refusal landed, the `requested`th
+    /// (`request_status_read`), withdraws one, for the forms and the
+    /// window's error alike (`State::refused_after`): a read asked for
+    /// before it, landing after it, may have read the working state before
+    /// an outside `git stash apply` left the conflict, and once said "No
+    /// conflicts remain" beside it. The refusal asks for a read of its own,
+    /// which decides (`read_pause_again`).
+    pub(super) fn conflicts_ended(
+        &mut self,
+        requested: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if requested <= self.recovery.refused_after {
+            return;
+        }
         self.recovery_refusals_ended(true, window, cx);
         if self.operation_error.as_deref() == Some(gitturtle_core::paused_recovery_refusal(None)) {
             self.operation_error = None;
@@ -427,6 +449,9 @@ impl GitTurtle {
                 if this.recovery.generation != generation {
                     return;
                 }
+                // The reads asked for before the core's answer landed: any
+                // asked for from here on reads after what it read.
+                let asked = this.status_requests;
                 this.recovery.task = None;
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
@@ -465,6 +490,9 @@ impl GitTurtle {
                     }
                     Err(error) => {
                         let message = format!("{error:#}");
+                        // Only a read asked for after the refusal can find
+                        // its cause gone (`conflicts_ended`).
+                        this.recovery.refused_after = asked;
                         if let Some(failure) = failure {
                             failure(message, window, cx);
                         } else {
@@ -8266,6 +8294,116 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         refused_for_conflicts_alone(cx, PausedForm::Stash).await;
+    }
+
+    /// A refusal for conflicts alone stays through a read asked for before
+    /// it was raised, which may have read the working state before the
+    /// conflict came: a read asked for, and made, before a stash is
+    /// restored outside the app, held while Save changes to stash… and a
+    /// commit's Revert are refused for the conflict it left, then landing
+    /// with no conflict, leaves the form's line and the window's error
+    /// standing. The read the refusals ask for finds the conflict left, and
+    /// both go once a later read finds it resolved. A read from before the
+    /// refusal once replaced them with "No conflicts remain" while the
+    /// conflict stood (`GitTurtle::conflicts_ended`).
+    #[gpui::test]
+    async fn a_read_from_before_a_refusal_for_conflicts_keeps_it(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::fixture_git(&repository, &["reset", "-q", "--hard"]);
+        clashing_stash(&repository);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stash_form(window, cx)));
+        crate::views::tests::draw(cx);
+        let form = app.read_with(cx, |app, _| app.recovery.stash.clone().expect("the form"));
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.name
+                    .update(cx, |name, cx| name.set_value("conflicted work", window, cx))
+            })
+        });
+        crate::views::tests::draw(cx);
+        let refusals = |cx: &mut gpui::VisualTestContext| {
+            (
+                form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
+                app.read_with(cx, |app, _| app.operation_error.clone()),
+            )
+        };
+        let standing = (
+            (Some(CONFLICTS_REFUSAL.to_owned()), None),
+            Some(CONFLICTS_REFUSAL.to_owned()),
+        );
+
+        // The read held across the refusals, asked for and made before the
+        // stash is restored.
+        let (requested, held) = app.update(cx, |app, _| {
+            let requested = app.request_status_read();
+            let repo = app.repository.clone().expect("the repository");
+            (
+                requested,
+                crate::worker::WorkingState::read(&repo).expect("the working state"),
+            )
+        });
+        assert!(
+            !held.status.entries.iter().any(|entry| entry.conflicted),
+            "the held read finds no conflict"
+        );
+        conflict_alone(&repository, "stash@{0}");
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        recovery_lands(&app, cx);
+        let head = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .and_then(|status| status.head.clone())
+                .expect("HEAD")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.prepare_commit_recovery(RecoveryKind::Revert, head, None, window, cx)
+            })
+        });
+        recovery_lands(&app, cx);
+        assert_eq!(refusals(cx), standing, "both refused for conflicts alone");
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.apply_worktree_state(held, true, requested, window, cx)
+            })
+        });
+        frame(cx);
+        assert_eq!(
+            refusals(cx),
+            standing,
+            "the read from before the refusals leaves them standing"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_some(),
+            "the form draws its refusal"
+        );
+
+        // The read the refusals asked for finds the conflict left.
+        quiet_reads_land(&app, cx);
+        frame(cx);
+        assert_eq!(refusals(cx), standing, "they stay while the conflict does");
+
+        conflict_resolved(&app, cx, &repository);
+        assert_eq!(
+            refusals(cx),
+            ((None, Some(None)), None),
+            "both go in the frame a later read finds no conflict"
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        drop(fixture);
     }
 
     /// Stashes' Review restore…, refused for a conflict a restoration

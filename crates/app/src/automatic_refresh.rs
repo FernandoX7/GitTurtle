@@ -355,6 +355,7 @@ impl GitTurtle {
         let path = repo.path().to_owned();
         let generation = self.generation;
         let work_generation = self.work_generation;
+        let requested = self.request_status_read();
         self.automatic.epoch = self.automatic.epoch.wrapping_add(1);
         let epoch = self.automatic.epoch;
         self.automatic.inflight = Some(change);
@@ -388,7 +389,7 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
-                        this.apply_quiet_refresh(*refresh, window, cx);
+                        this.apply_quiet_refresh(*refresh, requested, window, cx);
                         // A failed native watch gets one local state read. A
                         // later event, manual Refresh, or regained focus may
                         // reconnect; do not spin on a persistent watch error.
@@ -411,13 +412,16 @@ impl GitTurtle {
         }));
     }
 
+    /// Applies a quiet read asked for as the `requested`th working-state
+    /// read (`request_status_read`).
     fn apply_quiet_refresh(
         &mut self,
         refresh: worker::QuietRefresh,
+        requested: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.apply_worktree_state(refresh.working, true, window, cx);
+        self.apply_worktree_state(refresh.working, true, requested, window, cx);
         if let Some(snapshot) = refresh.snapshot {
             match snapshot {
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {

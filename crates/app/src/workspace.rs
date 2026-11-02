@@ -2040,6 +2040,7 @@ impl GitTurtle {
         }
         let path = repo.path().to_owned();
         self.status_task = None;
+        let requested = self.request_status_read();
         let response =
             self.operations
                 .submit_read_once(&mut self.status_reads, path.clone(), move || {
@@ -2057,7 +2058,7 @@ impl GitTurtle {
                 }
                 this.status_task = None;
                 match result {
-                    Ok(state) => this.apply_worktree_state(state, false, window, cx),
+                    Ok(state) => this.apply_worktree_state(state, false, requested, window, cx),
                     Err(error) => {
                         this.work_status = None;
                         this.working_paths.reset();
@@ -2084,10 +2085,24 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Numbers a working-state read as it is asked for, the explicit read
+    /// (`refresh_worktree`) and the quiet one (`try_automatic_refresh`)
+    /// alike: its reply carries the number to [`Self::apply_worktree_state`],
+    /// so a read asked for before a recovery review was refused, which may
+    /// have read the working state before what the core refused for came,
+    /// cannot say it has gone ([`Self::conflicts_ended`]).
+    pub(super) fn request_status_read(&mut self) -> u64 {
+        self.status_requests += 1;
+        self.status_requests
+    }
+
+    /// Applies a working-state read asked for as the `requested`th
+    /// ([`Self::request_status_read`]).
     pub(super) fn apply_worktree_state(
         &mut self,
         state: worker::WorkingState,
         quiet: bool,
+        requested: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2116,9 +2131,10 @@ impl GitTurtle {
         // resolves none of them (`integration_ended`), goes in the frame a
         // read finds none left, the window's and the recovery forms' alike
         // (`conflicts_ended`): it once stayed in the window's error until
-        // dismissed, saying conflicts remained after they were resolved.
+        // dismissed, saying conflicts remained after they were resolved. A
+        // read asked for before the refusal leaves it.
         if !status.entries.iter().any(|entry| entry.conflicted) {
-            self.conflicts_ended(window, cx);
+            self.conflicts_ended(requested, window, cx);
         }
         let preferred = self.working_selected.and_then(|(index, area)| {
             self.work_status

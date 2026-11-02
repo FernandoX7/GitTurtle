@@ -427,6 +427,12 @@ struct GitTurtle {
     /// (`GitTurtle::read_deferred_working`).
     working_read_deferred: Option<PathBuf>,
     work_generation: u64,
+    /// The working-state reads this window has asked for, explicit and
+    /// quiet alike: each takes the next number, which its reply carries
+    /// (`GitTurtle::request_status_read`), so a read asked for before a
+    /// refusal is told from one asked for after it. Window-lived, as the
+    /// readers are, so numbers only grow across tabs.
+    status_requests: u64,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
     working_paths: working_selection::FilterState,
     integration_state: Option<gitturtle_core::OperationState>,
@@ -812,6 +818,7 @@ impl GitTurtle {
             status_after_write: None,
             working_read_deferred: None,
             work_generation: 0,
+            status_requests: 0,
             work_status: None,
             working_paths: working_selection::FilterState::default(),
             integration_state: None,
