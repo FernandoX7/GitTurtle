@@ -12043,19 +12043,23 @@ pub(crate) mod tests {
     ) -> Option<String> {
         let written = std::rc::Rc::new(RefCell::new(None));
         let (placeholder, field) = (written.clone(), field.clone());
-        cx.draw(point(px(0.), px(0.)), size(px(1.), px(1.)), move |window, cx| {
-            *placeholder.borrow_mut() = field.update(cx, |state, cx| {
-                let element = Render::render(state, window, cx).into_element();
-                let mut node = gpui::accesskit::Node::new(
-                    element
-                        .a11y_role()
-                        .expect("the editing focus owner has a role"),
-                );
-                element.write_a11y_info(&mut node);
-                node.placeholder().map(str::to_owned)
-            });
-            div()
-        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            size(px(1.), px(1.)),
+            move |window, cx| {
+                *placeholder.borrow_mut() = field.update(cx, |state, cx| {
+                    let element = Render::render(state, window, cx).into_element();
+                    let mut node = gpui::accesskit::Node::new(
+                        element
+                            .a11y_role()
+                            .expect("the editing focus owner has a role"),
+                    );
+                    element.write_a11y_info(&mut node);
+                    node.placeholder().map(str::to_owned)
+                });
+                div()
+            },
+        );
         written.borrow_mut().take()
     }
 
@@ -12327,7 +12331,12 @@ pub(crate) mod tests {
     /// Asserts the last frame drew `row`'s graph node inside its graph cell,
     /// among the lanes History shows: the selected commit's 10 px node, as
     /// [`narrowing_history_keeps_the_selected_row_and_lane_in_view`] reads it.
-    fn assert_lane_shown(app: &Entity<GitTurtle>, row: usize, cx: &mut VisualTestContext, at: &str) {
+    fn assert_lane_shown(
+        app: &Entity<GitTurtle>,
+        row: usize,
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) {
         let (lane, offset, capacity) = app.read_with(cx, |app, cx| {
             let rows = app.history_rows(cx);
             (
@@ -12360,7 +12369,10 @@ pub(crate) mod tests {
                     && right <= graph.right() + px(0.5)
             })
         });
-        assert!(drawn, "{at}: row {row}'s node is drawn in its graph cell {graph:?}");
+        assert!(
+            drawn,
+            "{at}: row {row}'s node is drawn in its graph cell {graph:?}"
+        );
     }
 
     /// Narrowing History from 980 px to a 461 × 490 half tile, where narrow
@@ -12370,9 +12382,7 @@ pub(crate) mod tests {
     /// reveals the lane as it takes the new width, before its header and
     /// rows are built ([`GitTurtle::take_history_width`]).
     #[gpui::test]
-    async fn narrowing_history_draws_the_selected_lane_in_the_step_frame(
-        cx: &mut TestAppContext,
-    ) {
+    async fn narrowing_history_draws_the_selected_lane_in_the_step_frame(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
         let side = commit_index(&app, cx, SIDE_SUBJECT);
         crate::in_frame::probe::watch();
@@ -12432,7 +12442,9 @@ pub(crate) mod tests {
         HISTORY_LANES.with_borrow_mut(|lanes| *lanes = Some(Vec::new()));
         cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
         cx.run_until_parked();
-        let lanes = HISTORY_LANES.with_borrow_mut(Option::take).unwrap_or_default();
+        let lanes = HISTORY_LANES
+            .with_borrow_mut(Option::take)
+            .unwrap_or_default();
         assert_eq!(app.read_with(cx, |app, _| app.selected_commit), Some(side));
         let lane = app.read_with(cx, |app, _| app.graph[side].lane);
         let (first, shown) = *lanes.first().expect("the switch draws History");
