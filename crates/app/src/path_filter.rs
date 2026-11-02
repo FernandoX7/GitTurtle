@@ -592,6 +592,184 @@ mod tests {
         );
     }
 
+    /// Compare's file filter and Changes' working filter keep their rows
+    /// until their worker answers the query typed, as History's does
+    /// (`typing_a_filter_keeps_its_rows_until_the_answer_lands`): with the
+    /// worker held, "s" and then "rc" typed into each draw the rows drawn
+    /// before, never an empty list, "Filtering…" or "No matches"; the job
+    /// for "s", released alone while "src" waits, answers as superseded and
+    /// leaves the rows and the pending "src" as they were; and the answer
+    /// to "src" then replaces them. The
+    /// survey of 2026-10-30 found History's list emptied before its worker
+    /// answered, which `61e8df70` fixed; none of the three empties now.
+    #[gpui::test]
+    async fn compare_and_working_filters_keep_their_rows_until_the_answer_lands(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::filters_land;
+        use crate::GitTurtle;
+        use crate::views::tests::{draw, history_window_from, settle};
+        use gpui::{Bounds, Pixels, VisualTestContext};
+        use std::sync::mpsc;
+
+        const PATHS: [&str; 4] = [
+            "src/app/views.rs",
+            "src/app/main.rs",
+            "docs/guide.md",
+            "README.md",
+        ];
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfiles 4\n",
+        );
+        for path in PATHS {
+            script.push_str(&format!(
+                "M 100644 inline {path}\ndata {}\n{path}\n",
+                path.len()
+            ));
+        }
+        script.push_str("done\n");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        // The filter's worker is held until the first hold drops; a second
+        // hold queued after the first query signals `reached` and holds it
+        // again until `release` is sent, so the answer to the query typed
+        // before it lands alone. Its reply is kept: a read whose reply is
+        // dropped is skipped.
+        let second = |app: &gpui::Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            let (passed, reached) = mpsc::channel::<()>();
+            let (release, released) = mpsc::channel::<()>();
+            let reply = app.update(cx, |app, _| {
+                app.file_paths.executor().submit_read(move || {
+                    passed.send(())?;
+                    released.recv()?;
+                    Ok(())
+                })
+            });
+            (reached, release, reply)
+        };
+        let paths = |app: &gpui::Entity<GitTurtle>, cx: &mut VisualTestContext, rows: &[usize]| {
+            app.read_with(cx, |app, _| {
+                rows.iter()
+                    .map(|&index| app.files[index].path().display().to_string())
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // Compare, on the first file: its rows by their files' indices.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == crate::WorkspaceMode::Compare));
+        let compare = |cx: &mut VisualTestContext| -> Vec<usize> {
+            let selected = app.read_with(cx, |app, _| app.selected_file);
+            const ROWS: [&str; 4] = [
+                "changed-file-0",
+                "changed-file-1",
+                "changed-file-2",
+                "changed-file-3",
+            ];
+            (0..PATHS.len())
+                .filter(|index| {
+                    cx.debug_bounds(ROWS[*index]).is_some()
+                        || (selected == Some(*index)
+                            && cx.debug_bounds("selected-changed-file").is_some())
+                })
+                .collect()
+        };
+        assert_eq!(compare(cx), vec![0, 1, 2, 3], "every changed file");
+        let open = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            let filter = app.read(cx).file_filter.clone();
+            filter.update(cx, |input, cx| input.focus(window, cx));
+        });
+        cx.simulate_input("s");
+        let (reached, release, _reply) = second(&app, cx);
+        cx.simulate_input("rc");
+        for _ in 0..2 {
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.file_paths.pending));
+            assert_eq!(compare(cx), vec![0, 1, 2, 3], "Compare's rows stay");
+            assert!(cx.debug_bounds("files-no-match").is_none(), "no No matches");
+        }
+        drop(open);
+        reached.recv().unwrap();
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.file_paths.pending),
+            "\"s\"'s answer leaves \"src\" pending"
+        );
+        assert_eq!(compare(cx), vec![0, 1, 2, 3], "and the rows as they were");
+        release.send(()).unwrap();
+        filters_land(&app, cx);
+        let rows = compare(cx);
+        let mut shown = paths(&app, cx, &rows);
+        shown.sort();
+        assert_eq!(
+            shown,
+            ["src/app/main.rs", "src/app/views.rs"].map(String::from),
+            "\"src\"'s answer"
+        );
+
+        // Changes, where the import's empty index stages every deletion, in
+        // a window that draws every row.
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        filters_land(&app, cx);
+        let working = |cx: &mut VisualTestContext| -> Vec<Bounds<Pixels>> {
+            let rows = app.read_with(cx, |app, _| app.working_rows.len());
+            (0..rows)
+                .filter_map(|position| cx.debug_bounds(format!("working-row-{position}").leak()))
+                .collect()
+        };
+        let before = working(cx);
+        let files = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.working_rows
+                    .iter()
+                    .filter(|row| matches!(row, crate::workspace::WorkingRow::File(..)))
+                    .count()
+            })
+        };
+        assert_eq!(files(cx), 4, "every deletion is listed");
+        assert_eq!(
+            before.len(),
+            app.read_with(cx, |app, _| app.working_rows.len())
+        );
+        let open = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            let filter = app.read(cx).working_filter.clone();
+            filter.update(cx, |input, cx| input.focus(window, cx));
+        });
+        cx.simulate_input("s");
+        let (reached, release, _reply) = second(&app, cx);
+        cx.simulate_input("rc");
+        for _ in 0..2 {
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.working_paths.pending));
+            assert_eq!(working(cx), before, "Changes' rows stay where they were");
+            assert!(
+                cx.debug_bounds("working-filter-pending").is_none(),
+                "no Filtering working paths…"
+            );
+            assert!(
+                cx.debug_bounds("working-no-match").is_none(),
+                "no No matches"
+            );
+        }
+        drop(open);
+        reached.recv().unwrap();
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_paths.pending),
+            "\"s\"'s answer leaves \"src\" pending"
+        );
+        assert_eq!(working(cx), before, "and the rows where they were");
+        release.send(()).unwrap();
+        filters_land(&app, cx);
+        assert_eq!(files(cx), 2, "\"src\"'s answer: views.rs and main.rs");
+    }
+
     /// Twenty keys typed while the filter's worker is held coalesce: one
     /// job runs and the newest query waits, so no key is refused as the
     /// lane being busy, which once showed "Path filter unavailable" from
