@@ -1743,8 +1743,14 @@ impl GitTurtle {
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
-                this.draft_save_error = result.err();
-                cx.notify();
+                // A save that ends as the last did draws nothing new: each
+                // tab switch saves the draft it leaves, and its end drew the
+                // tab shown again once more.
+                let error = result.err();
+                if this.draft_save_error != error {
+                    this.draft_save_error = error;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -2198,11 +2204,19 @@ impl GitTurtle {
             previous.branch != status.branch || previous.upstream != status.upstream
         });
         let (default_remote, default_branch) = remote_defaults(&status, &remotes);
-        if branch_changed || self.remote_name.read(cx).value().is_empty() {
+        // A field given the value it holds only draws the window again, as
+        // `set_value` notifies: a repository without a remote gave its empty
+        // remote field an empty value on every quiet read, and a tab shown
+        // again drew once more as its rescan landed.
+        let defaults = |input: &Entity<InputState>, default: &str, cx: &App| {
+            let value = input.read(cx).value();
+            (branch_changed || value.is_empty()) && value.as_ref() != default
+        };
+        if defaults(&self.remote_name, &default_remote, cx) {
             self.remote_name
                 .update(cx, |input, cx| input.set_value(default_remote, window, cx));
         }
-        if branch_changed || self.remote_branch.read(cx).value().is_empty() {
+        if defaults(&self.remote_branch, &default_branch, cx) {
             self.remote_branch
                 .update(cx, |input, cx| input.set_value(default_branch, window, cx));
         }

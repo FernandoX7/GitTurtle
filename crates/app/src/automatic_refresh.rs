@@ -160,6 +160,7 @@ impl GitTurtle {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Local watcher setup stopped")));
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.path.as_ref() != Some(&path) { return; }
+                let shown = QuietDrawn::read(this);
                 this.automatic.watch_task = None;
                 match result {
                     Ok((roots, subscription)) => {
@@ -179,7 +180,13 @@ impl GitTurtle {
                         this.automatic.watch_warning = Some(format!("Automatic refresh could not start.\n\n{error:#}\n\nRefresh reads current local state and retries the watcher."));
                     }
                 }
-                cx.notify();
+                // A watch set up as it was, or registered with the rescan it
+                // asks for waiting behind the one running, draws nothing new
+                // (`QuietDrawn`): a tab shown again drew the same frame again
+                // as its watch was set up and as each rescan checked it.
+                if QuietDrawn::read(this) != shown {
+                    cx.notify();
+                }
             });
         }));
     }
@@ -378,6 +385,8 @@ impl GitTurtle {
                 if this.automatic.epoch != epoch {
                     return;
                 }
+                let shown = QuietDrawn::read(this);
+                let mut found = true;
                 this.automatic.task = None;
                 let changed = this.automatic.inflight.take().unwrap_or_default();
                 if !reply_is_current(
@@ -395,6 +404,7 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
+                        found = !this.shows_quiet_refresh(&refresh);
                         this.apply_quiet_refresh(*refresh, requested, window, cx);
                         // A failed native watch gets one local state read. A
                         // later event, manual Refresh, or regained focus may
@@ -413,9 +423,44 @@ impl GitTurtle {
                     }
                 }
                 this.try_automatic_refresh(window, cx);
-                cx.notify();
+                // A read that found the repository as the window shows it
+                // draws nothing new, as the rescan of a tab shown again
+                // finds it: that frame once drew the tab again, and the
+                // rescan the watcher asks for once registered a third time.
+                if found || QuietDrawn::read(this) != shown {
+                    cx.notify();
+                }
             });
         }));
+    }
+
+    /// Whether a quiet read found what the window shows, as its landing
+    /// installs it whatever History shows: the working state, the branches,
+    /// worktrees and references History and its navigation draw, no scope
+    /// gone and the working file's comparison unchanged. History's rows,
+    /// which it installs only where History follows its newest, are
+    /// compared once installed ([`QuietDrawn`]).
+    fn shows_quiet_refresh(&self, refresh: &worker::QuietRefresh) -> bool {
+        let working = &refresh.working;
+        let same_working = self.work_status.as_deref() == Some(&working.status)
+            && matches!(&working.profile, Ok(profile) if self.profile.as_ref() == Some(profile))
+            && matches!(&working.remotes, Ok(remotes) if *remotes == self.remotes)
+            && matches!(&working.operation, Ok(operation) if *operation == self.integration_state);
+        let same_history = match &refresh.snapshot {
+            None => true,
+            Some(Ok(worker::QuietHistory::Refreshed(snapshot))) => {
+                snapshot.vanished_scope.is_none()
+                    && snapshot.refs == self.refs
+                    && snapshot.branches == self.branches
+                    && snapshot.worktrees == self.worktrees
+            }
+            Some(_) => false,
+        };
+        let same_preview = matches!(
+            refresh.preview,
+            None | Some(Ok(worker::QuietPreview::Unchanged))
+        );
+        same_working && same_history && same_preview
     }
 
     /// Applies a quiet read asked for as the `requested`th working-state
@@ -566,6 +611,70 @@ impl GitTurtle {
         // A passive read: a conflict's view shows without taking focus.
         if self.page == AppPage::Repository {
             self.prepare_editor(false, window, cx);
+        }
+    }
+}
+
+/// What a quiet read's landing, or the watcher's setup, can change that the
+/// window draws besides the state a read brings
+/// ([`GitTurtle::shows_quiet_refresh`]), read as the reply lands and again
+/// once it is applied: a reply that changes none of it, nor that state,
+/// draws no frame. History's rows are a hash of their commits, which a
+/// commit's ID identifies, with the graph's shape and the page they are.
+#[derive(PartialEq)]
+struct QuietDrawn {
+    history: u64,
+    paging: (Option<gitturtle_core::HistoryScope>, usize, Option<usize>),
+    history_offset: Point<Pixels>,
+    selected_commit: Option<usize>,
+    graph_offset: usize,
+    cue: Option<history_updates::Update>,
+    status: String,
+    operation_error: Option<String>,
+    operation_notice: Option<String>,
+    watch: (bool, Option<String>),
+    travel: std::mem::Discriminant<motion::RowTravel>,
+    rows_pending: bool,
+    /// Whether writes are refused while the reload a write asked for runs.
+    unsettled: bool,
+    /// Whether Changes says its working state is being read, which it says
+    /// only while it shows no status of its own.
+    reading: bool,
+}
+impl QuietDrawn {
+    fn read(app: &GitTurtle) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut history = std::collections::hash_map::DefaultHasher::new();
+        for commit in &app.commits {
+            commit.oid.hash(&mut history);
+        }
+        (app.graph.len(), app.graph_lanes, &app.graph_notice).hash(&mut history);
+        app.visible.hash(&mut history);
+        let unshown = app.work_status.is_none()
+            || app.working_filter_waiting()
+            || app.working_paths.error.is_some();
+        Self {
+            history: history.finish(),
+            paging: (
+                app.history_paging.scope.clone(),
+                app.history_paging.offset,
+                app.history_paging.next_offset,
+            ),
+            history_offset: app.history_scroll.0.borrow().base_handle.offset(),
+            selected_commit: app.selected_commit,
+            graph_offset: app.graph_offset,
+            cue: app.history_updates.pending,
+            status: app.status.clone(),
+            operation_error: app.operation_error.clone(),
+            operation_notice: app.operation_notice.clone(),
+            watch: (
+                app.automatic.watch_failed,
+                app.automatic.watch_warning.clone(),
+            ),
+            travel: std::mem::discriminant(&app.working_travel),
+            rows_pending: app.working_paths.pending,
+            unsettled: app.write_unsettled(),
+            reading: unshown && app.working_read_pending(),
         }
     }
 }

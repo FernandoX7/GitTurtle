@@ -13305,6 +13305,115 @@ pub(crate) mod tests {
         }
     }
 
+    /// Shows tab `index` again with nothing held and counts the frames the
+    /// window draws until every reply its return asks for has landed, and
+    /// the frame callbacks after them, three times, have run.
+    fn switch_and_land(app: &Entity<GitTurtle>, index: usize, cx: &mut VisualTestContext) -> usize {
+        land_every_reply(app, cx);
+        repository_frames();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.switch_repository_tab(index, window, cx))
+        });
+        land_every_reply(app, cx);
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            land_every_reply(app, cx);
+        }
+        repository_frames()
+    }
+
+    /// Showing a warm tab again draws one frame with nothing held, every
+    /// reply it asks for landed, when nothing changed on disk: each way
+    /// between the two tabs of [`two_history_tabs`], each tab as it was
+    /// left. The replies a return asks for each drew a frame as they landed,
+    /// all alike: the commit draft's save, the watcher's setup, the rescan
+    /// the return asks for and the one the watcher asks for once registered,
+    /// and the watcher's check after each rescan.
+    #[gpui::test]
+    async fn a_warm_tab_switch_draws_one_frame_as_its_replies_land(cx: &mut TestAppContext) {
+        let (_fixtures, app, cx, tabs) = two_history_tabs(cx).await;
+        crate::in_frame::probe::watch();
+        for (index, (state, _), at) in [
+            (0, &tabs[0], "the first tab shown again"),
+            (1, &tabs[1], "the second tab shown again"),
+        ] {
+            assert_eq!(
+                switch_and_land(&app, index, cx),
+                1,
+                "{at}: one frame, every reply landed"
+            );
+            assert_eq!(&tab_state(&app, cx), state, "{at}: as it was left");
+        }
+        crate::in_frame::probe::stop();
+    }
+
+    /// A reply a warm tab's return asks for that brings something the tab
+    /// does not show draws it, in one frame of its own beside the switch's,
+    /// while the tab keeps its place: of the first tab's repository, changed
+    /// outside while the second showed, a branch made at HEAD, which only
+    /// the rescan's branches and references show, then a commit on `main`
+    /// that leaves the working state as it was, cued beside History's count
+    /// with its list kept where it was left a row down.
+    #[gpui::test]
+    async fn a_warm_tab_draws_what_its_rescan_finds_in_a_frame_of_its_own(cx: &mut TestAppContext) {
+        let (_fixtures, app, cx, tabs) = two_history_tabs(cx).await;
+        let root = app.read_with(cx, |app, _| app.repository_tabs.tabs[0].path.clone());
+        let branches = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.branches
+                    .iter()
+                    .map(|branch| branch.name.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(!branches(cx).contains(&"outside".to_owned()));
+        fixture_git(&root, &["branch", "outside"]);
+        crate::in_frame::probe::watch();
+        assert_eq!(
+            switch_and_land(&app, 0, cx),
+            2,
+            "the branch made outside: the switch's frame, and the rescan's"
+        );
+        assert!(branches(cx).contains(&"outside".to_owned()));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            None
+        );
+        assert_eq!(&tab_state(&app, cx), &tabs[0].0, "the tab as it was left");
+        switch_and_land(&app, 1, cx);
+        let commit = fixture_git_output(
+            &root,
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "HEAD",
+                "-m",
+                "Made outside",
+            ],
+        );
+        assert!(commit.status.success());
+        let oid = String::from_utf8(commit.stdout).unwrap();
+        fixture_git(&root, &["update-ref", "HEAD", oid.trim()]);
+        assert_eq!(
+            switch_and_land(&app, 0, cx),
+            2,
+            "the commit made outside: the switch's frame, and the rescan's"
+        );
+        crate::in_frame::probe::stop();
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            Some(crate::history_updates::Update::New(1))
+        );
+        assert!(
+            cx.debug_bounds("history-update-status").is_some(),
+            "the new commit is cued"
+        );
+        assert_eq!(&tab_state(&app, cx), &tabs[0].0, "the tab as it was left");
+    }
+
     /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
     /// one frame where it settles, the changed files' filter shortened to
     /// "Filter" in it at 18 pt.
