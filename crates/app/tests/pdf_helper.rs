@@ -1,4 +1,5 @@
-//! The Linux PDF helper's confinement: its seccomp filter in forked children.
+//! The Linux PDF helper: its seccomp filter in forked children, and the real
+//! binary as a confined helper.
 //!
 //! The app crate has no library target, so this test compiles
 //! `src/pdf_helper.rs` as its own module.
@@ -466,5 +467,424 @@ mod filter {
             }),
             SIGSYS
         );
+    }
+}
+
+/// PDFs built in test code.
+mod fixtures {
+    /// A PDF of `objects`, numbered from 1 in order; object 1 is the catalog.
+    pub(crate) fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(object);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    /// A stream object of `data` with the other `dictionary` entries.
+    pub(crate) fn stream(dictionary: &str, data: &[u8]) -> Vec<u8> {
+        let mut object =
+            format!("<< {dictionary} /Length {} >>\nstream\n", data.len()).into_bytes();
+        object.extend_from_slice(data);
+        object.extend_from_slice(b"\nendstream");
+        object
+    }
+
+    /// One 120 × 80 point page drawing `content`, with Helvetica as `/F1` and
+    /// `image`, a stream object, as `/Im0`.
+    pub(crate) fn page(content: &[u8], image: Option<Vec<u8>>) -> Vec<u8> {
+        let image_resource = if image.is_some() {
+            " /XObject << /Im0 6 0 R >>"
+        } else {
+            ""
+        };
+        let mut objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 120 80] /Resources << /Font << /F1 4 0 R >>{image_resource} >> /Contents 5 0 R >>"
+            )
+            .into_bytes(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_vec(),
+            stream("", content),
+        ];
+        objects.extend(image);
+        assemble(&objects)
+    }
+
+    /// A page whose top half is red, with "Benign" in its bottom half.
+    pub(crate) fn benign() -> Vec<u8> {
+        page(
+            b"1 0 0 rg 0 40 120 40 re f 0 g BT /F1 12 Tf 10 10 Td (Benign) Tj ET",
+            None,
+        )
+    }
+}
+
+/// The real binary as the helper: confinement, descriptors, parent and
+/// arguments.
+mod helper {
+    use std::fs;
+    use std::io::{self, BufRead, BufReader, Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use gitturtle_preview::pdf_helper::{PROTOCOL_VERSION, encode_request, read_reply};
+
+    use super::fixtures;
+    use super::pdf_helper::{HELPER_FLAG, exit};
+
+    const BINARY: &str = env!("CARGO_BIN_EXE_gitturtle");
+
+    fn version() -> String {
+        PROTOCOL_VERSION.to_string()
+    }
+
+    fn own_pid() -> String {
+        std::process::id().to_string()
+    }
+
+    /// The binary as a helper of this process, with no environment.
+    fn helper(parent: &str) -> Command {
+        let mut command = Command::new(BINARY);
+        command
+            .args([HELPER_FLAG, &version(), parent])
+            .env_clear()
+            .current_dir("/")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
+    }
+
+    fn field<'a>(status: &'a str, name: &str) -> &'a str {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("no {name} in\n{status}"))
+    }
+
+    /// `/proc/<pid>/status` once the helper has installed its filter, the
+    /// last step before it reads.
+    fn confined_status(pid: u32) -> String {
+        let started = Instant::now();
+        loop {
+            let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+            if field(&status, "Seccomp") == "2" {
+                return status;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the helper never confined itself:\n{status}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Whether `pid` runs: neither reaped nor a zombie.
+    fn running(pid: u32) -> bool {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let state = stat[stat.rfind(')').unwrap() + 1..].trim_start();
+        !state.starts_with(['Z', 'X'])
+    }
+
+    /// Waits up to 10 s for `child` to exit on its own.
+    fn exit_code(child: &mut std::process::Child) -> Option<i32> {
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status.code();
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the helper did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_confined_helper_round_trips_a_page() {
+        let mut command = helper(&own_pid());
+        // SAFETY: only signal calls between fork and exec, after std has
+        // reset the mask; both survive exec, so the helper must undo them.
+        unsafe {
+            command.pre_exec(|| {
+                let mut every: libc::sigset_t = std::mem::zeroed();
+                libc::signal(libc::SIGALRM, libc::SIG_IGN);
+                libc::signal(libc::SIGXCPU, libc::SIG_IGN);
+                libc::sigfillset(&mut every);
+                libc::sigprocmask(libc::SIG_SETMASK, &every, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        let status = confined_status(pid);
+        assert_eq!(field(&status, "Name"), "gitturtle-pdf");
+        assert_eq!(field(&status, "NoNewPrivs"), "1");
+        assert_eq!(field(&status, "Threads"), "1");
+        assert_eq!(u64::from_str_radix(field(&status, "SigBlk"), 16), Ok(0));
+        let ignored = u64::from_str_radix(field(&status, "SigIgn"), 16).unwrap();
+        let bit = |signal: i32| 1u64 << (signal - 1);
+        assert_eq!(ignored & (bit(libc::SIGALRM) | bit(libc::SIGXCPU)), 0);
+        assert_ne!(ignored & bit(libc::SIGXFSZ), 0);
+        let size = field(&status, "VmSize");
+        let kib: u64 = size.trim_end_matches("kB").trim().parse().unwrap();
+        eprintln!("the helper's VmSize at confinement: {size}");
+        assert!(
+            kib <= 512 * 1024,
+            "VmSize {size} leaves RLIMIT_AS too little room"
+        );
+
+        let mut stack = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reads into a local.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_STACK, &mut stack) },
+            0
+        );
+        let stack = (8 << 20).min(stack.rlim_cur).to_string();
+        let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+        for (name, soft, hard) in [
+            ("Max cpu time", "10", "11"),
+            ("Max file size", "0", "0"),
+            ("Max data size", "1073741824", "1073741824"),
+            ("Max stack size", &stack, &stack),
+            ("Max core file size", "0", "0"),
+            ("Max processes", "0", "0"),
+            ("Max open files", "3", "3"),
+            ("Max address space", "2147483648", "2147483648"),
+        ] {
+            let values: Vec<_> = limits
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .unwrap_or_else(|| panic!("no {name} in\n{limits}"))
+                .split_whitespace()
+                .collect();
+            assert_eq!(values[..2], [soft, hard], "{name}");
+        }
+        // Not dumpable: the descriptor table belongs to root.
+        let descriptors = fs::metadata(format!("/proc/{pid}/fd")).unwrap();
+        assert_eq!(descriptors.uid(), 0);
+        // Written while the file still belonged to the helper.
+        let oom_score_adj = fs::read_to_string(format!("/proc/{pid}/oom_score_adj")).unwrap();
+        assert_eq!(oom_score_adj.trim(), "1000");
+
+        let pdf = fixtures::benign();
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(&encode_request(0, &pdf).unwrap()).unwrap();
+        input.write_all(&pdf).unwrap();
+        drop(input);
+        let mut reply = Vec::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut reply)
+            .unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(0));
+        let page = read_reply(&reply[..]).unwrap().unwrap();
+        assert_eq!((page.page, page.page_count), (0, 1));
+        assert_eq!((page.image.width, page.image.height), (120, 80));
+        assert_eq!(page.image.rgba[..4], [255, 0, 0, 255]);
+        let last = page.image.rgba.len() - 4;
+        assert_eq!(page.image.rgba[last..], [255, 255, 255, 255]);
+        assert_eq!(page.text.unwrap().text.as_deref(), Some("Benign"));
+    }
+
+    fn pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0; 2];
+        // SAFETY: fills two descriptors this function then owns.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both were just opened.
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    /// Leaves `fd` open as `at` in the child, without close-on-exec.
+    fn inherit(fd: libc::c_int, at: libc::c_int) -> io::Result<()> {
+        // SAFETY: called between fork and exec on descriptors the child owns.
+        let result = unsafe {
+            if fd == at {
+                libc::fcntl(fd, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(fd, at)
+            }
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_descriptors_close_before_input() {
+        let (low_read, low_write) = pipe();
+        let (high_read, high_write) = pipe();
+        let (low, high) = (low_write.as_raw_fd(), high_write.as_raw_fd());
+        let mut command = helper(&own_pid());
+        // SAFETY: only dup2 and fcntl between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                inherit(high, 1000)?;
+                inherit(low, 5)
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        drop((low_write, high_write));
+        let started = Instant::now();
+        for read in [&low_read, &high_read] {
+            let mut poll = libc::pollfd {
+                fd: read.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: polls one descriptor this test owns.
+            assert_eq!(unsafe { libc::poll(&mut poll, 1, 1000) }, 1);
+            assert_ne!(poll.revents & libc::POLLHUP, 0);
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // The helper closed them itself: it still waits on stdin.
+        assert!(child.try_wait().unwrap().is_none());
+        confined_status(child.id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn the_helper_dies_with_its_parent() {
+        let mut shell = Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#""$0" "$1" "$2" $$ <&0 & echo $!; wait"#,
+                BINARY,
+                HELPER_FLAG,
+                &version(),
+            ])
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(shell.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let helper: u32 = line.trim().parse().unwrap();
+        confined_status(helper);
+        shell.kill().unwrap();
+        let killed = Instant::now();
+        shell.wait().unwrap();
+        while running(helper) {
+            assert!(
+                killed.elapsed() < Duration::from_millis(100),
+                "the helper outlived its parent"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_wrong_parent_exits_before_input() {
+        // The input stays open and unwritten.
+        let mut child = helper("1").spawn().unwrap();
+        assert_eq!(exit_code(&mut child), Some(exit::PARENT));
+    }
+
+    #[test]
+    fn malformed_helper_arguments_exit_before_input() {
+        let (version, parent) = (version(), own_pid());
+        let cases = [
+            ("2", parent.as_str()),
+            ("01", &parent),
+            ("+1", &parent),
+            (" 1", &parent),
+            ("", &parent),
+            (&version, "0"),
+            (&version, "-1"),
+            (&version, "+5"),
+            (&version, "05"),
+            (&version, "2147483648"),
+            (&version, "99999999999"),
+            (&version, "1x"),
+            (&version, ""),
+        ];
+        for (version, parent) in cases {
+            let mut child = Command::new(BINARY)
+                .args([HELPER_FLAG, version, parent])
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            assert_eq!(
+                exit_code(&mut child),
+                Some(exit::ARGUMENTS),
+                "{version:?} {parent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_argument_form_starts_the_app() {
+        let (version, parent) = (version(), own_pid());
+        let forms: [&[&str]; 9] = [
+            &[],
+            &[HELPER_FLAG],
+            &["/tmp/repository"],
+            &[HELPER_FLAG, &version],
+            &[HELPER_FLAG, "/tmp/repository"],
+            &[HELPER_FLAG, &version, &parent, "extra"],
+            &["extra", HELPER_FLAG, &version, &parent],
+            &["--gitturtle-pdf-helper=1", &version, &parent],
+            &["/tmp/repository", &version, &parent],
+        ];
+        for form in forms {
+            // No display, so the app path stops with its headless message
+            // instead of opening a window.
+            let output = Command::new(BINARY)
+                .args(form)
+                .env_clear()
+                .env("ZED_HEADLESS", "1")
+                .current_dir("/")
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{form:?}: {message}");
+            assert!(
+                message.contains("needs a Wayland or X11 desktop session"),
+                "{form:?}: {message}"
+            );
+        }
     }
 }

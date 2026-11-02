@@ -2442,6 +2442,13 @@ fn primary_label() -> &'static str {
 }
 
 fn main() {
+    // Exactly `--gitturtle-pdf-helper <version> <parent pid>` runs the
+    // confined PDF helper and never returns; anything else starts the app.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    pdf_helper::run_if_requested();
     if let Some(code) = gitturtle_core::run_askpass_if_requested() {
         std::process::exit(code);
     }
