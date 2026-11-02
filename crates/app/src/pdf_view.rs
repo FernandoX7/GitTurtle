@@ -573,6 +573,8 @@ thread_local! {
     /// (`system_preview::HeaderControl::toggle`).
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The zoom's widest reading, "400%", laid out.
+    static ZOOM_LEVEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Each side's page number, whole and short, at its widest for a count
     /// of so many digits ([`page_number_widths`]), laid out.
     static BEFORE_PAGE_NUMBER: PageNumberWidths = const { std::cell::RefCell::new(None) };
@@ -775,15 +777,25 @@ pub(super) fn render_comparison<T: 'static>(
                 window.refresh(); cx.notify();
             })), cx));
         }
+        // Fit, −, + and the zoom are one run, which moves to the next line
+        // of the header whole rather than break, as the image comparison's
+        // mode and zoom menus do; at 1480 × 973 a side with no link once
+        // ended its first line with Fit and began the next with − + 100%.
+        // Only a run wider than a line itself, in a side too narrow for it,
+        // wraps within, its lines each a line of the header.
+        let mut zooms = div().debug_selector(move || format!("pdf-zooms-{index}")).max_w_full().flex().flex_wrap().items_center().gap_2();
         for (action,text) in [(0i32,"Fit"),(-1,"−"),(1,"+")] {
             let target = document.clone();
             let id = index*3+(action+1) as usize;
             let zoom = button(("pdf-zoom",id),text,"",false).debug_selector(move || format!("pdf-zoom-{id}")).accessibility_label(format!("{label}: {}",match action {-1=>"Zoom out",1=>"Zoom in",_=>"Fit page width"})).on_click(cx.listener(move |_,_,window,cx| {
                 let mut state = target.state.lock().unwrap_or_else(|e|e.into_inner()); state.zoom=if action==0 {1.}else{(state.zoom * if action<0 {0.8}else{1.25}).clamp(0.25,4.)}; drop(state); window.refresh(); cx.notify();
             }));
-            header = header.child(held.track(("pdf-zoom",id), zoom, cx));
+            zooms = zooms.child(held.track(("pdf-zoom",id), zoom, cx));
         }
-        header = header.child(div().debug_selector(move || format!("pdf-zoom-level-{index}")).text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        // At its widest reading, so a zoom never changes the run's width.
+        let level = crate::views::cached_text_width(&ZOOM_LEVEL, "400%", window, || crate::views::line_widths(&[("400%", appearance::ui_text(10.))], window));
+        zooms = zooms.child(div().debug_selector(move || format!("pdf-zoom-level-{index}")).min_w(level).whitespace_nowrap().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        header = header.child(zooms);
         // The position's live region lies outside the header's region, which
         // can scroll it out of view and out of reach of assistive technology
         // while it is still being announced, in a 1 px box at the side's
@@ -1203,6 +1215,8 @@ pub(crate) mod tests {
 
         struct Pages {
             content: crate::worker::Content,
+            /// The comparison's width.
+            width: Pixels,
         }
 
         impl Render for Pages {
@@ -1216,14 +1230,9 @@ pub(crate) mod tests {
                 );
                 // Drawn as Compare draws it, which draws a side without
                 // pages, as a locked PDF's, on the generic document surface.
-                div().w(px(900.)).h(px(600.)).flex().flex_col().child(
+                div().w(self.width).h(px(600.)).flex().flex_col().child(
                     rich_preview::render_comparison(
-                        comparison,
-                        false,
-                        opener,
-                        px(900.),
-                        window,
-                        cx,
+                        comparison, false, opener, self.width, window, cx,
                     ),
                 )
             }
@@ -1245,7 +1254,10 @@ pub(crate) mod tests {
             let pages = std::rc::Rc::new(std::cell::RefCell::new(None));
             let made = pages.clone();
             let (_, cx) = cx.add_window_view(move |window, cx| {
-                let view = cx.new(|_| Pages { content });
+                let view = cx.new(|_| Pages {
+                    content,
+                    width: px(900.),
+                });
                 *made.borrow_mut() = Some(view.clone());
                 gpui_kit::component::Root::new(view, window, cx)
             });
@@ -1667,6 +1679,62 @@ pub(crate) mod tests {
             assert_eq!(page_message(cx, "pdf-page-message-1"), sentence);
             assert!(cx.debug_bounds("pdf-retry-0").is_none());
             assert!(cx.debug_bounds("pdf-retry-1").is_some());
+        }
+
+        /// Fit, −, + and the zoom are one run: wherever a line of the header
+        /// holds them, they lie on one line, moving to the next whole rather
+        /// than break, at every side width from 150 to 500 px at 13 and
+        /// 18 pt. A side with no link, as an added PDF's, once ended its
+        /// first line with Fit at 1480 × 973 and began the next with − +
+        /// 100%.
+        #[gpui::test]
+        fn the_zooms_are_one_run_that_moves_whole(cx: &mut gpui_kit::TestAppContext) {
+            let (content, document) = before_only(&pdf("the zooms are one run"), 3, 0);
+            // Drawn with its pages prepared, so the page lane, which every
+            // test in the process shares, is never asked for one.
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(0, PreparedPage::from(page()));
+            let (view, cx) = window(cx, content);
+            let mut moved = false;
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for width in (300..=1000).step_by(5) {
+                    view.update(cx, |view, cx| {
+                        view.width = px(width as f32);
+                        cx.notify();
+                    });
+                    crate::tags::tests::draw(cx);
+                    let mut bounds = |selector: &'static str| {
+                        cx.debug_bounds(selector)
+                            .unwrap_or_else(|| panic!("{selector} is drawn"))
+                    };
+                    let run = ["pdf-zoom-1", "pdf-zoom-0", "pdf-zoom-2", "pdf-zoom-level-0"]
+                        .map(&mut bounds);
+                    let (header, back) = (bounds("pdf-side-header-0"), bounds("pdf-back-0"));
+                    // The header's `p_2` and `gap_2`.
+                    let half = cx.update(|window, _| window.rem_size()) * 0.5;
+                    let natural = run
+                        .iter()
+                        .fold(half * 3., |width, drawn| width + drawn.size.width);
+                    let at = format!("{text} pt, side {} px: {run:?}", width / 2);
+                    if natural <= header.size.width - half * 2. {
+                        let centre = run[0].center().y;
+                        assert!(
+                            run.iter()
+                                .all(|drawn| (drawn.center().y - centre).abs() < px(0.5))
+                                && run.windows(2).all(|pair| pair[0].right() < pair[1].left()),
+                            "{at}: the zooms lie on one line, in order"
+                        );
+                    }
+                    moved |= run[0].top() > back.bottom()
+                        && (run[0].left() - header.left() - half).abs() < px(0.5);
+                }
+            }
+            assert!(moved, "at some width the run starts a line of its own");
         }
 
         /// Why a side shows no pages is static text that an AT-SPI client
