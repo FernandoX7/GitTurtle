@@ -6419,13 +6419,60 @@ pub(crate) struct LineKey {
     rem: u32,
 }
 
+thread_local! {
+    /// The key the window's root render read as it began, which every
+    /// [`LineKey::current`] for that window shares until the render ends
+    /// ([`LineKey::frame`]).
+    static FRAME_LINE: RefCell<Option<(gpui::WindowId, LineKey)>> = const { RefCell::new(None) };
+}
+
 impl LineKey {
+    /// The key a line laid out now takes. Within the window's root render
+    /// it is the one that render read as it began ([`Self::frame`]):
+    /// nothing a render does nests the text style it reads, which only its
+    /// elements' layout does, and reading that style builds GPUI's default
+    /// font features, an allocation, at every read, which the tab strip
+    /// once made on every frame however little changed. Anywhere else, as
+    /// in a view drawn inside the window or an element's prepaint, whose
+    /// ancestors may set another font, it reads the window's text style.
     pub(crate) fn current(window: &Window) -> Self {
+        let window_id = window.window_handle().window_id();
+        FRAME_LINE
+            .with_borrow(|frame| {
+                frame
+                    .as_ref()
+                    .filter(|(drawn, _)| *drawn == window_id)
+                    .map(|(_, key)| key.clone())
+            })
+            .unwrap_or_else(|| Self::read(window))
+    }
+
+    /// The key the window's text style gives now.
+    fn read(window: &Window) -> Self {
         Self {
             font: window.text_style().font(),
             scale: appearance::ui_scale().to_bits(),
             rem: f32::from(window.rem_size()).to_bits(),
         }
+    }
+
+    /// Reads the key once for the window's root render, which holds the
+    /// returned guard for its whole body: every [`Self::current`] for the
+    /// window shares it until the guard drops, and what was shared before
+    /// comes back as it drops.
+    pub(crate) fn frame(window: &Window) -> FrameLine {
+        let key = Self::read(window);
+        FrameLine(FRAME_LINE.replace(Some((window.window_handle().window_id(), key))))
+    }
+}
+
+/// The line key a window's root render shares while it runs
+/// ([`LineKey::frame`]).
+pub(crate) struct FrameLine(Option<(gpui::WindowId, LineKey)>);
+
+impl Drop for FrameLine {
+    fn drop(&mut self) {
+        FRAME_LINE.set(self.0.take());
     }
 }
 
@@ -6453,16 +6500,19 @@ thread_local! {
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
-    /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`).
-    static STATUS_OUTCOME: TextWidth = const { RefCell::new(None) };
+    /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`),
+    /// kept as [`STATUS_TEXT`] keeps the line's whole text, for each
+    /// outcome, font, size and scale factor drawn lately: one slot made two
+    /// windows, each with its own outcome, measure theirs again on each
+    /// other's frames.
+    static STATUS_OUTCOME: StatusLineWidths = const { RefCell::new(Measured::new()) };
     /// The status line's whole text, measured where spare keyboard hints
     /// ask whether it keeps it (`GitTurtle::fit_status_bar`), for each
     /// text, font, size and scale factor drawn lately, so windows drawn in
     /// turn keep their own, as [`STATUS_WIDTHS`] does. One slot, shared by
     /// every window, measured each window's line again on the other's
     /// frames while Keyboard Shortcuts was open in both.
-    static STATUS_TEXT: RefCell<Measured<(LineKey, u32, String), Pixels>> =
-        const { RefCell::new(Measured::new()) };
+    static STATUS_TEXT: StatusLineWidths = const { RefCell::new(Measured::new()) };
     /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
     /// drawn lately, so the windows, pages and text sizes drawn in turn keep
     /// their own; its gaps and the warning's controls snap to the window's
@@ -6934,6 +6984,35 @@ thread_local! {
     /// hints ([`STATUS_TEXT`]), for a test.
     pub(crate) static STATUS_TEXT_MEASURED: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    /// How many times a fresh outcome was measured ([`STATUS_OUTCOME`]),
+    /// for a test.
+    static STATUS_OUTCOME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Widths of status line texts, by text, line key and scale factor
+/// ([`status_line_width`]).
+type StatusLineWidths = RefCell<Measured<(LineKey, u32, String), Pixels>>;
+
+/// The width of `text` in the status line, kept in `cache` for each text,
+/// font, size and scale factor drawn lately, so windows drawn in turn keep
+/// their own; `measure` lays it out where it is not kept. Finding a kept
+/// text allocates nothing.
+fn status_line_width(
+    cache: &'static std::thread::LocalKey<StatusLineWidths>,
+    text: &str,
+    window: &Window,
+    measure: impl FnOnce() -> Pixels,
+) -> Pixels {
+    let (line, scale) = (LineKey::current(window), window.scale_factor().to_bits());
+    cache.with_borrow_mut(|cache| {
+        *cache.get_where(
+            |(kept, kept_scale, kept_text)| {
+                *kept == line && *kept_scale == scale && kept_text == text
+            },
+            || (line.clone(), scale, text.to_owned()),
+            |_| measure(),
+        )
+    })
 }
 
 /// `width` for `key`, computed again only when `key` changes, so a steady
@@ -7557,7 +7636,9 @@ impl GitTurtle {
             );
             let widths = cache.get(key, |(_, _, hints)| self.status_widths(hints, window));
             let line = match self.fresh_outcome() {
-                Some(outcome) => cached_text_width(&STATUS_OUTCOME, outcome, window, || {
+                Some(outcome) => status_line_width(&STATUS_OUTCOME, outcome, window, || {
+                    #[cfg(test)]
+                    STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
                     line_widths(&[(outcome, appearance::ui_text(10.))], window)
                 }),
                 None => widths.ellipsis,
@@ -7580,22 +7661,10 @@ impl GitTurtle {
             let spare = widths.spare.as_ref().filter(|(_, width)| {
                 !carried && {
                     let text = self.status_text();
-                    let (line_key, scale) =
-                        (LineKey::current(window), window.scale_factor().to_bits());
-                    let whole = STATUS_TEXT.with_borrow_mut(|cache| {
-                        *cache.get_where(
-                            |(kept, kept_scale, kept_text)| {
-                                *kept == line_key && *kept_scale == scale && kept_text == text
-                            },
-                            || (line_key.clone(), scale, text.to_owned()),
-                            |_| {
-                                #[cfg(test)]
-                                STATUS_TEXT_MEASURED.with(|measured| {
-                                    measured.set(measured.get() + 1);
-                                });
-                                line_widths(&[(text, appearance::ui_text(10.))], window)
-                            },
-                        )
+                    let whole = status_line_width(&STATUS_TEXT, text, window, || {
+                        #[cfg(test)]
+                        STATUS_TEXT_MEASURED.with(|measured| measured.set(measured.get() + 1));
+                        line_widths(&[(text, appearance::ui_text(10.))], window)
                     });
                     whole + gap + *width <= room
                 }
@@ -7645,6 +7714,8 @@ impl Render for GitTurtle {
         // Everything the window holds, its dialogs included, is built below.
         #[cfg(test)]
         native_accessibility::written::draw_begins();
+        // One read of the window's line key for everything measured below.
+        let _line = LineKey::frame(window);
         static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
             let layout = (
@@ -15482,6 +15553,40 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A write's fresh outcome in the status line is kept for each outcome,
+    /// font, size and scale factor drawn lately, as the line's whole text
+    /// is (`STATUS_TEXT`): two outcomes drawn in turn three times are
+    /// measured twice in all. Its one slot measured each again whenever the
+    /// other had been drawn, as two windows, each with its own outcome,
+    /// drawn in turn did on every frame.
+    #[gpui::test]
+    async fn two_status_outcomes_drawn_in_turn_are_measured_once_each(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        STATUS_OUTCOME.with_borrow_mut(|cache| *cache = Measured::new());
+        let before = STATUS_OUTCOME_MEASURED.with(std::cell::Cell::get);
+        for _ in 0..3 {
+            for outcome in ["Staged 2 files", "Unstaged 1 file"] {
+                app.update(cx, |app, cx| {
+                    app.record_outcome(&repository, outcome.into(), cx);
+                    cx.notify();
+                });
+                draw(cx);
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.fresh_outcome().map(str::to_owned)),
+                    Some(outcome.to_owned()),
+                    "the line shows {outcome:?}"
+                );
+            }
+        }
+        assert_eq!(
+            STATUS_OUTCOME_MEASURED.with(std::cell::Cell::get) - before,
+            2,
+            "each outcome is measured once"
+        );
     }
 
     /// Tiling window managers such as Hyprland ignore the window's minimum

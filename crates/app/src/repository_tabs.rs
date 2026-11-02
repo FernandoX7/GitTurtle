@@ -2177,9 +2177,10 @@ impl GitTurtle {
     /// snaps it (at 18 pt and scale factor 1.5 the cap is drawn 304⅔ px
     /// wide, not 304.62). The strip's choice asks on every frame
     /// (`tabs_whole_width`), so each label is written into one buffer the
-    /// thread keeps and read from the label cache, under the window's line
-    /// key read once: on a frame whose tabs have not changed it allocates
-    /// nothing beyond that one read of the font, whatever the tab count,
+    /// thread keeps and read from the label cache, under the line key the
+    /// window's root render read as it began (`views::LineKey::frame`): on
+    /// a frame whose tabs have not changed it allocates nothing, whatever
+    /// the tab count,
     /// where a label, the project's name and the font's key were allocated
     /// anew for each tab, and the list of widths for each frame.
     fn tab_whole_width_each(&self, window: &Window, mut each: impl FnMut(Pixels)) {
@@ -4437,15 +4438,16 @@ mod tests {
 
     /// The strip's choice measures every tab's whole label on each frame
     /// (`tabs_whole_width`), and on a frame where no tab changed that
-    /// allocates nothing beyond reading the window's line key once: each
-    /// label is written into one buffer the thread keeps and read from the
-    /// label cache. It once formatted each tab's label, copied its project's
-    /// name and read the key, three allocations per tab, and collected the
-    /// widths, one more per frame. (Reading the key builds the window's
-    /// text style, whose default font features GPUI allocates, wherever a
-    /// `LineKey` is read.) The labels it measures are the tabs' own: a
-    /// renamed project's name, and a folder's name with a running write's
-    /// "· working".
+    /// allocates nothing: each label is written into one buffer the thread
+    /// keeps and read from the label cache, under the line key the window's
+    /// root render read as it began (`LineKey::frame`), which reading again
+    /// within the render allocates nothing either. It once formatted each
+    /// tab's label, copied its project's name and read the key, three
+    /// allocations per tab, and collected the widths, one more per frame;
+    /// then read the key on its own, which builds the window's text style,
+    /// whose default font features GPUI allocates. The labels it measures
+    /// are the tabs' own: a renamed project's name, and a folder's name with
+    /// a running write's "· working".
     #[gpui::test]
     async fn the_tab_strip_measures_its_tabs_without_allocating(cx: &mut TestAppContext) {
         let (_fixture, app, cx, paths) = strip_window(cx).await;
@@ -4461,21 +4463,24 @@ mod tests {
             cx.notify();
         });
         crate::tags::tests::draw(cx);
-        // What reading the window's line key alone allocates.
+        // Reading the line key within the window's root render, which reads
+        // it once as it begins.
         let key = cx.update(|window, _| {
+            let _frame = crate::views::LineKey::frame(window);
             let before = allocations();
             let _ = crate::views::LineKey::current(window);
             allocations() - before
         });
-        assert!(key <= 1, "reading the line key allocates {key} times");
-        // The tab list's whole width, and what measuring it allocates beyond
-        // reading the key.
+        assert_eq!(key, 0, "reading the line key within the render allocates");
+        // The tab list's whole width, and what measuring it allocates within
+        // the window's root render.
         let measure = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
+                let _frame = crate::views::LineKey::frame(window);
                 let app = app.read(cx);
                 let before = allocations();
                 let whole = app.tabs_whole_width(window);
-                (whole, (allocations() - before).saturating_sub(key))
+                (whole, allocations() - before)
             })
         };
         let labels = |cx: &mut VisualTestContext| {
