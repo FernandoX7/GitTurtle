@@ -32,6 +32,9 @@ pub(super) struct PrimaryMenu {
     return_focus: Option<FocusHandle>,
     _dismiss: Option<Subscription>,
     _focus_out: Option<Subscription>,
+    /// Builds the open menu's rows again in place as what they read
+    /// changes (`toggle`).
+    _follows: Option<Subscription>,
     /// Whether the trigger shows "Menu" beside its icon, as the tab strip
     /// decides each frame (`GitTurtle::tab_strip_labels`) before this view
     /// renders inside it.
@@ -41,49 +44,34 @@ pub(super) struct PrimaryMenu {
     trigger: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
 }
 
+/// One of the Main Menu's rows as it is built ([`PrimaryMenu::rows`]): its
+/// command, the palette's reason it is refused, and the write it waits
+/// for, which it states; `None` for a separator.
+#[cfg(target_os = "linux")]
+type MainMenuRow = Option<(
+    command_palette::CommandSpec,
+    Option<&'static str>,
+    Option<native_accessibility::MenuWait>,
+)>;
+
+/// What a Main Menu row draws ([`PrimaryMenu::drawn`]): its command, the
+/// reason it is refused and the write it waits for; `None` for a
+/// separator. The open menu is built again when these change.
+#[cfg(target_os = "linux")]
+type DrawnRow = Option<(
+    command_palette::CommandId,
+    Option<&'static str>,
+    Option<native_accessibility::MenuWait>,
+)>;
+
 #[cfg(target_os = "linux")]
 impl PrimaryMenu {
-    pub(super) fn new(owner: WeakEntity<GitTurtle>) -> Self {
-        Self {
-            owner,
-            menu: None,
-            return_focus: None,
-            _dismiss: None,
-            _focus_out: None,
-            labelled: true,
-            trigger: Default::default(),
-        }
-    }
-
-    /// Shows the trigger's label, or only its icon where the tab strip
-    /// gives its room to the tabs' names. The strip sets it while it
-    /// renders, before this view renders inside it in the same frame, so it
-    /// needs no notification.
-    pub(super) fn set_labelled(&mut self, labelled: bool) {
-        self.labelled = labelled;
-    }
-
-    pub(super) fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.is_some() {
-            self.close(window, cx);
-            return;
-        }
-        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
-            return;
-        }
-        use command_palette::{COMMANDS, CommandId};
-        use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
-        let Some(owner) = self.owner.upgrade() else {
-            return;
-        };
-        let path = owner.read(cx).path.clone();
-        let focus = window
-            .focused(cx)
-            .unwrap_or_else(|| owner.read(cx).app_focus.clone());
-        self.return_focus = Some(focus.clone());
-        // Browse stashes… follows the View menu's repository inspectors, as
-        // the palette lists it among the repository's tools.
-        let rows = [
+    /// The Main Menu's commands in order, `None` for a separator. Browse
+    /// stashes… follows the View menu's repository inspectors, as the
+    /// palette lists it among the repository's tools.
+    const ORDER: [Option<command_palette::CommandId>; 19] = {
+        use command_palette::CommandId;
+        [
             Some(CommandId::Open),
             Some(CommandId::Projects),
             None,
@@ -104,24 +92,81 @@ impl PrimaryMenu {
             Some(CommandId::Help),
             Some(CommandId::About),
         ]
-        .map(|id| {
-            id.map(|id| {
-                let spec = *COMMANDS
-                    .iter()
-                    .find(|spec| spec.id == id)
-                    .expect("menu command is registered");
-                let app = owner.read(cx);
-                let reason = app.menu_command_reason(id, window, cx);
-                // Browse stashes… waits for a write as the Working Changes
-                // Actions menu's item does, and says so.
-                let wait = if id == CommandId::Stashes {
-                    app.stashes_menu_wait(reason)
-                } else {
-                    None
-                };
-                (spec, reason, wait)
+    };
+
+    pub(super) fn new(owner: WeakEntity<GitTurtle>) -> Self {
+        Self {
+            owner,
+            menu: None,
+            return_focus: None,
+            _dismiss: None,
+            _focus_out: None,
+            _follows: None,
+            labelled: true,
+            trigger: Default::default(),
+        }
+    }
+
+    /// Shows the trigger's label, or only its icon where the tab strip
+    /// gives its room to the tabs' names. The strip sets it while it
+    /// renders, before this view renders inside it in the same frame, so it
+    /// needs no notification.
+    pub(super) fn set_labelled(&mut self, labelled: bool) {
+        self.labelled = labelled;
+    }
+
+    /// The Main Menu's rows as `app` reads them now: each command's reason
+    /// is the palette's, and Browse stashes… waits for a write as the
+    /// Working Changes Actions menu's item does, and says so.
+    fn rows(app: &GitTurtle, window: &Window, cx: &App) -> Vec<MainMenuRow> {
+        use command_palette::{COMMANDS, CommandId};
+        #[cfg(test)]
+        main_menu_tests::ROWS_READ.with(|read| read.set(read.get() + 1));
+        Self::ORDER
+            .iter()
+            .map(|id| {
+                id.map(|id| {
+                    let spec = *COMMANDS
+                        .iter()
+                        .find(|spec| spec.id == id)
+                        .expect("menu command is registered");
+                    let reason = app.menu_command_reason(id, window, cx);
+                    let wait = if id == CommandId::Stashes {
+                        app.stashes_menu_wait(reason)
+                    } else {
+                        None
+                    };
+                    (spec, reason, wait)
+                })
             })
-        });
+            .collect()
+    }
+
+    /// What `rows` draw: each row's command, reason and wait.
+    fn drawn(rows: &[MainMenuRow]) -> Vec<DrawnRow> {
+        rows.iter()
+            .map(|row| row.map(|(spec, reason, wait)| (spec.id, reason, wait)))
+            .collect()
+    }
+
+    pub(super) fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() {
+            self.close(window, cx);
+            return;
+        }
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        use gpui_kit::component::menu::{CursorRests, PopupMenu, PopupMenuItem};
+        let Some(owner) = self.owner.upgrade() else {
+            return;
+        };
+        let path = owner.read(cx).path.clone();
+        let focus = window
+            .focused(cx)
+            .unwrap_or_else(|| owner.read(cx).app_focus.clone());
+        self.return_focus = Some(focus.clone());
+        let rows = Self::rows(owner.read(cx), window, cx);
         let target = self.owner.clone();
         // The menu's fill opens the kit's popup offset below its trigger
         // (the popup's top padding), the gap every menu keeps between its
@@ -133,43 +178,106 @@ impl PrimaryMenu {
             .get()
             .map(|trigger| trigger.bottom() + gpui_kit::component::popup_offset(window, cx));
         let keyboard = window.last_input_was_keyboard();
-        let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
-            menu = menu
-                .action_context(focus.clone())
-                .min_w(appearance::ui_size(305.))
-                .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)));
-            for row in &rows {
-                let Some((spec, reason, wait)) = row else {
-                    menu = menu.separator();
-                    continue;
-                };
-                let command = spec.id;
-                let target = target.clone();
-                let path = path.clone();
-                let return_focus = focus.clone();
-                let mut item = match wait {
-                    Some(wait) => {
-                        native_accessibility::waiting_item(spec.label, false, Some(*wait))
+        // The menu with `rows`, as it opens and as it is built again. Each
+        // item acts on the repository the menu opened for, checked again
+        // as it is chosen (`run_menu_command`).
+        let build = std::rc::Rc::new(
+            move |mut menu: PopupMenu,
+                  rows: &[MainMenuRow],
+                  window: &mut Window,
+                  cx: &mut Context<PopupMenu>| {
+                menu = menu
+                    .action_context(focus.clone())
+                    .min_w(appearance::ui_size(305.))
+                    .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)));
+                for row in rows {
+                    let Some((spec, reason, wait)) = row else {
+                        menu = menu.separator();
+                        continue;
+                    };
+                    let command = spec.id;
+                    let target = target.clone();
+                    let path = path.clone();
+                    let return_focus = focus.clone();
+                    let mut item = match wait {
+                        Some(wait) => {
+                            native_accessibility::waiting_item(spec.label, false, Some(*wait))
+                        }
+                        None => PopupMenuItem::new(spec.label).disabled(reason.is_some()),
+                    };
+                    if let Some(action) = spec.shortcut.and_then(shortcuts::action) {
+                        item = item.action(action);
                     }
-                    None => PopupMenuItem::new(spec.label).disabled(reason.is_some()),
-                };
-                if let Some(action) = spec.shortcut.and_then(shortcuts::action) {
-                    item = item.action(action);
+                    menu = menu.item(item.on_click(move |_, window, cx| {
+                        // Restore the originating editor before opening the
+                        // workflow; modal return focus must never capture
+                        // this transient menu.
+                        return_focus.focus(window, cx);
+                        let _ = target.update(cx, |this, cx| {
+                            this.run_menu_command(command, &path, window, cx)
+                        });
+                    }));
                 }
-                menu = menu.item(item.on_click(move |_, window, cx| {
-                    // Restore the originating editor before opening the workflow;
-                    // modal return focus must never capture this transient menu.
-                    return_focus.focus(window, cx);
-                    let _ = target.update(cx, |this, cx| {
-                        this.run_menu_command(command, &path, window, cx)
-                    });
-                }));
-            }
-            native_accessibility::open_menu(menu, keyboard, top, None, window, cx)
+                native_accessibility::open_menu(menu, keyboard, top, None, window, cx)
+            },
+        );
+        let menu = PopupMenu::build(window, cx, {
+            let (build, rows) = (build.clone(), rows.clone());
+            move |menu, window, cx| build(menu, &rows, window, cx)
         });
+        // A write that starts or ends while the menu is open, or the reload
+        // after it landing, builds its rows again in place, as the Actions
+        // menu follows writes (`AppDropdown::follows_writes`), the kit
+        // keeping the keyboard's cursor on its item or resting it while that
+        // item waits: built only as it opened, Browse stashes… went on
+        // saying "Fetching…" once the fetch had ended, and an item the write
+        // refused stayed refused until the menu was opened again.
+        // Every notify of the app reaches it, as a fetch's progress notices
+        // do, so it compares what the rows read (`MenuState`), a few fields,
+        // and reads the rows only as that changes: each row's reason reads
+        // the palette's availability, which clones the selection's scope,
+        // so reading them allocated for each of the menu's fifteen commands
+        // at every notify.
+        let mut read = owner.read(cx).menu_state();
+        let mut drawn = Self::drawn(&rows);
+        self._follows = Some(
+            cx.observe_in(&owner, window, move |this, owner, window, cx| {
+                let Some(menu) = this.menu.clone() else {
+                    return;
+                };
+                let now = owner.read(cx).menu_state();
+                if now == read {
+                    return;
+                }
+                read = now;
+                let rows = Self::rows(owner.read(cx), window, cx);
+                let now = Self::drawn(&rows);
+                if now == drawn {
+                    return;
+                }
+                drawn = now;
+                let build = build.clone();
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, move |menu, window, cx| {
+                        build(menu, &rows, window, cx)
+                    })
+                });
+            }),
+        );
+        // A rest that begins, the keyboard's cursor on Browse stashes… as a
+        // write starts, says once why it waits, as every menu that follows
+        // writes says it (`native_accessibility::announces_resting`).
+        window
+            .subscribe(&menu, cx, |_, rest: &CursorRests, window, cx| {
+                if rest.label != rest.name {
+                    crate::copy_feedback::announce(window, cx, rest.label.clone());
+                }
+            })
+            .detach();
         self._dismiss = Some(
             cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
                 this.menu = None;
+                this._follows = None;
                 cx.notify();
             }),
         );
@@ -178,6 +286,7 @@ impl PrimaryMenu {
             // A newly focused control or dialog owns focus now; remove the
             // transient menu without restoring over that destination.
             this.menu = None;
+            this._follows = None;
             cx.notify();
         }));
         menu_focus.focus(window, cx);
@@ -186,6 +295,7 @@ impl PrimaryMenu {
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._follows = None;
         if let Some(menu) = self.menu.take()
             && menu.focus_handle(cx).contains_focused(window, cx)
             && let Some(focus) = &self.return_focus
@@ -272,7 +382,12 @@ impl Render for PrimaryMenu {
 /// it has yet to land (`GitTurtle::write_unsettled`). Each is a read of a
 /// field or two; Browse Stashes… is offered or refused for the palette's
 /// reason, which reads exactly these, and waits for the write they name
-/// ([`StashesItem`]).
+/// ([`StashesItem`]). The Linux Main Menu, open, reads its rows again only
+/// as these change (`PrimaryMenu::toggle`): the palette's reason for each of
+/// its commands reads nothing else (`CommandId::reason`), and the label the
+/// write runs under decides its busy reason. A command added to that menu
+/// whose reason reads more, as File History reads the selection, needs
+/// that read here too, or the open menu would not follow it.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct MenuState {
     repository: bool,
@@ -424,13 +539,7 @@ impl GitTurtle {
     /// compares is a few fields, and the palette's reason, which clones the
     /// selection's scope, is read only as they change.
     pub(super) fn update_native_menus(&mut self, window: &Window, cx: &mut App) {
-        let state = MenuState {
-            repository: self.repository.is_some(),
-            busy: self.operation_busy,
-            projects_refused: self.projects_refusal().0,
-            workspace: self.page == AppPage::Repository,
-            unsettled: self.write_unsettled(),
-        };
+        let state = self.menu_state();
         if self.menu_state == Some(state) {
             return;
         }
@@ -447,6 +556,19 @@ impl GitTurtle {
         };
         menus(state, stashes, cx);
         self.menu_state = Some(state);
+    }
+
+    /// What the menus read now ([`MenuState`]): a few fields, which every
+    /// reason the menu bar's items and the Linux Main Menu's rows are
+    /// refused for, and every wait they state, are read from.
+    pub(super) fn menu_state(&self) -> MenuState {
+        MenuState {
+            repository: self.repository.is_some(),
+            busy: self.operation_busy,
+            projects_refused: self.projects_refusal().0,
+            workspace: self.page == AppPage::Repository,
+            unsettled: self.write_unsettled(),
+        }
     }
 
     /// Why Browse stashes… waits in a menu while the palette refuses it
@@ -983,6 +1105,16 @@ mod main_menu_tests {
     use crate::*;
     use core::prelude::v1::test;
 
+    thread_local! {
+        /// How often the Main Menu's rows have been read
+        /// (`PrimaryMenu::rows`).
+        pub(super) static ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn rows_read() -> usize {
+        ROWS_READ.with(std::cell::Cell::get)
+    }
+
     /// The label `id` reads in the palette and the Main Menu.
     fn label(id: CommandId) -> &'static str {
         COMMANDS
@@ -1144,6 +1276,152 @@ mod main_menu_tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Main Menu, open as a write runs, builds its rows again as the
+    /// write ends and as the reload after it lands, as the Actions menu
+    /// follows writes: Browse stashes…, opened waiting for "Fetching…",
+    /// waits for "Refreshing…" once the fetch has ended and is offered once
+    /// the reload has landed, a click then opening Stashes, and Quick Open,
+    /// refused by the fetch, is offered again with it; a notify that changes
+    /// nothing the rows read reads none of them. Opened from F10 with the
+    /// keyboard's cursor on Quick Open, the cursor stays there, and focus in
+    /// the menu, through a fetch's start, its end and its reload's landing,
+    /// so Enter opens Quick Open, and the closed menu follows nothing; with
+    /// the cursor on Browse stashes…, a write that starts rests it there and
+    /// says once why it waits. Built only as it opened, the menu went on
+    /// saying "Fetching…" after the fetch, and read every row at each notify.
+    #[gpui::test]
+    async fn the_main_menu_follows_a_write_while_it_is_open(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "kept"],
+        );
+        let (app, cx) = window(cx, &repo);
+        let (stashes, quick) = (label(CommandId::Stashes), label(CommandId::QuickOpen));
+        let waiting = |cx: &mut VisualTestContext, wait: &str| {
+            cx.debug_bounds(
+                format!("menu-item: {stashes}, available when {wait} finishes · MenuItem disabled")
+                    .leak(),
+            )
+        };
+        let refused = |cx: &mut VisualTestContext, name: &str| {
+            cx.debug_bounds(format!("menu-item: {name} · MenuItem disabled").leak())
+        };
+        // A write runs, its reload yet to land, or neither.
+        let write = |cx: &mut VisualTestContext, busy: Option<&'static str>, reload: bool| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = busy;
+                app.status_task = reload.then(|| Task::ready(()));
+                app.status_after_write = reload.then_some(app.work_generation);
+                cx.notify();
+            });
+            draw(cx);
+        };
+
+        write(cx, Some("Fetching…"), false);
+        open(cx);
+        assert!(
+            waiting(cx, "fetching").is_some() && refused(cx, quick).is_some(),
+            "opened during the fetch, {stashes} waits for it and {quick} is refused"
+        );
+        // A notify that changes nothing the rows read, as a fetch's progress
+        // notices, reads no row; the fetch's end reads them again.
+        let before = rows_read();
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        assert_eq!(
+            rows_read(),
+            before,
+            "a notify that changes nothing the rows read reads none"
+        );
+        write(cx, None, true);
+        assert!(rows_read() > before, "the fetch's end reads the rows again");
+        assert!(
+            waiting(cx, "fetching").is_none() && waiting(cx, "refreshing").is_some(),
+            "once the fetch has ended, {stashes} waits for its reload: {:?} {:?}",
+            waiting(cx, "fetching"),
+            waiting(cx, "refreshing")
+        );
+        assert!(
+            item(cx, quick).is_some(),
+            "{quick}, which only the fetch refused, is offered"
+        );
+        write(cx, None, false);
+        let row = item(cx, stashes)
+            .unwrap_or_else(|| panic!("once the reload has landed, {stashes} is offered"));
+        cx.simulate_click(row.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx))
+                && cx.debug_bounds("saved-stash-row-0").is_some(),
+            "the menu built again opens Stashes"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+
+        // From the keyboard: Open, Projects, History, Changes, then Quick
+        // Open, which the cursor keeps as the menu is built again, resting
+        // there while the fetch refuses it, back on it as the fetch ends and
+        // on it still as the reload lands, focus in the menu throughout;
+        // Enter then opens Quick Open, and the closed menu follows nothing.
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let primary = app.read_with(cx, |app, _| app.primary_menu.clone());
+        let in_menu = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                primary
+                    .read(cx)
+                    .menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.focus_handle(cx).contains_focused(window, cx))
+            })
+        };
+        cx.simulate_keystrokes("f10");
+        draw(cx);
+        for _ in 0..4 {
+            cx.simulate_keystrokes("down");
+        }
+        draw(cx);
+        for (busy, reload) in [(Some("Fetching…"), false), (None, true), (None, false)] {
+            let before = rows_read();
+            write(cx, busy, reload);
+            assert!(
+                rows_read() > before && in_menu(cx),
+                "built again ({busy:?}, reload {reload}), focus stays in the menu"
+            );
+        }
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            cx.debug_bounds("quick-open-results").is_some(),
+            "Enter on the row the cursor kept opens {quick}"
+        );
+        assert!(
+            primary.read_with(cx, |menu, _| menu.menu.is_none() && menu._follows.is_none()),
+            "the closed menu follows nothing"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+
+        // From the keyboard: Open, Projects, History, Changes, Quick Open,
+        // Compare revisions…, then Browse stashes….
+        cx.simulate_keystrokes("f10");
+        draw(cx);
+        for _ in 0..6 {
+            cx.simulate_keystrokes("down");
+        }
+        draw(cx);
+        write(cx, Some("Fetching…"), false);
+        assert_eq!(
+            crate::copy_feedback::tests::announced(cx).map(|(_, said)| said),
+            Some(format!("{stashes}, available when fetching finishes")),
+            "the cursor resting on {stashes} says why it waits"
+        );
+        write(cx, None, false);
     }
 }
 
