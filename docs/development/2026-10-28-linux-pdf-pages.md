@@ -99,4 +99,4 @@ The cost is process start-up plus re-parsing per request. Either one helper per 
 
 ## Outcome
 
-Not implemented. Pending the owner's go-ahead and the architecture review of the helper process.
+The owner took this recommendation on 2026-10-28. The [architecture review of 2026-11-02](2026-11-02-linux-pdf-pages-architecture.md) accepted the helper process (one per request), refreshed the dependency facts (no new release; more hostile JBIG2 inputs reported, which strengthens the case for a separate process) and cut the work into three slices. Confinement is the security review's decision. Not yet implemented.
