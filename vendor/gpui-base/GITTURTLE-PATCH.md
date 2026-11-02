@@ -260,9 +260,10 @@ device pixel, `k / scale` in logical pixels, can come back from the
 division a hair short of `k` times the scale, as at 1.1, 1.333 and 1.75,
 and took the row above
 (`positioner::tests::a_pointer_on_a_whole_device_pixel_lies_in_that_pixels_row`
-reads rows 0 to 3,999 at six scales). And `point_row_clear_by` the two
-edges that gap places a popup from, above and below the device row a point lies in, so a
-popup the positioner does not place starts where `Positioner::point` would
+reads rows 0 to 3,999 at six scales). `point_row_clear_by` gives the two
+edges that gap places a popup from, above and below the device row a point
+lies in, so a popup the positioner does not place starts where
+`Positioner::point` would
 start it: the app's right-click row menus (`RowAnchor::pointer` in
 `crates/app/src/native_accessibility.rs`) start below the pointer there,
 with the same gap for their ring. With their fill at the pointer, their ring
