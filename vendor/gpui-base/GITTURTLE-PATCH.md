@@ -32,6 +32,31 @@ real Editor layout across an enlarged font, then checks the reverse change.
 `fractional_font_changes_preserve_measured_rows_and_pending_hidden_viewports`
 checks high-row 18→23→18 line-height changes, hidden updates and wheel precedence.
 
+`InputBaseState::set_selected_range` in `src/input/base/state.rs` also lets
+a single-line field's next layout scroll its caret into view, runtime code
+only. `set_value` keeps a single-line field's start in view for the next
+frame, deliberately, though it leaves the caret at the end; the selection
+set after it scrolled through `scroll_to`, which measures against the last
+layout, still holding the text from before, and so kept that start; and the
+element follows the caret only when the selection has changed since the
+last frame, a change that frame used up. A long value restored with its
+caret at the end, as a repository tab's return restores History's search
+field (`crates/app/src/repository_tabs.rs`, `FieldSnapshot::restore`),
+drew with its caret clipped past the field's end until the next key moved
+it. A single-line field's `set_selected_range` now drops the deferred
+offset and row and its record of the last frame's selection, so the
+layout that holds the new text follows the caret in that frame; the
+editor's `refresh_editor` (`crates/app/src/text.rs`), which sets a scroll
+offset after the selection, still has that offset win, and a multi-line
+field keeps `scroll_to`'s offset, since its layout follows the caret by a
+line a frame. The kit test is
+`input::state::tests::a_caret_set_after_a_long_value_is_drawn_inside_the_field`
+(`scripts/vendor-crate-test.sh vendor/gpui-base a_caret_set_after`), a
+focused field holding a short value given a long one and a caret at its
+end, its caret inside the field in the first frame (past it at 4,886 px in a 1,536 px field
+without the patch). Remove this part when upstream follows a programmatic
+selection in the frame that lays out the text it was set in.
+
 The disabled-focus patch modifies `src/checkbox.rs`, `src/switch.rs`,
 `src/radio.rs`, `src/toggle.rs`, `src/link.rs` and `src/color_picker.rs` (the
 `ColorSwatch`), registers the added `src/disabled_focus.rs` in `src/lib.rs`,

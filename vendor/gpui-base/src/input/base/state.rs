@@ -2311,6 +2311,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selection_reversed = false;
         self.selected_word_range = None;
         self.select_to(end, cx);
+        // GitTurtle patch: a single-line field's next layout scrolls the
+        // caret into view. `scroll_to` above measures against the last
+        // layout, which holds the text from before a `set_value` just made,
+        // and so kept the start that `set_value` asks for: a long value
+        // restored with its caret at the end, as a repository tab's return
+        // restores History's search field, drew with the caret clipped past
+        // the field's end, and the element, which follows the caret only
+        // when the selection changes, used that change up in the same
+        // frame. Dropping the deferred offset and the record of the last
+        // selection lets the layout that holds the new text follow the
+        // caret, in that frame. A multi-line field keeps `scroll_to`'s
+        // offset: its layout follows the caret by a line a frame.
+        if self.is_single_line() {
+            self.deferred_scroll_offset = None;
+            self.deferred_scroll_row = None;
+            self.last_selected_range = None;
+        }
     }
 
     /// Resolve a mouse position to a byte offset in the text.
@@ -5035,6 +5052,55 @@ mod tests {
                     "long value should display from its start, not its tail"
                 );
             });
+        });
+    }
+
+    /// GitTurtle patch: a focused single-line field that held a short value,
+    /// given a value longer than it and then a caret at that value's end, as
+    /// a repository tab's return restores History's search field, draws the
+    /// caret inside the field in the first frame it lays the value out in.
+    /// The selection's `scroll_to` measured against the short value's
+    /// layout and kept the start `set_value` asks for, and the element
+    /// followed the caret only for a changed selection, which that frame
+    /// used up: the caret stayed past the field's end until the next key.
+    #[gpui::test]
+    fn a_caret_set_after_a_long_value_is_drawn_inside_the_field(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("short", window, cx);
+                state.focus_handle.focus(window, cx);
+            })
+        });
+        draw(&mut cx);
+
+        let value = format!("https://example.com/v1/users?{}", "x=1&".repeat(120));
+        let len = value.len();
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(value.clone(), window, cx);
+                state.set_selected_range(len..len, cx);
+            })
+        });
+        draw(&mut cx);
+
+        input.read_with(&cx, |state, _| {
+            let field = state.input_bounds;
+            let (caret, _) = state.cursor_layout().expect("the caret is laid out");
+            assert!(
+                state.scroll_size.width > field.size.width,
+                "the value must overflow the field or this test is vacuous"
+            );
+            assert!(
+                caret.left() >= field.left() && caret.right() <= field.right(),
+                "the caret {caret:?} lies outside the field {field:?}"
+            );
+            assert_eq!(state.selected_range, Selection::new(len, len));
         });
     }
 
