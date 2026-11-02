@@ -613,6 +613,13 @@ fn only_regular_fixture_files_are_read() {
     assert_eq!(read_fixture(&folder), Err("not a regular file"));
 }
 
+/// The bytes this thread has read through system calls, from any source
+/// (`rchar` in its `/proc` I/O counts): other tests' threads read apart.
+fn read_by_this_thread() -> u64 {
+    let counts = fs::read_to_string("/proc/thread-self/io").expect("this thread's I/O counts");
+    status_value(&counts, "rchar:").expect("a read count")
+}
+
 /// A fixture past the 32 MiB input limit is refused, read no further than
 /// one byte past it, and a helper's reply is read no further than one byte
 /// past the largest the client accepts, however much a source holds.
@@ -621,12 +628,20 @@ fn fixtures_and_replies_are_read_within_their_limits() {
     let directory = tempfile::tempdir().expect("a directory");
     let large = directory.path().join("large.pdf");
     let file = fs::File::create(&large).expect("a fixture");
-    file.set_len(u64::try_from(MAX_INPUT_BYTES).unwrap() + 1)
+    // Twice the limit, so what is read tells a bounded read from a whole
+    // one: both refuse the fixture.
+    let length = 2 * MAX_INPUT_BYTES;
+    file.set_len(u64::try_from(length).unwrap())
         .expect("a sparse fixture");
-    // Its length alone, should it be read whole.
-    assert_eq!(
-        read_fixture(&large).map(|bytes| bytes.len()),
-        Err("larger than the 32 MiB input limit")
+    let before = read_by_this_thread();
+    let refused = read_fixture(&large).map(|bytes| bytes.len());
+    let read = read_by_this_thread() - before;
+    assert_eq!(refused, Err("larger than the 32 MiB input limit"));
+    // One byte past the limit, with the first count's own few hundred.
+    let bound = u64::try_from(MAX_INPUT_BYTES).unwrap() + 1;
+    assert!(
+        (bound..bound + 4096).contains(&read),
+        "read {read} bytes of a {length}-byte fixture"
     );
     let endless = std::io::repeat(0);
     assert_eq!(
