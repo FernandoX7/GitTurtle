@@ -13145,6 +13145,78 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
     }
 
+    /// A dialog opened by its shortcut right after a warm tab is shown
+    /// again, before any other frame, gives focus back as it closes to the
+    /// control the tab came back with: a person on the keyboard shows the
+    /// first tab of [`two_history_tabs`] by its keys and then the second,
+    /// left with its changed files focused, opens GitTurtle Activity by its
+    /// keys and closes it with Done, whose close waits for the kit's
+    /// animation before the kit gives focus back; the frames drawn
+    /// meanwhile focus the changed files, and so does the window once the
+    /// animation ends. Activity keeps no opener of its own, as the command
+    /// palette and Keyboard Shortcuts do, so its close returns where the
+    /// window last saw focus (`modal_return_focus`). A first key after the
+    /// pointer draws a frame before it acts, which sees the tab's control;
+    /// on the keyboard none does, so the window last saw focus in the
+    /// switch's frame, on the root where the switch left it until that
+    /// frame gave it back (`GitTurtle::return_tab_focus`), and without the
+    /// return noted there Done left focus on the root, where nothing draws
+    /// it, until the kit's animation ended.
+    #[gpui::test]
+    async fn a_dialog_opened_right_after_a_warm_switch_returns_to_the_tabs_control(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixtures, app, cx, _tabs) = two_history_tabs(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        // The first tab by its keys, as a person on the keyboard switches:
+        // the window's input stays the keyboard's, so the shortcut below
+        // draws no frame of its own before it acts, as a first key after
+        // the pointer does.
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-alt-1");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-alt-1");
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.active),
+            Some(0),
+            "the first tab's keys show it"
+        );
+        // Held through the dialog's life, so no reply draws a frame between
+        // the switch and the shortcut.
+        let switch = switch_warm_tab(&app, 1, cx).await;
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| files.is_focused(window));
+        assert!(
+            focused(cx),
+            "the tab comes back with its changed files focused"
+        );
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-shift-a");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-shift-a");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "GitTurtle Activity opens"
+        );
+        cx.simulate_keystrokes("enter");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Done closes it"
+        );
+        draw(cx);
+        assert!(
+            focused(cx),
+            "the frames after Done focus the changed files, before the kit's animation ends"
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(focused(cx), "the changed files keep focus once it ends");
+        drop(switch);
+    }
+
     /// Lands every reply the window waits for, its reads, saves, watcher
     /// setup and path filtering, and each that they ask for in turn, drawing
     /// no frame of its own: the frames counted meanwhile are the ones the

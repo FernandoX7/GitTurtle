@@ -1074,7 +1074,9 @@ impl GitTurtle {
         let focus = focus.unwrap_or_else(|| fallback.clone());
         focus.focus(window, cx);
         // A modal opened before the next frame returns here, not to the root
-        // this frame's `update_modal_focus` saw focused.
+        // this frame's `update_modal_focus` saw focused: one opened by its
+        // keys after a tab shown by its keys, since only a key that follows
+        // the pointer draws a frame before it acts.
         self.modal_return_focus = Some(focus.clone());
         cx.defer_in(window, move |this, window, cx| {
             if this.page != AppPage::Repository
