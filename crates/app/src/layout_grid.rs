@@ -607,6 +607,50 @@ fn inspect(
     findings
 }
 
+/// The first line of each of the GitHub panel's bordered panes, by its
+/// selector: the reply composer's heading, the confirmation's destination and
+/// the connection pane's worktree.
+const PANE_LINES: [&str; 3] = [
+    "github-reply-heading",
+    "github-confirm-destination",
+    "github-worktree",
+];
+
+/// Where a bordered pane of the GitHub panel starts its text in the last
+/// frame, when that is not exactly the panel's text edge: a compact Button's
+/// label inset in from the content's side, where the panes' frames stand with
+/// the Buttons' (DESIGN.md, "One left edge"). The grid reads drawn pixels,
+/// which round a pane 0.75 px off, as the reply composer's padding once set
+/// it, to 0.5 px, inside its tolerance, so it reads the panes' laid-out
+/// bounds too. Adds each pane it finds to `seen`.
+fn pane_insets(
+    text: u8,
+    width: f32,
+    seen: &mut BTreeSet<&'static str>,
+    cx: &mut VisualTestContext,
+) -> Vec<String> {
+    let Some(content) = cx.debug_bounds("github-panel-content") else {
+        return Vec::new();
+    };
+    let inset = appearance::ui_size(crate::LABEL_INSET);
+    let mut off = Vec::new();
+    for selector in PANE_LINES {
+        let Some(line) = cx.debug_bounds(selector) else {
+            continue;
+        };
+        seen.insert(selector);
+        let at = line.left() - content.left();
+        if (at - inset).abs() > px(0.25) {
+            off.push(format!(
+                "\n  {selector} at {text} pt, {width} px wide: {:.2} px in, not {:.2}",
+                f32::from(at),
+                f32::from(inset)
+            ));
+        }
+    }
+    off
+}
+
 /// Fails on every finding no [`KNOWN`] entry names, on every entry for
 /// `surface` that nothing matched, and on every panel of `surface` where no
 /// layout found a line, which the grid would pass unread.
@@ -718,6 +762,8 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
     let mut findings = Vec::new();
     let mut measured = BTreeSet::new();
     let mut layouts = 0;
+    // The bordered panes read by their laid-out bounds, and which were drawn.
+    let (mut panes, mut seen) = (String::new(), BTreeSet::new());
     for text in [13, 18] {
         cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
         for width in WIDTHS {
@@ -728,17 +774,30 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
             layouts += 1;
             findings.extend(inspect(surface, text, width, &mut measured, cx));
             if let Some(body) = &body {
+                panes.extend(pane_insets(text, width, &mut seen, cx));
                 body.set_offset(point(px(0.), -body.max_offset().y));
                 frame(cx);
                 app.update(cx, |_, cx| cx.notify());
                 frame(cx);
                 layouts += 1;
                 findings.extend(inspect(surface, text, width, &mut measured, cx));
+                panes.extend(pane_insets(text, width, &mut seen, cx));
                 body.set_offset(point(px(0.), px(0.)));
             }
         }
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    if body.is_some() {
+        for selector in PANE_LINES {
+            if !seen.contains(selector) {
+                panes.push_str(&format!("\n  {selector} is never drawn"));
+            }
+        }
+        assert!(
+            panes.is_empty(),
+            "the bordered panes start their text off the panel's text edge:{panes}"
+        );
+    }
     verdict(surface, findings, measured, layouts);
 }
 
