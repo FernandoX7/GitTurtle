@@ -25,6 +25,9 @@ const CACHE_PAGES: usize = 4;
 /// tooltip and accessible name.
 const PREPARING: &str = "Preparing the page…";
 
+/// The link's readings, independent and linked.
+const LINK_READINGS: [&str; 2] = ["Independent pages", "Linked pages"];
+
 fn renderer() -> &'static SerialExecutor {
     static RENDERER: OnceLock<SerialExecutor> = OnceLock::new();
     RENDERER.get_or_init(|| SerialExecutor::new("gitturtle-pdf-pages"))
@@ -581,9 +584,11 @@ thread_local! {
     static AFTER_NAME: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Read page text's and Retry page's labels, laid out; the link is a
     /// toggle, laid out at both its readings
-    /// (`system_preview::HeaderControl::toggle`).
+    /// (`system_preview::HeaderControl::toggle`), and here at the wider,
+    /// the width it is drawn at.
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static LINK: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The zoom's widest reading, "400%", laid out.
     static ZOOM_LEVEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Each side's page number, whole and short, at its widest for a count
@@ -699,11 +704,13 @@ fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, P
 /// `labelled` wide at its widest reading and whose short form, where it has
 /// one, is `short` wide at its widest, drawn as wide as the form a line
 /// `room` wide gives it (`system_preview::HeaderControl::button`) whatever it
-/// reads now; its icon keeps its square. A page turn or a page that fails
-/// then changes what the control reads and moves nothing after it. Drawn at
-/// its own reading's width, the page number grew with "Page 10 / 10", and in
-/// a proportional font with any page whose digits are wider, and moved the
-/// link and the zooms after it.
+/// reads now; its icon keeps its square. A page turn, a click on the link or
+/// a page that fails then changes what the control reads and moves nothing
+/// after it. Drawn at its own reading's width, the page number grew with
+/// "Page 10 / 10", and in a proportional font with any page whose digits are
+/// wider, and moved the link and the zooms after it, and "Linked pages" was
+/// narrower than "Independent pages", so each click on the link moved the
+/// zooms.
 fn at_widest(control: Button, labelled: Pixels, short: Option<Pixels>, room: Pixels) -> Button {
     use crate::system_preview::Form;
     if Form::fitting(labelled, room) == Form::Labelled {
@@ -820,7 +827,8 @@ pub(super) fn render_comparison<T: 'static>(
             let target = document.clone();
             // Named for the state it shows, as the model's link is.
             let name = if linked {"Pages linked. Switch to independent pages"} else {"Pages independent. Link pages to this page"};
-            let link = HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), ["Independent pages", "Linked pages"], format!("{label}: {name}"), "link", linked, window).button(line_room);
+            let link = HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), LINK_READINGS, format!("{label}: {name}"), "link", linked, window).button(line_room);
+            let link = at_widest(link, text_button_width(&LINK_READINGS, &LINK, window), None, line_room);
             header = header.child(held.track(("pdf-link",index), link.on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }
@@ -1993,6 +2001,33 @@ pub(crate) mod tests {
                     assert!(
                         forms.contains(&(text, form)),
                         "at {text} pt the page number is drawn {form}"
+                    );
+                }
+            }
+        }
+
+        /// Linking the pages moves nothing after the link, which takes the
+        /// width of its wider reading where it is labelled: each side's link
+        /// and zooms keep their places with the pages independent and
+        /// linked, at every side width from 80 to 500 px at 13 and 18 pt.
+        /// Drawn at its own reading's width, "Linked pages" was narrower
+        /// than "Independent pages", so each click on the link moved the
+        /// zooms beside it.
+        #[gpui::test]
+        fn linking_the_pages_moves_nothing_after_the_link(cx: &mut gpui_kit::TestAppContext) {
+            let (content, documents) = both_sides("linking the pages", 3);
+            let (view, cx) = window(cx, content);
+            let link = |linked| {
+                for document in &documents {
+                    document.linked.store(linked, Ordering::Relaxed);
+                }
+            };
+            let forms = walk_widths(cx, &view, "pdf-link-0", [&|| link(false), &|| link(true)]);
+            for text in [13, 18] {
+                for form in ["labelled", "icon"] {
+                    assert!(
+                        forms.contains(&(text, form)),
+                        "at {text} pt the link is drawn {form}"
                     );
                 }
             }
