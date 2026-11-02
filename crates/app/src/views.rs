@@ -14035,7 +14035,10 @@ pub(crate) mod tests {
     /// history with 3,000 branches, in a 1,480 × 980 window at 13 pt, its
     /// first page of 500 rows shown at the top, which History follows, so
     /// each landing installs the page it read again, and then all 5,000
-    /// rows, which it does not. Each landing is asked for as a local change
+    /// rows, read as Older reads them, which it does not: a read is one page
+    /// of at most 500 rows (`MAX_HISTORY_PAGE`), whatever the window's
+    /// `limit`, so a deeper History is only ever paged to. Each landing is
+    /// asked for as a local change
     /// asks for one, its read answered on the reader's thread off the
     /// clock, then timed from before the window handles the reply to its
     /// return (`run_until_parked`): the reply's comparison, applying the
@@ -14075,10 +14078,20 @@ pub(crate) mod tests {
         crate::in_frame::probe::watch();
         let mut series = Vec::new();
         for (case, limit) in [("500_rows_followed", 500), ("5000_rows", 5_000)] {
-            app.update(cx, |app, _| app.limit = limit);
-            // The landing that installs the rows this case shows.
+            // The rows this case shows: the first page, which a rescan
+            // installs, then each page Older reads after it.
             rescan(cx);
             land_every_reply(&app, cx);
+            while let Some(offset) = app.read_with(cx, |app, _| {
+                app.history_paging
+                    .next_offset
+                    .filter(|_| app.commits.len() < limit)
+            }) {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.request_history_page(offset, window, cx))
+                });
+                land_every_reply(&app, cx);
+            }
             draw(cx);
             let (rows, refs) = app.read_with(cx, |app, _| (app.commits.len(), app.branches.len()));
             assert_eq!(rows, limit, "{case}: the rows shown");
