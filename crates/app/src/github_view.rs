@@ -6715,8 +6715,9 @@ mod tests {
     /// ellipsis starts a line of its own below the tabs, drawn there, rather than drawing
     /// nothing beside them: at 18 pt with the long counts "Files · 300+", across window
     /// widths from 400 to 520 px, some width leaves the tabs' last line too little, and at
-    /// every width the status is at least that wide and draws its text where the body shows
-    /// it. The status took whatever room the line left, down to none.
+    /// every width the status is at least that wide, and the rows below the tabs stand where
+    /// they stood with no status, so saving moves nothing. The status took whatever room the
+    /// line left, down to none.
     #[gpui::test]
     async fn a_draft_status_with_too_little_room_starts_a_line_below_the_tabs(
         cx: &mut TestAppContext,
@@ -6741,11 +6742,41 @@ mod tests {
         let least = text_inset() * 2. + appearance::ui_text(12.);
         let slack = px(0.5);
         let mut below = false;
+        let rows = |cx: &mut VisualTestContext| {
+            let edge = cx
+                .debug_bounds("github-panel-content")
+                .expect("the content");
+            let row = cx
+                .debug_bounds("github-captured-identities")
+                .expect("the identities");
+            row.origin - edge.origin
+        };
         for width in (400..=520).step_by(2) {
             cx.simulate_resize(size(px(width as f32), px(490.)));
-            draw(cx);
-            draw(cx);
             let at = format!("18 pt in {width} × 490");
+            // No status, then the saved draft's, which moves nothing below the tabs.
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.save_status = SharedString::default();
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+            let unsaid = rows(cx);
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.save_status = "Draft saved locally".into();
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+            assert_eq!(
+                rows(cx),
+                unsaid,
+                "{at}: saving moved the rows below the tabs"
+            );
             let tab = cx.debug_bounds("github-section-1").expect("the Files tab");
             let last = cx.debug_bounds("github-section-2").expect("the Review tab");
             assert!(

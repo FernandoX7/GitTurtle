@@ -1249,13 +1249,14 @@ impl Panel {
             .into_any_element()
     }
     /// The draft status at the end of the section tabs' last line, in the room the tabs leave
-    /// there, ending where the Buttons at the panel's right edge end their labels. It takes no
-    /// room of its own on the line, its basis zero and its margin giving back the row's gap
-    /// before it, so it never starts a line below the tabs and nothing moves as Reply saves
-    /// the drafts and says so: on a line of its own at 461 px it moved the rows below the
-    /// tabs 39 px. One line, elided in its middle where it is longer than that room, with the
-    /// whole text in its tooltip and accessible name, as a long failure's remedy is there
-    /// (decision of 2026-11-01).
+    /// there, ending where the Buttons at the panel's right edge end their labels. Its basis is
+    /// zero and its margin gives back the row's gap before it, so it takes only the room the
+    /// line leaves, down to its two insets and an ellipsis: where the tabs leave less, it starts
+    /// a line of its own below them, empty or not, so nothing moves as Reply saves the drafts
+    /// and says so (a status that took its line only with text moved the rows below the tabs
+    /// as it appeared, 39 px at 461 px when it always wrapped). One line, elided in its middle
+    /// where it is longer than its room, with the whole text in its tooltip and accessible
+    /// name, as a long failure's remedy is there (decision of 2026-11-01).
     fn render_save_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let status = self.save_status.clone();
         let tooltip = status.clone();

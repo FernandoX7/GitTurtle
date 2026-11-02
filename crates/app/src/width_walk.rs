@@ -1359,6 +1359,7 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
             window,
         )
     });
+    let mut found = None;
     for width in (515..535).map(|width| width as f32 * 0.5 + 257.5) {
         cx.simulate_resize(size(px(width), px(980.)));
         frame(cx);
@@ -1375,9 +1376,16 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
             .and_then(|row| cx.debug_bounds(format!("working-name-{row}").leak()))
             .map(|name| name.size.width);
         if room.is_some_and(|room| whole > room && whole < room + px(1.)) {
+            found = Some(width);
             break;
         }
     }
+    assert!(
+        found.is_some(),
+        "no window from 515 to 524.5 px leaves \"turtle.png\" ({whole:?}) less than a pixel \
+         too wide for its room, so the case this checks never arises: the row's padding or \
+         the inspector's width moved; search the widths that recreate it"
+    );
     let row = app.read_with(cx, |app, _| {
         let entries = &app.work_status.as_ref().unwrap().entries;
         app.working_rows
