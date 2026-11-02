@@ -3355,7 +3355,7 @@ mod render_tests {
     /// 13 pt in a 461 × 490 window, where in the bundled interface font the
     /// 157.25 px row fits the toolbar's 157.5 px, and the captions and the
     /// image moved down 34.5 px. At 13 and 18 pt, at the test window's
-    /// scale factor, 2, and at 1.5, a changed image is walked in 1/16 px
+    /// scale factor, 2, and at 1.5 and 1.25, a changed image is walked in 1/16 px
     /// steps through the windows whose toolbar holds the row by less than a
     /// pixel and a half: in each the zoom menu keeps the modes' row a gap
     /// after the mode menu, ending inside the toolbar's padding, and the
@@ -3373,9 +3373,17 @@ mod render_tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         let slack = px(0.5);
-        // At the test window's scale, 2, and at 1.5, where the layout rounds
-        // the column to device pixels otherwise than whole pixels.
-        for (text, scale) in [(13, 2.), (18, 2.), (13, 1.5), (18, 1.5)] {
+        // At the test window's scale, 2, and at 1.5 and 1.25 (as Omarchy
+        // sets), where the layout rounds the column to device pixels
+        // otherwise than whole pixels.
+        for (text, scale) in [
+            (13, 2.),
+            (18, 2.),
+            (13, 1.5),
+            (18, 1.5),
+            (13, 1.25),
+            (18, 1.25),
+        ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             let toolbar = |width: f32, cx: &mut VisualTestContext| {
                 cx.simulate_resize(size(px(width), px(490.)));
