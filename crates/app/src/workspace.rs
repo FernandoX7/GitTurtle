@@ -2041,16 +2041,11 @@ impl GitTurtle {
         }
         // A refusal for conflicts alone, which a pause's end keeps since it
         // resolves none of them (`integration_ended`), goes in the frame a
-        // read finds none left: it once stayed in the window's error until
+        // read finds none left, the window's and the recovery forms' alike
+        // (`conflicts_ended`): it once stayed in the window's error until
         // dismissed, saying conflicts remained after they were resolved.
-        if !status.entries.iter().any(|entry| entry.conflicted)
-            && self
-                .operation_error
-                .as_deref()
-                .and_then(gitturtle_core::paused_recovery_operation)
-                == Some(None)
-        {
-            self.operation_error = None;
+        if !status.entries.iter().any(|entry| entry.conflicted) {
+            self.conflicts_ended(window, cx);
         }
         let preferred = self.working_selected.and_then(|(index, area)| {
             self.work_status

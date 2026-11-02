@@ -23,18 +23,26 @@ pub(super) const PAUSED_REFUSAL: &str =
 /// ([`pause_ended_line`]).
 #[cfg(test)]
 const PAUSE_ENDED: &str = "The merge has ended. Choose Review restore… to continue.";
-/// What a recovery form says in place of a refusal for a paused
-/// `operation` (`gitturtle_core::paused_recovery_refusal`) once a status
-/// read finds it ended (`GitTurtle::integration_ended`): the operation, and
-/// the form's own button, `review`, that tries again ("The merge has ended.
-/// Choose Review stash to continue."). It once said "The paused operation
-/// has ended. Review again to continue." whatever had paused, naming no
-/// button.
-fn pause_ended_line(operation: OperationKind, review: &str) -> SharedString {
-    format!(
-        "The {} has ended. Choose {review} to continue.",
-        operation.label().to_lowercase()
-    )
+/// What a refusal in the core's words for a pause is for
+/// (`gitturtle_core::paused_recovery_operation`): the operation paused, or
+/// `None` for conflicts left with none paused.
+type RefusedFor = Option<OperationKind>;
+/// What a recovery form says in place of a refusal for `cause`
+/// (`gitturtle_core::paused_recovery_refusal`) once a status read finds it
+/// gone, naming the form's own button, `review`, that tries again: a paused
+/// operation that has ended (`GitTurtle::integration_ended`), "The merge has
+/// ended. Choose Review stash to continue.", or conflicts alone, none of
+/// which remain (`GitTurtle::conflicts_ended`), "No conflicts remain. Choose
+/// Review stash to continue." It once said "The paused operation has ended.
+/// Review again to continue." whatever had paused, naming no button.
+fn pause_ended_line(cause: RefusedFor, review: &str) -> SharedString {
+    match cause {
+        Some(operation) => format!(
+            "The {} has ended. Choose {review} to continue.",
+            operation.label().to_lowercase()
+        ),
+        None => format!("No conflicts remain. Choose {review} to continue."),
+    }
     .into()
 }
 /// The buttons that review again: the Amend and Save changes to stash…
@@ -264,42 +272,7 @@ impl GitTurtle {
     /// view, where AccessKit's filter leaves out a line of its own
     /// ([`StashBrowser::refuse`]).
     pub(super) fn integration_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let path = self.path.clone();
-        if let Some(browser) = self.recovery.browser.as_ref().and_then(WeakEntity::upgrade)
-            && path.as_deref() == Some(browser.read(cx).repository.path())
-        {
-            browser.update(cx, |browser, cx| {
-                if let Some(operation) =
-                    pause_ended(&mut browser.restore_line, &mut browser.pause_ended)
-                {
-                    browser.reveal_note_for(NoteReveal::PauseEnded);
-                    crate::copy_feedback::announce(
-                        window,
-                        cx,
-                        pause_ended_line(operation, REVIEW_RESTORE),
-                    );
-                    cx.notify();
-                }
-            });
-        }
-        if let Some(form) = &self.recovery.amend
-            && form.read(cx).repository == path
-        {
-            form.update(cx, |form, cx| {
-                if pause_ended(&mut form.error, &mut form.pause_ended).is_some() {
-                    cx.notify();
-                }
-            });
-        }
-        if let Some(form) = &self.recovery.stash
-            && form.read(cx).repository == path
-        {
-            form.update(cx, |form, cx| {
-                if pause_ended(&mut form.error, &mut form.pause_ended).is_some() {
-                    cx.notify();
-                }
-            });
-        }
+        self.recovery_refusals_ended(false, window, cx);
         // As the forms do, a refusal for conflicts alone stays: the end of
         // an integration does not resolve them.
         if self
@@ -310,6 +283,76 @@ impl GitTurtle {
             .is_some()
         {
             self.operation_error = None;
+        }
+    }
+
+    /// A status read found no conflicted entry: a refusal for conflicts
+    /// alone, which the end of an integration keeps, goes in that frame,
+    /// the window's error and the line of an open Amend or Save changes to
+    /// stash… form, or the open Stashes' note, of this repository alike,
+    /// each of those giving way to the line that says none remain, naming
+    /// its own button, as at the end of a pause ([`pause_ended_line`]).
+    /// Only the core's exact refusal for conflicts alone goes
+    /// (`gitturtle_core::paused_recovery_refusal(None)`); one that names a
+    /// paused operation stays until that ends. The forms' and Stashes'
+    /// copies once stayed after the window's error had gone, saying
+    /// conflicts remained after they were resolved.
+    pub(super) fn conflicts_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.recovery_refusals_ended(true, window, cx);
+        if self.operation_error.as_deref() == Some(gitturtle_core::paused_recovery_refusal(None)) {
+            self.operation_error = None;
+        }
+    }
+
+    /// Replaces each refusal of this repository's open recovery forms and
+    /// Stashes whose cause a status read has found gone, a paused
+    /// integration or, where `conflicts`, conflicts alone, with the line
+    /// that says so ([`refusal_ended`]). Stashes' note, which its detail can
+    /// have scrolled out of view, is said by the window's announcement,
+    /// once, politely ([`StashBrowser::refuse`]).
+    fn recovery_refusals_ended(
+        &mut self,
+        conflicts: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = self.path.clone();
+        if let Some(browser) = self.recovery.browser.as_ref().and_then(WeakEntity::upgrade)
+            && path.as_deref() == Some(browser.read(cx).repository.path())
+        {
+            browser.update(cx, |browser, cx| {
+                if let Some(cause) = refusal_ended(
+                    &mut browser.restore_line,
+                    &mut browser.pause_ended,
+                    conflicts,
+                ) {
+                    browser.reveal_note_for(NoteReveal::PauseEnded);
+                    crate::copy_feedback::announce(
+                        window,
+                        cx,
+                        pause_ended_line(cause, REVIEW_RESTORE),
+                    );
+                    cx.notify();
+                }
+            });
+        }
+        if let Some(form) = &self.recovery.amend
+            && form.read(cx).repository == path
+        {
+            form.update(cx, |form, cx| {
+                if refusal_ended(&mut form.error, &mut form.pause_ended, conflicts).is_some() {
+                    cx.notify();
+                }
+            });
+        }
+        if let Some(form) = &self.recovery.stash
+            && form.read(cx).repository == path
+        {
+            form.update(cx, |form, cx| {
+                if refusal_ended(&mut form.error, &mut form.pause_ended, conflicts).is_some() {
+                    cx.notify();
+                }
+            });
         }
     }
 
@@ -1131,9 +1174,10 @@ struct AmendForm {
     description: Entity<TextareaState>,
     initial: CommitDraft,
     error: Option<String>,
-    /// Whether the line beneath the fields says that the integration its
-    /// last review was refused for has ended ([`pause_ended_line`]).
-    pause_ended: Option<OperationKind>,
+    /// Whether the line beneath the fields says that what its last review
+    /// was refused for has gone, the integration paused or the conflicts
+    /// left ([`pause_ended_line`]).
+    pause_ended: Option<RefusedFor>,
     /// How often the form has been shown, which gives its refusal a fresh
     /// node each time it opens again (`native_accessibility::refusal_line`).
     opened: usize,
@@ -1275,9 +1319,10 @@ struct StashForm {
     name: Entity<InputState>,
     include_untracked: bool,
     error: Option<String>,
-    /// Whether the line beneath the fields says that the integration its
-    /// last review was refused for has ended ([`pause_ended_line`]).
-    pause_ended: Option<OperationKind>,
+    /// Whether the line beneath the fields says that what its last review
+    /// was refused for has gone, the integration paused or the conflicts
+    /// left ([`pause_ended_line`]).
+    pause_ended: Option<RefusedFor>,
     /// How often the form has been shown, which gives its refusal a fresh
     /// node each time it opens again (`native_accessibility::refusal_line`).
     opened: usize,
@@ -1360,22 +1405,25 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }
-/// Replaces a recovery form's `error` that refuses because an integration
-/// was paused with the line that says it has ended, `ended`, which keeps
-/// the operation the refusal named; returns that operation where it did.
-/// Any other reason stays, as does a refusal for conflicts with no
-/// operation paused, which the end of an integration does not resolve.
-fn pause_ended(
+/// Replaces a recovery form's `error`, or Stashes' refusal, given for a
+/// cause a status read has found gone with the line that says so, `ended`,
+/// which keeps what it was for; returns that where it did. Where
+/// `conflicts`, only a refusal for conflicts alone goes, once none remain;
+/// otherwise only one for a paused operation, once it has ended, a refusal
+/// for conflicts alone staying since that end resolves none of them. Any
+/// other reason stays.
+fn refusal_ended(
     error: &mut Option<String>,
-    ended: &mut Option<OperationKind>,
-) -> Option<OperationKind> {
-    let operation = error
+    ended: &mut Option<RefusedFor>,
+    conflicts: bool,
+) -> Option<RefusedFor> {
+    let cause = error
         .as_deref()
         .and_then(gitturtle_core::paused_recovery_operation)
-        .flatten()?;
+        .filter(|cause| cause.is_none() == conflicts)?;
     *error = None;
-    *ended = Some(operation);
-    Some(operation)
+    *ended = Some(cause);
+    Some(cause)
 }
 
 /// The line beneath a recovery form's fields: why its last review was
@@ -1387,7 +1435,7 @@ fn pause_ended(
 /// unannounced as it first appeared and as the form opened again with it.
 fn form_line(
     error: Option<&str>,
-    pause_ended: Option<OperationKind>,
+    pause_ended: Option<RefusedFor>,
     review: &str,
     opened: usize,
     cx: &App,
@@ -1523,9 +1571,10 @@ pub(crate) struct StashBrowser {
     /// is, so a failure for a stash the person has just moved off is never
     /// said.
     read_alert: Option<crate::copy_feedback::Alerted>,
-    /// Whether that note says the integration Review restore… was last
-    /// refused for has ended ([`pause_ended_line`]).
-    pause_ended: Option<OperationKind>,
+    /// Whether that note says that what Review restore… was last refused
+    /// for has gone, the integration paused or the conflicts left
+    /// ([`pause_ended_line`]).
+    pause_ended: Option<RefusedFor>,
     /// The next frame scrolls the stacked detail to the footer note, for
     /// why it changed: an answer to Review restore…'s press, a refusal or
     /// failure, has just replaced it, which shows while focus stays where
@@ -7597,7 +7646,7 @@ mod tests {
         assert!(!paused(cx), "the read finds the merge ended");
         assert_eq!(
             form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
-            (None, Some(OperationKind::Merge)),
+            (None, Some(Some(OperationKind::Merge))),
             "the refusal gives way"
         );
         assert!(
@@ -7752,7 +7801,7 @@ mod tests {
             );
             assert_eq!(
                 form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
-                (None, Some(kind)),
+                (None, Some(Some(kind))),
                 "{kind:?}: the form's refusal gives way"
             );
             let note = crate::native_accessibility::written::get("recovery-form-note")
@@ -7984,6 +8033,310 @@ mod tests {
         );
         drop(nothing);
         quiet_reads_land(&app, cx);
+        drop(fixture);
+    }
+
+    /// Why a recovery action refuses while conflicts remain with no
+    /// operation paused (`gitturtle_core::paused_recovery_refusal`).
+    const CONFLICTS_REFUSAL: &str = gitturtle_core::paused_recovery_refusal(None);
+
+    /// Saves an edit of notes.txt in a stash and commits another over it,
+    /// so that applying the stash outside the app ([`conflict_alone`])
+    /// leaves notes.txt conflicted.
+    fn clashing_stash(repository: &std::path::Path) {
+        let git = |arguments: &[&str]| {
+            let identity = [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ];
+            crate::views::tests::fixture_git(repository, &[&identity[..], arguments].concat())
+        };
+        std::fs::write(repository.join("notes.txt"), "stashed\n").unwrap();
+        git(&["stash", "push", "-q", "-m", "Clash"]);
+        std::fs::write(repository.join("notes.txt"), "committed\n").unwrap();
+        git(&["commit", "-q", "-am", "Clash"]);
+    }
+
+    /// Applies the stash `clashing_stash` saved outside the app, which
+    /// stops with notes.txt conflicted and no operation paused, as a
+    /// conflicted stash restoration leaves it.
+    fn conflict_alone(repository: &std::path::Path, stash: &str) {
+        let applied =
+            crate::views::tests::fixture_git_output(repository, &["stash", "apply", "-q", stash]);
+        assert!(!applied.status.success(), "the stash clashes");
+        let unmerged = crate::views::tests::fixture_git_output(repository, &["ls-files", "-u"]);
+        assert!(!unmerged.stdout.is_empty(), "notes.txt is conflicted");
+        assert!(
+            !repository.join(".git").join("MERGE_HEAD").exists(),
+            "no merge is paused"
+        );
+    }
+
+    /// Resolves notes.txt outside the app and has the window read it
+    /// quietly, as the local watcher would.
+    fn conflict_resolved(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        repository: &std::path::Path,
+    ) {
+        std::fs::write(repository.join("notes.txt"), "resolved\n").unwrap();
+        crate::views::tests::fixture_git(repository, &["add", "notes.txt"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        quiet_reads_land(app, cx);
+        frame(cx);
+        let unmerged = crate::views::tests::fixture_git_output(repository, &["ls-files", "-u"]);
+        assert!(unmerged.stdout.is_empty(), "notes.txt is resolved");
+    }
+
+    /// Opens `form` at rest and fills its field, then has a stash restored
+    /// outside the app leave notes.txt conflicted with no operation paused,
+    /// and asks for the form's review: the core refuses it for conflicts
+    /// alone, and the form opens again with that refusal. It stays while a
+    /// read finds the conflict left and gives way in the frame a read finds
+    /// none, as the window's error does, to the line that says none remain,
+    /// naming the form's button, a status heard once speech pauses
+    /// (`GitTurtle::conflicts_ended`). A refusal that names a paused merge
+    /// stays through such a read. The form's refusal once stayed after the
+    /// conflicts were resolved, though the window's error had gone.
+    async fn refused_for_conflicts_alone(cx: &mut gpui::TestAppContext, form: PausedForm) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::fixture_git(&repository, &["reset", "-q", "--hard"]);
+        clashing_stash(&repository);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let review = match form {
+            PausedForm::Amend => {
+                let head = app.read_with(cx, |app, _| {
+                    app.work_status
+                        .as_ref()
+                        .and_then(|status| status.head.clone())
+                        .expect("HEAD")
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.prepare_commit_recovery(RecoveryKind::Amend, head, None, window, cx)
+                    })
+                });
+                let read = app.update(cx, |app, _| app.recovery.task.take());
+                read.expect("the amend plan is read").await;
+                REVIEW_AMEND
+            }
+            PausedForm::Stash => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_stash_form(window, cx)));
+                crate::views::tests::draw(cx);
+                let form =
+                    app.read_with(cx, |app, _| app.recovery.stash.clone().expect("the form"));
+                cx.update(|window, cx| {
+                    form.update(cx, |form, cx| {
+                        form.name
+                            .update(cx, |name, cx| name.set_value("conflicted work", window, cx))
+                    })
+                });
+                REVIEW_STASH
+            }
+        };
+        crate::views::tests::draw(cx);
+        let ended = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, cx| match form {
+                PausedForm::Amend => app.recovery.amend.as_ref().map(|f| f.read(cx).pause_ended),
+                PausedForm::Stash => app.recovery.stash.as_ref().map(|f| f.read(cx).pause_ended),
+            })
+            .expect("the form")
+        };
+
+        conflict_alone(&repository, "stash@{0}");
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        recovery_lands(&app, cx);
+        assert_eq!(
+            paused_form(&app, cx, form).0.as_deref(),
+            Some(CONFLICTS_REFUSAL),
+            "{form:?}: refused in the core's words for conflicts alone"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_some(),
+            "{form:?}: the form draws its refusal"
+        );
+        // The read the refusal asks for finds the conflict left.
+        quiet_reads_land(&app, cx);
+        frame(cx);
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_none()));
+        assert_eq!(
+            paused_form(&app, cx, form).0.as_deref(),
+            Some(CONFLICTS_REFUSAL),
+            "{form:?}: the refusal stays while the conflict does"
+        );
+
+        conflict_resolved(&app, cx, &repository);
+        assert_eq!(
+            (paused_form(&app, cx, form).0, ended(cx)),
+            (None, Some(None)),
+            "{form:?}: the refusal gives way in the frame the read finds no conflict"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_none(),
+            "{form:?}: the form draws no refusal"
+        );
+        let line = format!("No conflicts remain. Choose {review} to continue.");
+        let note = crate::native_accessibility::written::get("recovery-form-note")
+            .unwrap_or_else(|| panic!("{form:?}: the form's note"));
+        assert_eq!(
+            note.node.label(),
+            Some(line.as_str()),
+            "{form:?}: says none remain"
+        );
+        assert_eq!(
+            crate::native_accessibility::written::announced("recovery-form-note")
+                .map(|announced| announced.live),
+            Some(gpui::accesskit::Live::Polite),
+            "{form:?}: a status, heard once speech pauses"
+        );
+
+        // A refusal that names a paused merge stays through a read that
+        // finds no conflict and no pause.
+        app.update(cx, |app, cx| match form {
+            PausedForm::Amend => {
+                app.recovery
+                    .amend
+                    .clone()
+                    .expect("the form")
+                    .update(cx, |form, cx| {
+                        form.error = Some(PAUSED_REFUSAL.into());
+                        cx.notify();
+                    })
+            }
+            PausedForm::Stash => {
+                app.recovery
+                    .stash
+                    .clone()
+                    .expect("the form")
+                    .update(cx, |form, cx| {
+                        form.error = Some(PAUSED_REFUSAL.into());
+                        cx.notify();
+                    })
+            }
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        frame(cx);
+        assert_eq!(
+            paused_form(&app, cx, form).0.as_deref(),
+            Some(PAUSED_REFUSAL),
+            "{form:?}: a refusal naming a paused merge stays"
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        drop(fixture);
+    }
+
+    /// Amend last commit…'s refusal for conflicts alone gives way once a
+    /// read finds them resolved.
+    #[gpui::test]
+    async fn the_amend_forms_refusal_for_conflicts_goes_as_they_are_resolved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        refused_for_conflicts_alone(cx, PausedForm::Amend).await;
+    }
+
+    /// Save changes to stash…'s refusal for conflicts alone gives way once
+    /// a read finds them resolved.
+    #[gpui::test]
+    async fn the_stash_forms_refusal_for_conflicts_goes_as_they_are_resolved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        refused_for_conflicts_alone(cx, PausedForm::Stash).await;
+    }
+
+    /// Stashes' Review restore…, refused for a conflict a restoration
+    /// outside the app left with no operation paused, keeps that refusal in
+    /// its note while a read finds the conflict left, and in the frame a
+    /// read finds none the note says none remain, naming Review restore…,
+    /// which the window's announcement says once (`conflicts_ended`), as
+    /// at the end of a pause. The refusal once stayed until another stash
+    /// was chosen, saying conflicts remained after they were resolved.
+    #[gpui::test]
+    async fn stashes_refusal_for_conflicts_goes_as_they_are_resolved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let _git = two_stashes(&repository);
+        clashing_stash(&repository);
+        conflict_alone(&repository, "stash@{0}");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_none()));
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            stashes
+                .read_with(cx, |stashes, _| stashes.restore_line.clone())
+                .as_deref(),
+            Some(CONFLICTS_REFUSAL),
+            "refused for conflicts alone, which a read finds left"
+        );
+        let mut heard = Heard::start(cx);
+        conflict_resolved(&app, cx, &repository);
+        crate::views::tests::draw(cx);
+        let line = pause_ended_line(None, REVIEW_RESTORE);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| (
+                stashes.restore_line.clone(),
+                stashes.pause_ended
+            )),
+            (None, Some(None)),
+            "the refusal gives way in the frame the read finds no conflict"
+        );
+        assert!(
+            cx.debug_bounds("stash-restore-ended").is_some(),
+            "the note says none remain"
+        );
+        let found = reached(cx);
+        assert_eq!(
+            said_from_the_window(&found, &line, gpui::accesskit::Live::Polite),
+            1,
+            "the window's announcement says none remain: {found:?}"
+        );
+        if let Some(heard) = heard.next(cx) {
+            assert!(
+                heard.iter().filter(|said| **said == *line).count() == 1,
+                "AT-SPI announces it once: {heard:?}"
+            );
+        }
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
         drop(fixture);
     }
 
