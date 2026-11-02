@@ -65,11 +65,16 @@ const ERROR_TOOLTIP_BYTES: usize = 1024;
 /// [`ERROR_LINES`] lines, the last ending in an ellipsis where it needs
 /// more, its whole text, bounded (`bounded_accessible_text`), its
 /// accessible value, as the alert that says it ([`set_error_line`]) says it
-/// whole. Only a line that is cut, wrapped at the width it was last drawn
-/// at, has a tooltip, which shows the report's first lines
-/// ([`error_tooltip`]); a whole line has none, as a whole label has none.
-/// Drawn whole, a long Git report, as a hook's or a remote's stderr, grew
-/// the form by each of its lines, past its fields and actions.
+/// whole. Only a line that is cut has a tooltip, which shows the report's
+/// first lines ([`error_tooltip`]); a whole line has none, as a whole label
+/// has none. Whether it is cut is decided as the tooltip is asked for, from
+/// the width the line was laid out at in the frame the pointer rests on,
+/// so a resize that cuts the line, or makes it whole, in one step answers
+/// the next hover without another frame; decided while the frame was
+/// built, from the frame before, it answered for the old width until
+/// something else drew the form again. Drawn whole, a long Git report, as
+/// a hook's or a remote's stderr, grew the form by each of its lines, past
+/// its fields and actions.
 pub(crate) fn error_line(
     id: &'static str,
     text: &str,
@@ -78,33 +83,43 @@ pub(crate) fn error_line(
     cx: &mut App,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let whole = native_accessibility::bounded_accessible_text(text);
-    // The width the line was drawn at last, which its prepaint records.
-    let drawn = window.use_keyed_state(
-        ElementId::from(SharedString::from(format!("{id}/width"))),
-        cx,
-        |_, _| std::rc::Rc::new(std::cell::Cell::new(None::<Pixels>)),
-    );
-    let drawn = drawn.read(cx).clone();
+    // The width the line was laid out at last, which its prepaint records,
+    // kept across frames so the hover a frame began reads the latest.
+    let laid_out = window
+        .use_keyed_state(
+            ElementId::from(SharedString::from(format!("{id}/width"))),
+            cx,
+            |_, _| std::rc::Rc::new(std::cell::Cell::new(None::<Pixels>)),
+        )
+        .read(cx)
+        .clone();
+    let recorded = laid_out.clone();
     let measured =
         size.unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
-    let cut = drawn.get().is_some_and(|width| {
-        crate::image_compare::wrapped_lines(&whole, measured, width, window) > ERROR_LINES
-    });
-    let tooltip = cut.then(|| error_tooltip(&whole));
+    let report = whole.clone();
     native_accessibility::static_text(
         div()
             .on_children_prepainted(move |bounds, _, _| {
-                drawn.set(bounds.first().map(|line| line.size.width));
+                recorded.set(bounds.first().map(|line| line.size.width));
             })
             .id(id)
             .debug_selector(move || id.into())
             .when_some(size, |line, size| line.text_size(size))
             .line_clamp(ERROR_LINES)
             .text_ellipsis()
-            .when_some(tooltip, |line, tooltip| {
-                line.tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                })
+            .tooltip(move |window, cx| {
+                let cut = laid_out.get().is_some_and(|width| {
+                    crate::image_compare::wrapped_lines(&report, measured, width, window)
+                        > ERROR_LINES
+                });
+                if cut {
+                    gpui_kit::component::tooltip::Tooltip::new(error_tooltip(&report))
+                        .build(window, cx)
+                } else {
+                    // Nothing to add to a whole line: an empty view, drawn
+                    // as nothing.
+                    cx.new(|_| gpui::EmptyView).into()
+                }
             })
             .child(whole.clone()),
         whole,
@@ -2193,6 +2208,95 @@ pub(crate) mod tests {
             hovered_tooltips(cx, "tag-preparation-error"),
             0,
             "a whole line has no tooltip"
+        );
+    }
+
+    /// Whether an error line is cut is read as its tooltip is asked for,
+    /// from the width it was laid out at in the frame the pointer rests on:
+    /// at 13 pt, a three-line report whole under Create tag in a 1480 × 980
+    /// window shows no tooltip; resized in one step to 461 × 980, below the
+    /// dialog's 560 px, where its lines wrap past three, and one frame
+    /// drawn, a hover shows its tooltip; and resized back in one step, a
+    /// hover shows none. Decided while each frame was built, from the frame
+    /// before, the tooltip answered for the old width until something else
+    /// drew the form again, which a Hyprland re-tile alone does not.
+    #[gpui::test]
+    async fn a_one_step_resize_answers_the_error_lines_next_hover(cx: &mut TestAppContext) {
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        let report = (1..=3)
+            .map(|line| {
+                format!("remote: hook line {line} refused the tag for its annotation policy")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                set_error_line(&mut form.error, report.clone(), window, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        // A test window draws itself once at the end of an update that made
+        // it dirty: a resize draws its one frame, as a single configure from
+        // the compositor does, and nothing below draws another.
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        let popups = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .map(|quad| quad.bounds)
+                    .collect::<Vec<_>>()
+            })
+        };
+        // The tooltips a hover on the line shows once its delay has passed;
+        // the pointer then leaves.
+        let hovered = |cx: &mut VisualTestContext| {
+            let before = popups(cx);
+            let line = rendered(cx, "tag-preparation-error");
+            cx.simulate_mouse_move(line.center(), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            cx.run_until_parked();
+            let shown = popups(cx)
+                .into_iter()
+                .filter(|popup| !before.contains(popup))
+                .count();
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            cx.run_until_parked();
+            shown
+        };
+        let lines = |cx: &mut VisualTestContext| {
+            let width = rendered(cx, "tag-preparation-error").size.width;
+            cx.update(|window, _| {
+                crate::image_compare::wrapped_lines(
+                    &report,
+                    crate::appearance::ui_text(12.),
+                    width,
+                    window,
+                )
+            })
+        };
+        assert_eq!(lines(cx), ERROR_LINES, "whole in the wide window");
+        assert_eq!(hovered(cx), 0, "whole, no tooltip");
+        cx.simulate_resize(size(px(461.), px(980.)));
+        assert!(lines(cx) > ERROR_LINES, "cut in the narrow window");
+        assert_eq!(
+            hovered(cx),
+            1,
+            "cut in one step, the next hover shows its tooltip"
+        );
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        assert_eq!(lines(cx), ERROR_LINES, "whole again");
+        assert_eq!(
+            hovered(cx),
+            0,
+            "whole in one step, the next hover shows none"
         );
     }
 
