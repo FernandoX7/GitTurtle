@@ -15,7 +15,12 @@
 //! (its actions, a count on its own) or one centred in it (an empty state). A
 //! panel's edge is its leftmost line start: every other line starts there,
 //! or at one of the panel's [`Offset`]s from it, each named with its reason.
-//! A run its clip cuts on the left, scrolled sideways, starts no line.
+//! A run its clip cuts on the left, scrolled sideways, starts no line, and
+//! neither does one it cuts at its top or foot, at a list's or the body's
+//! edge, where the other runs of its line may lie past the clip: at 18 pt
+//! the foot of the conversation list left 5 px of a card's comment count
+//! showing without the Reply and Resolve Buttons before it, which read as a
+//! line 433 px into the GitHub panel.
 //!
 //! The bars of controls (the repository header, the Git actions, the
 //! toolbars and the status strip) lay their groups side by side rather than
@@ -310,14 +315,6 @@ const KNOWN: &[Known] = &[
         sizes: &[13],
         follow_up: "the conversation cards start their lines and Buttons' labels at one edge",
     },
-    // With the panes open at 18 pt in a 1,480 px window, a line 12 px down
-    // the body starts 433 px into the panel.
-    Known {
-        surface: Surface::GitHubPanes,
-        panel: "GitHub panel",
-        sizes: &[18],
-        follow_up: "the line 433 px into the panel at 18 pt starts at its text edge",
-    },
 ];
 
 /// The widths the grid lays each surface out at: a 1,480 px window and a
@@ -430,14 +427,19 @@ fn drawn(cx: &mut VisualTestContext) -> Drawn {
             } else {
                 return None;
             };
-            (run.left() >= clip.left() - slack
-                && run.left() < clip.right()
-                && run.top() < clip.bottom()
-                && run.bottom() > clip.top())
-            .then_some(Run {
-                bounds: run,
-                field: field_box,
-            })
+            // A field is read by its box, which its clip may cut by its ring's
+            // room and still show its text whole.
+            let whole = if field_box.is_some() {
+                run.top() < clip.bottom() && run.bottom() > clip.top()
+            } else {
+                run.top() >= clip.top() - slack && run.bottom() <= clip.bottom() + slack
+            };
+            (run.left() >= clip.left() - slack && run.left() < clip.right() && whole).then_some(
+                Run {
+                    bounds: run,
+                    field: field_box,
+                },
+            )
         })
         .collect();
     Drawn { runs, dialog }
