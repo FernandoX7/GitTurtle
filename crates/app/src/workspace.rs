@@ -6109,3 +6109,79 @@ mod targets_focus_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod background_clone_tests {
+    use crate::views::tests::{draw, history_window, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// A clone that fails while another repository shows says so in the
+    /// status line as one part, its destination's path whole: started from
+    /// Projects into a folder whose name holds " · ", from a local folder
+    /// that is not a repository, and left for the repository before Git
+    /// answers, the status reads "Repository operation failed in <path>:
+    /// <Git's report>", the repository's own error untouched, and in a
+    /// 461 × 490 half tile, where it does not fit, the line keeps it whole
+    /// up to its ellipsis rather than giving way at the separator inside
+    /// the path. Set as a plain status, the line gave way there and read
+    /// the path's head as if it were all of it.
+    #[gpui::test]
+    async fn a_clone_that_fails_in_the_background_keeps_its_path_one_part(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window(cx).await;
+        let folder = fixture.path().join("clones · b");
+        let source = fixture.path().join("not a repository");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::create_dir(&source).unwrap();
+        let destination = folder.join("copy");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_projects(window, cx);
+                app.project_event(
+                    &projects::ProjectEvent::Clone {
+                        source: source.display().to_string(),
+                        destination: destination.clone(),
+                    },
+                    window,
+                    cx,
+                );
+                app.return_from_page(window, cx);
+            })
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.page),
+            AppPage::Repository,
+            "the repository shows while Git clones"
+        );
+        // The clone answers on the operation executor, a thread of its own.
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        let (status, error) = app.read_with(cx, |app, _| {
+            (app.status.clone(), app.operation_error.clone())
+        });
+        let head = format!("Repository operation failed in {}: ", destination.display());
+        assert!(
+            status.starts_with(&head) && status.len() > head.len(),
+            "the status says the clone failed, where and why: {status:?}"
+        );
+        assert_eq!(error, None, "the repository's own error says nothing");
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let drawn =
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_line_drawn(window, cx)));
+        let line = cx.debug_bounds("status-line").expect("the status line");
+        let need = cx.update(|window, _| {
+            let weight = window.text_style().font_weight;
+            crate::views::shaped_width(&status, appearance::ui_text(10.), weight, window)
+        });
+        assert!(
+            need > line.size.width,
+            "the status, {need:?} wide, does not fit the line {line:?}"
+        );
+        assert_eq!(
+            drawn, status,
+            "the line keeps the status whole up to its ellipsis, the path in it"
+        );
+        drop(fixture);
+    }
+}
