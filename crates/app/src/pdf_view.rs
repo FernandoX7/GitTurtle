@@ -695,6 +695,26 @@ fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, P
     })
 }
 
+/// `control`, a control of a side's own header whose labelled form is
+/// `labelled` wide at its widest reading and whose short form, where it has
+/// one, is `short` wide at its widest, drawn as wide as the form a line
+/// `room` wide gives it (`system_preview::HeaderControl::button`) whatever it
+/// reads now; its icon keeps its square. A page turn or a page that fails
+/// then changes what the control reads and moves nothing after it. Drawn at
+/// its own reading's width, the page number grew with "Page 10 / 10", and in
+/// a proportional font with any page whose digits are wider, and moved the
+/// link and the zooms after it.
+fn at_widest(control: Button, labelled: Pixels, short: Option<Pixels>, room: Pixels) -> Button {
+    use crate::system_preview::Form;
+    if Form::fitting(labelled, room) == Form::Labelled {
+        control.w(labelled)
+    } else if let Some(short) = short.filter(|short| *short <= room) {
+        control.w(short)
+    } else {
+        control
+    }
+}
+
 /// The comparison's sides, each with its header of page controls; `width`
 /// is the comparison's in the frame it is drawn
 /// (`rich_preview::render_comparison`), which those controls, the open
@@ -761,7 +781,6 @@ pub(super) fn render_comparison<T: 'static>(
         // wider, Read page text, so a failure that brings Retry page moves
         // nothing either.
         let slot = labelled_button_width("Read page text", &READ_TEXT, window).max(labelled_button_width("Retry page", &RETRY_PAGE, window));
-        let labelled = crate::system_preview::Form::fitting(slot, line_room) == crate::system_preview::Form::Labelled;
         let page_control = if error.is_some() {
             let target=document.clone();
             let retry = HeaderControl::new(("pdf-retry",index), format!("pdf-retry-{index}"), "Retry page", format!("{label}: retry page {}",page+1), "refresh", slot).labelled_with_icon().button(line_room);
@@ -775,7 +794,7 @@ pub(super) fn render_comparison<T: 'static>(
             };
             held.track(("pdf-read-text",index), read, cx)
         };
-        header=header.child(if labelled { page_control.w(slot) } else { page_control });
+        header=header.child(at_widest(page_control, slot, None, line_room));
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
             let document = document.clone(); let partner = partner.clone();
             let id = if previous {"pdf-back"} else {"pdf-forward"};
@@ -788,10 +807,12 @@ pub(super) fn render_comparison<T: 'static>(
         let target = document.clone(); let linked_partner = partner.clone();
         // "1/3" where "Page 1 / 3" does not fit a line of the header, and
         // its page icon where "1/3" does not either, its whole reading its
-        // tooltip; each form measured at its widest for the count.
+        // tooltip; each form measured at its widest for the count, and drawn
+        // that wide on every page.
         let (labelled, short) = page_number_widths(index, document.count, window);
         let number = HeaderControl::new(("pdf-page-number",index), format!("pdf-page-number-{index}"), format!("Page {} / {}",page+1,document.count), format!("{label}: page {} of {}. Enter page number",page+1,document.count), "page", labelled)
-            .short(format!("{}/{}",page+1,document.count), short).button(line_room)
+            .short(format!("{}/{}",page+1,document.count), short).button(line_room);
+        let number = at_widest(number, labelled, Some(short), line_room)
             .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx));
         header = header.child(held.track(("pdf-page-number",index), number, cx));
         if let Some(partner) = partner {
@@ -1246,6 +1267,12 @@ pub(crate) mod tests {
             content: crate::worker::Content,
             /// The comparison's width.
             width: Pixels,
+            /// The comparison's showing, which lasts as long as the view,
+            /// as Compare's lasts while it shows one file. Made for each
+            /// frame, it made each side header's scrolling state again
+            /// every frame, so a header that scrolls, both sides' at 18 pt
+            /// in 80 px sides, never settled and asked for frame after frame.
+            showing: crate::system_preview::Showing,
         }
 
         impl Render for Pages {
@@ -1253,10 +1280,8 @@ pub(crate) mod tests {
                 let crate::worker::Content::Rich(comparison) = &self.content else {
                     panic!("a document comparison");
                 };
-                let opener = crate::system_preview::Opener::new(
-                    WeakEntity::new_invalid(),
-                    crate::system_preview::Showing::next(),
-                );
+                let opener =
+                    crate::system_preview::Opener::new(WeakEntity::new_invalid(), self.showing);
                 // Drawn as Compare draws it, which draws a side without
                 // pages, as a locked PDF's, on the generic document surface.
                 div()
@@ -1292,6 +1317,7 @@ pub(crate) mod tests {
                 let view = cx.new(|_| Pages {
                     content,
                     width: px(900.),
+                    showing: crate::system_preview::Showing::next(),
                 });
                 *made.borrow_mut() = Some(view.clone());
                 gpui_kit::component::Root::new(view, window, cx)
@@ -1866,6 +1892,107 @@ pub(crate) mod tests {
                     assert!(
                         reached.contains(&(text, step)),
                         "at {text} pt the heading reaches its {step} step"
+                    );
+                }
+            }
+        }
+
+        /// `document` shows page `number` (counted from 0), prepared, as it
+        /// is once Next or the page field brings it and it arrives, so the
+        /// page lane, which every test in the process shares, is never asked
+        /// for one.
+        fn show(document: &Document, number: usize) {
+            document.select(number, None);
+            let mut state = document.state.lock().unwrap();
+            if state.cache.get(number).is_none() {
+                state.cache.insert(number, PreparedPage::from(page()));
+            }
+        }
+
+        /// A comparison of two `count`-page documents, each side showing its
+        /// first page prepared ([`show`]) and offering to link its pages,
+        /// independent.
+        fn both_sides(name: &str, count: usize) -> (crate::worker::Content, [Arc<Document>; 2]) {
+            let documents = [0, 1].map(|side| {
+                let bytes = pdf(&format!("{name}: side {side}"));
+                let document = Document::new(Arc::from(bytes), count, None, || Ok(())).unwrap();
+                show(&document, 0);
+                Arc::new(document)
+            });
+            let name = Path::new("document.pdf");
+            let [old, new] = documents.clone().map(|document| {
+                let mut side = rich_preview::Side::unavailable(name, true, None);
+                side.pdf = Some(document);
+                Arc::new(side)
+            });
+            let content = crate::worker::Content::Rich(rich_preview::Comparison { old, new });
+            (content, documents)
+        }
+
+        /// Checks that each side's link and zooms lie where they lay in the
+        /// first of `states` in the second as well, at every comparison
+        /// width from 160 to 1,000 px at 13 and 18 pt, and returns the forms
+        /// `control` was drawn in, by text size.
+        fn walk_widths(
+            cx: &mut gpui_kit::VisualTestContext,
+            view: &Entity<Pages>,
+            control: &str,
+            states: [&dyn Fn(); 2],
+        ) -> std::collections::BTreeSet<(u8, &'static str)> {
+            let mut forms = std::collections::BTreeSet::new();
+            for text in [13u8, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for width in (160..=1000).step_by(8) {
+                    view.update(cx, |view, _| view.width = px(width as f32));
+                    let drawn = states.map(|state| {
+                        state();
+                        crate::system_preview::DRAWN_CONTROLS
+                            .with_borrow_mut(|drawn| drawn.clear());
+                        view.update(cx, |_, cx| cx.notify());
+                        crate::tags::tests::draw(cx);
+                        let form = crate::system_preview::DRAWN_CONTROLS
+                            .with_borrow(|drawn| drawn[control].form);
+                        forms.insert((text, form));
+                        ["pdf-link-0", "pdf-zooms-0", "pdf-link-1", "pdf-zooms-1"].map(|selector| {
+                            cx.debug_bounds(selector)
+                                .unwrap_or_else(|| panic!("{selector} is drawn"))
+                        })
+                    });
+                    assert_eq!(
+                        drawn[0],
+                        drawn[1],
+                        "{text} pt, side {} px: the link and the zooms keep their places",
+                        width / 2
+                    );
+                }
+            }
+            forms
+        }
+
+        /// A page turn moves nothing after the page number, which takes the
+        /// width of its widest reading in the form it is drawn in: each
+        /// side's link and zooms keep their places on page 1 and page 10 of
+        /// 10, whose readings differ most in the tests' font (one width for
+        /// every character), labelled "Page 1 / 10" and short "1/10", at
+        /// every side width from 80 to 500 px at 13 and 18 pt. Drawn at its
+        /// own reading's width, the page number grew with "Page 10 / 10",
+        /// and in a proportional font with any page whose digits are wider,
+        /// so the link and the zooms moved on a page turn.
+        #[gpui::test]
+        fn a_page_turn_moves_nothing_after_the_page_number(cx: &mut gpui_kit::TestAppContext) {
+            let (content, documents) = both_sides("a page turn", 10);
+            let (view, cx) = window(cx, content);
+            let turn = |number| {
+                for document in &documents {
+                    show(document, number);
+                }
+            };
+            let forms = walk_widths(cx, &view, "pdf-page-number-0", [&|| turn(0), &|| turn(9)]);
+            for text in [13, 18] {
+                for form in ["labelled", "short"] {
+                    assert!(
+                        forms.contains(&(text, form)),
+                        "at {text} pt the page number is drawn {form}"
                     );
                 }
             }
