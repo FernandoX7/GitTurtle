@@ -155,7 +155,7 @@ fn panels(surface: Surface) -> &'static [Panel] {
         icon_panel(
             "working files",
             Union(&["working-header", "working-pane"]),
-            || appearance::ui_size(appearance::PANE_INSET),
+            || appearance::ui_size(appearance::PANE_INSET) + px(2.),
         ),
         panel("composer", Selector("commit-composer")),
     ];
@@ -257,8 +257,8 @@ const OFFSETS: &[Offset] = &[
     Offset {
         panel: Some((&[Surface::Working], "working files")),
         by: || px(17.) + appearance::ui_size(6.5),
-        reason: "the Changes header's 17 px commit icon stands at the pane's edge, in the \
-                 file rows' tile column, its label after the 0.5 rem gap",
+        reason: "the Changes header's 17 px commit icon stands in the list's column, with \
+                 the headings' icons and the file rows' tiles, its label after the 0.5 rem gap",
     },
     Offset {
         panel: Some((&[Surface::Working], "composer")),

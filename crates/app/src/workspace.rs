@@ -267,6 +267,11 @@ pub(super) struct StatusOutcome {
 /// The Changes header's height in the full form.
 const WORKING_HEADER: f32 = 44.;
 
+/// How far past the pane's inset the Changes header starts, so its icon stands in
+/// the file list's column: the list's 1 px margin and its 1 px border, inside which
+/// the rows keep the pane's inset and their focus rings' room.
+const HEADER_LEAD: Pixels = px(2.);
+
 /// What the Working list says where its path filter matches nothing, as
 /// the Tags list says "No tags match this filter".
 pub(super) const WORKING_NO_MATCH: &str = "No files match this filter";
@@ -1017,12 +1022,14 @@ impl GitTurtle {
         } else {
             px(0.)
         };
+        // The header leads the list's column, `HEADER_LEAD` past its inset.
+        let header_room = room - HEADER_LEAD;
         let full = sum(&[icon, label, chip], gap) + gap + refreshing + actions + gap + control;
-        let compact_actions = full > room;
+        let compact_actions = full > header_room;
         let (mut header_icon, mut header_label) = (true, true);
         if compact_actions {
             let trailing = control * 2. + tight;
-            let fits = |items: &[Pixels]| sum(items, gap) + gap + trailing <= room;
+            let fits = |items: &[Pixels]| sum(items, gap) + gap + trailing <= header_room;
             if !fits(&[icon, label, chip]) {
                 header_icon = false;
                 header_label = fits(&[label, chip]);
@@ -3413,7 +3420,11 @@ impl GitTurtle {
                     .debug_selector(|| "working-header".into())
                     .h(px(header_height))
                     .flex_shrink_0()
-                    .px_3()
+                    // Its icon, or its label where the icon has left, in the list's
+                    // column: the rows' leading inset inside the list's 1 px margin
+                    // and border (`HEADER_LEAD`), where its rows' icons and tiles stand.
+                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) + HEADER_LEAD)
+                    .pr_3()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -4282,9 +4293,7 @@ impl GitTurtle {
                     .map_or("Repository root".into(), |path| path.display().to_string());
                 div()
                     .h(px(self.settings.density.file_row_height()))
-                    // At the header's edge, inside the list's 2 px.
-                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
-                    .pr_3()
+                    .px_3()
                     .flex()
                     .items_center()
                     .text_size(crate::appearance::ui_text(11.))
@@ -4360,9 +4369,7 @@ impl GitTurtle {
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
-                    // Its icon in the header's icon column, inside the list's 2 px.
-                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
-                    .pr_3()
+                    .px_3()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -4513,11 +4520,12 @@ impl GitTurtle {
                     })
                     .h(px(self.settings.density.file_row_height()))
                     .w_full()
-                    // Its tile or glyph in the header's icon column, at the pane's
-                    // inset: the list's 2 px and the row's 2 px marker come out of
-                    // it (DESIGN.md, "One left edge"). A fixed 10 px stood the tile
-                    // 4.25 px past the header's icon at 13 pt.
-                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(4.))
+                    // Its tile or glyph in the list's column, where the headings'
+                    // icons and the header's stand: the rows' leading inset, the
+                    // row's 2 px marker out of it (DESIGN.md, "One left edge"). A
+                    // fixed 10 px stood the tile 2.25 px past the headings' icons at
+                    // 13 pt.
+                    .pl(crate::appearance::ui_size(crate::appearance::PANE_INSET) - px(2.))
                     .pr_3()
                     .flex()
                     .items_center()

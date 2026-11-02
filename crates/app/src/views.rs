@@ -19989,6 +19989,29 @@ pub(crate) mod tests {
                     count.right() <= action.left(),
                     "{at}: {count:?} before {action:?}"
                 );
+                // The Changes header's icon and the file rows' tiles stand in the
+                // headings' column, the list's (DESIGN.md, "One left edge").
+                if let Some(heading) = cx.debug_bounds(glyph) {
+                    let rows = app.read_with(cx, |app, _| app.working_rows.len());
+                    let mut column: Vec<(&str, Bounds<Pixels>)> = cx
+                        .debug_bounds("working-header-icon")
+                        .map(|icon| ("the header's icon", icon))
+                        .into_iter()
+                        .collect();
+                    for row in 0..rows {
+                        let tile: &'static str = format!("working-tile-{row}").leak();
+                        column.extend(
+                            cx.debug_bounds(tile)
+                                .map(|bounds| ("a file's tile", bounds)),
+                        );
+                    }
+                    for (part, bounds) in column {
+                        assert!(
+                            (bounds.left() - heading.left()).abs() <= px(0.5),
+                            "{at}: {part} {bounds:?} in {glyph}'s column {heading:?}"
+                        );
+                    }
+                }
                 // The glyph tells the groups apart wherever the name has left.
                 assert!(cx.debug_bounds(glyph).is_some(), "{at}: {glyph}");
                 assert_eq!(cx.debug_bounds(label).is_some(), !narrow, "{at}: {label}");
