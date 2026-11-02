@@ -99,7 +99,15 @@ by the OS/user; distribution of those components would require a separate review
   under the SIL Open Font License 1.1 with IBM's Reserved Font Name "Plex".
   Preserve its [notice](docs/licenses/assets/ibm-plex-sans-LICENSE.txt), keep the
   faces unmodified and unrenamed, and do not sell them by themselves. macOS builds
-  embed no font and use installed system fonts. Font files
+  embed no font and use installed system fonts. Linux builds for x86-64 and
+  AArch64 also link the hayro PDF renderer (`Apache-2.0 OR MIT`), which embeds Foxit's standard-font
+  substitutes extracted from PDFium (BSD-3-Clause, `assets/LICENSE_FOXIT` in
+  `hayro-interpret`), Adobe's predefined CMaps (BSD-3-Clause, `assets/LICENSE.txt`
+  in `hayro-cmap`) and CC0-1.0 ICC profiles. hayro's `NOTICE.md` records code
+  adapted from PDFBox, pdf.js and the png crate under Apache-2.0. The collector
+  copies the notices the crates ship, and the [supplements](docs/licenses/README.md)
+  add `NOTICE.md` and the CMYK profile's CC0 text, which the published crates
+  omit or name differently. macOS builds do not include hayro. Font files
   present in decoder/text dependency test directories are not application
   assets. Preserve their own notices if separately redistributing those test
   corpora.

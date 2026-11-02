@@ -120,6 +120,21 @@
     ]
   },
   {
+    "name": "alloc-stdlib",
+    "version": "0.2.4",
+    "license": "BSD-3-Clause",
+    "repository": "dropbox/rust-alloc-no-stdlib",
+    "revision": "ae42d22078b98549e987d2f03d12df7b984fde47",
+    "files": [
+      {
+        "path": "texts/c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae.txt",
+        "url": "https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/ae42d22078b98549e987d2f03d12df7b984fde47/LICENSE",
+        "sha256": "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+      }
+    ],
+    "note": "The alloc-stdlib crate lives in the alloc-stdlib directory of the alloc-no-stdlib repository and ships no license file; the repository's LICENSE at the archive's revision covers it."
+  },
+  {
     "name": "block2",
     "version": "0.5.1",
     "license": "MIT",
@@ -230,6 +245,46 @@
         "sha256": "3a7c3f0b887abb7c638faf022d29257418458614c6724b120ceeffb279f9c7d2"
       }
     ]
+  },
+  {
+    "name": "hayro-interpret",
+    "version": "0.8.0",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "LaurenzV/hayro",
+    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "files": [
+      {
+        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
+        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+      },
+      {
+        "path": "texts/469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/CGATS_LICENSE.txt",
+        "sha256": "469d87b5fa48f8aaf69e25f4fcac3a309c97dbb7d561b917638abdb640e004d9"
+      },
+      {
+        "path": "texts/060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/hayro-interpret/assets/README.md",
+        "sha256": "060a1d5778f49e9de3050c2bb84e5980a29744d9fe25ce590e76d7614c4f172f"
+      }
+    ],
+    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate. The embedded CMYK profile's CC0-1.0 text is in assets/CGATS_LICENSE.txt, a name the collector does not match, and assets/README.md records the embedded Foxit fonts' PDFium origin and the generated LAB profile."
+  },
+  {
+    "name": "hayro-syntax",
+    "version": "0.8.0",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "LaurenzV/hayro",
+    "revision": "ea9c81dc70cde40c64205986fdcfcd481fe934d8",
+    "files": [
+      {
+        "path": "texts/a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4.txt",
+        "url": "https://raw.githubusercontent.com/LaurenzV/hayro/ea9c81dc70cde40c64205986fdcfcd481fe934d8/NOTICE.md",
+        "sha256": "a871b6be96582455a3fb26c6c58ddf166481fdca8c850a1cee6faf4ce6c765c4"
+      }
+    ],
+    "note": "The repository NOTICE.md (code adapted from PDFBox, pdf.js and the png crate under Apache-2.0) is not in the published crate."
   },
   {
     "name": "hexf-parse",

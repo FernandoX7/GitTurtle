@@ -22,6 +22,19 @@ pub mod metadata;
 pub mod model3d;
 #[cfg(target_os = "macos")]
 mod native;
+// Linux renders PDF pages with hayro only inside GitTurtle's confined helper
+// process: `pdf_helper::serve` is the single way in, so the app never runs it.
+// The helper supports x86-64 and AArch64; other targets keep refusing PDF pages.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod pdf_hayro;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub mod pdf_helper;
 mod svg_limits;
 
 pub const PDF_PREVIEW_EDGE: u32 = 1000;
@@ -441,6 +454,265 @@ fn decode_svg(bytes: &[u8], max_edge: u32) -> Result<ImagePreview> {
         rgba,
         format: "SVG".into(),
     })
+}
+
+/// Small, valid PDFs generated for the Linux renderer's tests. Every page
+/// shares one Helvetica font with WinAnsi encoding, so content can show text.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod test_pdf {
+    #[derive(Clone)]
+    pub(crate) struct Page {
+        pub(crate) media_box: [u32; 4],
+        pub(crate) crop_box: Option<[u32; 4]>,
+        pub(crate) rotate: i32,
+        pub(crate) content: Vec<u8>,
+    }
+
+    impl Page {
+        /// A 120 × 80 point page drawing `content`.
+        pub(crate) fn new(content: impl Into<Vec<u8>>) -> Self {
+            Self {
+                media_box: [0, 0, 120, 80],
+                crop_box: None,
+                rotate: 0,
+                content: content.into(),
+            }
+        }
+    }
+
+    /// `pages` pages of 120 × 80 points whose top half is red.
+    pub(crate) fn pdf(pages: usize) -> Vec<u8> {
+        document(&vec![Page::new("1 0 0 rg 0 40 120 40 re f"); pages], None)
+    }
+
+    /// One US Letter page per text, shown once at the top left.
+    pub(crate) fn text_pdf(texts: &[&str]) -> Vec<u8> {
+        let pages: Vec<_> = texts
+            .iter()
+            .map(|text| Page {
+                media_box: [0, 0, 612, 792],
+                ..Page::new(format!("BT /F1 12 Tf 40 740 Td ({text}) Tj ET"))
+            })
+            .collect();
+        document(&pages, None)
+    }
+
+    /// A document with `pages`; `user_password` encrypts it with the standard
+    /// security handler (revision 2, 40-bit RC4) and owner password "owner".
+    pub(crate) fn document(pages: &[Page], user_password: Option<&[u8]>) -> Vec<u8> {
+        let encryption = user_password.map(Encryption::new);
+        let font = 3 + pages.len() * 2;
+        let kids: Vec<_> = (0..pages.len())
+            .map(|index| format!("{} 0 R", 3 + index * 2))
+            .collect();
+        let mut objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            format!(
+                "<< /Type /Pages /Count {} /Kids [{}] >>",
+                pages.len(),
+                kids.join(" ")
+            )
+            .into_bytes(),
+        ];
+        let numbers = |values: [u32; 4]| values.map(|value| value.to_string()).join(" ");
+        for (index, page) in pages.iter().enumerate() {
+            let crop_box = page
+                .crop_box
+                .map(|crop_box| format!(" /CropBox [{}]", numbers(crop_box)))
+                .unwrap_or_default();
+            objects.push(
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [{}]{crop_box} /Rotate {} /Resources << /Font << /F1 {font} 0 R >> >> /Contents {} 0 R >>",
+                    numbers(page.media_box),
+                    page.rotate,
+                    4 + index * 2
+                )
+                .into_bytes(),
+            );
+            let content = match &encryption {
+                Some(encryption) => encryption.encrypt(4 + index * 2, &page.content),
+                None => page.content.clone(),
+            };
+            let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+            stream.extend_from_slice(&content);
+            stream.extend_from_slice(b"\nendstream");
+            objects.push(stream);
+        }
+        objects.push(
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_vec(),
+        );
+        let identifier = hex(DOCUMENT_ID);
+        let mut trailer = format!("/ID [<{identifier}> <{identifier}>]");
+        if let Some(encryption) = &encryption {
+            objects.push(
+                format!(
+                    "<< /Filter /Standard /V 1 /R 2 /O <{}> /U <{}> /P {PERMISSIONS} >>",
+                    hex(&encryption.owner),
+                    hex(&encryption.user)
+                )
+                .into_bytes(),
+            );
+            trailer.push_str(&format!(" /Encrypt {} 0 R", objects.len()));
+        }
+        assemble(&objects, &trailer)
+    }
+
+    /// Numbers `objects` from 1, with object 1 as the catalog, and writes an
+    /// exact cross-reference table and a trailer carrying `trailer` entries.
+    pub(crate) fn assemble(objects: &[Vec<u8>], trailer: &str) -> Vec<u8> {
+        let mut output = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(output.len());
+            output.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            output.extend_from_slice(object);
+            output.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = output.len();
+        output.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            output.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        output.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R {trailer} >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        output
+    }
+
+    const DOCUMENT_ID: &[u8; 16] = b"GitTurtleFixture";
+    const PERMISSIONS: i32 = -4;
+    // ISO 32000-1, 7.6.3.3, Algorithm 2 step a.
+    const PADDING: [u8; 32] = [
+        0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01,
+        0x08, 0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53,
+        0x69, 0x7a,
+    ];
+
+    struct Encryption {
+        key: [u8; 5],
+        owner: Vec<u8>,
+        user: Vec<u8>,
+    }
+
+    impl Encryption {
+        /// Algorithms 2, 3 and 4 of ISO 32000-1 for revision 2.
+        fn new(user_password: &[u8]) -> Self {
+            let owner = rc4(&md5(&padded(b"owner"))[..5], &padded(user_password));
+            let mut input = padded(user_password).to_vec();
+            input.extend_from_slice(&owner);
+            input.extend_from_slice(&PERMISSIONS.to_le_bytes());
+            input.extend_from_slice(DOCUMENT_ID);
+            let mut key = [0; 5];
+            key.copy_from_slice(&md5(&input)[..5]);
+            let user = rc4(&key, &PADDING);
+            Self { key, owner, user }
+        }
+
+        /// Algorithm 1: RC4 with the object's own key (generation 0).
+        fn encrypt(&self, object: usize, data: &[u8]) -> Vec<u8> {
+            let mut input = self.key.to_vec();
+            input.extend_from_slice(&(object as u32).to_le_bytes()[..3]);
+            input.extend_from_slice(&[0, 0]);
+            rc4(&md5(&input)[..10], data)
+        }
+    }
+
+    fn padded(password: &[u8]) -> [u8; 32] {
+        let length = password.len().min(32);
+        let mut output = PADDING;
+        output[..length].copy_from_slice(&password[..length]);
+        output[length..].copy_from_slice(&PADDING[..32 - length]);
+        output
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut state: Vec<u8> = (0..=255).collect();
+        let mut j = 0u8;
+        for i in 0..256 {
+            j = j.wrapping_add(state[i]).wrapping_add(key[i % key.len()]);
+            state.swap(i, usize::from(j));
+        }
+        let (mut i, mut j) = (0u8, 0u8);
+        data.iter()
+            .map(|byte| {
+                i = i.wrapping_add(1);
+                j = j.wrapping_add(state[usize::from(i)]);
+                state.swap(usize::from(i), usize::from(j));
+                byte ^ state[usize::from(state[usize::from(i)].wrapping_add(state[usize::from(j)]))]
+            })
+            .collect()
+    }
+
+    /// RFC 1321.
+    fn md5(input: &[u8]) -> [u8; 16] {
+        const SHIFTS: [u32; 16] = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+        let constants: Vec<u32> = (0..64u32)
+            .map(|index| ((f64::from(index) + 1.).sin().abs() * 4_294_967_296.) as u32)
+            .collect();
+        let mut message = input.to_vec();
+        message.push(0x80);
+        while message.len() % 64 != 56 {
+            message.push(0);
+        }
+        message.extend_from_slice(&(input.len() as u64 * 8).to_le_bytes());
+        let mut state = [0x6745_2301u32, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+        for block in message.as_chunks::<64>().0 {
+            let words: Vec<u32> = block
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|word| u32::from_le_bytes(*word))
+                .collect();
+            let [mut a, mut b, mut c, mut d] = state;
+            for index in 0..64 {
+                let (mixed, word) = match index / 16 {
+                    0 => ((b & c) | (!b & d), index),
+                    1 => ((d & b) | (!d & c), (5 * index + 1) % 16),
+                    2 => (b ^ c ^ d, (3 * index + 5) % 16),
+                    _ => (c ^ (b | !d), (7 * index) % 16),
+                };
+                let sum = mixed
+                    .wrapping_add(a)
+                    .wrapping_add(constants[index])
+                    .wrapping_add(words[word]);
+                (a, d, c) = (d, c, b);
+                b = b.wrapping_add(sum.rotate_left(SHIFTS[index / 16 * 4 + index % 4]));
+            }
+            for (value, add) in state.iter_mut().zip([a, b, c, d]) {
+                *value = value.wrapping_add(add);
+            }
+        }
+        let mut output = [0; 16];
+        for (chunk, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+            *chunk = value.to_le_bytes();
+        }
+        output
+    }
+
+    #[test]
+    fn pdf_fixture_digests_match_their_specifications() {
+        assert_eq!(hex(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(
+            hex(&md5(b"The quick brown fox jumps over the lazy dog")),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
+        assert_eq!(hex(&rc4(b"Key", b"Plaintext")), "bbf316e8d940af0ad3");
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,11 @@ source URL, and checksum. Most use the archive's `.cargo_vcs_info.json` revision
 entries whose old revision lacked the text explicitly identify a later upstream
 snapshot. `hexf-parse` retains its declared CC0-1.0 terms using the standard text
 from a pinned SPDX license dataset revision, rather than substituting its later
-upstream ISC license. These records do not change dependency license terms.
+upstream ISC license. hayro's repository `NOTICE.md` (for `hayro-syntax` and
+`hayro-interpret`), `hayro-interpret`'s CMYK profile license and asset
+provenance, and the `alloc-no-stdlib` repository license that `alloc-stdlib`
+omits were captured on November 2, 2026 at the archives' recorded revisions.
+These records do not change dependency license terms.
 
 `assets/sources.json` records the same provenance for theme palettes, toolkit
 Lucide/Feather icons, the native ufbx library and the fonts Linux builds embed.
