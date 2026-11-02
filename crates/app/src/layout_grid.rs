@@ -205,17 +205,21 @@ fn panels(surface: Surface) -> &'static [Panel] {
 
 /// A deliberate offset from a panel's edge: a line of the panel may start
 /// `by` past it, at the interface size, for `reason`. An offset for no
-/// panel in particular holds in every panel; one for a panel holds in that
-/// panel of each of the surfaces it names.
+/// panel in particular holds in every panel; one for some holds only in the
+/// panels it names, each with its surface, which are the panels its reason
+/// lists.
 struct Offset {
-    panel: Option<(&'static [Surface], &'static str)>,
+    panel: Option<&'static [(Surface, &'static str)]>,
     by: fn() -> Pixels,
     #[allow(dead_code, reason = "read by people, as a follow-up is")]
     reason: &'static str,
 }
 
-/// The inspector's surfaces.
-const INSPECTORS: &[Surface] = &[Surface::History, Surface::Compare];
+/// The inspector, on each surface that draws it.
+const INSPECTOR: &[(Surface, &str)] = &[
+    (Surface::History, "inspector"),
+    (Surface::Compare, "inspector"),
+];
 
 const OFFSETS: &[Offset] = &[
     Offset {
@@ -229,64 +233,79 @@ const OFFSETS: &[Offset] = &[
         reason: "a field at the edge starts its text and placeholder past its border and padding",
     },
     Offset {
-        panel: None,
+        panel: Some(&[
+            (Surface::History, "inspector"),
+            (Surface::Compare, "inspector"),
+            (Surface::GitHubPanes, "GitHub panel"),
+        ]),
         by: || appearance::ui_size(crate::LABEL_INSET + 16. + 6.),
-        reason: "a compact Button at the edge whose 16 px icon leads its label, as the \
-                 inspector's Copy message does, starts its label past its label inset, the \
-                 icon and the 6 px gap",
+        reason: "a compact Button standing at the edge whose 16 px icon leads its label starts \
+                 its label past its label inset, the icon and the 6 px gap: the inspector's \
+                 Copy message, and in a bordered pane of the GitHub panel, whose Buttons stand \
+                 their frames at its text edge, Refresh conversations on a line of its own",
     },
     Offset {
-        panel: None,
+        panel: Some(&[
+            (Surface::History, "navigation"),
+            (Surface::History, "inspector"),
+            (Surface::Compare, "inspector"),
+            (Surface::Working, "working files"),
+            (Surface::ProjectPane, "project pane"),
+        ]),
         by: || px(15.) + appearance::ui_size(6.5),
         reason: "a row's or header's 15 px icon stands at the edge, its text after the 0.5 \
                  rem gap: History's branch and worktree rows, the inspector's Changed files \
-                 header, the project pane's projects",
+                 header, Working's Staged and Unstaged headings and the project pane's \
+                 projects; and the Changes header over Working's list, which shares the \
+                 filter's and the composer's inset, the list's 1 px margin and border before \
+                 the list's column, where the headings' icons and the file tiles stand inside \
+                 their rings' room, starts its label after its 17 px commit icon and the gap, \
+                 as far past the column",
     },
     Offset {
-        panel: None,
+        panel: Some(&[
+            (Surface::History, "inspector"),
+            (Surface::Compare, "inspector"),
+            (Surface::Working, "working files"),
+        ]),
         by: || px(26.) + appearance::ui_size(6.5),
         reason: "a changed file's 26 px status tile stands at the edge, its name and folder \
                  after the 0.5 rem gap, in the inspector and in Working Changes",
     },
     Offset {
-        panel: Some((&[Surface::History], "References column")),
+        panel: Some(&[(Surface::History, "References column")]),
         by: || appearance::ui_size(3.25),
         reason: "a reference's pill stands at the column's edge and pads its name 0.25 rem in",
     },
     Offset {
-        panel: Some((INSPECTORS, "inspector")),
+        panel: Some(INSPECTOR),
         by: || px(15.) + appearance::ui_size(6.5 + 4.875),
         reason: "where the Changed files label has left a narrow inspector, the count stands \
                  in its place after the header's 15 px icon and pads its figure 0.375 rem in",
     },
     Offset {
-        panel: Some((&[Surface::Working], "working files")),
-        by: || px(17. - 2.) + appearance::ui_size(6.5),
-        reason: "the Changes header shares the filter's and the composer's inset, the list's 1 \
-                 px margin and border before the list's column, where the headings' icons and \
-                 the file rows' tiles stand inside their rings' room, and starts its label after \
-                 its 17 px commit icon and the 0.5 rem gap",
-    },
-    Offset {
-        panel: Some((&[Surface::Working], "composer")),
+        panel: Some(&[(Surface::Working, "composer")]),
         by: || px(13.) + appearance::ui_size(4.875),
         reason: "the branch line's 13 px branch glyph stands at the edge, its name after \
                  the 0.375 rem gap",
     },
     Offset {
-        panel: Some((&[Surface::ProjectHub], "project action")),
+        panel: Some(&[(Surface::ProjectHub, "project action")]),
         by: || px(42.) + appearance::ui_size(9.75),
         reason: "the action's 42 px tile stands at the card's edge, its heading after the \
                  0.75 rem gap",
     },
     Offset {
-        panel: Some((&[Surface::ProjectHub], "project action")),
+        panel: Some(&[(Surface::ProjectHub, "project action")]),
         by: || px(16.) + appearance::ui_size(9.75),
         reason: "a feature's 16 px icon stands at the card's edge, its title and detail \
                  after the 0.75 rem gap",
     },
     Offset {
-        panel: Some((&[Surface::GitHub, Surface::GitHubPanes], "GitHub panel")),
+        panel: Some(&[
+            (Surface::GitHub, "GitHub panel"),
+            (Surface::GitHubPanes, "GitHub panel"),
+        ]),
         by: || appearance::ui_size(16. + 6.),
         reason: "a Button whose icon leads its label, as Pull requests, Refresh PRs and New \
                  pull request do, stands its 16 px icon at the text's edge, where its frame's \
@@ -563,9 +582,9 @@ fn inspect(
         let offsets: Vec<Pixels> = OFFSETS
             .iter()
             .filter(|offset| {
-                offset.panel.is_none_or(|(surfaces, name)| {
-                    surfaces.contains(&surface) && name == panel.name
-                })
+                offset
+                    .panel
+                    .is_none_or(|panels| panels.contains(&(surface, panel.name)))
             })
             .map(|offset| (offset.by)())
             .collect();
