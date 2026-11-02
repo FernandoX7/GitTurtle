@@ -789,7 +789,7 @@ async fn repository_dialogs_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCont
             "the rewrite review",
             interface,
             &mut failures,
-            |app, window, cx| app.open_rewrite_review(window, cx),
+            |app, window, cx| app.open_series_review(window, cx),
         )
         .await;
         walk_dialog(

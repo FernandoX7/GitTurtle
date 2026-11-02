@@ -1629,9 +1629,11 @@ impl Dialog {
                 })
                 .await
             }
+            // Through the review, whose series, read on its own thread,
+            // `open_dialog` waits for.
             Dialog::RewriteReview => {
                 open_dialog(app, cx, &name, |app, window, cx| {
-                    app.open_rewrite_review(window, cx)
+                    app.open_series_review(window, cx)
                 })
                 .await
             }

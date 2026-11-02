@@ -8,17 +8,50 @@ use gpui_kit::prelude::FluentBuilder;
 
 impl GitTurtle {
     pub(super) fn open_rewrite_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_series_review(window, cx);
+    }
+
+    /// Opens the rewritten series' review, as [`Self::open_rewrite_review`]
+    /// does, and returns it, which a test waits on for its read
+    /// (`focus_ring::sweep::Opened`).
+    pub(super) fn open_series_review(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<SeriesBrowser>> {
         if self.operation_busy.is_some() || self.page != AppPage::Repository {
-            return;
+            return None;
         }
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
+        let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let remote = self.remote_name.read(cx).value().trim().to_owned();
         let branch = self.remote_branch.read(cx).value().trim().to_owned();
         let form = cx.new(|cx| SeriesBrowser::new(owner, repo, remote, branch, window, cx));
-        open_series_dialog(form, window, cx);
+        open_series_dialog(form.clone(), window, cx);
+        Some(form)
+    }
+}
+
+/// The focus sweep (`focus_ring::sweep`) walks the rewritten series' review,
+/// and the width walk (`width_walk`) reads it, once its series has been
+/// read. The read runs on the review's own thread, which neither
+/// `run_until_parked` nor the drain of the app's executor waits for: a walk
+/// that began while it ran read "Reading captured local history…" with
+/// Refresh series disabled, which the reply then replaced.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<SeriesBrowser>> {
+    fn finish(self, cx: &mut gpui::VisualTestContext) {
+        let Some(review) = self else {
+            return;
+        };
+        // Every read the review submitted has answered once its thread
+        // drains, and the reply lands on this thread when it next runs.
+        review.read_with(cx, |review, _| review.metadata.drain());
+        cx.executor().run_until_parked();
+        assert!(
+            review.read_with(cx, |review, _| !review.pending),
+            "the rewritten series' read lands"
+        );
     }
 }
 
@@ -44,7 +77,7 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
     });
 }
 
-struct SeriesBrowser {
+pub(crate) struct SeriesBrowser {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     metadata: SerialExecutor,
