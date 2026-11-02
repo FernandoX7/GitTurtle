@@ -222,7 +222,7 @@ thread_local! {
 /// What a cut error line's tooltip shows of `report`: its first
 /// [`ERROR_TOOLTIP_LINES`] lines, within [`ERROR_TOOLTIP_BYTES`], with an
 /// ellipsis where more follows; the line's accessible value keeps the rest.
-fn error_tooltip(report: &str) -> SharedString {
+pub(crate) fn error_tooltip(report: &str) -> SharedString {
     let mut lines = report.lines();
     let mut shown = lines
         .by_ref()

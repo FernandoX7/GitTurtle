@@ -2204,16 +2204,18 @@ const ACCESSIBLE_TEXT_BYTES: usize = 16 * 1024;
 
 /// `text` as an accessible name or value carries it: whole up to 16 KiB,
 /// otherwise cut between characters to end in an ellipsis within that
-/// bound. Text it borrows is copied only as far as it keeps it, and text it
-/// owns is kept without a copy. A failure's report, which Git's output can
-/// make megabytes long, or a model's details would otherwise reach
-/// assistive technology whole in every frame that draws them.
+/// bound. Text it borrows is copied only as far as it keeps it, once, into
+/// the shared string itself; made an owned string first, every frame that
+/// drew a borrowed status line copied it twice. A failure's report, which
+/// Git's output can make megabytes long, or a model's details would
+/// otherwise reach assistive technology whole in every frame that draws
+/// them.
 pub(crate) fn bounded_accessible_text<'a>(
     text: impl Into<std::borrow::Cow<'a, str>>,
 ) -> SharedString {
     let text = text.into();
     if text.len() <= ACCESSIBLE_TEXT_BYTES {
-        return SharedString::from(text.into_owned());
+        return SharedString::from(text);
     }
     let end = text.floor_char_boundary(ACCESSIBLE_TEXT_BYTES - '…'.len_utf8());
     format!("{}…", &text[..end]).into()

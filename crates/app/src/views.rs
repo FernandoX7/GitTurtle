@@ -6596,8 +6596,9 @@ thread_local! {
     static STATUS_OUTCOME: StatusLineWidths = const { RefCell::new(Measured::new()) };
     /// The status line's whole text where it has no parts, measured where
     /// spare keyboard hints ask whether it keeps it
-    /// (`GitTurtle::fit_status_bar`), for each text, font, size and scale
-    /// factor drawn lately, so windows drawn in turn keep their own, as
+    /// (`GitTurtle::fit_status_bar`) or a hover whether it is drawn whole
+    /// (`whole_status_width`), for each text, font, size and scale factor
+    /// drawn lately, so windows drawn in turn keep their own, as
     /// [`STATUS_WIDTHS`] does. One slot, shared by every window, measured
     /// each window's line again on the other's frames while Keyboard
     /// Shortcuts was open in both.
@@ -6605,8 +6606,8 @@ thread_local! {
     /// The laid-out widths of the status line's leading whole parts, each
     /// with the byte where it ends, and its whole width (`status_parts_end`),
     /// kept for each text, font, size and scale factor drawn lately, as
-    /// [`STATUS_TEXT`] keeps a text's without parts; the spare hints read a
-    /// text's whole width with parts here.
+    /// [`STATUS_TEXT`] keeps a text's without parts; the spare hints and a
+    /// hover read a text's whole width with parts here.
     static STATUS_PARTS: StatusPartWidths = const { RefCell::new(Measured::new()) };
     /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
     /// drawn lately, so the windows, pages and text sizes drawn in turn keep
@@ -7085,6 +7086,9 @@ thread_local! {
     /// How many times a fresh outcome was measured ([`STATUS_OUTCOME`]),
     /// for a test.
     static STATUS_OUTCOME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// What the status line's tooltip last showed
+    /// (`GitTurtle::render_status_line`), for a test.
+    static STATUS_TOOLTIP: RefCell<Option<SharedString>> = const { RefCell::new(None) };
 }
 
 /// Widths of status line texts, by text, line key and scale factor
@@ -7172,6 +7176,34 @@ impl StatusParts {
     /// each separator it holds.
     fn ends_in(&self, text: &str) -> Option<&[usize]> {
         (self.text == text).then_some(self.ends.as_slice())
+    }
+}
+
+/// How the latest frame that drew the status line laid it out
+/// (`GitTurtle::render_status_line`): the text it says, the width and text
+/// size it laid that text out at, whether its fit dropped a part, and so
+/// whether the line is shortened, decided as that frame prepainted the
+/// line, in the line's own text style, as a dialog's error line decides
+/// (`tags::error_line`). Kept together, so a hover never pairs one frame's
+/// text with another's width, and decided again only when one of them
+/// changes, so a steady frame measures nothing; the text's width itself is
+/// kept for each text drawn lately (`whole_status_width`).
+struct StatusLaidOut {
+    text: SharedString,
+    width: Pixels,
+    size: Pixels,
+    dropped: bool,
+    cut: bool,
+}
+
+impl StatusLaidOut {
+    /// Whether this is `text` laid out `width` wide at `size`, a part of it
+    /// dropped where `dropped`.
+    fn is(&self, text: &str, width: Pixels, size: Pixels, dropped: bool) -> bool {
+        self.width == width
+            && self.size == size
+            && self.dropped == dropped
+            && self.text.as_ref() == text
     }
 }
 
@@ -7946,6 +7978,104 @@ impl GitTurtle {
         self.status_parts = parts;
     }
 
+    /// The status line, `line`, drawing the status text as `fit` keeps it
+    /// ([`Self::status_line_text`]), its accessible value the whole text.
+    /// Where the line drops a part or ends in an ellipsis, a hover shows the
+    /// whole text in the app's tooltip, after the shared tooltip delay; a
+    /// line drawn whole has none, as a whole label has none. The tooltip
+    /// shows the text's first lines, within the bound a dialog's error line
+    /// keeps (`tags::error_tooltip`), since a read's error can carry Git's
+    /// whole report. Whether the line is shortened is decided as each frame
+    /// lays it out, its text, width and text size together
+    /// ([`StatusLaidOut`]), and the tooltip, asked for as a hover's delay
+    /// ends, shows what the latest frame decided, with that frame's text: a
+    /// status that changes, or a resize, during the delay is answered for
+    /// the line drawn last. Decided from the frame the hover began in, it
+    /// showed the old text, or a tooltip for a line drawn whole since. A
+    /// tooltip already shown keeps its text until the pointer leaves the
+    /// line, as macOS keeps one, and the next hover shows the new text. The
+    /// rule is the error lines': a person who reads the shortened line can
+    /// still read all of it, and nothing drawn moves.
+    fn render_status_line(
+        &self,
+        line: Div,
+        fit: &StatusFit,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> native_accessibility::StaticText<Stateful<Div>> {
+        let whole = native_accessibility::bounded_accessible_text(self.status_text());
+        // The whole text is drawn where no part gives way, without a copy
+        // of its own.
+        let drawn = match fit.parts {
+            Some(_) => SharedString::from(self.status_line_text(fit).to_owned()),
+            None => whole.clone(),
+        };
+        // How the line was laid out last, which its prepaint records, kept
+        // across frames so the hover a frame began reads the latest.
+        let laid_out = window
+            .use_keyed_state(ElementId::from("status-line/laid-out"), cx, |_, _| {
+                std::rc::Rc::new(std::cell::RefCell::new(None::<StatusLaidOut>))
+            })
+            .read(cx)
+            .clone();
+        let recorded = laid_out.clone();
+        let dropped = fit.parts.is_some();
+        let text = whole.clone();
+        native_accessibility::static_text(
+            line.on_children_prepainted(move |bounds, window, _| {
+                // The size the bar draws the line at and `whole_status_width`
+                // measures it at, read without the window's text style, which
+                // builds a default style, an allocation, at every read: a
+                // steady frame reads nothing more. A miss measures inside the
+                // line's own text style, so its font measures it.
+                let size = crate::appearance::ui_text(10.);
+                let mut laid = recorded.borrow_mut();
+                let Some(width) = bounds.first().map(|line| line.size.width) else {
+                    *laid = None;
+                    return;
+                };
+                if !laid
+                    .as_ref()
+                    .is_some_and(|laid| laid.is(&text, width, size, dropped))
+                {
+                    *laid = Some(StatusLaidOut {
+                        // A dropped part or a line after the first is never
+                        // drawn, and a text wider than its line ends in an
+                        // ellipsis.
+                        cut: dropped
+                            || text.contains('\n')
+                            || whole_status_width(&text, window) > width,
+                        text: text.clone(),
+                        width,
+                        size,
+                        dropped,
+                    });
+                }
+            })
+            .id("status-line")
+            .truncate()
+            .tooltip(move |window, cx| {
+                let shown = laid_out
+                    .borrow()
+                    .as_ref()
+                    .filter(|laid| laid.cut)
+                    .map(|laid| crate::tags::error_tooltip(&laid.text));
+                match shown {
+                    Some(shown) => {
+                        #[cfg(test)]
+                        STATUS_TOOLTIP.with_borrow_mut(|last| *last = Some(shown.clone()));
+                        gpui_kit::component::tooltip::Tooltip::new(shown).build(window, cx)
+                    }
+                    // Nothing to add to a whole line: an empty view, drawn
+                    // as nothing.
+                    None => cx.new(|_| gpui::EmptyView).into(),
+                }
+            })
+            .child(drawn),
+            whole,
+        )
+    }
+
     /// The status line's text as the status bar draws it
     /// ([`Self::status_line_text`]).
     #[cfg(test)]
@@ -8326,8 +8456,9 @@ impl Render for GitTurtle {
                                         .min_w(side)
                                         .px(crate::appearance::ui_size(2.))
                                         .h(watch_control_height(cx))
-                                })),
-                            None => line.truncate().child(self.status_line_text(&status).to_owned()),
+                                }))
+                                .into_any_element(),
+                            None => self.render_status_line(line, &status, window, cx).into_any_element(),
                         }
                     })
                     .when(watch_warning, |footer| {
@@ -16391,6 +16522,240 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A status line that drops a part or ends in an ellipsis reads whole to
+    /// assistive technology and on hover, as a dialog's cut error line does:
+    /// at 18 pt in Compare in a 461 × 490 half tile, "1 changed file ·
+    /// content read 12.3 ms" draws "1 changed file", and "Reached the end of
+    /// this captured history", with no parts, ends in an ellipsis; each is
+    /// the line's accessible value whole, and a hover shows it whole in the
+    /// app's tooltip once the shared delay has passed. In 1,000 × 680 each
+    /// is drawn whole, and a hover shows no tooltip. A dropped part left no
+    /// sign that more was there, and the line had no accessible text.
+    #[gpui::test]
+    async fn a_shortened_status_line_reads_whole_and_on_hover(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::hovered_tooltips;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let weight = cx.update(|window, _| window.text_style().font_weight);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (status, shortened) in [
+            ("1 changed file · content read 12.3 ms", "1 changed file"),
+            ("Reached the end of this captured history", ""),
+        ] {
+            app.update(cx, |app, cx| {
+                app.status = status.into();
+                cx.notify();
+            });
+            for (width, height) in [(461., 490.), (1000., 680.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                written::forget();
+                draw(cx);
+                let at = format!("{status:?} at 18 pt in Compare in {width} × {height}");
+                let drawn = cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.status_line_drawn(window, cx))
+                });
+                let line = cx.debug_bounds("status-line").expect("the status line");
+                let need = cx.update(|window, _| {
+                    shaped_width(&drawn, appearance::ui_text(10.), weight, window)
+                });
+                let whole = width == 1000.;
+                if whole {
+                    assert!(
+                        drawn == status && need <= line.size.width,
+                        "{at}: drawn whole, {drawn:?} {need:?} in {line:?}"
+                    );
+                } else if shortened.is_empty() {
+                    assert!(
+                        drawn == status && need > line.size.width,
+                        "{at}: ends in an ellipsis, {drawn:?} {need:?} in {line:?}"
+                    );
+                } else {
+                    assert_eq!(drawn, shortened, "{at}: drops its timing");
+                }
+                let value = written::get("status-line")
+                    .and_then(|line| line.node.value().map(str::to_owned));
+                assert_eq!(value.as_deref(), Some(status), "{at}: its accessible value");
+                assert_eq!(
+                    hovered_tooltips(cx, "status-line"),
+                    usize::from(!whole),
+                    "{at}: a tooltip only where it is shortened"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A hover's tooltip on the status line answers for the frame drawn
+    /// last, its text, width and text size together, whatever changed
+    /// during the hover's delay: at 18 pt in Compare in a 461 × 490 half
+    /// tile, "1 changed file · content read 12.3 ms" draws "1 changed file"
+    /// and a hover shows it whole; "2 changed files · content read 4.5 ms"
+    /// taking its place during the delay, the hover shows the new text;
+    /// "Ready", drawn whole, taking its place, none; and resized in one step
+    /// to 1,000 × 490 during the delay, where the line is whole, none. A
+    /// tooltip already shown keeps its text through a status change until
+    /// the pointer leaves the line. Decided from the frame the hover began
+    /// in, the tooltip showed the old text, or one for a line drawn whole.
+    #[gpui::test]
+    async fn a_status_change_during_the_hover_delay_is_answered_by_the_frame_drawn_last(
+        cx: &mut TestAppContext,
+    ) {
+        const DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let set = |cx: &mut VisualTestContext, status: &str| {
+            app.update(cx, |app, cx| {
+                app.status = status.into();
+                cx.notify();
+            });
+            draw(cx);
+        };
+        let (first, second) = (
+            "1 changed file · content read 12.3 ms",
+            "2 changed files · content read 4.5 ms",
+        );
+        set(cx, first);
+        let line = cx.debug_bounds("status-line").expect("the status line");
+        let rest = point(line.left() + px(20.), line.center().y);
+        // A resize reads the pointer's place from the platform, which the
+        // test platform puts at the window's corner, so before the resize's
+        // frame draws the pointer is put back where it rests, as the
+        // desktop reports it (`tags::tests`, the error lines' hover).
+        let rests = std::rc::Rc::new(std::cell::Cell::new(None::<Point<Pixels>>));
+        let _kept = cx.update(|window, cx| {
+            let rests = rests.clone();
+            let watcher = cx.new(|_| ());
+            let observing = watcher.update(cx, |_, cx| {
+                cx.observe_window_bounds(window, move |_, window, cx| {
+                    if let Some(position) = rests.get() {
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                position,
+                                modifiers: Modifiers::default(),
+                                pressed_button: None,
+                            }),
+                            cx,
+                        );
+                    }
+                })
+            });
+            (watcher, observing)
+        });
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        // The popover fills the frame paints: the page's own, and a tooltip.
+        let popups = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .count() as isize
+            })
+        };
+        // What the tooltip shows once a hover's delay has passed, `change`
+        // made as the pointer has come to rest on the line, and the popover
+        // fills painted then; `leave` moves the pointer off until the
+        // tooltip has gone, and gives the fills painted then.
+        let hover = |cx: &mut VisualTestContext, change: &dyn Fn(&mut VisualTestContext)| {
+            STATUS_TOOLTIP.take();
+            rests.set(Some(rest));
+            cx.simulate_mouse_move(rest, None, Modifiers::default());
+            change(cx);
+            cx.executor().advance_clock(DELAY);
+            cx.run_until_parked();
+            draw(cx);
+            (STATUS_TOOLTIP.take(), popups(cx))
+        };
+        let leave = |cx: &mut VisualTestContext| {
+            rests.set(None);
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(DELAY);
+            cx.run_until_parked();
+            draw(cx);
+            popups(cx)
+        };
+        let shown = |text: &str| Some(SharedString::from(text.to_owned()));
+
+        let (tooltip, painted) = hover(cx, &|_| ());
+        assert_eq!(tooltip, shown(first), "cut, its tooltip shows it whole");
+        // Shown, it keeps its text until the pointer leaves.
+        set(cx, second);
+        assert_eq!(
+            (STATUS_TOOLTIP.take(), popups(cx)),
+            (None, painted),
+            "a shown tooltip stays as shown through a status change"
+        );
+        assert_eq!(
+            painted - leave(cx),
+            1,
+            "one tooltip, gone once the pointer leaves"
+        );
+        set(cx, first);
+        let (tooltip, painted) = hover(cx, &|cx| set(cx, second));
+        assert_eq!(
+            tooltip,
+            shown(second),
+            "changed during the delay, the new text"
+        );
+        assert_eq!(painted - leave(cx), 1, "its one tooltip");
+        let (tooltip, painted) = hover(cx, &|cx| set(cx, "Ready"));
+        assert_eq!(
+            (tooltip, painted - leave(cx)),
+            (None, 0),
+            "whole once changed during the delay, none"
+        );
+        set(cx, first);
+        let (tooltip, painted) = hover(cx, &|cx| cx.simulate_resize(size(px(1000.), px(490.))));
+        assert_eq!(
+            (tooltip, painted - leave(cx)),
+            (None, 0),
+            "whole once resized during the delay, none"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The status line's tooltip shows a long text's first lines within the
+    /// bound a dialog's error line keeps (`tags::error_tooltip`): a read's
+    /// error of forty lines, as Git's stderr can make it, in History at 13
+    /// pt in 1,000 × 680, shows its first twelve, the last ending in an
+    /// ellipsis, while its accessible value keeps it whole. Unbounded, the
+    /// tooltip had no height of its own to keep and ran past the window.
+    #[gpui::test]
+    async fn a_long_status_error_shows_its_first_lines_on_hover(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::hovered_tooltips;
+        let (_fixture, app, cx) = history_window(cx).await;
+        let report = (1..=40)
+            .map(|line| format!("fatal: line {line} of the read's report"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.update(cx, |app, cx| {
+            app.error = Some(report.clone());
+            cx.notify();
+        });
+        written::forget();
+        draw(cx);
+        let value =
+            written::get("status-line").and_then(|line| line.node.value().map(str::to_owned));
+        assert_eq!(value.as_deref(), Some(report.as_str()), "its whole text");
+        STATUS_TOOLTIP.take();
+        assert_eq!(hovered_tooltips(cx, "status-line"), 1, "its tooltip");
+        let shown = STATUS_TOOLTIP.take().expect("the tooltip's text");
+        assert_eq!(shown.lines().count(), 12, "{shown:?}");
+        assert!(
+            shown.starts_with("fatal: line 1 of")
+                && shown.ends_with("line 12 of the read's report…"),
+            "{shown:?}"
+        );
+    }
+
     /// The status line gives way only where its parts end, never inside a
     /// part from user text: with a repository cloned into a folder whose
     /// path holds " · " itself, at 13 pt in History at every fourth width
@@ -16833,8 +17198,11 @@ pub(crate) mod tests {
         assert_eq!(paging(cx), (0, page + 20, None), "after Older");
         // Only the new count is laid out, and the status line's new text,
         // once, for the whole parts the status bar keeps of it
-        // (`status_part_widths`).
-        assert_eq!(layouts(), before + 2, "after Older");
+        // (`status_part_widths`), and "Reading older history…", which has
+        // no parts, once, for whether its line ends in an ellipsis and so
+        // shows its tooltip (`StatusLaidOut`); the new text drops a part,
+        // which decides that without a layout.
+        assert_eq!(layouts(), before + 3, "after Older");
         // Latest reads current history again and shows its newest rows.
         click(cx, "history-newest");
         settle(&app, cx).await;
