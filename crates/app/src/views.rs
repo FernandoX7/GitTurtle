@@ -6594,17 +6594,19 @@ thread_local! {
     /// windows, each with its own outcome, measure theirs again on each
     /// other's frames.
     static STATUS_OUTCOME: StatusLineWidths = const { RefCell::new(Measured::new()) };
-    /// The status line's whole text, measured where spare keyboard hints
-    /// ask whether it keeps it (`GitTurtle::fit_status_bar`), for each
-    /// text, font, size and scale factor drawn lately, so windows drawn in
-    /// turn keep their own, as [`STATUS_WIDTHS`] does. One slot, shared by
-    /// every window, measured each window's line again on the other's
-    /// frames while Keyboard Shortcuts was open in both.
+    /// The status line's whole text where it has no parts, measured where
+    /// spare keyboard hints ask whether it keeps it
+    /// (`GitTurtle::fit_status_bar`), for each text, font, size and scale
+    /// factor drawn lately, so windows drawn in turn keep their own, as
+    /// [`STATUS_WIDTHS`] does. One slot, shared by every window, measured
+    /// each window's line again on the other's frames while Keyboard
+    /// Shortcuts was open in both.
     static STATUS_TEXT: StatusLineWidths = const { RefCell::new(Measured::new()) };
     /// The laid-out widths of the status line's leading whole parts, each
     /// with the byte where it ends, and its whole width (`status_parts_end`),
     /// kept for each text, font, size and scale factor drawn lately, as
-    /// [`STATUS_TEXT`] keeps the whole width the spare hints ask for.
+    /// [`STATUS_TEXT`] keeps a text's without parts; the spare hints read a
+    /// text's whole width with parts here.
     static STATUS_PARTS: StatusPartWidths = const { RefCell::new(Measured::new()) };
     /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
     /// drawn lately, so the windows, pages and text sizes drawn in turn keep
@@ -7116,8 +7118,17 @@ fn status_line_width(
     })
 }
 
-/// The status line's whole `text` as it is laid out ([`STATUS_TEXT`]).
+/// The status line's whole `text` as it is laid out: for a text with parts
+/// ([`STATUS_SEPARATOR`]), the last of the widths its parts are read from
+/// ([`STATUS_PARTS`]), which the line's fitting lays it out for anyway;
+/// for another, its own layout ([`STATUS_TEXT`]). Each laid out a text with
+/// parts once more where spare hints asked for its whole width.
 fn whole_status_width(text: &str, window: &Window) -> Pixels {
+    if text.contains(STATUS_SEPARATOR) {
+        return status_parts(text, window, |widths| {
+            widths.last().map_or(px(0.), |(_, width)| *width)
+        });
+    }
     status_line_width(&STATUS_TEXT, text, window, || {
         #[cfg(test)]
         STATUS_TEXT_MEASURED.with(|measured| measured.set(measured.get() + 1));
@@ -7141,15 +7152,7 @@ fn status_parts_end(text: &str, room: Pixels, window: &Window) -> Option<usize> 
     if !text.contains(STATUS_SEPARATOR) {
         return None;
     }
-    let (line, scale) = (LineKey::current(window), window.scale_factor().to_bits());
-    STATUS_PARTS.with_borrow_mut(|cache| {
-        let widths = cache.get_where(
-            |(kept, kept_scale, kept_text)| {
-                *kept == line && *kept_scale == scale && kept_text == text
-            },
-            || (line.clone(), scale, text.to_owned()),
-            |_| status_part_widths(text, window),
-        );
+    status_parts(text, window, |widths| {
         let (whole, leading) = widths.split_last()?;
         (whole.1 > room).then(|| {
             leading
@@ -7159,6 +7162,22 @@ fn status_parts_end(text: &str, room: Pixels, window: &Window) -> Option<usize> 
                 .or(leading.first())
                 .map_or(whole.0, |(end, _)| *end)
         })
+    })
+}
+
+/// `read` of the laid-out widths of `text`'s parts ([`status_part_widths`]),
+/// kept for each text, font, size and scale factor drawn lately
+/// ([`STATUS_PARTS`]).
+fn status_parts<T>(text: &str, window: &Window, read: impl FnOnce(&[(usize, Pixels)]) -> T) -> T {
+    let (line, scale) = (LineKey::current(window), window.scale_factor().to_bits());
+    STATUS_PARTS.with_borrow_mut(|cache| {
+        read(cache.get_where(
+            |(kept, kept_scale, kept_text)| {
+                *kept == line && *kept_scale == scale && kept_text == text
+            },
+            || (line.clone(), scale, text.to_owned()),
+            |_| status_part_widths(text, window),
+        ))
     })
 }
 

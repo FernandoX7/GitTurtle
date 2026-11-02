@@ -3100,7 +3100,10 @@ mod list_tests {
     /// lines once each: at 13 pt in a 1480 × 980 window, two lines drawn in
     /// turn three times are measured twice in all, and each keeps the spare
     /// hints beside it. One slot, shared by every window, measured each line
-    /// again whenever the other had been drawn.
+    /// again whenever the other had been drawn. A line with parts is never
+    /// measured whole on its own: its whole width is the last of those its
+    /// parts are read from, one layout of it (`views::status_part_widths`);
+    /// measured on its own as well, it was laid out twice.
     #[gpui::test]
     async fn two_status_lines_drawn_in_turn_are_measured_once_each(cx: &mut TestAppContext) {
         use crate::views::STATUS_TEXT_MEASURED;
@@ -3111,7 +3114,11 @@ mod list_tests {
         let keys = DialogKeys::Shortcuts.key_hints();
         let before = STATUS_TEXT_MEASURED.with(std::cell::Cell::get);
         for _ in 0..3 {
-            for line in ["Up to date with origin", "2 commits ahead of origin"] {
+            for line in [
+                "Up to date with origin",
+                "2 commits ahead of origin",
+                "Up to date with origin · nothing new",
+            ] {
                 app.update(cx, |app, cx| {
                     app.status = line.into();
                     cx.notify();
