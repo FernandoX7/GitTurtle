@@ -44,6 +44,11 @@ pub struct Snapshot {
     /// An explicit Open whose branch or worktree scope no longer resolves
     /// reads All history instead and names the vanished scope here once.
     pub vanished_scope: Option<VanishedScope>,
+    /// Whether the repository may be shallow, which a quiet read finds out:
+    /// deepening it outside the app gives commits new parents, and can bring
+    /// new rows, while every reference and the page stay as they were. Only
+    /// a quiet read's snapshot reads it, and one that cannot says `true`.
+    pub shallow: bool,
 }
 
 /// Every commit's references as History shows them, prepared with the
@@ -1266,7 +1271,7 @@ fn execute(
                     cancellation,
                     session,
                 ) {
-                    Ok(snapshot) => Ok(QuietHistory::Refreshed(snapshot)),
+                    Ok(snapshot) => Ok(QuietHistory::Refreshed(worker_shallow(snapshot, &repo))),
                     Err(error) => {
                         cancellation.check()?;
                         // A zero-row unscoped snapshot reads current navigation
@@ -1588,7 +1593,15 @@ fn read_snapshot(
         refs,
         elapsed: start.elapsed(),
         vanished_scope,
+        shallow: false,
     })
+}
+
+/// `snapshot` with whether `repo` is shallow, `true` where that cannot be
+/// read, as the landing then draws whatever it installs.
+fn worker_shallow(mut snapshot: Snapshot, repo: &GitRepository) -> Snapshot {
+    snapshot.shallow = repo.is_shallow().unwrap_or(true);
+    snapshot
 }
 
 /// Each commit's references in Git's order, HEAD's branch first, then its

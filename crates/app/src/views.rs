@@ -13650,6 +13650,47 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
     }
 
+    /// A followed History tab of a shallow repository draws each rescan's
+    /// page as it is shown again, though the page is the one shown: a fetch
+    /// that deepens it outside the app gives commits new parents, and can
+    /// bring rows in, while every reference, the page and its length stay as
+    /// they were, so its page never counts as the same, and the return draws
+    /// a frame for its own rescan and one for the watcher's.
+    #[gpui::test]
+    async fn a_shallow_history_tab_draws_its_rescan_whatever_it_finds(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let origin = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clones = tempfile::tempdir().unwrap();
+        open_clone(&app, clones.path(), "full", cx).await;
+        let url = format!("file://{}", origin.display());
+        fixture_git(
+            clones.path(),
+            &["clone", "--quiet", "--depth", "5", url.as_str(), "shallow"],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(clones.path().join("shallow"), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        land_every_reply(&app, cx);
+        assert_eq!(app.read_with(cx, |app, _| app.commits.len()), 5);
+        switch_and_land(&app, 1, cx);
+        crate::in_frame::probe::watch();
+        let installed = app.read_with(cx, |app, _| app.history_updates.installed);
+        assert_eq!(
+            switch_and_land(&app, 2, cx),
+            3,
+            "the switch's frame, and one for each rescan: the return's and the watcher's"
+        );
+        assert_ne!(
+            app.read_with(cx, |app, _| app.history_updates.installed),
+            installed,
+            "a shallow page counts as differing"
+        );
+        crate::in_frame::probe::stop();
+    }
+
     /// A reply a warm tab's return asks for that brings something the tab
     /// does not show draws it, in one frame of its own beside the switch's,
     /// while the tab keeps its place: of the first tab's repository, changed

@@ -240,6 +240,13 @@ impl GitRepository {
         Ok((absolute(private)?, absolute(common)?))
     }
 
+    /// Whether the repository is shallow, its history cut at grafted
+    /// boundaries that a fetch can deepen without moving any reference.
+    pub fn is_shallow(&self) -> Result<bool> {
+        let bytes = run_git(&self.path, &["rev-parse", "--is-shallow-repository"])?;
+        Ok(trim_line(&bytes) == b"true")
+    }
+
     pub fn branches(&self) -> Result<Vec<Branch>> {
         let bytes = run_git(
             &self.path,

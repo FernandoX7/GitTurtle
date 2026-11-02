@@ -274,8 +274,12 @@ impl GitTurtle {
         // Commits are immutable, so the same pinned tips read from the same
         // place give the same rows and graph: only a history that differs
         // from the one shown counts as installed, which the landing draws.
+        // A shallow repository's is never the same: deepened outside the
+        // app, its commits take new parents, and rows can come and go, with
+        // the tips, the page and its length as they were.
         let retained = usize::from(self.automatic.retained_commit.is_some());
-        let same = !matches!(snapshot.history_scope, HistoryScope::AllRefs)
+        let same = !snapshot.shallow
+            && !matches!(snapshot.history_scope, HistoryScope::AllRefs)
             && self.history_paging.scope.as_ref() == Some(&snapshot.history_scope)
             && self.history_paging.offset == snapshot.history_offset
             && self.history_paging.next_offset == snapshot.history_next_offset
@@ -614,6 +618,7 @@ mod tests {
             refs: Default::default(),
             elapsed: std::time::Duration::ZERO,
             vanished_scope: None,
+            shallow: false,
             commits,
         };
         crate::views::tests::init_app(cx);
