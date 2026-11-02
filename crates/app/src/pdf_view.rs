@@ -32,9 +32,26 @@ const PREPARING: &str = "Preparing the page…";
 /// The link's readings, independent and linked.
 const LINK_READINGS: [&str; 2] = ["Independent pages", "Linked pages"];
 
+/// The serialized lane that prepares every page after a side's first. Each
+/// test thread has a lane of its own, so a test's pages never wait behind
+/// other tests' pages or meet a bounded queue they filled: one lane for the
+/// whole test process, held by one test's slow helper, filled with other
+/// tests' requests and refused the next as busy ("Background executor is
+/// busy or unavailable"), failing tests that waited for their page.
 fn renderer() -> &'static SerialExecutor {
-    static RENDERER: OnceLock<SerialExecutor> = OnceLock::new();
-    RENDERER.get_or_init(|| SerialExecutor::new("gitturtle-pdf-pages"))
+    #[cfg(not(test))]
+    {
+        static RENDERER: OnceLock<SerialExecutor> = OnceLock::new();
+        RENDERER.get_or_init(|| SerialExecutor::new("gitturtle-pdf-pages"))
+    }
+    #[cfg(test)]
+    {
+        thread_local! {
+            static RENDERER: &'static SerialExecutor =
+                Box::leak(Box::new(SerialExecutor::new("gitturtle-pdf-pages")));
+        }
+        RENDERER.with(|renderer| *renderer)
+    }
 }
 
 #[derive(Default)]
@@ -1065,6 +1082,20 @@ pub(crate) mod tests {
         );
     }
 
+    /// Each test thread prepares its pages on a lane of its own
+    /// ([`renderer`]) and keeps it, so a test never meets a queue that tests
+    /// running beside it filled. With one lane for the process, the 20-seed
+    /// GPUI runs of this module failed two runs in six, each time a
+    /// different test whose page was refused as busy.
+    #[test]
+    fn each_test_thread_has_its_own_page_lane() {
+        let lane = || renderer() as *const SerialExecutor as usize;
+        let here = lane();
+        let there = std::thread::spawn(lane).join().unwrap();
+        assert_ne!(here, there, "another thread has another lane");
+        assert_eq!(here, lane(), "a thread keeps its lane");
+    }
+
     #[test]
     fn cache_promotes_revisited_pages_and_evicts_oldest() {
         let mut cache = Cache::default();
@@ -1643,9 +1674,9 @@ pub(crate) mod tests {
                     // of whose second page is then being prepared: its
                     // request is pending, as the page lane holds it while
                     // a slow helper works. The states are set here rather
-                    // than by helpers that block the page lane, which every
-                    // test in the process shares: held while bounds were
-                    // read, it refused other tests' pages as busy.
+                    // than by helpers that block the page lane: once one
+                    // lane for the whole test process, held while bounds
+                    // were read, it refused other tests' pages as busy.
                     documents[0].select(1, Some(&documents[1]));
                     for document in &documents {
                         document.state.lock().unwrap().pending = true;
@@ -1785,8 +1816,8 @@ pub(crate) mod tests {
         #[gpui::test]
         fn the_zooms_are_one_run_that_moves_whole(cx: &mut gpui_kit::TestAppContext) {
             let (content, document) = before_only(&pdf("the zooms are one run"), 3, 0);
-            // Drawn with its pages prepared, so the page lane, which every
-            // test in the process shares, is never asked for one.
+            // Drawn with its pages prepared, so the page lane is never
+            // asked for one.
             document
                 .state
                 .lock()
@@ -1846,8 +1877,8 @@ pub(crate) mod tests {
         #[gpui::test]
         fn a_side_s_heading_gives_way_rather_than_be_cut(cx: &mut gpui_kit::TestAppContext) {
             let (content, document) = before_only(&pdf("a side's heading"), 3, 0);
-            // Drawn with its pages prepared, so the page lane, which every
-            // test in the process shares, is never asked for one.
+            // Drawn with its pages prepared, so the page lane is never
+            // asked for one.
             document
                 .state
                 .lock()
@@ -1933,8 +1964,7 @@ pub(crate) mod tests {
 
         /// `document` shows page `number` (counted from 0), prepared, as it
         /// is once Next or the page field brings it and it arrives, so the
-        /// page lane, which every test in the process shares, is never asked
-        /// for one.
+        /// page lane is never asked for one.
         fn show(document: &Document, number: usize) {
             document.select(number, None);
             let mut state = document.state.lock().unwrap();
@@ -2071,8 +2101,8 @@ pub(crate) mod tests {
         ) {
             let (content, document) = before_only(&pdf("Read page text while preparing"), 3, 1);
             // The page is being prepared, as the page lane holds its request
-            // while a slow helper works; set here, so the lane, which every
-            // test in the process shares, is never asked for it.
+            // while a slow helper works; set here, so the lane is never
+            // asked for it.
             document.state.lock().unwrap().pending = true;
             let (view, cx) = window(cx, content);
             let name = format!("Before: read extracted text from page 2 · {PREPARING}");
@@ -2176,8 +2206,8 @@ pub(crate) mod tests {
         #[gpui::test]
         fn the_page_number_typed_replaces_the_current_one(cx: &mut gpui_kit::TestAppContext) {
             let (content, document) = before_only(&pdf("a page number typed"), 12, 3);
-            // Drawn with its pages prepared, so the page lane, which every
-            // test in the process shares, is never asked for one.
+            // Drawn with its pages prepared, so the page lane is never
+            // asked for one.
             document
                 .state
                 .lock()
