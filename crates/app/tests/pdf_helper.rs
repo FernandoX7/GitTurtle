@@ -587,13 +587,39 @@ mod helper {
             .unwrap_or_else(|| panic!("no {name} in\n{status}"))
     }
 
-    /// `/proc/<pid>/status` once the helper has installed its filter, the
-    /// last step before it reads.
-    fn confined_status(pid: u32) -> String {
+    /// How many seccomp filters confine a process, from its `status`.
+    fn filters(status: &str) -> u32 {
+        field(status, "Seccomp_filters").parse().unwrap()
+    }
+
+    /// The filters this test thread runs under, which every process it
+    /// starts inherits: none on a desktop, one under Docker's default
+    /// profile (every process of a `container:` CI job) or Flatpak's.
+    /// Filters belong to a thread, and the helper is forked from this one.
+    fn own_filters() -> u32 {
+        filters(&fs::read_to_string("/proc/thread-self/status").unwrap())
+    }
+
+    /// Whether a process whose `status` this is, started under `inherited`
+    /// filters, has installed a filter of its own.
+    ///
+    /// The count is relative because `Seccomp: 2` only says some filter is
+    /// in place: under an outer filter the helper reads 2 from its first
+    /// instruction, before it names itself or confines anything, and a wait
+    /// for 2 returned there on Arch CI. The helper's filter is always the
+    /// last one added, so one filter more than it inherited means its own.
+    fn confined(status: &str, inherited: u32) -> bool {
+        field(status, "Seccomp") == "2" && filters(status) > inherited
+    }
+
+    /// `/proc/<pid>/status` once the helper has installed its own filter,
+    /// the last step before it reads, on top of the `inherited` filters it
+    /// started under.
+    fn confined_status(pid: u32, inherited: u32) -> String {
         let started = Instant::now();
         loop {
             let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-            if field(&status, "Seccomp") == "2" {
+            if confined(&status, inherited) {
                 return status;
             }
             assert!(
@@ -630,22 +656,108 @@ mod helper {
 
     #[test]
     fn a_confined_helper_round_trips_a_page() {
-        let mut command = helper(&own_pid());
-        // SAFETY: only signal calls between fork and exec, after std has
-        // reset the mask; both survive exec, so the helper must undo them.
+        round_trip_a_page(|| Ok(()), 0);
+    }
+
+    /// Flatpak, and Docker's default profile for every process of a
+    /// `container:` job, start the app under a seccomp filter of their own,
+    /// which the helper inherits: it reads `Seccomp: 2` before it confines
+    /// itself, so its confinement is told by its own filter's count.
+    #[test]
+    fn a_helper_started_under_an_outer_filter_round_trips_a_page() {
+        round_trip_a_page(allow_every_call, 1);
+    }
+
+    /// A process an outer filter started reads `Seccomp: 2` holding only
+    /// the filters it inherited, as the helper does until it confines
+    /// itself: that is not confinement, and one filter more is. The status
+    /// is a real one, of a `cat` waiting on its input under
+    /// [`allow_every_call`], so this does not race the helper's setup.
+    #[test]
+    fn only_a_filter_of_its_own_counts_as_confinement() {
+        let inherited = own_filters();
+        let mut command = Command::new("/bin/cat");
+        command
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // SAFETY: only `allow_every_call` between fork and exec.
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(allow_every_call);
+        }
+        // `spawn` returns once `cat` has replaced the child: the filter is
+        // in place and `cat` adds none.
+        let mut child = command.spawn().unwrap();
+        let status = fs::read_to_string(format!("/proc/{}/status", child.id())).unwrap();
+        drop(child.stdin.take());
+        assert_eq!(child.wait().unwrap().code(), Some(0));
+        assert_eq!(field(&status, "Seccomp"), "2");
+        assert_eq!(filters(&status), inherited + 1);
+        assert!(
+            !confined(&status, inherited + 1),
+            "an outer filter alone is not the helper's own:\n{status}"
+        );
+        assert!(
+            confined(&status, inherited),
+            "one filter more than inherited is:\n{status}"
+        );
+    }
+
+    /// Installs a filter that allows every call, as a sandbox does before it
+    /// starts the app. Runs between fork and exec: two `prctl` calls on a
+    /// program on this stack, and no allocation.
+    fn allow_every_call() -> io::Result<()> {
+        let mut allow = [libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        }];
+        let program = libc::sock_fprog {
+            len: 1,
+            filter: allow.as_mut_ptr(),
+        };
+        // SAFETY: a process flag, then a pointer to one initialized
+        // instruction that outlives the call; the kernel copies it.
+        let installed = unsafe {
+            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0, 0, 0) == 0
+                && libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER as libc::c_ulong,
+                    &program as *const libc::sock_fprog,
+                ) == 0
+        };
+        if installed {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Starts the helper with every signal blocked and SIGALRM and SIGXCPU
+    /// ignored, after `outer`, which adds `outer_filters` seccomp filters,
+    /// has run in the child; checks each confinement step once its own
+    /// filter is in place, then renders a page through it.
+    fn round_trip_a_page(outer: fn() -> io::Result<()>, outer_filters: u32) {
+        let inherited = own_filters() + outer_filters;
+        let mut command = helper(&own_pid());
+        // SAFETY: only signal calls and `outer`'s between fork and exec,
+        // after std has reset the mask; the signal changes survive exec, so
+        // the helper must undo them.
+        unsafe {
+            command.pre_exec(move || {
                 let mut every: libc::sigset_t = std::mem::zeroed();
                 libc::signal(libc::SIGALRM, libc::SIG_IGN);
                 libc::signal(libc::SIGXCPU, libc::SIG_IGN);
                 libc::sigfillset(&mut every);
                 libc::sigprocmask(libc::SIG_SETMASK, &every, std::ptr::null_mut());
-                Ok(())
+                outer()
             });
         }
         let mut child = command.spawn().unwrap();
         let pid = child.id();
-        let status = confined_status(pid);
+        let status = confined_status(pid, inherited);
         assert_eq!(field(&status, "Name"), "gitturtle-pdf");
         assert_eq!(field(&status, "NoNewPrivs"), "1");
         assert_eq!(field(&status, "Threads"), "1");
@@ -773,7 +885,7 @@ mod helper {
         assert!(started.elapsed() < Duration::from_secs(1));
         // The helper closed them itself: it still waits on stdin.
         assert!(child.try_wait().unwrap().is_none());
-        confined_status(child.id());
+        confined_status(child.id(), own_filters());
         child.kill().unwrap();
         child.wait().unwrap();
     }
@@ -799,7 +911,7 @@ mod helper {
             .read_line(&mut line)
             .unwrap();
         let helper: u32 = line.trim().parse().unwrap();
-        confined_status(helper);
+        confined_status(helper, own_filters());
         // The helper keeps waiting on this input: only its parent's death
         // can end it.
         let input = shell.stdin.take();
