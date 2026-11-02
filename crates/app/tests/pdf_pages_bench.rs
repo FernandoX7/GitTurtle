@@ -9,8 +9,11 @@
 //! file. Each fixture's first, middle and last page is requested
 //! `GITTURTLE_PDF_BENCH_RUNS` times (default 20) from a new helper, as the app
 //! does, both through an instrumented exchange that times every phase and
-//! reads the helper's peak memory from `wait4`, and through the app's own
-//! client for the whole request. The helper's start, its `VmSize` once it is
+//! through the app's own client for the whole request. The helper's own peak
+//! resident memory, its `VmHWM`, is read from `/proc` in untimed requests of
+//! their own, while the helper waits in its reply's write (`wait4`'s
+//! `ru_maxrss` is no measure: the helper carries this process's high-water
+//! mark across its `exec`). The helper's start, its `VmSize` once it is
 //! confined, and the time from a kill to the reap are measured apart. The
 //! JSON goes to the file named by `GITTURTLE_PDF_BENCH_OUT`. It names each
 //! fixture by its file name in that directory and the executable by its file
@@ -34,6 +37,7 @@ mod pdf_helper;
 
 use std::fs;
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -110,25 +114,13 @@ fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Reaps `child` with `wait4` (which `Child::wait` cannot do and still
-/// report usage), returning its peak resident set in KiB and
-/// whether it exited 0.
-fn reap(child: Child) -> (i64, bool) {
-    let mut status = 0;
-    // SAFETY: zeroed plain data the kernel fills.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    let pid = child.id() as libc::pid_t;
-    // SAFETY: waits for this test's own child, which nothing else reaps.
-    let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
-    assert_eq!(reaped, pid, "the helper is reaped");
-    (
-        usage.ru_maxrss,
-        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-    )
+/// Reaps `child`, returning whether it exited 0.
+fn reap(mut child: Child) -> bool {
+    child.wait().expect("the helper is reaped").success()
 }
 
 /// One request through an instrumented exchange: blocking pipes, each phase
-/// timed from this side, the helper's own phase timings, and its peak memory.
+/// timed from this side, and the helper's own phase timings.
 fn instrumented(pdf: &[u8], page: usize) -> Value {
     let header = encode_request(page, pdf).expect("a request");
     let started = Instant::now();
@@ -149,7 +141,7 @@ fn instrumented(pdf: &[u8], page: usize) -> Value {
         .map(|()| started.elapsed());
     drop(input);
     let (reply, read) = reader.join().expect("the reader");
-    let (maxrss_kib, exited) = reap(child);
+    let exited = reap(child);
     let request = started.elapsed();
     let read = read - started;
     // Each phase on its own: the spawn; writing the request, which a request
@@ -162,7 +154,6 @@ fn instrumented(pdf: &[u8], page: usize) -> Value {
         "reap_us": micros(request.saturating_sub(read)),
         "request_us": micros(request),
         "reply_bytes": reply.len(),
-        "maxrss_kib": maxrss_kib,
         "exited_0": exited,
     });
     match read_reply(reply.as_slice()) {
@@ -269,6 +260,56 @@ fn kill_at_work(pdf: &[u8], page: usize) -> u64 {
     micros(killed.elapsed())
 }
 
+/// Requests per page whose helper's peak is read.
+const PEAK_RUNS: usize = 5;
+/// How long a helper may take to begin its reply: past its own 12-second
+/// alarm, which ends it.
+const PEAK_WAIT: Duration = Duration::from_secs(20);
+
+/// The helper's own peak resident set in KiB, its `VmHWM`, for one request.
+/// Its reply's pipe holds a single page and nothing reads it until the peak
+/// is read, so a helper whose reply has begun, its work and every allocation
+/// for it done, waits in its write for as long as the reply is larger than
+/// that page: a page's pixels always are. `None` where the helper ends
+/// first, as a failure's short reply lets it.
+fn peak_kib(pdf: &[u8], page: usize) -> Option<u64> {
+    let header = encode_request(page, pdf).expect("a request");
+    let mut child = spawn();
+    let mut input = child.stdin.take().expect("stdin");
+    let mut output = child.stdout.take().expect("stdout");
+    let reply = output.as_raw_fd();
+    // SAFETY: resizes a pipe this process holds, still empty, to the least
+    // the kernel allows, one page.
+    let resized = unsafe { libc::fcntl(reply, libc::F_SETPIPE_SZ, 1) };
+    assert!(resized > 0, "the reply pipe holds one page");
+    // The helper reads the whole request before it replies.
+    let _ = input.write_all(&header).and_then(|()| input.write_all(pdf));
+    drop(input);
+    let path = format!("/proc/{}/status", child.id());
+    let started = Instant::now();
+    let peak = loop {
+        let mut queued: libc::c_int = 0;
+        // SAFETY: FIONREAD writes the count of bytes in the pipe to the int.
+        let replying =
+            unsafe { libc::ioctl(reply, libc::FIONREAD, &mut queued) } == 0 && queued > 0;
+        // Read once the reply has begun, the status holds the helper's peak;
+        // an ended helper's has no `VmHWM`.
+        let peak = status_value(&fs::read_to_string(&path).unwrap_or_default(), "VmHWM:");
+        if replying || peak.is_none() {
+            break peak.filter(|_| replying);
+        }
+        if started.elapsed() > PEAK_WAIT {
+            let _ = child.kill();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    // No further than one byte past the largest reply the client accepts.
+    let _ = read_bounded(&mut output, MAX_REPLY_BYTES);
+    let _ = reap(child);
+    peak
+}
+
 /// p50, p95 and max of each numeric `metric` over `runs`.
 fn summary(runs: &[Value], metrics: &[&str]) -> Value {
     let mut summary = serde_json::Map::new();
@@ -303,7 +344,6 @@ const RUN_METRICS: &[&str] = &[
     "overhead_us",
     "start_transfer_parse_us",
     "request_us",
-    "maxrss_kib",
 ];
 
 /// A PDF of `objects`, numbered from 1 in order; object 1 is the catalog.
@@ -531,6 +571,9 @@ fn measure_pdf_pages_through_the_helper() {
             let client: Vec<Value> = (0..runs)
                 .map(|_| through_client(pdf, page, &slots))
                 .collect();
+            let peaks: Vec<Value> = (0..PEAK_RUNS)
+                .map(|_| json!({ "vm_hwm_kib": peak_kib(pdf, page) }))
+                .collect();
             pages.push(json!({
                 "page": page,
                 "first": measured[0],
@@ -539,6 +582,8 @@ fn measure_pdf_pages_through_the_helper() {
                 "client_warm": summary(&client[1..], &["request_us"]),
                 "errors": measured.iter().filter_map(|run| run["error"].as_str()).chain(client.iter().filter_map(|run| run["error"].as_str())).collect::<Vec<_>>(),
                 "kill_to_reap_at_work_us": kill_at_work(pdf, page),
+                // `n` counts the requests whose peak was read.
+                "helper_peak": summary(&peaks, &["vm_hwm_kib"]),
             }));
         }
         records.push(json!({
@@ -689,4 +734,24 @@ fn the_executable_is_read_within_its_limit() {
     assert_eq!(within["name"], json!("gitturtle"), "{within}");
     assert_eq!(within["source_tree"], json!(TREE), "{within}");
     assert!(["clean", "modified", "unknown"].contains(&TREE), "{TREE}");
+}
+
+/// The peak recorded is the helper's own: while this process holds 256 MiB,
+/// a one-page document's helper peaks at a fraction of it. `wait4`'s
+/// `ru_maxrss`, recorded before, was at least this process's high-water
+/// mark, which the helper carries across its `exec`.
+#[test]
+fn the_helpers_peak_is_its_own() {
+    // Written, so every page of it is resident.
+    let ballast = std::hint::black_box(vec![1_u8; 256 << 20]);
+    let pdf = document(
+        vec![b"BT /F1 12 Tf 30 800 Td (One page) Tj ET".to_vec()],
+        vec![None],
+    );
+    let peak = peak_kib(&pdf, 0).expect("the helper's peak, read in its reply's write");
+    assert!(
+        (1..128 << 10).contains(&peak),
+        "the helper peaked at {peak} KiB"
+    );
+    drop(ballast);
 }
