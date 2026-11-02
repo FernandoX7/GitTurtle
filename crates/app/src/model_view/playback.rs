@@ -160,7 +160,11 @@ fn toggle(documents: &[Arc<Document>]) {
         }
     }
 }
-fn choose_clip(document: &Arc<Document>, partner: Option<&Arc<Document>>, clip: Option<usize>) {
+pub(super) fn choose_clip(
+    document: &Arc<Document>,
+    partner: Option<&Arc<Document>>,
+    clip: Option<usize>,
+) {
     {
         let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
         state.playback.pose.clip =
@@ -433,7 +437,7 @@ fn scrubber<T: 'static>(
     let increment = documents.to_vec();
     let decrement = documents.to_vec();
     let fraction = (seconds / total).clamp(0., 1.) as f32;
-    div().id("model-timeline").min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
+    div().id("model-timeline").debug_selector(|| "model-timeline".into()).min_w(px(120.)).w(px(210.)).h(px(22.)).relative().cursor(CursorStyle::PointingHand)
         .track_focus(&focus).tab_stop(true).role(Role::Slider).aria_label("Model animation time in seconds").aria_description("Left and right seek one thirtieth second; Home and End seek to the beginning and end. Seeking pauses playback.")
         .aria_numeric_value(seconds).aria_min_numeric_value(0.).aria_max_numeric_value(total).aria_numeric_value_step(1. / FPS)
         // Kept while the pointer moves, as the canvas's ring is.

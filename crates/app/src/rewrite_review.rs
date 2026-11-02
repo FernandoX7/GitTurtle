@@ -940,6 +940,75 @@ mod tests {
         );
     }
 
+    /// A model the series review shows, an inspected commit's 3D file,
+    /// focused from the keyboard keeps its canvas's accent ring while the
+    /// pointer moves over it and away, at 13 pt in a 1,480 × 980 window, as
+    /// Compare's does: the review's opener carries the window's focus ring
+    /// (`Opener::ringed_by`), which the canvas asks.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_inspected_models_canvas_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let model = |scale: &str| format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n");
+        let shape = repo.path().join("shape.obj");
+        for (scale, message) in [("1", "Add a model"), ("2", "Grow it")] {
+            std::fs::write(&shape, model(scale)).unwrap();
+            git(repo.path(), &["add", "shape.obj"]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files;
+                browser.file(0, window, cx);
+            })
+        });
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            draw(cx);
+            if cx.debug_bounds("model-canvas-1").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        crate::focus_ring::sweep::prepare(&app, cx);
+        crate::model_view::tests::assert_the_canvas_keeps_its_ring(
+            cx,
+            "model-canvas-1",
+            "the series review",
+        );
+    }
+
     /// An inspected document's comparison takes its open controls' form
     /// from its box's width in the frame it is drawn ([`crate::in_frame`]):
     /// every frame drawn as the window narrows and widens between 461 and

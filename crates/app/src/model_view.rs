@@ -1626,6 +1626,42 @@ pub(crate) mod tests {
         assert_the_canvas_keeps_its_ring(cx, "model-canvas-1", "Compare");
     }
 
+    /// The animation timeline of a model in Compare, an animated GLB with a
+    /// clip chosen, focused from the keyboard keeps its accent ring while the
+    /// pointer moves over it and away, as the canvas does: Compare's opener
+    /// carries the window's focus ring (`Opener::ringed_by`), which the
+    /// timeline asks.
+    #[gpui::test]
+    async fn a_focused_models_timeline_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let glb =
+            include_bytes!("../../preview/tests/fixtures/models/glb/workflow/morph-animation.glb");
+        let mut input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 6\nmodel\nM 100644 inline morph.glb\ndata {}\n",
+            glb.len()
+        )
+        .into_bytes();
+        input.extend_from_slice(glb);
+        input.extend_from_slice(b"\ndone\n");
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(cx, &input).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let documents = app.read_with(cx, |app, _| match app.content.as_deref() {
+            Some(Content::Rich(comparison)) => [&comparison.old, &comparison.new]
+                .into_iter()
+                .filter_map(|side| side.model.clone())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+        let (model, partner) = documents.split_first().expect("Compare holds the model");
+        playback::choose_clip(model, partner.first(), Some(0));
+        app.update(cx, |_, cx| cx.notify());
+        crate::width_walk::frame(cx);
+        assert_the_canvas_keeps_its_ring(cx, "model-timeline", "Compare's timeline");
+    }
+
     /// The model canvas `selector` names, which `at` draws, focused by a
     /// click draws its plain edge, marked by a key the accent ring, and
     /// keeps the ring while the pointer moves over it and away
