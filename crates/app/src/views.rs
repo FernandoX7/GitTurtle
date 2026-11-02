@@ -12315,6 +12315,15 @@ pub(crate) mod tests {
         );
     }
 
+    /// The frames that laid the repository page's columns out since the last
+    /// call, one each, while [`crate::in_frame::probe`] watches.
+    fn repository_frames() -> usize {
+        crate::in_frame::probe::take()
+            .iter()
+            .filter(|frame| frame.region == "repository-columns")
+            .count()
+    }
+
     /// Asserts the last frame drew `row`'s graph node inside its graph cell,
     /// among the lanes History shows: the selected commit's 10 px node, as
     /// [`narrowing_history_keeps_the_selected_row_and_lane_in_view`] reads it.
@@ -12352,6 +12361,42 @@ pub(crate) mod tests {
             })
         });
         assert!(drawn, "{at}: row {row}'s node is drawn in its graph cell {graph:?}");
+    }
+
+    /// Narrowing History from 980 px to a 461 × 490 half tile, where narrow
+    /// History's graph holds one lane, draws the selected commit's lane in
+    /// the one frame the step draws, at 13 and 18 pt: the side commit, on
+    /// the second lane, which the wider graph showed from its first. History
+    /// reveals the lane as it takes the new width, before its header and
+    /// rows are built ([`GitTurtle::take_history_width`]).
+    #[gpui::test]
+    async fn narrowing_history_draws_the_selected_lane_in_the_step_frame(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        crate::in_frame::probe::watch();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(980.), px(490.)));
+            draw(cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(side, window, cx)));
+            settle(&app, cx).await;
+            draw(cx);
+            cx.update(|_, cx| app.update(cx, |app, _| app.graph_offset = 0));
+            draw(cx);
+            assert_lane_shown(&app, side, cx, &format!("{text} pt at 980 × 490"));
+            let held = quiet_reader(&app, cx).await;
+            repository_frames();
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.run_until_parked();
+            let at = format!("{text} pt narrowed to 461 × 490");
+            assert_eq!(repository_frames(), 1, "{at}: the step draws one frame");
+            assert_lane_shown(&app, side, cx, &at);
+            drop(held);
+        }
+        crate::in_frame::probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A warm tab shown again at a width the window took while another tab
