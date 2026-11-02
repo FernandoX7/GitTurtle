@@ -12127,8 +12127,8 @@ pub(crate) mod tests {
                 cx.update(|window, cx| {
                     app.update(cx, |app, cx| app.select_file(index, window, cx))
                 });
-                settle(&app, cx).await;
             }
+            settle(&app, cx).await;
             let panels = app.read_with(cx, |app, _| app.content_panels.clone());
             cx.update(|window, cx| {
                 panels.update(cx, |panels, cx| {
@@ -12137,13 +12137,16 @@ pub(crate) mod tests {
             });
             draw(cx);
             frames();
+            // The step's frames as the window asks for them: the resize, the
+            // update it ends drawing the frame and every frame its effects
+            // ask for, and then the frame callbacks it left, with what they
+            // draw. Neither waits for the window's reads on other threads,
+            // whose answers draw content, not the step.
             cx.simulate_resize(to);
-            cx.run_until_parked();
             assert_eq!(frames(), 1, "{at}: the step draws one frame");
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
             });
-            cx.run_until_parked();
             assert_eq!(frames(), 0, "{at}: the step asks for no further frame");
             let step = step_layout(&app, path.is_none(), cx);
             // As a window opened at this width with these panels: History's
