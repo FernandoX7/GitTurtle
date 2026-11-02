@@ -15452,7 +15452,10 @@ pub(crate) mod tests {
     /// compact chrome comes where they would not leave it. With labels
     /// measured to whole pixels alone, as a whole scale factor lays them out,
     /// a 71 px Menu was drawn 71⅓ px wide at 1.5 and a tab predicted whole
-    /// beside a label was cut.
+    /// beside a label was cut. The strip holds two tabs, each at its 220 px
+    /// cap: one tab beside Workspaces' label fits from 425 device pixels at
+    /// 13 pt and 1x in macOS's strip, which holds no Menu, below every body
+    /// walked, so hosted macOS 15 crossed no breakpoint there.
     #[gpui::test]
     async fn the_tab_strip_and_the_chrome_fit_the_body_they_are_drawn_in(cx: &mut TestAppContext) {
         use std::collections::BTreeSet;
@@ -15487,10 +15490,27 @@ pub(crate) mod tests {
             cx.update(|window, _| window.pixel_snap(appearance::ui_size(base)))
         };
         let path = app.read_with(cx, |app, _| app.path.clone().expect("the repository"));
-        let name = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
-            let path = path.clone();
+        // A second tab beside the first, which stays active, so the tabs need
+        // the room that puts a breakpoint of each text size inside the bodies
+        // walked whether or not Menu stands in the strip.
+        let other = tempfile::tempdir().unwrap();
+        let second = fixture_repository(other.path().join("second"));
+        cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.project_names.insert(path, name.into());
+                app.open_repository_tab(second.path().to_owned(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let paths = [path.clone(), second.path().to_owned()];
+        let name = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            let paths = paths.clone();
+            app.update(cx, |app, cx| {
+                for path in paths {
+                    app.project_names.insert(path, name.into());
+                }
                 cx.notify();
             });
         };
@@ -15530,7 +15550,7 @@ pub(crate) mod tests {
             for text in [13, 18] {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 step(wide, tall, cx);
-                let breakpoints: BTreeSet<u32> = cx.update(|window, cx| {
+                let fits: Vec<u32> = cx.update(|window, cx| {
                     let app = app.read(cx);
                     let (body, whole) = (body_size(window).width, app.tabs_whole_width(window));
                     let actions = app.tab_strip_labelled_actions(window);
@@ -15540,9 +15560,13 @@ pub(crate) mod tests {
                             body + whole - app.tab_list_room(*labels, actions, window, cx)
                         })
                         .map(|fits| (f32::from(fits) * scale).ceil() as u32)
-                        .filter(|device| (narrowest..widest).contains(device))
                         .collect()
                 });
+                let breakpoints: BTreeSet<u32> = fits
+                    .iter()
+                    .copied()
+                    .filter(|device| (narrowest..widest).contains(device))
+                    .collect();
                 let mut seen = BTreeSet::new();
                 let mut walked = std::collections::BTreeMap::new();
                 for breakpoint in breakpoints {
@@ -15607,7 +15631,9 @@ pub(crate) mod tests {
                 }
                 assert!(
                     seen.len() > 1,
-                    "{text} pt at {scale}x crosses a breakpoint: {seen:?}"
+                    "{text} pt at {scale}x crosses a breakpoint: its forms fit from {fits:?} \
+                     device pixels, the bodies walked span {narrowest}..{widest}, and it drew \
+                     {seen:?}"
                 );
                 // From the narrowest body walked to the widest, each label
                 // changes once at most: none comes back after giving way.
