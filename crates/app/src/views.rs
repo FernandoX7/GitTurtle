@@ -213,35 +213,78 @@ impl GitTurtle {
     /// device pixels. Their whole text stays the heading's accessible name
     /// and its tooltip ([`Self::repository_heading`]). Kept for each text,
     /// room, font, size and scale factor drawn lately, so a steady frame
-    /// shapes nothing. (Decided 2026-11-02: both ended in an ellipsis,
+    /// shapes nothing; it finds what it kept by what the texts are made of,
+    /// borrowed, so it allocates nothing either: built as owned strings to
+    /// look up, the name and the path line were two allocations a frame.
+    /// (Decided 2026-11-02: both ended in an ellipsis,
     /// "/tmp/gitturtle-evi…" and "sysprev…" for "sysprev-mod", cutting
     /// what told two tabs apart.)
-    fn shown_identity(&self, room: Pixels, window: &Window) -> (SharedString, SharedString) {
-        let key = (
-            LineKey::current(window),
-            window.scale_factor().to_bits(),
-            f32::from(room).to_bits(),
-            self.repository_name(),
-            self.repository_path_line(),
-        );
-        HEADER_IDENTITY.with_borrow_mut(|cache| {
+    fn shown_identity(&self, room: Pixels, window: &Window) -> ShownIdentity {
+        #[cfg(test)]
+        let before = crate::test_support::allocations();
+        let line = LineKey::current(window);
+        let (scale, room_bits) = (window.scale_factor().to_bits(), f32::from(room).to_bits());
+        let repository = self.repository.as_ref().map(|repo| repo.path());
+        let named = repository
+            .and_then(|path| self.project_names.get(path))
+            .map(String::as_str);
+        let path = self.path.as_deref();
+        let shown = HEADER_IDENTITY.with_borrow_mut(|cache| {
             cache
-                .get(key, |(_, _, _, name, path)| {
-                    let width = |size: f32, weight: FontWeight| {
-                        move |text: &str| {
-                            laid_out_text_width(
-                                shaped_width(text, appearance::ui_text(size), weight, window),
-                                window,
+                .get_where(
+                    |kept| {
+                        kept.line == line
+                            && kept.scale == scale
+                            && kept.room == room_bits
+                            && kept.repository.as_deref() == repository
+                            && kept.named.as_deref() == named
+                            && kept.path.as_deref() == path
+                    },
+                    || IdentityKey {
+                        line: line.clone(),
+                        scale,
+                        room: room_bits,
+                        repository: repository.map(std::path::Path::to_path_buf),
+                        named: named.map(str::to_owned),
+                        path: path.map(std::path::Path::to_path_buf),
+                    },
+                    |_| {
+                        #[cfg(test)]
+                        IDENTITY_LOOKUPS.with(|counted| {
+                            let (lookups, measured, allocations) = counted.get();
+                            counted.set((lookups, measured + 1, allocations));
+                        });
+                        let width = |size: f32, weight: FontWeight| {
+                            move |text: &str| {
+                                laid_out_text_width(
+                                    shaped_width(text, appearance::ui_text(size), weight, window),
+                                    window,
+                                )
+                            }
+                        };
+                        let whole = self.repository_name();
+                        let name = name_middle(&whole, room, &width(14., FontWeight::SEMIBOLD));
+                        ShownIdentity {
+                            name_elided: name != whole,
+                            name: name.into(),
+                            path: path_tail(
+                                &self.repository_path_line(),
+                                room,
+                                width(11., FontWeight::NORMAL),
                             )
+                            .into(),
                         }
-                    };
-                    (
-                        name_middle(name, room, &width(14., FontWeight::SEMIBOLD)).into(),
-                        path_tail(path, room, width(11., FontWeight::NORMAL)).into(),
-                    )
-                })
+                    },
+                )
                 .clone()
-        })
+        });
+        #[cfg(test)]
+        IDENTITY_LOOKUPS.with(|counted| {
+            let (lookups, measured, allocations) = counted.get();
+            let made = crate::test_support::allocations() - before;
+            counted.set((lookups + 1, measured, allocations + made));
+        });
+        shown
     }
 
     /// The header's repository identity, named with its path for assistive
@@ -463,8 +506,11 @@ impl GitTurtle {
         // The name alone, elided in its middle to its room, which it then
         // takes whole, as the end-elided name did, so the toggles after it
         // stand where they stood.
-        let (shown, _) = self.shown_identity(name, window);
-        let elided = shown.as_ref() != self.repository_name();
+        let ShownIdentity {
+            name: shown,
+            name_elided: elided,
+            ..
+        } = self.shown_identity(name, window);
         #[cfg(test)]
         HEADER_SHOWN
             .with(|kept| *kept.borrow_mut() = Some((shown.clone(), SharedString::default())));
@@ -673,7 +719,8 @@ impl GitTurtle {
         let plan = plan.unwrap_or_else(|| self.header_plan(chrome, window));
         // Each line inside the identity, short of the pixel its own middle
         // elision keeps as a guard ([`ellipsis_middle`]).
-        let (name, path) = self.shown_identity(plan.identity - px(ELLIPSIS_SLACK), window);
+        let ShownIdentity { name, path, .. } =
+            self.shown_identity(plan.identity - px(ELLIPSIS_SLACK), window);
         #[cfg(test)]
         HEADER_SHOWN.with(|shown| *shown.borrow_mut() = Some((name.clone(), path.clone())));
         let (trailing, slot) = plan.full.unwrap_or((Trailing::Shared, false));
@@ -4243,10 +4290,31 @@ thread_local! {
     /// The header's repository name and path as they show in their room
     /// (`GitTurtle::shown_identity`), for each text, room, font, size and
     /// scale factor drawn lately.
-    #[allow(clippy::type_complexity)]
-    static HEADER_IDENTITY: RefCell<
-        Measured<(LineKey, u32, u32, String, String), (SharedString, SharedString)>,
-    > = const { RefCell::new(Measured::new()) };
+    static HEADER_IDENTITY: RefCell<Measured<IdentityKey, ShownIdentity>> =
+        const { RefCell::new(Measured::new()) };
+}
+
+/// What the header's repository name and path were measured from
+/// (`GitTurtle::shown_identity`): the line's font and size, the scale
+/// factor and the room, with the repository, the name it was given, if
+/// any, and the path line's path, of which the texts are made.
+#[derive(PartialEq)]
+struct IdentityKey {
+    line: LineKey,
+    scale: u32,
+    room: u32,
+    repository: Option<PathBuf>,
+    named: Option<String>,
+    path: Option<PathBuf>,
+}
+
+/// The header's repository name and path as they show in their room
+/// (`GitTurtle::shown_identity`), and whether the name was elided there.
+#[derive(Clone)]
+struct ShownIdentity {
+    name: SharedString,
+    path: SharedString,
+    name_elided: bool,
 }
 
 /// How the full header lays out its trailing controls: Projects (or History
@@ -6932,6 +7000,11 @@ thread_local! {
     /// drawn (`GitTurtle::shown_identity`); the compact row shows no path.
     pub(crate) static HEADER_SHOWN: RefCell<Option<(SharedString, SharedString)>> =
         const { RefCell::new(None) };
+    /// How many times the header's identity was looked up, how many of
+    /// those measured it, and what the lookups allocated
+    /// (`GitTurtle::shown_identity`).
+    static IDENTITY_LOOKUPS: std::cell::Cell<(usize, usize, u64)> =
+        const { std::cell::Cell::new((0, 0, 0)) };
     /// What Compare's path showed in the last frame drawn and its whole
     /// accessible name (`path_tail`).
     pub(crate) static COMPARE_PATH_SHOWN: RefCell<Option<(SharedString, SharedString)>> =
@@ -22037,6 +22110,82 @@ pub(crate) mod tests {
         assert!(
             seen.0 && seen.1,
             "the walk elides the name and the path: {seen:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A frame drawn again with nothing changed finds the header's name and
+    /// path where they were kept, measuring nothing and allocating nothing
+    /// to find them, in 461 × 490 and 1000 × 680 windows at 13 and 18 pt,
+    /// the compact row (18 pt in the narrower) and the full header; a new
+    /// name for the project is measured once and shows. Looked up by the
+    /// name and the path line built as owned strings, a steady frame made
+    /// two allocations to find what it had kept.
+    #[gpui::test]
+    async fn a_steady_frame_finds_the_headers_identity_without_measuring_or_allocating(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture_repository(fixture.path().join("steady"));
+        git(
+            repo.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "First"],
+        );
+        let (app, cx) = window(cx, &repo);
+        let path = app.read_with(cx, |app, _| app.path.clone().expect("the repository"));
+        let drawn = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            IDENTITY_LOOKUPS.get()
+        };
+        let frame = |cx: &mut VisualTestContext| {
+            IDENTITY_LOOKUPS.set((0, 0, 0));
+            drawn(cx)
+        };
+        let mut rows = Vec::new();
+        for (width, height) in [(461., 490.), (1000., 680.)] {
+            for text in [13, 18] {
+                let at = format!("{text} pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                rows.push(cx.debug_bounds("repository-path").is_none());
+                let (lookups, measured, allocations) = frame(cx);
+                assert!(lookups > 0, "{at}: the frame draws the header's identity");
+                assert_eq!(
+                    (measured, allocations),
+                    (0, 0),
+                    "{at}: a steady frame measures nothing and allocates nothing to find \
+                     the identity"
+                );
+                let renamed = format!("R{text}");
+                IDENTITY_LOOKUPS.set((0, 0, 0));
+                app.update(cx, |app, cx| {
+                    app.project_names.insert(path.clone(), renamed.clone());
+                    cx.notify();
+                });
+                let (_, measured, _) = drawn(cx);
+                assert_eq!(measured, 1, "{at}: a new name is measured once");
+                let (name, _) = HEADER_SHOWN
+                    .with(|kept| kept.borrow().clone())
+                    .expect("the header is drawn");
+                assert_eq!(name.as_ref(), renamed, "{at}: the new name shows");
+                assert_eq!(frame(cx).1, 0, "{at}: and is then kept");
+                app.update(cx, |app, cx| {
+                    app.project_names.remove(&path);
+                    cx.notify();
+                });
+            }
+        }
+        // The compact row draws at 18 pt in the narrow window; 13 pt keeps
+        // the full header there.
+        assert_eq!(
+            rows,
+            [false, true, false, false],
+            "the compact row and the full header are each drawn"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
