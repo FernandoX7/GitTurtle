@@ -27211,7 +27211,7 @@ pub(crate) mod tests {
     }
 
     /// The fills painted exactly over a control's bounds.
-    fn painted_fills(
+    pub(crate) fn painted_fills(
         cx: &mut VisualTestContext,
         selector: &'static str,
     ) -> Vec<gpui_kit::Background> {

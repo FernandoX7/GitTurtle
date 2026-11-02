@@ -938,7 +938,9 @@ impl GitTurtle {
                 ))
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .footer(crate::tags::dialog_footer("Close", None))
+                // Bordered beside the body's filled Review restore…, the
+                // dialog's one default action.
+                .footer(crate::tags::dialog_dismiss_footer("Close"))
                 // In the dialog's content rather than its scrolling body,
                 // whose scroller lays the browser out at the height it asks
                 // for and cut its lines mid-line where the cap left less:
@@ -3524,6 +3526,90 @@ mod tests {
             sweep::close_dialogs(cx, "Stashes", interface, &mut failures);
         }
         sweep::assert_whole(failures);
+    }
+
+    /// Stashes has one default button: with a stash selected, Review
+    /// restore… is the filled primary, and the footer's Close takes Cancel's
+    /// bordered style, the dialog's edge on its `subtle` fill, at Review
+    /// restore…'s 28 px, in a dark and a light palette. Close drew a second
+    /// filled primary beside it.
+    #[gpui::test]
+    async fn stashes_close_is_bordered_beside_the_filled_restore(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        use crate::views::tests::{painted_edges, painted_fills};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "kept for later",
+            ],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        // The saved stashes, then the selected stash's inspection, are read
+        // on the browser's own threads.
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        cx.simulate_keystrokes("home");
+        landed(cx, "restore-saved-stash");
+        let palettes: Vec<_> = appearance::test_palettes()
+            .into_iter()
+            .filter(|(name, _)| ["Midnight", "Braden"].contains(&name.as_str()))
+            .collect();
+        assert_eq!(palettes.len(), 2);
+        for (name, palette) in palettes {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            draw(cx);
+            let accent = gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette.accent)));
+            assert!(
+                painted_fills(cx, "restore-saved-stash").contains(&accent),
+                "{name}: Review restore… is the filled primary"
+            );
+            let close = "dialog-ok: Close";
+            let fills = painted_fills(cx, close);
+            assert!(
+                !fills.contains(&accent),
+                "{name}: Close is not a second filled primary: {fills:?}"
+            );
+            assert_eq!(
+                painted_edges(cx, close),
+                vec![gpui_kit::Hsla::from(rgb(palette.dialog_edge()))],
+                "{name}: Close draws the dialog's edge, as Cancel does"
+            );
+            let (close, restore) = (
+                cx.debug_bounds(close).expect("Close"),
+                cx.debug_bounds("restore-saved-stash")
+                    .expect("Review restore…"),
+            );
+            assert!(
+                (close.size.height - restore.size.height).abs() < px(0.01),
+                "{name}: Close keeps the compact frame's height: {close:?} beside {restore:?}"
+            );
+        }
     }
 
     /// At 18 pt in a 1000 × 680 window the Stashes detail shows Restore

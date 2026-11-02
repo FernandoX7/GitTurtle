@@ -298,6 +298,26 @@ pub(crate) fn dialog_footer(
         )
 }
 
+/// A dialog's footer whose one action only dismisses it, `label` (Stashes'
+/// Close), where the dialog's body holds its own filled primary action, as
+/// Stashes' Review restore…: the footer's action takes Cancel's bordered
+/// style ([`dialog_cancel`]) rather than a second filled primary, since a
+/// macOS window has one default button. It still dispatches the kit's
+/// `Confirm`, so Enter and the dialog's `on_ok` act as before, and keeps
+/// the compact frame's 28 px, so nothing moves. Tests find it as
+/// `dialog-ok: {label}`. (Decided 2026-11-02: Stashes drew Review restore…
+/// and Close as two filled primaries.)
+pub(crate) fn dialog_dismiss_footer(label: &'static str) -> DialogFooter {
+    use gpui_kit::component::dialog::Confirm;
+    DialogFooter::new().child(
+        dialog_cancel("ok", label)
+            .debug_selector(move || format!("dialog-ok: {label}"))
+            .on_click(|_, window, cx| {
+                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+            }),
+    )
+}
+
 /// A dialog's Cancel, `id`, reading `label`, on the compact frame: the
 /// secondary variant, its `subtle` fill bordered by the dialog's own edge,
 /// 3:1 or more against the dialog (`Palette::dialog_edge`, which the palette
