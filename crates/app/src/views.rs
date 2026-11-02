@@ -13521,6 +13521,144 @@ pub(crate) mod tests {
         );
     }
 
+    /// A field focused from code blinks only while it holds focus:
+    /// History's search field, focused from code (`InputState::focus`, as
+    /// the project hub focuses its name field when the folder picker
+    /// returns), draws its caret in the frame that focuses it and first
+    /// blinks it off one interval later; focused from code again and left
+    /// for the commit list before any frame is drawn, it notifies nothing
+    /// and the window draws nothing over the next five seconds. The kit
+    /// started the blink as the focus was asked for, before any frame
+    /// reported it, so a field left before a frame never had the blur that
+    /// stops it and blinked, redrawing the window twice a second, until it
+    /// was next focused and left (`vendor/gpui-base`, `InputState::focus`).
+    #[gpui::test]
+    async fn a_field_focused_from_code_blinks_only_while_it_holds_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        // The caret is drawn only in the active window.
+        cx.update(|window, _| window.activate_window());
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        let search = app.read_with(cx, |app, _| app.search.clone());
+        let field = search.read_with(cx, |search, cx| search.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        cx.update(|window, cx| search.update(cx, |search, cx| search.focus(window, cx)));
+        draw(cx);
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "the field takes focus"
+        );
+        assert_eq!(
+            painted_carets(cx),
+            1,
+            "the frame that focuses it draws the caret"
+        );
+        let step = |cx: &mut VisualTestContext, millis: u64| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            cx.run_until_parked();
+            draw(cx);
+            painted_carets(cx)
+        };
+        assert_eq!(step(cx, 499), 1, "shown until an interval has passed");
+        assert_eq!(step(cx, 1), 0, "blinks off an interval after the focus");
+        assert_eq!(step(cx, 500), 1, "and on again an interval later");
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        let notified = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let counted = notified.clone();
+        cx.update(|_, cx| {
+            cx.observe(&search, move |_, _| counted.set(counted.get() + 1))
+                .detach()
+        });
+        cx.update(|window, cx| {
+            search.update(cx, |search, cx| search.focus(window, cx));
+            window.focus(&list, cx);
+        });
+        draw(cx);
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the commit list holds focus"
+        );
+        let frames = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.draws.len());
+        let (notifies, drawn) = (notified.get(), frames(cx));
+        for _ in 0..10 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(500));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            notified.get(),
+            notifies,
+            "the field left before a frame notifies nothing more"
+        );
+        assert_eq!(frames(cx), drawn, "the window draws nothing more");
+    }
+
+    /// A focused field emptied and focused again from code, as the kit's
+    /// clear button does (`clean`, then `focus`), draws its caret in the
+    /// next frame: History's search field, focused by its keys, given "abc"
+    /// and left until its caret is hidden in its blink, then emptied and
+    /// focused from code, shows its caret at once and blinks again after.
+    /// An edit pauses the blink only while the caret is shown, and focus on
+    /// a field that holds it already is not reported again, so with the
+    /// blink started only by that report the caret stayed hidden for up to
+    /// an interval (`vendor/gpui-base`, `InputState::focus`).
+    #[gpui::test]
+    async fn a_focused_field_emptied_and_focused_from_code_shows_its_caret(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        // The caret is drawn only in the active window.
+        cx.update(|window, _| window.activate_window());
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        let search = app.read_with(cx, |app, _| app.search.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw(cx);
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-f");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-f");
+        draw(cx);
+        cx.simulate_input("abc");
+        draw(cx);
+        let step = |cx: &mut VisualTestContext, millis: u64| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            cx.run_until_parked();
+            draw(cx);
+            painted_carets(cx)
+        };
+        let mut hidden = false;
+        for _ in 0..10 {
+            if step(cx, 100) == 0 {
+                hidden = true;
+                break;
+            }
+        }
+        assert!(hidden, "the focused field's caret blinks off");
+        cx.update(|window, cx| {
+            search.update(cx, |search, cx| {
+                search.clean(window, cx);
+                search.focus(window, cx);
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            search.read_with(cx, |search, _| search.value().to_string()),
+            "",
+            "the field is emptied"
+        );
+        assert_eq!(painted_carets(cx), 1, "the next frame draws the caret");
+        let blink: Vec<usize> = (0..15).map(|_| step(cx, 100)).collect();
+        let off = blink.iter().position(|caret| *caret == 0);
+        assert!(
+            off.is_some_and(|off| blink[off..].contains(&1)),
+            "the caret blinks off and on again after: {blink:?}"
+        );
+    }
+
     /// Lands every reply the window waits for, its reads, saves, watcher
     /// setup and path filtering, and each that they ask for in turn, drawing
     /// no frame of its own: the frames counted meanwhile are the ones the

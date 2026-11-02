@@ -1256,11 +1256,20 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// Focus the input field.
+    ///
+    /// GitTurtle patch: the caret starts blinking as GPUI reports the focus
+    /// (`on_focus`), after the frame that focuses the field; that frame draws
+    /// the caret shown, as a new or stopped cursor leaves it. Upstream also
+    /// started it here, before any frame, so a field focused here and left
+    /// before a frame never had the blur that stops it and blinked, redrawing
+    /// the window, until it was next focused and left. A field focused
+    /// already, whose focus GPUI reports no more, has its blink paused, so
+    /// its caret shows at once and holds, as the clear button's `clean` and
+    /// `focus` leave a caret in the off half of its blink; a pause starts
+    /// no cursor that has not started.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+        self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
     }
 
     /// Refresh the input, so the next render re-runs syntax highlighting and

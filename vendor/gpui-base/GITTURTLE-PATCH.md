@@ -525,6 +525,34 @@ pauses it, just before the blur stops it, and that pause's own end finds a
 later epoch and blinks nothing, so a start that waited for it left the
 caret shown for good on the tab's return.
 
+The caret-start patch also modifies `InputState::focus` in
+`src/input/base/state.rs`, runtime code only. Upstream's `focus` started
+the cursor as it asked for focus, before GPUI reported the focus and so
+before any blur could stop it: a field focused there and left before a
+frame was drawn, as the project hub's name field would be if focus moved
+on before a frame after the folder picker returns and focuses it
+(`projects.rs`), never had the blur that stops its cursor and blinked,
+notifying the field and redrawing the window twice a second, until it was
+next focused and left. `focus` no longer starts the cursor: `on_focus`
+starts it as the focus is reported, after the frame that focuses the
+field, which draws the caret shown, as a new or stopped cursor leaves it;
+the caret still first blinks off one interval after that frame. `focus`
+pauses the cursor instead, which does nothing to a cursor not started, so
+a field focused there and left before a frame still never blinks. A field
+that holds focus already, whose focus GPUI does not report again, has its
+caret shown at once and held through the pause, then blinking again: the
+edits that empty such a field pause only a caret that is shown, so
+without the pause one emptied while its caret was hidden in its blink drew
+no caret for up to an interval. The callers that empty a focused field and
+then focus it are the toolkit Input's clear button
+(`vendor/gpui-component/src/input/input.rs`, `clean` and then `focus`
+through `InputSurface::focus` in `src/input/state.rs`; the button takes no
+focus as it is pressed), which the app's cleanable filters show, and the
+project hub's search, cleared with `set_value` and then focused
+(`projects.rs`). The kit's `OtpState` (`src/otp_input.rs`), whose `focus`
+already left the start to its focus report, shares `BlinkCursor` and so
+`start`, `stop` and `pause` above; the application uses no `OtpInput`.
+
 The consumers are every text field: History's search field, the filters
 and the commit composer among them. The kit tests are
 `input::blink_cursor::tests::a_start_shows_the_caret_at_once_and_blinks_an_interval_later`
@@ -534,7 +562,18 @@ application's are `views::tests::an_unfocused_field_given_text_stays_still`,
 `views::tests::a_focused_field_holds_its_caret_while_typing_and_blinks_after`,
 `views::tests::a_warm_tab_left_in_a_field_draws_one_frame_with_its_caret`,
 a tab left with its caret shown and with it hidden in its blink, each
-drawing one frame on its return with the caret in it, and
-`views::tests::a_field_focused_by_its_keys_or_a_click_blinks_its_caret`.
+drawing one frame on its return with the caret in it,
+`views::tests::a_field_focused_by_its_keys_or_a_click_blinks_its_caret`
+and `views::tests::a_field_focused_from_code_blinks_only_while_it_holds_focus`,
+History's search field focused through `InputState::focus` blinking off
+one interval after the frame that focuses it, and, focused there again and
+left for the commit list before any frame, notifying nothing and drawing
+no frame for five seconds (10 notifications with upstream's `focus`), and
+`views::tests::a_focused_field_emptied_and_focused_from_code_shows_its_caret`,
+History's search field holding focus with its caret hidden in its blink,
+emptied with `clean` and focused from code, drawing its caret in the next
+frame (no caret without the pause in `focus`) and blinking again after.
 Remove the patch when upstream shows the caret as a focus starts it,
-pauses no cursor it has not started, and those tests pass without it.
+pauses no cursor it has not started, starts none before the focus is
+reported, shows a focused field's caret as it is focused again, and those
+tests pass without it.
