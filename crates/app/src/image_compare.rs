@@ -588,17 +588,14 @@ impl GitTurtle {
         // Pan menu stands beside the zooms only where the row holds them.
         let inset = crate::appearance::ui_size(crate::ICON_INSET);
         let zoom_row = widths.zooms[1];
-        let modes_drawn = if modes_labelled {
-            mode_group
-        } else {
-            widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window) - inset
-        };
         // The rows follow this choice (`ToolbarForms::zooms_lead`): left to
         // the layout, which breaks the row from the column's width before
         // rounding, the zoom menu gave its inset back on a row it shared at
         // 13 pt in a 478.5 px window, half a pixel from the mode menu, its
-        // ring over the mode menu's.
-        let zooms_lead = forms.zooms_lead(source, modes_drawn + widths.gap + zoom_row, room);
+        // ring over the mode menu's. It is made from the run and the room as
+        // drawn ([`drawn_run`]).
+        let (run, run_room) = drawn_run(modes_labelled, widths.gap, zoom_row, width, window);
+        let zooms_lead = forms.zooms_lead(source, run, run_room);
         // Which ways the zoomed images can still move, in PANS' order: a pan
         // control that cannot move them is unavailable.
         let pan_room = self.pan_room();
@@ -1767,6 +1764,10 @@ fn side_details(index: usize, side: &worker::ImageSide) -> String {
     }
 }
 
+/// `N` labels' widths laid out in whole pixels, under the line key they
+/// were laid out for ([`drawn_group_width`]).
+type LabelWidths<const N: usize> = std::cell::RefCell<Option<(crate::views::LineKey, [Pixels; N])>>;
+
 thread_local! {
     /// Each side caption's name, laid out.
     static BEFORE_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -1774,6 +1775,8 @@ thread_local! {
     /// The labelled mode and zoom groups' labels, laid out.
     static MODE_GROUP: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static ZOOM_GROUP: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The labelled modes' labels, each laid out ([`drawn_group_width`]).
+    static MODE_LABELS: LabelWidths<3> = const { std::cell::RefCell::new(None) };
     /// The pan's four arrows, laid out.
     static PAN_ARROWS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Each menu's label, laid out: the modes', the widest zoom's and the Pan
@@ -1886,22 +1889,102 @@ fn menu_width(
 }
 
 /// A menu reading the widest of `names`, which is its width whatever it
-/// reads, so choosing one never changes the toolbar's rows or forms.
+/// reads, so choosing one never changes the toolbar's rows or forms: as
+/// layout draws the menu reading it on this display's device pixels, the
+/// icon's inset either side, the shared `button` helper's 6 px gap and the
+/// caret each on a whole device pixel, halves toward zero
+/// (`Window::pixel_snap`), and the label rounded up to a whole pixel and
+/// then to a device pixel (`crate::views::laid_out_text_width`). Summed
+/// unrounded, it fell short of the menu drawn reading its widest choice: at
+/// 18 pt and scale 2 the mode menu took 160.5 px and drew "Side by side"
+/// 161 px wide, half a pixel wider than "Wipe", and ran half a pixel into
+/// the toolbar's padding where the toolbar measured its row to fit.
 fn widest_menu(
     names: &[&str],
     cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    crate::appearance::ui_size(crate::ICON_INSET * 2. + 6.)
-        + crate::views::cached_text_width(cache, &names.join("\n"), window, || {
-            names
-                .iter()
-                .map(|name| {
-                    crate::views::line_widths(&[(name, crate::appearance::ui_text(12.))], window)
-                })
-                .fold(px(0.), Pixels::max)
+    let snap = |length: Pixels| window.pixel_snap(length);
+    // Cached in whole pixels, which the display's scale does not change.
+    let label = crate::views::cached_text_width(cache, &names.join("\n"), window, || {
+        names
+            .iter()
+            .map(|name| {
+                crate::views::line_widths(&[(name, crate::appearance::ui_text(12.))], window)
+            })
+            .fold(px(0.), Pixels::max)
+    });
+    snap(crate::appearance::ui_size(crate::ICON_INSET)) * 2.
+        + snap(crate::appearance::ui_size(6.))
+        + crate::views::laid_out_text_width(label, window)
+        + snap(window.rem_size() * 0.875)
+}
+
+/// The modes, the gap and the zoom menu `zoom` wide ([`widest_menu`]), one
+/// run where the zoom menu shares the modes' row, and the room a toolbar
+/// `width` wide leaves it inside its padding, each as layout draws it on
+/// this display's device pixels: every length the toolbar sets (its
+/// padding, the `gap` between its groups and the mode menu's inset given
+/// back) on a whole device pixel, halves toward zero (`Window::pixel_snap`),
+/// and the modes as drawn, their menu ([`widest_menu`]) or labelled
+/// ([`drawn_group_width`]). Summed unrounded, the run fit the room where it
+/// was drawn wider: at 13 pt and scale 1.2 the 9.75 px padding is drawn
+/// 10 px, the 6.5 px gap 6.67 px and the 6 px inset 5.83 px, so a
+/// 175.25 px run measured for a 175.5 px room took 211 device pixels of 210
+/// and the zoom menu ended 0.83 px into the toolbar's padding. `width` is
+/// the column's, from its laid-out bounds, so on device pixels already.
+/// Both come back on their whole device pixel, so a run as wide as its room
+/// is not taken past it by the float error the sums leave.
+fn drawn_run(
+    modes_labelled: bool,
+    gap: Pixels,
+    zoom: Pixels,
+    width: Pixels,
+    window: &Window,
+) -> (Pixels, Pixels) {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let scale = window.scale_factor();
+    let whole = |length: Pixels| px((f32::from(length) * scale).round() / scale);
+    let modes = if modes_labelled {
+        drawn_group_width(&MODES.map(|(_, name)| name), &MODE_LABELS, window)
+    } else {
+        widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window)
+            + snap(-crate::appearance::ui_size(crate::ICON_INSET))
+    };
+    (
+        whole(modes + snap(gap) + zoom),
+        whole(width - snap(window.rem_size() * 0.75) * 2.),
+    )
+}
+
+/// [`group_width`]'s group of `names` as layout draws it on this display's
+/// device pixels: each Button its 10 px of padding either side on a whole
+/// device pixel, halves toward zero, around its 12 pt label rounded up to a
+/// whole pixel and then to a device pixel
+/// (`crate::views::laid_out_text_width`), at least its 28 px square on one,
+/// and the `gap_1` between them on one. The labels are laid out again only
+/// when the font or the sizes change, and cached in whole pixels, which the
+/// display's scale does not change, since the cache's key does not hold it.
+fn drawn_group_width<const N: usize>(
+    names: &[&str; N],
+    cache: &'static std::thread::LocalKey<LabelWidths<N>>,
+    window: &Window,
+) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let labels = crate::views::cached_width(cache, &crate::views::LineKey::current(window), || {
+        names.map(|name| {
+            crate::views::line_widths(&[(name, crate::appearance::ui_text(12.))], window)
         })
-        + window.rem_size() * 0.875
+    });
+    labels
+        .into_iter()
+        .map(|label| {
+            (crate::views::laid_out_text_width(label, window)
+                + snap(crate::appearance::ui_size(10.)) * 2.)
+                .max(snap(crate::appearance::ui_size(28.)))
+        })
+        .sum::<Pixels>()
+        + snap(window.rem_size() * 0.25) * N.saturating_sub(1) as f32
 }
 
 /// The overlay's or the wipe's 11 pt line at its widest, whatever the mode
@@ -2009,8 +2092,9 @@ impl ToolbarForms {
     /// Whether the zoom menu leads a row, where the modes, the gap and the
     /// zoom menu at its widest take `row` of a toolbar `room` wide inside
     /// its padding, past that room, or where it is a `source` image's first
-    /// group. The menus are as wide as their widest choices, so `row` is
-    /// the row as drawn; where the zoom menu does not lead, it and the modes
+    /// group. The menus are as wide as their widest choices, and `row` and
+    /// `room` are measured on the display's device pixels ([`drawn_run`]),
+    /// so `row` is the row as drawn; where the zoom menu does not lead, it and the modes
     /// are one run the layout never breaks, and where it leads the modes
     /// take their row whole, so the rows are the ones chosen here even where
     /// the layout rounds the column's width otherwise, and the zoom menu
@@ -3348,22 +3432,30 @@ mod render_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// The zoom menu keeps the mode menu's row wherever the toolbar holds
-    /// the mode menu, the gap and the zoom menu, each as wide as its widest
-    /// choice, as they are drawn, and takes a row of its own only past that
-    /// room. Leading within a pixel of fitting, it took a row of its own at
-    /// 13 pt in a 461 × 490 window, where in the bundled interface font the
+    /// The zoom menu keeps the modes' row wherever the toolbar holds the
+    /// modes, the gap and the zoom menu as they are drawn, each menu as wide
+    /// as its widest choice, and takes a row of its own only past that room.
+    /// Leading within a pixel of fitting, it took a row of its own at 13 pt
+    /// in a 461 × 490 window, where in the bundled interface font the
     /// 157.25 px row fits the toolbar's 157.5 px, and the captions and the
-    /// image moved down 34.5 px. At 13 and 18 pt, at the test window's
-    /// scale factor, 2, and at 1.5 and 1.25, a changed image is walked in 1/16 px
-    /// steps through the windows whose toolbar holds the row by less than a
-    /// pixel and a half: in each the zoom menu keeps the modes' row a gap
-    /// after the mode menu, ending inside the toolbar's padding, and the
-    /// toolbar is one row, as tall as one 8 px wider, so the captions and
-    /// the image stay where a wider toolbar has them; the walk
-    /// meets a toolbar within a pixel of the row. Left to the layout, which
-    /// breaks the row before it rounds the column to device pixels, the
-    /// zoom menu wrapped at 1.5 where the row fit.
+    /// image moved down 34.5 px; sharing the row where it is drawn past the
+    /// room, it ended 0.83 px into the toolbar's padding at 13 pt and scale
+    /// 1.2, the run measured unrounded. At 13 and 18 pt, at the test
+    /// window's scale factor, 2, and at 1.5, 1.25 (as Omarchy sets) and 1.2
+    /// (as Hyprland gives a panel it cannot set to 1.25), a changed image is
+    /// walked in 1/8 px steps through the windows within 2 px of where the
+    /// toolbar holds the run, beside the mode menu and beside the labelled modes. The
+    /// run and the room are read from what is drawn: the modes from where the
+    /// toolbar's padding starts them, the mode menu an inset before it, the
+    /// gap and the padding on device pixels as layout sets them, and the zoom
+    /// menu's width. Where the zoom menu shares the modes' row it stands the
+    /// gap after them and ends inside the toolbar's padding, and the toolbar
+    /// is one row, as tall as one 8 px wider, so the captions and the image
+    /// stay where a wider toolbar has them; where it leads a row, the run is
+    /// wider than the room. The walk meets both, and a shared row within a
+    /// pixel of its room. Left to the layout, which breaks the row before it
+    /// rounds the column to device pixels, the zoom menu wrapped at 1.5 where
+    /// the row fit.
     #[gpui::test]
     async fn the_zoom_menu_keeps_the_modes_row_wherever_the_row_fits(cx: &mut TestAppContext) {
         let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
@@ -3372,10 +3464,8 @@ mod render_tests {
         let (_fixture, app, cx) = history_window_from(cx, input).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
-        let slack = px(0.5);
-        // At the test window's scale, 2, and at 1.5 and 1.25 (as Omarchy
-        // sets), where the layout rounds the column to device pixels
-        // otherwise than whole pixels.
+        // What layout draws lies on device pixels, so it matches to a hair.
+        let hair = px(0.01);
         for (text, scale) in [
             (13, 2.),
             (18, 2.),
@@ -3383,6 +3473,8 @@ mod render_tests {
             (18, 1.5),
             (13, 1.25),
             (18, 1.25),
+            (13, 1.2),
+            (18, 1.2),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             let toolbar = |width: f32, cx: &mut VisualTestContext| {
@@ -3392,59 +3484,181 @@ mod render_tests {
                 cx.debug_bounds("image-toolbar").expect("the toolbar")
             };
             toolbar(461., cx);
-            // The mode menu, given its inset back, the gap and the zoom menu
-            // at its widest, as they are drawn.
-            let (gap, rem, row) = cx.update(|window, _| {
+            // The toolbar's padding and gap as layout sets them, and the
+            // runs beside the mode menu and the labelled modes as measured
+            // unrounded, which find the windows to walk.
+            let (padding, gap, rows) = cx.update(|window, _| {
                 let gap = window.rem_size() * 0.5;
-                let inset = appearance::ui_size(crate::ICON_INSET);
-                let mode = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window);
                 let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
-                (gap, window.rem_size(), mode - inset + gap + zoom)
+                let menu = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window)
+                    - appearance::ui_size(crate::ICON_INSET);
+                let labelled = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
+                (
+                    window.pixel_snap(window.rem_size() * 0.75),
+                    window.pixel_snap(gap),
+                    [
+                        ("image-mode-menu", menu + gap + zoom),
+                        ("image-modes", labelled + gap + zoom),
+                    ],
+                )
             });
-            // The first whole window whose toolbar holds the row.
-            let mut holds = 400.;
-            while toolbar(holds, cx).size.width - rem * 1.5 < row {
-                holds += 1.;
-                assert!(holds < 1200., "{text} pt: a window holds the row");
-            }
-            // A toolbar with room to spare is one row, the captions beneath it.
-            let one_row = toolbar(holds + 8., cx).size.height;
-            let mut within = 0;
-            for step in 0..=40 {
-                let width = holds - 1. + step as f32 / 16.;
-                let bar = toolbar(width, cx);
-                let room = bar.size.width - rem * 1.5;
-                if room < row {
-                    continue;
+            for (modes_id, row) in rows {
+                let form = format!("{text} pt at scale {scale} beside {modes_id}");
+                // About the first whole window whose toolbar holds the run as
+                // measured, the toolbar growing no faster than the window,
+                // and from there the first whose zoom menu shares the modes'
+                // row, where the walk is centred.
+                let mut holds = 461.;
+                loop {
+                    let room = toolbar(holds, cx).size.width - padding * 2.;
+                    if room >= row {
+                        break;
+                    }
+                    holds += f32::from(row - room).ceil().max(1.);
+                    assert!(holds < 1400., "{form}: a window holds the run");
                 }
-                if room < row + px(1.) {
-                    within += 1;
-                }
-                let at = format!(
-                    "{text} pt at scale {scale} in {width} × 490, a {room:?} room for the {row:?} row"
-                );
-                let (Some(modes), Some(zooms)) = (
-                    cx.debug_bounds("image-mode-menu"),
-                    cx.debug_bounds("image-zoom-menu"),
-                ) else {
-                    panic!("{at}: the modes and the zooms are each a menu");
+                let shares = |width: f32, cx: &mut VisualTestContext| {
+                    toolbar(width, cx);
+                    match (
+                        cx.debug_bounds(modes_id),
+                        cx.debug_bounds("image-zoom-menu"),
+                    ) {
+                        (Some(modes), Some(zooms)) => zooms.top() < modes.bottom(),
+                        drawn => {
+                            panic!("{form} in {width} × 490: the modes and the zoom menu {drawn:?}")
+                        }
+                    }
                 };
+                holds -= 4.;
+                while shares(holds, cx) {
+                    holds -= 1.;
+                }
+                while !shares(holds, cx) {
+                    holds += 1.;
+                    assert!(holds < 1400., "{form}: a window shares the row");
+                }
+                // A toolbar with room to spare is one row, the captions
+                // beneath it.
+                let one_row = toolbar(holds + 8., cx).size.height;
+                let (mut shared, mut within, mut led) = (false, false, false);
+                // Two pixels either side, as drawn the run can differ from
+                // it by more than one, and finer than any device pixel.
+                for step in 0..=32 {
+                    let width = holds - 2. + step as f32 / 8.;
+                    let bar = toolbar(width, cx);
+                    let at = format!("{form} in {width} × 490");
+                    let (Some(modes), Some(zooms)) = (
+                        cx.debug_bounds(modes_id),
+                        cx.debug_bounds("image-zoom-menu"),
+                    ) else {
+                        panic!("{at}: the modes and the zoom menu are drawn");
+                    };
+                    let room = bar.size.width - padding * 2.;
+                    let run = modes.right() - (bar.left() + padding) + gap + zooms.size.width;
+                    if zooms.top() < modes.bottom() {
+                        shared = true;
+                        within |= room - run < px(1.);
+                        assert!(
+                            (zooms.left() - modes.right() - gap).abs() < hair
+                                && zooms.right() <= bar.right() - padding + hair,
+                            "{at}: the zoom menu {zooms:?} keeps the modes' {modes:?} row, \
+                             {gap:?} after them, inside the toolbar {bar:?}'s {padding:?} padding"
+                        );
+                        assert!(
+                            (bar.size.height - one_row).abs() < hair,
+                            "{at}: the toolbar {bar:?} is one row, {one_row:?} tall as with room \
+                             to spare"
+                        );
+                    } else {
+                        led = true;
+                        assert!(
+                            run > room + hair,
+                            "{at}: the zoom menu {zooms:?} leads a row of its own where the \
+                             {run:?} run fits the {room:?} room"
+                        );
+                    }
+                }
                 assert!(
-                    zooms.top() < modes.bottom()
-                        && (zooms.left() - modes.right() - gap).abs() <= slack
-                        && zooms.right() <= bar.right() - rem * 0.75 + slack,
-                    "{at}: the zoom menu {zooms:?} keeps the mode menu's {modes:?} row, a gap \
-                     after it, inside the toolbar {bar:?}"
-                );
-                assert!(
-                    (bar.size.height - one_row).abs() <= slack,
-                    "{at}: the toolbar {bar:?} is one row, {one_row:?} tall as with room to spare"
+                    shared && within && led,
+                    "{form}: the walk meets the zoom menu leading its own row ({led}), \
+                     sharing the modes' ({shared}) and within a pixel of the room ({within})"
                 );
             }
-            assert!(
-                within > 0,
-                "{text} pt at scale {scale}: the walk meets a toolbar within a pixel of the row"
-            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The mode menu and the zoom menu are as wide as layout draws them
+    /// reading their widest choice, whatever they read, so choosing a mode
+    /// or a zoom moves nothing after them: at 13 and 18 pt in a 461 × 490
+    /// window, at the test window's scale factor, 2, and at 1.5, 1.25 and
+    /// 1.2, each keeps one width through every choice. Its width summed
+    /// unrounded, the mode menu drew "Side by side" 161 px wide and "Wipe"
+    /// 160.5 px at 18 pt and scale 2.
+    #[gpui::test]
+    async fn the_mode_and_zoom_menus_keep_one_width_through_their_choices(cx: &mut TestAppContext) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let input = image_commits(&[Some(&before), Some(&after)]);
+        let (_fixture, app, cx) = history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (text, scale) in [
+            (13, 2.),
+            (18, 2.),
+            (13, 1.5),
+            (18, 1.5),
+            (13, 1.25),
+            (18, 1.25),
+            (13, 1.2),
+            (18, 1.2),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            let mut width = |menu: &'static str, choose: &dyn Fn(&mut GitTurtle)| {
+                app.update(cx, |app, cx| {
+                    choose(app);
+                    cx.notify();
+                });
+                draw(cx);
+                let at = format!("{text} pt at scale {scale}");
+                cx.debug_bounds(menu)
+                    .unwrap_or_else(|| panic!("{at}: the {menu}"))
+                    .size
+                    .width
+            };
+            let modes: Vec<Pixels> = MODES
+                .iter()
+                .map(|&(mode, _)| {
+                    width("image-mode-menu", &move |app: &mut GitTurtle| {
+                        app.set_image_mode(mode)
+                    })
+                })
+                .collect();
+            let zooms: Vec<Pixels> = ZOOMS
+                .iter()
+                .map(|&(zoom, _)| {
+                    width("image-zoom-menu", &move |app: &mut GitTurtle| {
+                        app.set_image_mode(MODES[0].0);
+                        app.set_image_zoom(zoom)
+                    })
+                })
+                .collect();
+            for (menu, widths) in [("image-mode-menu", modes), ("image-zoom-menu", zooms)] {
+                assert!(
+                    widths
+                        .iter()
+                        .all(|width| (*width - widths[0]).abs() < px(0.01)),
+                    "{text} pt at scale {scale}: the {menu} keeps one width, not {widths:?}"
+                );
+            }
+            app.update(cx, |app, cx| {
+                app.set_image_mode(MODES[0].0);
+                app.set_image_zoom(0.);
+                cx.notify();
+            });
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
