@@ -26,6 +26,7 @@ pub(super) enum CommandId {
     Branch,
     Worktrees,
     Tags,
+    Stashes,
     GitHub,
     Reflog,
     Rebase,
@@ -182,6 +183,14 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         "annotate release create delete push",
         None
     ),
+    // Named as the Working Changes Actions menu's item, which opens the
+    // same Stashes.
+    command!(
+        Stashes,
+        "Browse stashes…",
+        "stash saved shelve apply pop drop restore",
+        None
+    ),
     command!(
         Reflog,
         "Browse reflog and recover a commit…",
@@ -315,6 +324,10 @@ struct Availability {
     /// dropped review's read, which Projects ends as it opens
     /// (`GitTurtle::projects_refusal`).
     projects_ends_busy: bool,
+    /// Whether a write runs or the reload after it has yet to land, for
+    /// which the Working Changes Actions menu's items wait
+    /// (`GitTurtle::write_unsettled`, `GitTurtle::menu_wait`).
+    unsettled: bool,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -336,6 +349,7 @@ impl CommandId {
                 | Self::Worktrees
                 | Self::GitHub
                 | Self::Tags
+                | Self::Stashes
                 | Self::Reflog
                 | Self::Rebase
                 | Self::RewriteReview
@@ -391,6 +405,12 @@ impl CommandId {
         }
         if self.workspace() && !context.workspace {
             return Some("Return to the repository workspace first");
+        }
+        // Browse stashes… waits where the Actions menu's item does, through
+        // the reload after a write as well, and says so as the menu's
+        // "Refreshing…" does.
+        if self == Self::Stashes && context.unsettled {
+            return Some(crate::workspace::REFRESHING_ROWS_REASON);
         }
         if self == Self::Branch && !context.branch {
             return Some("Check out a named local branch first");
@@ -585,6 +605,7 @@ impl GitTurtle {
             workspace: self.page == AppPage::Repository,
             busy: self.operation_busy.map(|_| self.busy_reason()),
             projects_ends_busy: self.projects_ends_busy(),
+            unsettled: self.write_unsettled(),
             branch: self
                 .work_status
                 .as_ref()
@@ -698,6 +719,7 @@ impl GitTurtle {
             }
             CommandId::Worktrees => self.open_worktree_manager(window, cx),
             CommandId::Tags => self.open_tags(window, cx),
+            CommandId::Stashes => self.open_stashes(window, cx),
             CommandId::GitHub => self.open_github(window, cx),
             CommandId::Reflog => {
                 self.open_reflog_browser(window, cx);
@@ -1178,6 +1200,8 @@ mod tests {
             ("blame", CommandId::Blame),
             ("light dark", CommandId::Appearance),
             ("lost commit", CommandId::Reflog),
+            ("stash", CommandId::Stashes),
+            ("shelve", CommandId::Stashes),
         ] {
             assert!(
                 matches(query)
@@ -1194,11 +1218,31 @@ mod tests {
         let mut context = Availability::default();
         assert!(CommandId::Profiles.reason(&context).is_none());
         assert!(CommandId::QuickOpen.reason(&context).is_some());
+        assert_eq!(
+            CommandId::Stashes.reason(&context),
+            Some("Open a repository first")
+        );
         context.repository = true;
         assert!(CommandId::History.reason(&context).is_none());
         assert!(CommandId::QuickOpen.reason(&context).is_some());
+        // Browse stashes… is available where the Working Changes Actions
+        // menu's item is: on the repository page while no write runs.
+        assert_eq!(
+            CommandId::Stashes.reason(&context),
+            Some("Return to the repository workspace first")
+        );
         context.workspace = true;
         assert!(CommandId::QuickOpen.reason(&context).is_none());
+        assert_eq!(CommandId::Stashes.reason(&context), None);
+        // Through the reload after a write too, as the menu's item says
+        // "Refreshing…".
+        context.unsettled = true;
+        assert_eq!(
+            CommandId::Stashes.reason(&context),
+            Some(crate::workspace::REFRESHING_ROWS_REASON)
+        );
+        assert!(CommandId::QuickOpen.reason(&context).is_none());
+        context.unsettled = false;
         assert!(CommandId::Blame.reason(&context).is_some());
         context.working_file = true;
         assert!(CommandId::Blame.reason(&context).is_none());
@@ -1206,6 +1250,10 @@ mod tests {
         assert!(CommandId::Rebase.reason(&context).is_some());
         context.busy = Some(crate::workspace::BUSY_REASON);
         assert!(CommandId::Profiles.reason(&context).is_some());
+        assert_eq!(
+            CommandId::Stashes.reason(&context),
+            Some(crate::workspace::BUSY_REASON)
+        );
         assert!(CommandId::Activity.reason(&context).is_none());
         // Page navigation only reads, so a write leaves it available, while
         // Projects, whose every action starts another operation, waits.
@@ -2108,5 +2156,132 @@ mod render_tests {
             );
         }
         assert_eq!(kinds, (true, true), "both kinds of row are shown");
+    }
+
+    /// In a repository with a stash, at 13 and 18 pt in a 461 × 490 window,
+    /// the palette finds Browse stashes… by "stash", and Return opens
+    /// Stashes, as the Working Changes Actions menu's Browse stashes… does,
+    /// with the palette closed and focus in Stashes: the palette offered no
+    /// stash command, so the search matched nothing and Return did nothing.
+    /// While a write runs, and through the reload after it, as the menu item
+    /// waits, the entry says why and Return says so again and opens nothing:
+    /// through the reload it once opened Stashes while the item still waited.
+    #[gpui::test]
+    async fn browse_stashes_opens_stashes_with_focus_in_it(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "kept for later",
+            ],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for text in [13, 18] {
+            let at = format!("{text} pt in 461 × 490");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+            draw(cx);
+            cx.simulate_input("stash");
+            draw(cx);
+            for query in ["stash", "Browse stashes"] {
+                assert_eq!(
+                    matches(query).first().map(|&index| COMMANDS[index].id),
+                    Some(CommandId::Stashes),
+                    "{at}: the first match for {query:?} is Browse stashes…"
+                );
+            }
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            let (browser, list) = app
+                .read_with(cx, crate::recovery::open_stash_list)
+                .unwrap_or_else(|| panic!("{at}: Return opens Stashes"));
+            crate::recovery::StashBrowser::lands(&browser, cx);
+            assert!(
+                cx.debug_bounds("saved-stash-row-0").is_some(),
+                "{at}: Stashes shows the saved stash"
+            );
+            assert!(
+                cx.debug_bounds("palette-command-0").is_none(),
+                "{at}: the palette closed"
+            );
+            assert!(
+                cx.update(|window, cx| window
+                    .focused(cx)
+                    .is_some_and(|focused| focused == list || focused.contains(&list, window))),
+                "{at}: focus is in Stashes"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes Stashes"
+            );
+
+            // While a write runs, and through the reload after it, the
+            // entry says why, as the menu item waits ("Fetching…", then
+            // "Refreshing…"), and Return says so again and opens nothing.
+            let value =
+                |id: &str| written::get(id).and_then(|line| line.node.value().map(str::to_owned));
+            for (state, reason) in [
+                ("during a write", crate::workspace::BUSY_REASON),
+                (
+                    "through the reload after a write",
+                    crate::workspace::REFRESHING_ROWS_REASON,
+                ),
+            ] {
+                app.update(cx, |app, _| {
+                    if reason == crate::workspace::BUSY_REASON {
+                        app.operation_busy = Some("Fetching…");
+                    } else {
+                        app.status_task = Some(Task::ready(()));
+                        app.status_after_write = Some(app.work_generation);
+                    }
+                });
+                assert!(
+                    app.read_with(cx, |app, _| app.menu_wait().is_some()),
+                    "{at}: {state}, the Actions menu's item waits"
+                );
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.open_command_palette(window, cx))
+                });
+                draw(cx);
+                cx.simulate_input("stash");
+                draw(cx);
+                assert_eq!(
+                    value("command-palette-help").as_deref(),
+                    Some(reason),
+                    "{at}: {state}, the highlighted Browse stashes… says why it waits"
+                );
+                cx.simulate_keystrokes("enter");
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("palette-command-0").is_some()
+                        && cx.debug_bounds("saved-stash-row-0").is_none(),
+                    "{at}: {state}, Return leaves the palette open and opens no Stashes"
+                );
+                assert_eq!(
+                    value("command-palette-error").as_deref(),
+                    Some(reason),
+                    "{at}: {state}, and says why"
+                );
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                app.update(cx, |app, _| {
+                    app.operation_busy = None;
+                    app.status_task = None;
+                    app.status_after_write = None;
+                });
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }

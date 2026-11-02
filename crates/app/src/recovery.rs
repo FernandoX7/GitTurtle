@@ -1709,6 +1709,18 @@ pub(crate) fn stash_restore_line(app: &GitTurtle, cx: &App) -> Option<String> {
     browser.read(cx).restore_line.clone()
 }
 
+/// The open Stashes and the focus of its saved stashes' list, for tests in
+/// other modules.
+#[cfg(test)]
+pub(crate) fn open_stash_list(
+    app: &GitTurtle,
+    cx: &App,
+) -> Option<(Entity<StashBrowser>, FocusHandle)> {
+    let browser = app.recovery.browser.as_ref()?.upgrade()?;
+    let list = browser.read(cx).stash_focus.clone();
+    Some((browser, list))
+}
+
 impl StashBrowser {
     /// Returns once every read the browser has started, the saved stashes
     /// or a selected stash's inspection, has landed and been drawn. They run
