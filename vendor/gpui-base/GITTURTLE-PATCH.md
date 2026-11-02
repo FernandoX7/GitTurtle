@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/mod.rs`, `src/otp_input.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -579,6 +579,31 @@ project hub's search, cleared with `set_value` and then focused
 (`projects.rs`). The kit's `OtpState` (`src/otp_input.rs`), whose `focus`
 already left the start to its focus report, shares `BlinkCursor` and so
 `start`, `stop` and `pause` above; the application uses no `OtpInput`.
+
+The caret-start patch also removes the window-activation observer from
+`InputBaseState::new_in_mode` in `src/input/base/state.rs` and from
+`OtpState::new` in `src/otp_input.rs`, runtime code only. Upstream's
+observer started the cursor of whichever field held the window's focus as
+the window turned active, drawn or not: a field on a tab not shown, in a
+dialog closed with its state kept, or focused from code and left for
+another before a frame, had no blur to stop it and blinked, notifying it
+twice a second, until it was next focused and left. GPUI already reports
+focus in the first frame it draws after the window turns active, and a
+blur in the first after it turns inactive, to the field focused and drawn
+in that frame (`WindowFocusEvent` counts an inactive frame's focus path
+empty), so `on_focus` gives a drawn field its caret back, shown in that
+frame and blinking off one interval later, and `on_blur` stops it; the
+observer only ever added a start for a field that frame did not draw. The
+kit tests are
+`input::state::tests::window_activation_blinks_only_the_drawn_focused_input`,
+a field drawn and focused blinking, stopping while the window is inactive
+and blinking again once it is active and drawn, while one taken out of the
+frame, holding the window's focus, starts nothing as the window turns
+inactive and active (ten blinks in five seconds with the observer), and
+`otp_input::tests::window_activation_blinks_only_a_drawn_focused_field`,
+the same for an OTP field (`scripts/vendor-crate-test.sh vendor/gpui-base
+window_activation`). Remove this part with the rest of the caret-start
+patch.
 
 The consumers are every text field: History's search field, the filters
 and the commit composer among them. The kit tests are

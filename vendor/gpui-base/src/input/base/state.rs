@@ -653,17 +653,17 @@ impl<M: InputModeKind> InputBaseState<M> {
         let _subscriptions = vec![
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
-            cx.observe_window_activation(window, |input, window, cx| {
-                if window.is_window_active() {
-                    let focus_handle = input.focus_handle.clone();
-                    if focus_handle.is_focused(window) {
-                        input.blink_cursor.update(cx, |blink_cursor, cx| {
-                            blink_cursor.start(cx);
-                        });
-                    }
-                }
-            }),
+            // GitTurtle patch: no window-activation observer starts the
+            // blink. GPUI reports focus in the first frame it draws after the
+            // window turns active, and a blur in the first after it turns
+            // inactive, to an input focused and drawn in that frame, so
+            // `on_focus` gives a drawn input its caret back and `on_blur`
+            // stops it. Upstream's observer started the cursor of any input
+            // that held the window's focus as the window turned active,
+            // drawn or not: one on a tab not shown or in a dialog closed
+            // with its state kept, or focused from code and left before a
+            // frame, began blinking with no blur to stop it, notifying the
+            // input twice a second until it was next focused and left.
             cx.on_focus(&focus_handle, window, Self::on_focus),
             cx.on_blur(&focus_handle, window, Self::on_blur),
         ];
@@ -3899,6 +3899,89 @@ mod tests {
 
         right_drag(cx, at.a, at.a);
         assert_eq!(*log.borrow(), ["A"], "a right-click in A opens A's menu");
+    }
+
+    /// Counts the notifications of `input`'s blink cursor, each a blink
+    /// that redraws the input.
+    fn count_blinks(
+        input: &Entity<InputBaseState<InputMode>>,
+        cx: &mut VisualTestContext,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
+        let blinks = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = blinks.clone();
+        let cursor = input.read_with(cx, |state, _| state.blink_cursor.clone());
+        cx.update(|_, cx| {
+            cx.observe(&cursor, move |_, _| counted.set(counted.get() + 1))
+                .detach()
+        });
+        blinks
+    }
+
+    /// Lets `seconds` pass on the test's clock.
+    fn wait(cx: &mut VisualTestContext, seconds: u64) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(seconds));
+        cx.run_until_parked();
+    }
+
+    /// GitTurtle patch: a window turned active again gives the caret back,
+    /// blinking, to the focused input drawn in it, through the focus GPUI
+    /// reports in the first frame it draws active, and starts nothing for an
+    /// input that holds the window's focus without being drawn, taken out of
+    /// the frame as a tab not shown or a dialog closed with its state kept
+    /// takes it. Upstream's window-activation observer started the cursor of
+    /// whichever input held the window's focus, drawn or not, and with no
+    /// blur to stop it, that input blinked, ten notifications in five
+    /// seconds, until it was next focused and left.
+    #[gpui::test]
+    fn window_activation_blinks_only_the_drawn_focused_input(cx: &mut TestAppContext) {
+        let (cx, root, [a, _], _, _) = two_inputs(cx);
+        activate(cx);
+        let a_focus = cx.update(|_, cx| a.read(cx).focus_handle.clone());
+        let a_blinks = count_blinks(&a, cx);
+
+        // A drawn and focused blinks; inactive, it stops; active again and
+        // drawn, it blinks once more.
+        cx.update(|window, cx| window.focus(&a_focus, cx));
+        draw(cx);
+        wait(cx, 5);
+        assert!(a_blinks.get() >= 9, "A, focused and drawn, blinks");
+        cx.deactivate_window();
+        draw(cx);
+        a_blinks.set(0);
+        wait(cx, 5);
+        assert_eq!(a_blinks.get(), 0, "A stops in an inactive window");
+        activate(cx);
+        draw(cx);
+        wait(cx, 5);
+        assert!(
+            a_blinks.get() >= 9,
+            "A, drawn in the window turned active, blinks again: {} blinks",
+            a_blinks.get()
+        );
+
+        // A taken out of the frame while focused, its blur reported, and the
+        // window turned inactive and active again.
+        root.update(cx, |root, cx| {
+            root.show_a = false;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.update(|window, _| a_focus.is_focused(window)),
+            "A, not drawn, holds the window's focus"
+        );
+        cx.deactivate_window();
+        draw(cx);
+        activate(cx);
+        draw(cx);
+        a_blinks.set(0);
+        wait(cx, 5);
+        assert_eq!(
+            a_blinks.get(),
+            0,
+            "A, focused but not drawn, starts nothing as the window turns active"
+        );
     }
 
     /// GitTurtle patch: the menu places the caret at the press's offset

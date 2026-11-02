@@ -32,11 +32,10 @@ impl OtpState {
         let blink_cursor = cx.new(|_| BlinkCursor::new());
         let subscriptions = vec![
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            cx.observe_window_activation(window, |this, window, cx| {
-                if window.is_window_active() && this.focus_handle.is_focused(window) {
-                    this.blink_cursor.update(cx, |cursor, cx| cursor.start(cx));
-                }
-            }),
+            // GitTurtle patch: as the input's state, no window-activation
+            // observer: GPUI's focus and blur reports on activation start and
+            // stop the cursor of a drawn, focused field only
+            // (`InputBaseState::new_in_mode`).
             cx.on_focus(&focus_handle, window, Self::on_focus),
             cx.on_blur(&focus_handle, window, Self::on_blur),
         ];
@@ -209,7 +208,94 @@ impl RenderOnce for OtpInput {
 
 #[cfg(test)]
 mod tests {
-    use super::OtpState;
+    use super::{OtpInput, OtpState};
+    use gpui::{
+        AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, TestAppContext,
+        VisualTestContext, Window, div,
+    };
+    use std::{cell::Cell, rc::Rc, time::Duration};
+
+    /// An OTP field, drawn while `shown`.
+    struct Root {
+        otp: Entity<OtpState>,
+        shown: bool,
+    }
+
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().children(self.shown.then(|| OtpInput::new(&self.otp)))
+        }
+    }
+
+    /// GitTurtle patch: a window turned active again starts the blink of a
+    /// focused OTP field drawn in it, through the focus GPUI reports in the
+    /// first frame it draws active, and starts nothing for one that holds
+    /// the window's focus without being drawn. Upstream's window-activation
+    /// observer started it drawn or not, and with no blur to stop it, it
+    /// blinked, ten notifications in five seconds.
+    #[gpui::test]
+    fn window_activation_blinks_only_a_drawn_focused_field(cx: &mut TestAppContext) {
+        let (root, cx) = cx.add_window_view(|window, cx| Root {
+            otp: cx.new(|cx| OtpState::new(4, window, cx)),
+            shown: true,
+        });
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        let activate = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.activate_window());
+            cx.run_until_parked();
+        };
+        let wait = |cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(Duration::from_secs(5));
+            cx.run_until_parked();
+        };
+        let otp = root.read_with(cx, |root, _| root.otp.clone());
+        let (focus, cursor) = otp.read_with(cx, |otp, _| {
+            (otp.focus_handle.clone(), otp.blink_cursor.clone())
+        });
+        let blinks = Rc::new(Cell::new(0));
+        let counted = blinks.clone();
+        cx.update(|_, cx| {
+            cx.observe(&cursor, move |_, _| counted.set(counted.get() + 1))
+                .detach()
+        });
+        draw(cx);
+        activate(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+
+        cx.deactivate_window();
+        draw(cx);
+        activate(cx);
+        draw(cx);
+        blinks.set(0);
+        wait(cx);
+        assert!(
+            blinks.get() >= 9,
+            "the field, drawn in the window turned active, blinks: {} blinks",
+            blinks.get()
+        );
+
+        root.update(cx, |root, cx| {
+            root.shown = false;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "the field, not drawn, holds the window's focus"
+        );
+        cx.deactivate_window();
+        draw(cx);
+        activate(cx);
+        draw(cx);
+        blinks.set(0);
+        wait(cx);
+        assert_eq!(
+            blinks.get(),
+            0,
+            "the field, focused but not drawn, starts nothing as the window turns active"
+        );
+    }
 
     #[test]
     fn keyboard_editing_backspaces_and_stops_at_length() {
