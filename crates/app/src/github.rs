@@ -770,9 +770,11 @@ pub(crate) fn retry_after(value: &str) -> String {
         Err(_) => format!("{seconds} seconds"),
     };
     // The header's seconds are whole, but a server that sends a fraction
-    // still means seconds.
-    let wait = match value.split_once('.') {
-        None if digits(value) => whole(value),
+    // still means seconds; a leading "+" is the number's sign, as the
+    // integer parse once took it.
+    let number = value.strip_prefix('+').unwrap_or(value);
+    let wait = match number.split_once('.') {
+        None if digits(number) => whole(number),
         Some((seconds, "")) if digits(seconds) => whole(seconds),
         Some((seconds, fraction))
             if (seconds.is_empty() || digits(seconds)) && digits(fraction) =>
@@ -798,6 +800,8 @@ mod tests {
         assert_eq!(retry_after(" 1.5 "), " Retry after 1.5 seconds.");
         assert_eq!(retry_after("0.25"), " Retry after 0.25 seconds.");
         assert_eq!(retry_after("5."), " Retry after 5 seconds.");
+        assert_eq!(retry_after("+5"), " Retry after 5 seconds.");
+        assert_eq!(retry_after("+1.5"), " Retry after 1.5 seconds.");
         assert_eq!(retry_after("1."), " Retry after 1 second.");
         assert_eq!(retry_after(".5"), " Retry after 0.5 seconds.");
         assert_eq!(

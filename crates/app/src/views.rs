@@ -1122,7 +1122,9 @@ impl GitTurtle {
                 .into_any_element();
         }
         if let Some(folder) = self.render_nav_folder(index, cx) {
-            return folder.into_any_element();
+            // Its node recorded for tests, which read the name it is drawn
+            // with; transparent otherwise.
+            return native_accessibility::recorded(folder).into_any_element();
         }
         let (name, symbol, active, depth, tooltip) = match &row {
             NavRow::All => (
@@ -27288,18 +27290,19 @@ pub(crate) mod tests {
     }
 
     /// A navigator folder's name counts its branches with their noun, read
-    /// from the row the navigator draws: a folder holding one branch reads
-    /// "Expand feature · 1 branch", where it read "1 branches", and one
-    /// holding two "Expand release · 2 branches".
+    /// from the tree item the navigator draws, as its node is written: a
+    /// folder holding one branch reads "Expand feature · 1 branch", where it
+    /// read "1 branches", and one holding two "Expand release · 2 branches".
     #[gpui::test]
     async fn a_folder_counts_one_branch_as_one(cx: &mut TestAppContext) {
-        use gpui::Element as _;
+        use crate::native_accessibility::written;
         let (fixture, app, cx) = history_window_from(cx, &history_script(2, 1)).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
         for branch in ["feature/one", "release/one", "release/two"] {
             fixture_git(&repository, &["branch", branch]);
         }
         press_refresh(&app, cx).await;
+        written::forget();
         draw(cx);
         for (folder, expected) in [
             ("feature", "Expand feature · 1 branch"),
@@ -27312,15 +27315,10 @@ pub(crate) mod tests {
                     )
                 })
                 .unwrap_or_else(|| panic!("the {folder} folder"));
-            let drawn = app.clone();
-            let node = view_node(cx, move |_, cx| {
-                let row = drawn
-                    .update(cx, |app, cx| app.render_nav_folder(index, cx))
-                    .expect("a folder row");
-                let mut node = gpui::accesskit::Node::new(row.a11y_role().expect("a role"));
-                row.write_a11y_info(&mut node);
-                node
-            });
+            let id = app.read_with(cx, |app, _| app.nav_row_key(index).to_string());
+            let node = written::get(&id)
+                .unwrap_or_else(|| panic!("the {folder} folder's row is drawn"))
+                .node;
             assert_eq!(node.role(), gpui::accesskit::Role::TreeItem, "{folder}");
             assert_eq!(node.label(), Some(expected), "{folder}");
         }

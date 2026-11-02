@@ -22,10 +22,6 @@ use crate::native_accessibility::text as static_text;
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
-    /// The form opened last, for a test to choose its rule as the person
-    /// would.
-    #[cfg(test)]
-    form: Option<WeakEntity<IgnoreForm>>,
 }
 
 /// Reads `path`'s status again, as Discard…'s review reads its row's
@@ -143,10 +139,6 @@ impl GitTurtle {
             preparing: None,
             error: None,
         });
-        #[cfg(test)]
-        {
-            self.ignore_actions.form = Some(form.downgrade());
-        }
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
@@ -271,7 +263,7 @@ impl Render for IgnoreForm {
             .child(static_text("ignore-destination-label", "Save rule in").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
             .child(div().flex().gap_2().children([(false, "Shared .gitignore"), (true, "Local excludes")].map(|(local, label)| button(label, label, "", self.local == local).toggled(self.local == local).disabled(pending).on_click(cx.listener(move |this, _, _, cx| { this.local = local; this.error = None; cx.notify(); })))))
             .child(static_text("ignore-destination-help", if self.local { "For this repository's local setup. Stored in Git's info/exclude, including linked worktrees." } else { "For patterns the project should share. Changes to .gitignore remain unstaged for review." }).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .when_some(parent, |element, parent| element.child(Checkbox::new("ignore-containing-directory").label(format!("Ignore containing directory: {}/", parent.display())).checked(self.directory).disabled(pending).on_click(cx.listener(|this, checked, _, cx| { this.directory = *checked; this.error = None; cx.notify(); }))))
+            .when_some(parent, |element, parent| element.child(Checkbox::new("ignore-containing-directory").debug_selector(|| "ignore-containing-directory".into()).label(format!("Ignore containing directory: {}/", parent.display())).checked(self.directory).disabled(pending).on_click(cx.listener(|this, checked, _, cx| { this.directory = *checked; this.error = None; cx.notify(); }))))
             .child(static_text("ignore-tracked-explanation", "The next step previews the exact escaped rule and destination. Ignore rules affect untracked content; they never remove tracked files from Git.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(pending, |element| element.child(static_text("ignore-preparation-status", "Preparing exact rule and checking current content…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| crate::tags::error_line("ignore-preparation-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
@@ -351,15 +343,11 @@ pub(crate) mod tests {
                 .unwrap_or_else(|| panic!("{path:?} is listed"));
             cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(entry, window, cx)));
             ignore_lands(&app, cx);
-            let form = app
-                .read_with(cx, |app, _| app.ignore_actions.form.clone())
-                .and_then(|form| form.upgrade())
-                .expect("the form opens");
-            // The containing directory, as its checkbox chooses it.
-            form.update(cx, |form, cx| {
-                form.directory = true;
-                cx.notify();
-            });
+            // The containing directory, chosen with a click on its checkbox.
+            let checkbox = cx
+                .debug_bounds("ignore-containing-directory")
+                .unwrap_or_else(|| panic!("{directory}: the form offers the directory"));
+            cx.simulate_click(checkbox.center(), Modifiers::default());
             draw(cx);
             preview_rule(cx);
             app.read_with(cx, |app, _| app.operations.drain());
@@ -369,6 +357,10 @@ pub(crate) mod tests {
             let consequences = written::get("operation-consequences")
                 .and_then(|written| written.node.value().map(str::to_owned))
                 .unwrap_or_else(|| panic!("{directory}: the review is drawn"));
+            assert!(
+                consequences.contains(&format!("Exact rule:\n/{directory}/\n")),
+                "{directory}: the click chose the containing directory: {consequences:?}"
+            );
             assert!(
                 consequences.contains(expected),
                 "{directory}: the review says {expected:?}: {consequences:?}"
