@@ -8412,15 +8412,7 @@ impl Render for GitTurtle {
         // After the focus repairs above, before any list is built.
         self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);
-        let menu_state = (
-            self.repository.is_some(),
-            self.operation_busy.is_some(),
-            self.projects_refusal().0,
-        );
-        if self.menu_state != Some(menu_state) {
-            platform_polish::menus(menu_state.0, menu_state.1, menu_state.2, cx);
-            self.menu_state = Some(menu_state);
-        }
+        self.update_native_menus(window, cx);
         let chrome = self.chrome(window, cx);
         let page = match self.page {
             AppPage::Repository => self.render_repository(chrome, window, cx),
@@ -8853,6 +8845,15 @@ impl Render for GitTurtle {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     this.open_revision_comparison(window, cx);
                 }
+            }))
+            // The menu bar's View ▸ Browse Stashes…, checked again as it
+            // arrives, as the Linux Main Menu's row is: GPUI validates a
+            // macOS menu item by whether the window handles its action
+            // (`App::is_action_available`), which can offer an item built
+            // refused.
+            .on_action(cx.listener(|this, _: &BrowseStashes, window, cx| {
+                let path = this.path.clone();
+                this.run_menu_command(command_palette::CommandId::Stashes, &path, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {

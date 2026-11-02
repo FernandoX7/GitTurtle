@@ -523,7 +523,6 @@ impl Selection {
     }
 }
 impl GitTurtle {
-    #[cfg(any(target_os = "linux", test))]
     pub(super) fn menu_command_reason(
         &self,
         id: CommandId,
@@ -533,7 +532,6 @@ impl GitTurtle {
         id.reason(&self.palette_availability(window, cx))
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn run_menu_command(
         &mut self,
         id: CommandId,

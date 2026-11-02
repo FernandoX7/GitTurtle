@@ -270,9 +270,9 @@ struct GitTurtle {
     interactive_rebase: interactive_rebase::State,
     ignore_actions: ignore::State,
     discard_actions: discard::State,
-    /// What the native menus were last built for: a repository open, the
-    /// busy spell, and whether Projects is refused (`projects_refusal`).
-    menu_state: Option<(bool, bool, bool)>,
+    /// What the native menus were last built for
+    /// (`GitTurtle::update_native_menus`).
+    menu_state: Option<platform_polish::MenuState>,
     #[cfg(target_os = "linux")]
     primary_menu: Entity<PrimaryMenu>,
     dialog_layer_subscription: Option<Subscription>,
@@ -2525,7 +2525,7 @@ fn main() {
         cx.on_action(|_: &HideApplication, cx| cx.hide());
         cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAllApplications, cx| cx.unhide_other_apps());
-        platform_polish::menus(false, false, false, cx);
+        platform_polish::menus(MenuState::default(), StashesItem::Refused, cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();

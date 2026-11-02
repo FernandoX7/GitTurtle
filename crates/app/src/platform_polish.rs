@@ -15,6 +15,7 @@ gpui_kit::actions!(
         OpenTerminal,
         ShortcutHelp,
         MainMenu,
+        BrowseStashes,
         MinimizeWindow,
         CloseWindow,
         ZoomWindow,
@@ -112,15 +113,12 @@ impl PrimaryMenu {
                 let app = owner.read(cx);
                 let reason = app.menu_command_reason(id, window, cx);
                 // Browse stashes… waits for a write as the Working Changes
-                // Actions menu's item does, through the reload after it, and
-                // says so as that item does: the write's label at the row's
-                // end and "available when … finishes" in its name. Its
-                // reason is the palette's, the write's while one refuses it.
-                let wait = app.menu_wait().filter(|_| {
-                    id == CommandId::Stashes
-                        && (reason == Some(crate::workspace::REFRESHING_ROWS_REASON)
-                            || (app.operation_busy.is_some() && reason == Some(app.busy_reason())))
-                });
+                // Actions menu's item does, and says so.
+                let wait = if id == CommandId::Stashes {
+                    app.stashes_menu_wait(reason)
+                } else {
+                    None
+                };
                 (spec, reason, wait)
             })
         });
@@ -263,11 +261,64 @@ impl Render for PrimaryMenu {
     }
 }
 
-/// The native menus, built for a repository open (`repository`), the busy
-/// spell (`busy`) and whether Projects is refused (`projects_refused`,
-/// `GitTurtle::projects_refusal`), which a wait for a dropped review's read
-/// never refuses, since Projects ends it.
-pub(super) fn menus(repository: bool, busy: bool, projects_refused: bool, cx: &mut App) {
+/// What the native menus read from their window, compared with what they
+/// were last built from in each frame it draws
+/// ([`GitTurtle::update_native_menus`]), so they are built again only as it
+/// changes: whether a repository is open, the write or request that runs
+/// as the busy spell, by the label it runs under, whether Projects is
+/// refused (`GitTurtle::projects_refusal`), which a wait for a dropped
+/// review's read never refuses, since Projects ends it, whether the
+/// repository's page is shown, and whether a write runs or the reload after
+/// it has yet to land (`GitTurtle::write_unsettled`). Each is a read of a
+/// field or two; Browse Stashes… is offered or refused for the palette's
+/// reason, which reads exactly these, and waits for the write they name
+/// ([`StashesItem`]).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(super) struct MenuState {
+    repository: bool,
+    busy: Option<&'static str>,
+    projects_refused: bool,
+    workspace: bool,
+    unsettled: bool,
+}
+
+/// Browse Stashes… in the menu bar's View menu as the menus are built, as
+/// the Linux Main Menu's Browse stashes… stands: offered, refused for a
+/// reason of its own (no repository, or another page shown), or waiting
+/// for a write, or the reload after it, by the label it runs under
+/// ("Fetching…", "Refreshing…"), which its title then states after the
+/// command, "Browse Stashes… · Fetching…", as a control waiting in place
+/// says what it waits for (decided 2026-11-02: a native menu item has no
+/// room of its own at its trailing edge for the write, which the Linux row
+/// draws there, and its title is what VoiceOver reads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StashesItem {
+    Offered,
+    Refused,
+    Waits(&'static str),
+}
+
+impl StashesItem {
+    /// The View menu's title for Browse Stashes… in this state.
+    pub(super) fn title(self) -> std::borrow::Cow<'static, str> {
+        const TITLE: &str = "Browse Stashes…";
+        match self {
+            Self::Waits(wait) => format!("{TITLE} · {wait}").into(),
+            Self::Offered | Self::Refused => TITLE.into(),
+        }
+    }
+}
+
+/// The native menus, built for `state` ([`MenuState`]), Browse Stashes…
+/// as `stashes` stands.
+pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
+    let MenuState {
+        repository,
+        busy,
+        projects_refused,
+        ..
+    } = state;
+    let busy = busy.is_some();
     let action = |label: &str, action: Box<dyn Action>, enabled: bool| MenuItem::Action {
         name: label.to_owned().into(),
         action,
@@ -337,6 +388,13 @@ pub(super) fn menus(repository: bool, busy: bool, projects_refused: bool, cx: &m
                 Box::new(CompareRevisions),
                 repository && !busy,
             ),
+            // Among the repository's inspectors, after Compare Revisions…,
+            // as the Linux Main Menu and the palette list it.
+            action(
+                &stashes.title(),
+                Box::new(BrowseStashes),
+                stashes == StashesItem::Offered,
+            ),
             MenuItem::action("GitTurtle Activity…", ShowActivity),
             action(
                 "Refresh Local State",
@@ -358,6 +416,57 @@ pub(super) fn menus(repository: bool, busy: bool, projects_refused: bool, cx: &m
 }
 
 impl GitTurtle {
+    /// Builds the native menus again where what they read
+    /// ([`MenuState`]) has changed since this window last built them,
+    /// Browse Stashes… then offered or refused for the palette's reason and
+    /// waiting as the Linux Main Menu's item waits
+    /// ([`Self::stashes_menu_wait`]). Called as each frame is built: what it
+    /// compares is a few fields, and the palette's reason, which clones the
+    /// selection's scope, is read only as they change.
+    pub(super) fn update_native_menus(&mut self, window: &Window, cx: &mut App) {
+        let state = MenuState {
+            repository: self.repository.is_some(),
+            busy: self.operation_busy,
+            projects_refused: self.projects_refusal().0,
+            workspace: self.page == AppPage::Repository,
+            unsettled: self.write_unsettled(),
+        };
+        if self.menu_state == Some(state) {
+            return;
+        }
+        let reason = self.menu_command_reason(command_palette::CommandId::Stashes, window, cx);
+        let stashes = match (reason, self.stashes_menu_wait(reason)) {
+            (None, _) => StashesItem::Offered,
+            // The wait is the running write's label, or the refresh after
+            // it once it has ended (`menu_wait`).
+            (Some(_), Some(_)) => StashesItem::Waits(
+                self.operation_busy
+                    .unwrap_or(crate::workspace::REFRESHING_ROWS),
+            ),
+            (Some(_), None) => StashesItem::Refused,
+        };
+        menus(state, stashes, cx);
+        self.menu_state = Some(state);
+    }
+
+    /// Why Browse stashes… waits in a menu while the palette refuses it
+    /// for `reason`: as the Working Changes Actions menu's item waits, for
+    /// a write and through the reload after it, stating the write's label
+    /// at the row's end and "available when … finishes" in its name. Its
+    /// reason is the palette's, the write's while one refuses it; refused
+    /// for a reason of its own, as on another page, it states no wait. The
+    /// Linux Main Menu's row and the menu bar's View ▸ Browse Stashes… both
+    /// read it.
+    pub(super) fn stashes_menu_wait(
+        &self,
+        reason: Option<&'static str>,
+    ) -> Option<native_accessibility::MenuWait> {
+        self.menu_wait().filter(|_| {
+            reason == Some(crate::workspace::REFRESHING_ROWS_REASON)
+                || (self.operation_busy.is_some() && reason == Some(self.busy_reason()))
+        })
+    }
+
     pub(super) fn effective_theme(&self, cx: &App) -> appearance::custom::ResolvedTheme {
         self.settings.effective_theme(cx, &self.custom_themes)
     }
@@ -1035,5 +1144,158 @@ mod main_menu_tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+}
+
+/// The menu bar's menus, as macOS draws them; built on Linux as well,
+/// where nothing draws them, so these run on both.
+#[cfg(test)]
+mod menu_bar_tests {
+    use crate::command_palette::CommandId;
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// The View menu's items, by title, each with whether it was built
+    /// refused.
+    fn view_menu(cx: &mut VisualTestContext) -> Vec<(String, bool)> {
+        cx.update(|_, cx| cx.get_menus())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|menu| menu.name.as_ref() == "View")
+            .expect("the View menu")
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                gpui::OwnedMenuItem::Action { name, disabled, .. } => Some((name, disabled)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The menu bar's View menu offers Browse Stashes… right after Compare
+    /// Revisions…, as the Linux Main Menu and the palette do, and choosing
+    /// it opens Stashes with focus in its list. While a write runs, and
+    /// through the reload after it, it is refused and its title states the
+    /// write it waits for, "Browse Stashes… · Fetching…", then
+    /// "· Refreshing…", the palette's reason refusing it; on another page
+    /// it is refused with no wait; refused, choosing it opens nothing,
+    /// though macOS may offer it. Once the write has landed it is offered
+    /// again. The menu bar had no way to Stashes.
+    #[gpui::test]
+    async fn the_menu_bar_browses_stashes_as_the_main_menu_does(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "kept"],
+        );
+        let (app, cx) = window(cx, &repo);
+        const TITLE: &str = "Browse Stashes…";
+        let stashes = |cx: &mut VisualTestContext| {
+            let items = view_menu(cx);
+            let at = items
+                .iter()
+                .position(|(name, _)| name.starts_with(TITLE))
+                .unwrap_or_else(|| panic!("the View menu offers {TITLE}: {items:?}"));
+            assert_eq!(
+                items[at - 1].0,
+                "Compare Revisions…",
+                "{TITLE} follows Compare Revisions…: {items:?}"
+            );
+            items[at].clone()
+        };
+        let palette = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.read(cx)
+                    .menu_command_reason(CommandId::Stashes, window, cx)
+            })
+        };
+        // Chosen as macOS chooses it: dispatched where the window's focus
+        // is, inside the app's view. Whether Stashes then shows.
+        let opens = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let focus = app.read(cx).app_focus.clone();
+                if !focus.contains_focused(window, cx) {
+                    focus.focus(window, cx);
+                }
+            });
+            cx.dispatch_action(BrowseStashes);
+            draw(cx);
+            cx.update(|window, cx| window.has_active_dialog(cx))
+                || cx.debug_bounds("saved-stash-row-0").is_some()
+        };
+
+        assert_eq!(stashes(cx), (TITLE.to_owned(), false), "offered at rest");
+        assert!(opens(cx), "choosing it opens Stashes");
+        let (browser, list) = app
+            .read_with(cx, crate::recovery::open_stash_list)
+            .expect("the open Stashes");
+        crate::recovery::StashBrowser::lands(&browser, cx);
+        assert!(
+            cx.debug_bounds("saved-stash-row-0").is_some(),
+            "Stashes shows the saved stash"
+        );
+        assert!(
+            cx.update(|window, cx| window
+                .focused(cx)
+                .is_some_and(|focused| focused == list || focused.contains(&list, window))),
+            "focus is in Stashes"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && cx.debug_bounds("saved-stash-row-0").is_none(),
+            "Escape closes Stashes"
+        );
+
+        for (state, reason, title) in [
+            (
+                "during a write",
+                crate::workspace::BUSY_REASON,
+                format!("{TITLE} · Fetching…"),
+            ),
+            (
+                "through the reload after a write",
+                crate::workspace::REFRESHING_ROWS_REASON,
+                format!("{TITLE} · Refreshing…"),
+            ),
+            (
+                "on another page",
+                "Return to the repository workspace first",
+                TITLE.to_owned(),
+            ),
+        ] {
+            app.update(cx, |app, cx| {
+                match reason {
+                    crate::workspace::BUSY_REASON => app.operation_busy = Some("Fetching…"),
+                    crate::workspace::REFRESHING_ROWS_REASON => {
+                        app.status_task = Some(Task::ready(()));
+                        app.status_after_write = Some(app.work_generation);
+                    }
+                    _ => app.page = AppPage::Settings,
+                }
+                cx.notify();
+            });
+            draw(cx);
+            assert_eq!(palette(cx), Some(reason), "{state}: the palette's reason");
+            assert_eq!(stashes(cx), (title, true), "{state}: refused, saying why");
+            assert!(!opens(cx), "{state}: choosing it opens nothing");
+            app.update(cx, |app, cx| {
+                app.operation_busy = None;
+                app.status_task = None;
+                app.status_after_write = None;
+                app.page = AppPage::Repository;
+                cx.notify();
+            });
+            draw(cx);
+            assert_eq!(
+                stashes(cx),
+                (TITLE.to_owned(), false),
+                "{state}: offered again once it ends"
+            );
+        }
     }
 }
