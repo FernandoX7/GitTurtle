@@ -878,6 +878,7 @@ fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
         x: px(10.),
         top: px(top),
         below: px(top + 44.),
+        asked: px(top + 44.),
         trailing: None,
     };
     let (menu, opened) = (size(px(160.), px(150.)), row(100.));
@@ -1308,5 +1309,38 @@ fn a_rows_menu_below_the_pointer_draws_its_edge_below_the_pointers_row(cx: &mut 
             cx.simulate_keystrokes("escape");
             draw(cx);
         }
+    }
+}
+
+/// A right-click's row that moves a fraction of a pixel, as a refresh can
+/// lay it out, keeps its menu open where the menu fits on neither side:
+/// moved 0.1 px across a pixel's edge, and 0.4 px within one, at scale 1
+/// and 1.5. The menu's place below the pointer rounds out to a whole pixel,
+/// and judged from that place, a 0.1 px move across a pixel's edge moved
+/// it by a whole pixel and closed the menu.
+#[test]
+fn a_row_menu_stays_with_a_row_moved_a_fraction_of_a_pixel() {
+    use super::{RowAnchor, leaves_its_row};
+    let room = Bounds::from_corners(point(px(0.), px(9.)), point(px(400.), px(300.)));
+    // Taller than the room on either side of a row near the room's middle.
+    let menu = size(px(160.), px(280.));
+    for scale in [1., 1.5] {
+        // A pointer 0.95 px into a row's pixel at 100 px, and moved with
+        // the row by `by`.
+        let at = |by: f32| {
+            let row = Bounds::new(point(px(10.), px(90. + by)), size(px(380.), px(24.)));
+            RowAnchor::pointer(point(px(40.), px(100.95 + by)), row, scale)
+        };
+        let opened = at(0.);
+        for by in [0.1, 0.4, -0.4] {
+            assert!(
+                !leaves_its_row(opened, (at(by), true), menu, room),
+                "scale {scale}: a row moved {by} px keeps its menu"
+            );
+        }
+        assert!(
+            leaves_its_row(opened, (at(1.), true), menu, room),
+            "scale {scale}: a row moved a whole pixel takes its menu with it"
+        );
     }
 }

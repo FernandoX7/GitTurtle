@@ -75,16 +75,24 @@ pub(super) struct RowAnchor {
     top: Pixels,
     /// Where the menu's top goes when it opens below the row.
     below: Pixels,
+    /// Where the menu was asked to start below the row, before `below`
+    /// rounds it to whole pixels: the pointer, or the row's foot and its
+    /// gap. A move is judged from it ([`RowAnchor::moved_from`]).
+    asked: Pixels,
     /// Where the menu's trailing edge ends, in place of starting at `x`.
     trailing: Option<Pixels>,
 }
 
 impl RowAnchor {
     /// Whether the row lies elsewhere than `other` did, by more than
-    /// rounding.
+    /// rounding: judged from where its menu was asked to start, not from
+    /// `below`, which a pointer's menu rounds out to a whole pixel past the
+    /// pointer's device row, so that a row moved a tenth of a pixel across
+    /// a pixel's edge moved its menu's place by a whole one, and closed a
+    /// menu that fits on neither side.
     fn moved_from(&self, other: Self) -> bool {
         let apart = |a: Pixels, b: Pixels| (a - b).abs() > px(0.5);
-        apart(self.x, other.x) || apart(self.top, other.top) || apart(self.below, other.below)
+        apart(self.x, other.x) || apart(self.top, other.top) || apart(self.asked, other.asked)
     }
 
     /// The row painted at `row` that a pointer pressed at `pointer`, on a
@@ -100,6 +108,7 @@ impl RowAnchor {
             x: pointer.x,
             top: row.top(),
             below: gpui_kit::base::point_row_clear_by(y, MENU_EDGE, scale).1,
+            asked: y,
             trailing: None,
         }
     }
@@ -584,6 +593,7 @@ impl KeyboardMenu {
             x: bounds.left() + inset,
             top: visible(top),
             below: visible(top + height) + menu_offset(),
+            asked: visible(top + height) + menu_offset(),
             trailing: None,
         }
     }
