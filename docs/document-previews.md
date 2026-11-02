@@ -33,8 +33,14 @@ text. The helper confines itself before it reads a byte (resource limits,
 `no_new_privs` and a seccomp allow-list with no file, network or process
 calls). The client kills it at a 10-second deadline, and within 25 ms once
 the page is no longer wanted. A first page is prepared by the repository
-worker's read, which a newer read (another file or commit), Back from
-Compare, a tab switch or close, or closing the window cancels. A later page
+worker's read, which a newer read (another file or commit), a tab switch or
+close, or closing the window cancels. Back from Compare cancels only the
+comparison's own preview read, the one labelled “Loading preview…”
+(`PREVIEW_LABEL` in [`main.rs`](../crates/app/src/main.rs)): a captured
+comparison restored with its tab (“Restoring captured comparison…”,
+[`repository_tabs.rs`](../crates/app/src/repository_tabs.rs)) keeps reading
+after Back until it completes or the helper reaches its 10-second deadline,
+and its late result is dropped. A later page
 is prepared on the render lane, whose request a page change, Retry page, Back,
 another file, a tab switch or leaving the repository page for Settings or
 Projects supersedes; leaving the page keeps a first page's read, whose
