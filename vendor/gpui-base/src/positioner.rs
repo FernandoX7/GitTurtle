@@ -95,12 +95,18 @@ impl Strategy {
     /// [`resolve_placement`] weighs ([`Positioner::point_room`]). `None`
     /// for the other placements.
     fn point_room(self, viewport_size: Size<Pixels>, margin: Pixels) -> Option<Pixels> {
-        let (Self::Point { .. }, Self::Side { trigger_bounds, .. }) = (self, self.as_side()) else {
+        let (Self::Point { scale_factor, .. }, Self::Side { trigger_bounds, .. }) =
+            (self, self.as_side())
+        else {
             return None;
         };
-        let bottom_limit = (viewport_size.height - margin).max(margin);
+        // GitTurtle patch: measured to the device pixels at or inside the
+        // margins, where a popup clamped to them lies, so a popup capped at
+        // the room lies wholly on its side of the point clear of them too.
+        let bottom_limit =
+            device_pixel_at_or_before((viewport_size.height - margin).max(margin), scale_factor);
         let below = bottom_limit - trigger_bounds.bottom();
-        let above = trigger_bounds.top() - margin;
+        let above = trigger_bounds.top() - device_pixel_at_or_after(margin, scale_factor);
         Some(below.max(above).max(px(0.)))
     }
 
@@ -154,9 +160,9 @@ pub fn point_device_row(y: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
 }
 
 /// GitTurtle patch: how near a popup's trailing edge lies to the window's
-/// right margin, or a popup's edge to a point's gap, to stand on it: the
-/// clamp or placement that moves it there subtracts, and can leave it a
-/// rounding error short.
+/// right or foot margin, or a popup's edge to a point's gap, to stand on
+/// it: the clamp or placement that moves it there subtracts, and can leave
+/// it a rounding error short.
 const SIDE_TOLERANCE: Pixels = px(0.01);
 
 /// GitTurtle patch: the first device pixel boundary at or after `x` on a
@@ -592,7 +598,7 @@ impl Element for Positioner {
         // viewport's foot is moved by whole pixels without crossing it:
         // rounding to the nearest pixel put a popup ending 8 px above a
         // status bar another half pixel lower.
-        let bottom = viewport.height - margin;
+        let bottom = (viewport.height - margin).max(margin);
         let y = if self.strategy_in(window).clear_of_point(position.bounds) {
             // GitTurtle patch: a popup wholly below or above a point lies on
             // the device pixel its gap ends on ([`Strategy::as_side`]), its
@@ -604,6 +610,20 @@ impl Element for Positioner {
             // at 2 it left a device row empty; above it, moved up to a whole
             // pixel, it ended a device row short of its gap at 2.
             offset.y
+        } else if position.bounds.top() <= margin {
+            // GitTurtle patch: a popup on the top margin, moved down to it,
+            // lies on the device pixel at or below it, counted from the
+            // window's top, as one on a side margin does. Rounded to whole
+            // pixels, at 1.25 and 1.5 GPUI's rounding of its place, halves
+            // toward zero, put its fill a device pixel nearer the top and its
+            // ring 7.2 px from it.
+            device_pixel_at_or_after(margin, scale_factor) - bounds.origin.y
+        } else if bottom - position.bounds.bottom() < SIDE_TOLERANCE {
+            // GitTurtle patch: and one on the foot's margin, moved up to it,
+            // ends on the device pixel at or above it.
+            device_pixel_at_or_before(bottom, scale_factor)
+                - position.bounds.size.height
+                - bounds.origin.y
         } else {
             match offset.y.round() {
                 y if position.bounds.bottom() <= bottom
@@ -1242,6 +1262,88 @@ mod tests {
                         } else if (edge - fill).abs() >= 1e-3 {
                             failures.push((scale, format!("{at}: edge {edge}, not {fill}")));
                         }
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures_by_scale(&failures));
+    }
+
+    /// GitTurtle patch: a popup moved down to the window's top margin or up
+    /// to its foot's, from a positioner laid out at the window's top, part
+    /// way into a pixel or 4/3 px down, lies on the device pixel at or
+    /// inside its 9 px margin, so a ring outside its fill stands exactly
+    /// 8 px from the window's top or foot, at scale 1, 1.25, 1.5 and 2,
+    /// while a popup the margins leave alone keeps its place. Moved by whole
+    /// pixels from where it was laid out, and placed by GPUI, which rounds
+    /// an element's place to the device pixel with halves toward zero, at
+    /// 1.25 a popup clamped 9 px down, 11.25 device pixels, lay on device
+    /// pixel 11, its ring 7.2 px from the top, and at 1.5 the 13.5 rounded
+    /// to 13.
+    #[gpui::test]
+    fn a_popup_clamped_to_the_top_or_foot_lies_on_the_device_pixel_at_its_margin(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        const HEIGHT: f32 = 300.;
+        const MARGIN: Pixels = px(9.);
+
+        struct Harness {
+            lead: Pixels,
+            corner: Point<Pixels>,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().pt(self.lead).child(
+                    Positioner::corner(Anchor::TopLeft, self.corner)
+                        .margin(MARGIN)
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "clamped-popup".into())
+                                .w(px(120.))
+                                .h(px(60.)),
+                        ),
+                )
+            }
+        }
+
+        let mut failures = Vec::new();
+        for scale in [1., 1.25, 1.5, 2.] {
+            let device = |value: Pixels| f32::from(value) * scale;
+            let at_top = (device(MARGIN) - 1e-3).ceil();
+            let at_foot = (device(px(HEIGHT) - MARGIN) + 1e-3).floor();
+            for lead in [0., 6.5, 4. / 3.] {
+                for (corner, top, clamped) in [
+                    // Clamped down to the top margin, and up to the foot's.
+                    (2., true, Some(at_top)),
+                    (HEIGHT - 40., false, Some(at_foot)),
+                    // Inside both margins, laid out at the window's top:
+                    // where it was asked to be.
+                    (100., true, None),
+                ] {
+                    if clamped.is_none() && lead != 0. {
+                        continue;
+                    }
+                    let (_, cx) = cx.add_window_view(move |_, _| Harness {
+                        lead: px(lead),
+                        corner: point(px(100.), px(corner)),
+                    });
+                    cx.simulate_resize(Size::new(px(460.), px(HEIGHT)));
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        window.draw(cx).clear(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let popup = cx.debug_bounds("clamped-popup").expect("the popup");
+                    let edge = device(if top { popup.top() } else { popup.bottom() });
+                    let expected = clamped.unwrap_or_else(|| device(px(corner)));
+                    if (edge - expected).abs() >= 1e-3 {
+                        failures.push((
+                            scale,
+                            format!(
+                                "at {corner}, laid out {lead} px down: {popup:?} on device pixel {edge}, not {expected}"
+                            ),
+                        ));
                     }
                 }
             }

@@ -198,10 +198,22 @@ which reads a popup moved in from either side of a window at scale 1, 1.5
 and 2 from a positioner laid out part way into a pixel and at the
 window's side; the old placement fails it at 1.5 and 2. The component's
 `a_popover_moved_in_from_a_side_draws_its_edge_8_px_from_it` reads the
-ring itself. Left open: the clamps at the window's top margin and above
-the bottom inset still move a popup by whole pixels from where it was
-laid out, so a popup moved in there can stand up to a pixel off that
-margin, as one moved in from a side did. Remove this part with the
+ring itself. The top and foot clamps do the same (2026-11-02): a popup
+moved down to the window's top margin lies on the device pixel at or below
+it, and one moved up to the margin above the window's foot, or above an
+application's bottom inset, ends on the device pixel at or above it, its
+drawn height a whole number of device pixels as GPUI lays it out, so its
+ring stands exactly 8 px from the window's top or foot at every scale;
+moved by whole pixels, at 1.25 a popup clamped 9 px down, 11.25 device
+pixels, lay on device pixel 11 and its ring 7.2 px from the top, and at
+1.5 the 13.5 rounded to 13. `Positioner::point_room` measures the room to
+those device pixels, so a popup capped there lies wholly on its side of
+the point and inside them. A popup inside both margins moves as before.
+`a_popup_clamped_to_the_top_or_foot_lies_on_the_device_pixel_at_its_margin`
+reads a popup clamped to the top and to the foot of a window at scale 1,
+1.25, 1.5 and 2 from a positioner laid out at the window's top, 6.5 px and
+4/3 px down, and one inside both margins left where it was asked to be;
+the whole-pixel clamps fail it at 1.25, 1.5 and 2. Remove this part with the
 component's window-margin patch.
 
 The popup-frame patch also modifies `src/popup.rs` and `src/positioner.rs`.
