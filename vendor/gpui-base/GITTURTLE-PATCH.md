@@ -402,3 +402,23 @@ a test window draws the body exactly as wide as its content, so a test-only
 inset narrows the body by 100 px. Remove the patch when upstream lays a
 group's panels out at their rescaled sizes in the first frame at a new size,
 and those tests pass with the three `fit_container` calls removed.
+
+The placeholder-fit patch modifies `src/input/base/state.rs` and
+`src/input/base/element.rs`. An application that fits a single-line field's
+placeholder to the width the field gives its text, as GitTurtle shortens a
+search field's and a filter's in a narrow window, could only read that width
+once the field had been painted (`text_bounds`), so a new width drew the
+earlier width's placeholder and the application's new one only in a second
+frame. `InputBaseState::set_placeholder_fit` gives the field a function from
+the width its text is laid out at to its placeholder (`PlaceholderFit`); the
+text element calls it as it is prepainted, with its bounds in that frame,
+before it shapes the placeholder, and keeps the result as the field's own
+placeholder without a notify. Without one the field shows the placeholder
+it was given, as upstream. GitTurtle sets it through
+`workspace::placeholder_fit`, as the field is laid out; its History search
+field, changed files' filter and navigation filter are covered by
+`cargo test --locked -p gitturtle draws_one_frame_where_it_settles` and by
+`views::tests::history_search_fits_its_placeholder_and_keeps_its_name`,
+`changed_file_filter_fits_in_whole_words_and_keeps_its_name` and
+`working_filter_placeholder_fits_its_field`. Remove the patch when upstream
+chooses a placeholder from the laid-out width in the frame.

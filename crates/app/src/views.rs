@@ -7371,7 +7371,8 @@ impl GitTurtle {
                     this.render_content_columns(working_layout, bounds.size.height, window, cx)
                 })
                 .unwrap_or_else(|_| div().into_any_element())
-        });
+        })
+        .named("repository-columns");
         div()
             .size_full()
             .flex()
@@ -11990,6 +11991,197 @@ pub(crate) mod tests {
             cx.debug_bounds("selected-changed-file").is_none(),
             "the selection, below the list's view, is not revealed over the request"
         );
+    }
+
+    /// What a width step is checked against, as its frame left it: History's
+    /// columns and the width it took, where the regions History and Compare
+    /// lay out are drawn, and the placeholders the changed files' filter and
+    /// History's search field show, the last two in History only.
+    type StepLayout = (
+        Option<(f32, Vec<(Pixels, Pixels)>)>,
+        Vec<(&'static str, Option<Bounds<Pixels>>)>,
+        SharedString,
+        Option<SharedString>,
+    );
+
+    /// The layout [`StepLayout`] reads, as the last frame drew it.
+    fn step_layout(app: &Entity<GitTurtle>, history: bool, cx: &mut VisualTestContext) -> StepLayout {
+        const REGIONS: [&str; 13] = [
+            "history-sidebar",
+            "history-scope-toolbar",
+            "history-scope-label",
+            "history-pane",
+            "commit-inspector",
+            "changed-files-header",
+            "selected-changed-file",
+            "compare-toolbar",
+            "preview-file-path",
+            "preview-content",
+            "compare-footer",
+            "compare-footer-text",
+            "text-review-menu",
+        ];
+        (
+            history.then(|| history_columns(app, cx)),
+            REGIONS
+                .into_iter()
+                .map(|region| (region, cx.debug_bounds(region)))
+                .collect(),
+            app.read_with(cx, |app, cx| {
+                app.file_filter.read(cx).presentation().placeholder().clone()
+            }),
+            history.then(|| {
+                app.read_with(cx, |app, cx| {
+                    app.search.read(cx).presentation().placeholder().clone()
+                })
+            }),
+        )
+    }
+
+    /// Steps a window from `from` to `to` at 13 and 18 pt, in History or,
+    /// given `path`, comparing that file of [`file_commits`]' image, text and
+    /// forty more files, with the inspector at its 320 px default where the
+    /// window holds it, and checks that the step draws one frame, the one it
+    /// settles in: one frame lays the repository's columns out, the next
+    /// frame's callbacks draw nothing, and that frame drew History's columns,
+    /// the regions beside them and the fields' placeholders where a window
+    /// opened at this width with these panels draws them, which nothing it
+    /// took from the earlier width reaches. Each source that drew such steps
+    /// twice on Wayland (`docs/benchmarks/2026-10-29-columns-in-frame.md`)
+    /// is checked: a field's placeholder fitted once the field was painted
+    /// and drawn by a refresh, as the changed files' filter's between 461 and
+    /// 980 px at 18 pt.
+    async fn assert_a_width_step_draws_one_frame(
+        cx: &mut TestAppContext,
+        path: Option<&'static str>,
+        from: Size<Pixels>,
+        to: Size<Pixels>,
+    ) {
+        use crate::in_frame::probe;
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let paths: Vec<String> = (0..40).map(|index| format!("f-{index:02}.txt")).collect();
+        let mut added: Vec<(&str, &[u8])> =
+            vec![("image.png", &before), ("notes.txt", b"one\ntwo\n")];
+        added.extend(paths.iter().map(|path| (path.as_str(), &b"first\n"[..])));
+        let mut changed: Vec<(&str, &[u8])> =
+            vec![("image.png", &after), ("notes.txt", b"one\nthree\n")];
+        changed.extend(paths.iter().map(|path| (path.as_str(), &b"second\n"[..])));
+        let input = file_commits(&[("add", added.as_slice()), ("change", changed.as_slice())]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        // The frames that lay the repository page's columns out, one each.
+        let frames = || {
+            probe::take()
+                .iter()
+                .filter(|frame| frame.region == "repository-columns")
+                .count()
+        };
+        probe::watch();
+        for text in [13, 18] {
+            let at = format!(
+                "{} at {text} pt, from {} × {} to {} × {}",
+                path.unwrap_or("History"),
+                from.width,
+                from.height,
+                to.width,
+                to.height
+            );
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(from);
+            draw(cx);
+            if let Some(path) = path {
+                let index = app.read_with(cx, |app, _| {
+                    app.files
+                        .iter()
+                        .position(|file| {
+                            file.new_path.as_deref() == Some(std::path::Path::new(path))
+                        })
+                        .expect("the file changed")
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_file(index, window, cx))
+                });
+                settle(&app, cx).await;
+            }
+            let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+            cx.update(|window, cx| {
+                panels.update(cx, |panels, cx| panels.resize_panel(1, px(320.), window, cx))
+            });
+            draw(cx);
+            frames();
+            cx.simulate_resize(to);
+            cx.run_until_parked();
+            assert_eq!(frames(), 1, "{at}: the step draws one frame");
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+            assert_eq!(frames(), 0, "{at}: the step asks for no further frame");
+            let step = step_layout(&app, path.is_none(), cx);
+            // As a window opened at this width with these panels: History's
+            // width, the lists' layouts and the placeholders as a new window
+            // starts them, then every frame it asks for.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.history_width = 900.;
+                    app.history_list_layout = None;
+                    app.file_list_layout = None;
+                    for field in [app.search.clone(), app.file_filter.clone()] {
+                        field.update(cx, |field, cx| field.set_placeholder("", window, cx));
+                    }
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            assert_eq!(
+                step_layout(&app, path.is_none(), cx),
+                step,
+                "{at}: the step's frame is the one a window opened at this width draws"
+            );
+        }
+        probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A text comparison narrowed from 980 px to a 461 × 490 half tile draws
+    /// one frame where it settles, the changed files' filter shortened to
+    /// "Filter" in it at 18 pt.
+    #[gpui::test]
+    async fn a_text_comparison_narrowed_from_980_to_461_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (wide, tile) = (size(px(980.), px(490.)), size(px(461.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, Some("notes.txt"), wide, tile).await;
+    }
+
+    /// A text comparison widened from a 461 × 490 half tile to 980 px draws
+    /// one frame where it settles.
+    #[gpui::test]
+    async fn a_text_comparison_widened_from_461_to_980_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (tile, wide) = (size(px(461.), px(490.)), size(px(980.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, Some("notes.txt"), tile, wide).await;
+    }
+
+    /// An image comparison narrowed from 980 px to a 461 × 490 half tile
+    /// draws one frame where it settles.
+    #[gpui::test]
+    async fn an_image_comparison_narrowed_from_980_to_461_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (wide, tile) = (size(px(980.), px(490.)), size(px(461.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, Some("image.png"), wide, tile).await;
+    }
+
+    /// An image comparison widened from a 461 × 490 half tile to 980 px draws
+    /// one frame where it settles.
+    #[gpui::test]
+    async fn an_image_comparison_widened_from_461_to_980_draws_one_frame_where_it_settles(
+        cx: &mut TestAppContext,
+    ) {
+        let (tile, wide) = (size(px(461.), px(490.)), size(px(980.), px(490.)));
+        assert_a_width_step_draws_one_frame(cx, Some("image.png"), tile, wide).await;
     }
 
     /// Every choice the repository page's width makes reads one width: the

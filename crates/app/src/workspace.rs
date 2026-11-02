@@ -1582,37 +1582,61 @@ fn whole_form(forms: &[&str], room: Pixels, size: Pixels, window: &Window) -> Sh
         )
 }
 
-/// A canvas that, painted after `field`, fits its placeholder to the width
-/// the field just painted its text at: the first of `forms`, its whole-word
-/// wordings from the longest, that fits, else the shortest ending with an
-/// ellipsis rather than clipping a glyph (`whole_form`). It sets the
-/// placeholder only when that changes, and then draws again, since refresh is
-/// ignored during paint. Its parent is positioned; it takes no room. The
-/// placeholder is no name: the field keeps its whole accessible name
-/// (`aria_label`) whichever form shows. `text` is the size the field draws
-/// its text at, at the default interface size: 12 pt for most fields, 11 pt
-/// for the navigation's filter.
+/// Fits `field`'s placeholder to the width the field lays its text out at:
+/// the first of `forms`, its whole-word wordings from the longest, that
+/// fits, else the shortest ending with an ellipsis rather than clipping a
+/// glyph (`whole_form`). The field chooses it as it is prepainted, in the
+/// frame that lays it out at that width
+/// (`InputBaseState::set_placeholder_fit`), so a new width draws the
+/// placeholder it takes in its first frame. Chosen after the field had been
+/// painted, it was a frame late, and the refresh that drew it asked for a
+/// second frame at every width that changed it: History's search field and
+/// the changed files' filter between a 461 px half tile and 980 px at 18 pt
+/// drew each such step twice. What this returns hands the field its choice
+/// as it is laid out, before the field is prepainted; its parent is
+/// positioned and it takes no room. The placeholder is no name: the field
+/// keeps its whole accessible name (`aria_label`) whichever form shows.
+/// `text` is the size the field draws its text at, at the default interface
+/// size: 12 pt for most fields, 11 pt for the navigation's filter.
 pub(super) fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     field: Entity<gpui_kit::base::input::InputBaseState<M>>,
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
     forms: &'static [&'static str],
     text: f32,
 ) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |_, _, window, cx| {
-            let Some(bounds) = field.read(cx).text_bounds() else {
-                return;
-            };
-            let fit = fitted_placeholder(cache, forms, bounds.size.width, text, window);
-            if *field.read(cx).presentation().placeholder() != fit {
-                field.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
-                window.defer(cx, |window, _| window.refresh());
-            }
-        },
-    )
-    .absolute()
-    .size_0()
+    FittedPlaceholder {
+        field,
+        cache,
+        forms,
+        text,
+    }
+}
+
+/// What [`placeholder_fit`] returns: as it is laid out, it hands its field
+/// the choice the field makes for its width as it is prepainted.
+#[derive(IntoElement)]
+struct FittedPlaceholder<M: gpui_kit::base::input::InputModeKind + 'static> {
+    field: Entity<gpui_kit::base::input::InputBaseState<M>>,
+    cache: &'static std::thread::LocalKey<PlaceholderFit>,
+    forms: &'static [&'static str],
+    text: f32,
+}
+
+impl<M: gpui_kit::base::input::InputModeKind + 'static> RenderOnce for FittedPlaceholder<M> {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            field,
+            cache,
+            forms,
+            text,
+        } = self;
+        field.update(cx, |state, _| {
+            state.set_placeholder_fit(Some(std::rc::Rc::new(move |room, window| {
+                fitted_placeholder(cache, forms, room, text, window)
+            })));
+        });
+        div().absolute().size_0()
+    }
 }
 
 /// `forms` at `text` pt as they fit `room` (`whole_form`), laid out again

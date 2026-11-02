@@ -373,6 +373,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// its default mask when the user has not made an explicit choice.
     pub(super) mask_pattern_set: bool,
     pub(super) placeholder: SharedString,
+    /// GitTurtle patch: what chooses the placeholder for the width the
+    /// field's text is laid out at ([`Self::set_placeholder_fit`]).
+    pub(super) placeholder_fit: Option<PlaceholderFit>,
 
     /// Diagnostic currently requested by pointer hover; applications render it.
     pub(super) diagnostic_popover: Option<Rc<crate::input::DiagnosticEntry>>,
@@ -422,6 +425,10 @@ pub struct InputBaseState<M: InputModeKind> {
 ///
 /// The fields are private and read through the methods below, so that a new
 /// one can be added without breaking the facades.
+/// GitTurtle patch: the placeholder a field shows with its text laid out
+/// this wide ([`InputBaseState::set_placeholder_fit`]).
+pub type PlaceholderFit = Rc<dyn Fn(Pixels, &Window) -> SharedString>;
+
 #[derive(Clone)]
 pub struct InputPresentation {
     focus_handle: FocusHandle,
@@ -686,6 +693,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             deferred_scroll_row: None,
             preferred_column: None,
             placeholder: SharedString::default(),
+            placeholder_fit: None,
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
@@ -818,6 +826,16 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         self.placeholder = placeholder.into();
         cx.notify();
+    }
+
+    /// GitTurtle patch: chooses the placeholder from the width the field's
+    /// text is laid out at, as the field is prepainted, in the frame that
+    /// lays it out at that width. A placeholder chosen from that width once
+    /// the field had been painted showed the earlier width's choice in the
+    /// first frame at a new width and asked for another. The choice is kept
+    /// as the field's placeholder; `None` leaves the placeholder as set.
+    pub fn set_placeholder_fit(&mut self, fit: Option<PlaceholderFit>) {
+        self.placeholder_fit = fit;
     }
 
     /// Find which line and sub-line the given offset belongs to, along with the position within that sub-line.

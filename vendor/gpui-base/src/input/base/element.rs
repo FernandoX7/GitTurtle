@@ -1709,11 +1709,26 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.display_map.ensure_text_prepared(&state.text, cx);
         });
 
+        // GitTurtle patch: a placeholder fitted to the width the text is laid
+        // out at in this frame, kept as the field's own
+        // (`InputBaseState::set_placeholder_fit`).
+        let placeholder = match self.state.read(cx).placeholder_fit.clone() {
+            Some(fit) => {
+                let fitted = fit(bounds.size.width, window);
+                self.state.update(cx, |state, _| {
+                    if state.placeholder != fitted {
+                        state.placeholder = fitted.clone();
+                    }
+                });
+                fitted
+            }
+            None => self.placeholder.clone(),
+        };
+
         let state = self.state.read(cx);
         let multi_line = state.is_multi_line();
         let text = state.text.clone();
         let is_empty = text.len() == 0;
-        let placeholder = self.placeholder.clone();
 
         let text_style = window.text_style();
         let disabled = state.disabled;
