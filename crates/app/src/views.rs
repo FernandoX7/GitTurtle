@@ -208,7 +208,8 @@ impl GitTurtle {
     /// each line elided in its middle as macOS elides one, so the part that
     /// tells two tabs apart stays: the name keeping its start and its end
     /// around "…" ("sysp…mod", [`name_middle`]), and the path its top
-    /// directory and its last component ("/tmp/…/compact", [`path_tail`]),
+    /// directory and its last component ("/tmp/…/compact"), never its last
+    /// component alone ([`location_tail`]),
     /// each measured in its own font as it is laid out on the window's
     /// device pixels. Their whole text stays the heading's accessible name
     /// and its tooltip ([`Self::repository_heading`]). Kept for each text,
@@ -267,7 +268,7 @@ impl GitTurtle {
                         ShownIdentity {
                             name_elided: name != whole,
                             name: name.into(),
-                            path: path_tail(
+                            path: location_tail(
                                 &self.repository_path_line(),
                                 room,
                                 width(11., FontWeight::NORMAL),
@@ -6123,6 +6124,41 @@ pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels
         Some(keep) => shown(keep),
         None => name_middle(&name[1..], room, &width),
     }
+}
+
+/// The header's repository path in `room`, as `width` measures a line:
+/// elided as [`path_tail`] elides a path, but never down to its last
+/// component alone, since the name line above already shows the name.
+/// Where "…/" and the last component no longer fit, the top directory, an
+/// absolute path's root with it, stays whole and the component is elided in
+/// its middle in the room it leaves ([`name_middle`]), "/tmp/gitt…qa87", or
+/// "/home/…/GitT…urtle" past directories between; where the top directory
+/// leaves the component less than its first character and "…", "…/" stands
+/// for the directories ("…/gitt…qa87"); and only where not even that fits,
+/// what `path_tail` gives. Kept to the component alone, the line read as a
+/// second elided name beneath the name and lost "/tmp" (decided 2026-11-02,
+/// QA-87 #14).
+pub(crate) fn location_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels) -> String {
+    let shown = path_tail(path, room, &width);
+    // `path_tail` keeps a separator wherever it keeps a directory.
+    let Some(slash) = path.rfind('/').filter(|_| !shown.contains('/')) else {
+        return shown;
+    };
+    let (directory, name) = (&path[..slash], &path[slash + 1..]);
+    let root = usize::from(directory.starts_with('/'));
+    let top = directory[root..]
+        .find('/')
+        .map_or(directory.len(), |at| at + root);
+    let between = if top < directory.len() { "…/" } else { "" };
+    let kept = format!("{}/{between}", &directory[..top]);
+    for prefix in [kept.as_str(), "…/"] {
+        let elided = name_middle(name, room - width(prefix), &width);
+        let line = format!("{prefix}{elided}");
+        if elided != name && width(&line) <= room {
+            return line;
+        }
+    }
+    shown
 }
 
 /// A file name in `room`, as `width` measures a line: whole where it fits,
@@ -22038,6 +22074,41 @@ pub(crate) mod tests {
         );
     }
 
+    /// The header's path never drops its directory, since the name line
+    /// above it shows the name: where "…/" and its last component no longer
+    /// fit, the top directory stays whole and the component is elided in its
+    /// middle in the room left, "…/" standing for any directories between,
+    /// down to "…/" and the elided component, and only past that the
+    /// component alone; a path whose directory `path_tail` keeps is
+    /// unchanged. Measured a pixel per character. The component alone,
+    /// elided, read as a second elided name and lost "/tmp".
+    #[test]
+    fn the_headers_path_keeps_its_directory_where_its_name_overflows() {
+        let location = |path: &str, room: f32| {
+            location_tail(path, px(room), |text| px(text.chars().count() as f32))
+        };
+        let tmp = "/tmp/gitturtle-evidence-qa87";
+        assert_eq!(location(tmp, 28.), tmp);
+        assert_eq!(location(tmp, 20.), "/tmp/gitturt…ce-qa87");
+        assert_eq!(location(tmp, 7.), "/tmp/g…");
+        assert_eq!(location(tmp, 6.), "…/gi…7");
+        assert_eq!(location(tmp, 3.), "g…7", "past that, the component alone");
+        let deep = "/home/fernando/projects/a-very-long-repository-name";
+        assert_eq!(location(deep, 25.), "/home/…/a-very-l…ory-name");
+        // Where the component fits whole but not after "…/", "…/" stays and
+        // the component gives way, so the line still reads as a path.
+        assert_eq!(location("/tmp/ab/compact", 9.), "…/compact");
+        assert_eq!(location("/tmp/ab/compact", 8.), "…/com…ct");
+        // What `path_tail` already keeps a directory in stays as it is.
+        let kept = "/tmp/gitturtle-evidence/compact";
+        assert_eq!(location(kept, 14.), "/tmp/…/compact");
+        assert_eq!(location(kept, 12.), "/tm…/compact");
+        assert_eq!(
+            location("A clearer view of your code", 30.),
+            "A clearer view of your code"
+        );
+    }
+
     /// The header's repository name and path, too long for their room, are
     /// elided in their middle, so what tells two tabs apart stays: at 461
     /// and 1000 px wide, at 13 and 18 pt, the name keeps its start and its
@@ -22141,6 +22212,87 @@ pub(crate) mod tests {
         assert!(
             seen.0 && seen.1,
             "the walk elides the name and the path: {seen:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The header's path line keeps its top directory where its last
+    /// component alone overflows the line, since the name line above shows
+    /// the name: in 461 × 490 and 1000 × 680 windows at 13 and 18 pt, a
+    /// repository whose own directory's name is longer than the line shows
+    /// its top directory, "…" for the directories between, and that name
+    /// elided in its middle, its start and its end kept, fitting its line.
+    /// It showed the name alone, elided as the name line above it was, and
+    /// lost "/tmp".
+    #[gpui::test]
+    async fn the_headers_path_keeps_its_directory_beneath_a_long_name(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, window};
+        const LONG: &str = "gitturtle-evidence-2026-11-02-a-repository-named-longer-than-its-line";
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture_repository(fixture.path().join(LONG));
+        git(
+            repo.path(),
+            &["commit", "--quiet", "--allow-empty", "-m", "First"],
+        );
+        let (app, cx) = window(cx, &repo);
+        let whole = app.read_with(cx, |app, _| {
+            app.path
+                .as_ref()
+                .expect("the repository")
+                .display()
+                .to_string()
+        });
+        let top = format!("/{}", whole[1..].split('/').next().unwrap());
+        let prefix = if whole[top.len()..].matches('/').count() > 1 {
+            format!("{top}/…/")
+        } else {
+            format!("{top}/")
+        };
+        let mut seen = [false; 2];
+        for (width, height) in [(461., 490.), (1000., 680.)] {
+            for (at_size, text) in [13, 18].into_iter().enumerate() {
+                let at = format!("{text} pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                draw(cx);
+                // The compact row shows the name alone.
+                let Some(line) = cx.debug_bounds("repository-path") else {
+                    continue;
+                };
+                let (_, shown) = HEADER_SHOWN
+                    .with(|kept| kept.borrow().clone())
+                    .expect("the header is drawn");
+                let rest = shown
+                    .strip_prefix(prefix.as_str())
+                    .unwrap_or_else(|| panic!("{at}: {shown:?} keeps {prefix:?}"));
+                let (front, back) = rest
+                    .split_once('…')
+                    .unwrap_or_else(|| panic!("{at}: {shown:?} elides the name in its middle"));
+                assert!(
+                    LONG.starts_with(front)
+                        && LONG.ends_with(back)
+                        && !front.is_empty()
+                        && !back.is_empty(),
+                    "{at}: {shown:?} keeps the name's start and its end"
+                );
+                let drawn = cx.update(|window, _| {
+                    laid_out_text_width(
+                        shaped_width(&shown, appearance::ui_text(11.), FontWeight::NORMAL, window),
+                        window,
+                    )
+                });
+                assert!(
+                    drawn <= line.size.width - px(ELLIPSIS_SLACK) + px(0.01),
+                    "{at}: {shown:?}, {drawn:?} wide, fits its line, {line:?}"
+                );
+                seen[at_size] = true;
+            }
+        }
+        assert_eq!(
+            seen,
+            [true, true],
+            "the walk draws the path line at 13 and 18 pt"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
