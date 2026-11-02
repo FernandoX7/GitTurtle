@@ -1170,3 +1170,207 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod deepened_shallow_tests {
+    use crate::views::tests::{fixture_git, history_window_from, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// Commits on `main` and on its side branch.
+    const LINE: usize = 400;
+
+    /// A `git fast-import` stream: `main`'s [`LINE`] commits, a side branch
+    /// of [`LINE`] more from main's first, and `main` merging the side
+    /// branch on top, so History's topological page shows the side branch's
+    /// line and then main's.
+    fn merged_script() -> String {
+        let mut input = String::new();
+        let mut commit = |reference: &str, mark: usize, message: String, parents: &str| {
+            input.push_str(&format!(
+                "commit refs/heads/{reference}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n{parents}",
+                1_700_000_000 + mark,
+                message.len(),
+            ));
+        };
+        for index in 0..LINE {
+            commit("main", index + 1, format!("main {index}"), "");
+        }
+        for index in 0..LINE {
+            let from = if index == 0 { "from :1\n" } else { "" };
+            commit("side", 1_001 + index, format!("side {index}"), from);
+        }
+        commit(
+            "main",
+            2_001,
+            "merge side".into(),
+            &format!("merge :{}\n", 1_000 + LINE),
+        );
+        input + "done\n"
+    }
+
+    /// Lands every reply the window waits for and each that they ask for
+    /// in turn, drawing no frame of its own, as
+    /// `views::tests::land_every_reply` does: each executor answers on a
+    /// thread of its own, which `run_until_parked` cannot wait for.
+    fn land(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..16 {
+            let asked = app.update(cx, |app, _| {
+                app.worker.wait_idle();
+                app.operations.drain();
+                app.preferences_writer.drain();
+                app.file_paths.drain();
+                app.worker.submissions()
+            });
+            cx.run_until_parked();
+            if app.read_with(cx, |app, _| {
+                app.worker.submissions() == asked
+                    && app.automatic.replies_landed()
+                    && !app.working_paths.pending
+                    && !app.file_paths.pending
+            }) {
+                return;
+            }
+        }
+        panic!("the window's replies kept asking for more");
+    }
+
+    /// A shallow clone deepened in place outside the app draws its deepened
+    /// page in one landing, though the page is as long as it was and every
+    /// reference stays where it was: a clone at depth 300, from a local
+    /// bare repository, of a history whose top merges a side branch as
+    /// long as `main`, fills History's 500-row page with the merge, the
+    /// side branch's 299 commits it holds and then 200 of main's, the last
+    /// side commit it holds without parents. `git fetch --deepen=50` from
+    /// the same bare repository, with no network, gives that commit its
+    /// parent and brings the side branch's next 50 commits into the page,
+    /// pushing 50 of main's out. A quiet rescan then installs the page in
+    /// one landing, which draws one frame: the side commits it brought in,
+    /// on the page, and the commit that had none drawn with its parent below
+    /// it. Counted as the page shown, as it was where only references,
+    /// paging and length were compared, the landing drew nothing and the
+    /// page kept the rows and graph the clone had before.
+    #[gpui::test]
+    async fn a_shallow_clone_deepened_in_place_draws_its_page_in_one_landing(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, merged_script()).await;
+        let origin = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clones = tempfile::tempdir().unwrap();
+        let bare = clones.path().join("bare.git");
+        fixture_git(
+            clones.path(),
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                origin.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let url = format!("file://{}", bare.display());
+        fixture_git(
+            clones.path(),
+            &[
+                "clone",
+                "--quiet",
+                "--depth",
+                "300",
+                url.as_str(),
+                "shallow",
+            ],
+        );
+        let shallow = clones.path().join("shallow");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(shallow.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        land(&app, cx);
+        settle(&app, cx).await;
+        let page = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.commits
+                    .iter()
+                    .map(|commit| (commit.oid.clone(), commit.subject.clone()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = page(cx);
+        assert_eq!(before.len(), 500, "the clone fills History's page");
+        let boundary = app.read_with(cx, |app, _| {
+            let index = app
+                .commits
+                .iter()
+                .position(|commit| commit.parents.is_empty())
+                .expect("the clone's deepest side commit, without parents");
+            (
+                app.commits[index].oid.clone(),
+                app.commits[index].subject.clone(),
+            )
+        });
+        assert!(boundary.1.starts_with("side "), "{boundary:?}");
+
+        fixture_git(&shallow, &["fetch", "--quiet", "--deepen=50", "origin"]);
+        crate::in_frame::probe::watch();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        land(&app, cx);
+        let frames = crate::in_frame::probe::take()
+            .iter()
+            .filter(|frame| frame.region == "repository-columns")
+            .count();
+        crate::in_frame::probe::stop();
+        assert_eq!(frames, 1, "the deepened page draws in one landing");
+
+        let after = page(cx);
+        assert_eq!(after.len(), 500, "the page is as long as it was");
+        let entered = after
+            .iter()
+            .filter(|row| !before.contains(row))
+            .collect::<Vec<_>>();
+        assert_eq!(entered.len(), 50, "the side commits the fetch brought in");
+        assert!(
+            entered
+                .iter()
+                .all(|(_, subject)| subject.starts_with("side ")),
+            "{entered:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .filter(|row| !after.contains(row))
+                .all(|(_, subject)| subject.starts_with("main ")),
+            "main's oldest rows leave the page"
+        );
+        app.read_with(cx, |app, _| {
+            let index = app
+                .commits
+                .iter()
+                .position(|commit| commit.oid == boundary.0)
+                .expect("the commit that had no parents stays on the page");
+            let parent = &app.commits[index].parents;
+            assert_eq!(parent.len(), 1, "{boundary:?} has its parent");
+            assert_eq!(
+                app.commits[index + 1].oid,
+                parent[0],
+                "{boundary:?}'s parent is the row below it"
+            );
+            assert!(
+                !app.graph[index].edges.is_empty(),
+                "{boundary:?} is drawn joined to its parent"
+            );
+        });
+    }
+}
