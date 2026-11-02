@@ -557,44 +557,81 @@ pub(super) fn history_bytes(commits: &[Commit], graph: &[graph::GraphRow]) -> us
 // from its text alone, a field came back with its caret at the end and
 // nothing selected.
 #[derive(Default)]
-struct TabInputs {
-    values: [String; 6],
-    /// Each field's selection as the byte offsets where it began and where
-    /// its caret is: the same offset twice where nothing is selected.
-    selections: [(usize, usize); 6],
-}
+struct TabInputs([FieldSnapshot; 6]);
 impl TabInputs {
-    fn capture(inputs: [&Entity<InputState>; 6], cx: &App) -> Self {
-        Self {
-            values: inputs.map(|input| input.read(cx).value().to_string()),
-            selections: inputs.map(|input| {
-                let input = input.read(cx);
-                let (selected, caret) = (input.selected_range(), input.cursor());
-                let anchor = if caret == selected.start {
-                    selected.end
-                } else {
-                    selected.start
-                };
-                (anchor, caret)
-            }),
-        }
+    fn capture(inputs: [&Entity<InputState>; 6], window: &mut Window, cx: &mut App) -> Self {
+        Self(inputs.map(|input| FieldSnapshot::capture(input, window, cx)))
     }
     fn restore(self, inputs: [&Entity<InputState>; 6], window: &mut Window, cx: &mut App) {
-        for ((input, value), (anchor, caret)) in
-            inputs.into_iter().zip(self.values).zip(self.selections)
-        {
-            input.update(cx, |input, cx| {
-                let end = value.len();
-                input.set_value(value, window, cx);
-                // The text leaves the caret at its end with nothing
-                // selected; a selection or a caret elsewhere is set again,
-                // from where it began to the caret, so a selection made
-                // backwards keeps its caret at its start.
-                if (anchor, caret) != (end, end) {
-                    input.set_selected_range(anchor..caret, cx);
-                }
-            });
+        for (input, field) in inputs.into_iter().zip(self.0) {
+            field.restore(input, window, cx);
         }
+    }
+}
+
+/// One field's text and selection as its tab was left.
+#[derive(Default)]
+pub(super) struct FieldSnapshot {
+    value: String,
+    /// The selection's byte offsets, the same offset twice where only the
+    /// caret is.
+    selected: std::ops::Range<usize>,
+    /// Whether the caret is at the selection's start, as a selection made
+    /// backwards leaves it.
+    reversed: bool,
+}
+impl FieldSnapshot {
+    pub(super) fn capture<M: gpui_kit::base::input::InputModeKind>(
+        input: &Entity<gpui_kit::base::input::InputBaseState<M>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
+        use gpui::EntityInputHandler as _;
+        input.update(cx, |input, cx| {
+            let value = input.value().to_string();
+            let caret = input.cursor();
+            // Text an input method is still composing is kept as typed, with
+            // the caret at its end and nothing selected: a selection within
+            // it is the input method's, which ends with the composition.
+            if input.marked_text_range(window, cx).is_some() {
+                return Self {
+                    value,
+                    selected: caret..caret,
+                    reversed: false,
+                };
+            }
+            // The kit reports where the caret is rather than the selection's
+            // direction; with no composition its caret is the selection's
+            // start exactly where the selection was made backwards.
+            let selected = input.selected_range();
+            let reversed = !selected.is_empty() && caret == selected.start;
+            Self {
+                value,
+                selected,
+                reversed,
+            }
+        })
+    }
+    pub(super) fn restore<M: gpui_kit::base::input::InputModeKind>(
+        self,
+        input: &Entity<gpui_kit::base::input::InputBaseState<M>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        input.update(cx, |input, cx| {
+            input.set_value(self.value, window, cx);
+            // The text leaves a single-line field's caret at its end and a
+            // multi-line field's at its start, nothing selected; the
+            // selection is always set again, from where it began to the
+            // caret, so one made backwards keeps its caret at its start.
+            let std::ops::Range { start, end } = self.selected;
+            let (anchor, caret) = if self.reversed {
+                (end, start)
+            } else {
+                (start, end)
+            };
+            input.set_selected_range(anchor..caret, cx);
+        });
     }
 }
 
@@ -907,7 +944,7 @@ impl GitTurtle {
             search: std::mem::take(&mut self.history_search),
             paging: std::mem::take(&mut self.history_paging),
             history_updates: std::mem::take(&mut self.history_updates),
-            inputs: TabInputs::capture(self.tab_inputs(), cx),
+            inputs: TabInputs::capture(self.tab_inputs(), window, cx),
             branches: std::mem::take(&mut self.branches),
             worktrees: std::mem::take(&mut self.worktrees),
             nav_rows: std::mem::take(&mut self.nav_rows),
@@ -5424,7 +5461,7 @@ mod tests {
             ]) {
                 input.update(cx, |input, cx| input.set_value(value, window, cx));
             }
-            let first_tab = TabInputs::capture(inputs.each_ref(), cx);
+            let first_tab = TabInputs::capture(inputs.each_ref(), window, cx);
             TabInputs::default().restore(inputs.each_ref(), window, cx);
             assert!(inputs.iter().all(|input| input.read(cx).value().is_empty()));
 
@@ -5432,11 +5469,11 @@ mod tests {
             inputs[0].update(cx, |input, cx| {
                 input.set_value("new repository query", window, cx)
             });
-            let second_tab = TabInputs::capture(inputs.each_ref(), cx);
+            let second_tab = TabInputs::capture(inputs.each_ref(), window, cx);
             first_tab.restore(inputs.each_ref(), window, cx);
             assert_eq!(inputs[0].read(cx).value().as_ref(), "change 11000");
             assert_eq!(inputs[1].read(cx).value().as_ref(), "feature/");
-            let first_tab = TabInputs::capture(inputs.each_ref(), cx);
+            let first_tab = TabInputs::capture(inputs.each_ref(), window, cx);
             second_tab.restore(inputs.each_ref(), window, cx);
             assert_eq!(inputs[0].read(cx).value().as_ref(), "new repository query");
             assert!(

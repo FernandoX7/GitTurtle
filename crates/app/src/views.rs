@@ -13429,6 +13429,103 @@ pub(crate) mod tests {
         }
     }
 
+    /// A warm tab left while an input method composes in a field gives the
+    /// field back its text with the caret after it and nothing selected:
+    /// the second tab of [`two_history_tabs`] left with "fix" in History's
+    /// search field and "ing" composed after it, the input method
+    /// selecting the first two composed characters, the first tab shown and
+    /// the second shown again: the field reads "fixing", its caret at its
+    /// end, nothing selected. The selection was the composition's, which the
+    /// switch ends; given back, it selected part of the composed text.
+    #[gpui::test]
+    async fn a_warm_tab_left_mid_composition_gives_its_field_back_its_caret(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::EntityInputHandler as _;
+        let (_fixtures, app, cx, _tabs) = two_history_tabs(cx).await;
+        let field = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, cx| {
+                let search = app.search.read(cx);
+                (
+                    search.value().to_string(),
+                    search.selected_range(),
+                    search.cursor(),
+                )
+            })
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |search, cx| {
+                    search.set_value("fix", window, cx);
+                    search.replace_and_mark_text_in_range(None, "ing", Some(0..2), window, cx);
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            field(cx),
+            ("fixing".to_owned(), 3..5, 6),
+            "the input method selects within its composition"
+        );
+        let away = switch_warm_tab(&app, 0, cx).await;
+        drop(away);
+        settle(&app, cx).await;
+        assert_eq!(field(cx).0, "", "the first tab's own field");
+        let back = switch_warm_tab(&app, 1, cx).await;
+        drop(back);
+        assert_eq!(
+            field(cx),
+            ("fixing".to_owned(), 6..6, 6),
+            "the composed text kept, the caret after it, nothing selected"
+        );
+    }
+
+    /// A multi-line field gets back the caret and selection its tab left:
+    /// a test-only multi-line field reading "one\ntwo", left with its caret
+    /// at its end, with "ne\ntw" selected forward and then backward, each
+    /// time captured as a warm tab captures its fields, emptied as a new tab
+    /// empties them and given back what was captured. A multi-line field's
+    /// text puts its caret at its start, so a caret left at the end, which
+    /// the text alone was trusted to put back, returned at the start.
+    #[gpui::test]
+    fn a_multi_line_field_gets_back_its_caret_and_selection(cx: &mut TestAppContext) {
+        use crate::repository_tabs::FieldSnapshot;
+        cx.update(gpui_kit::init);
+        let cx = cx.add_empty_window();
+        let field = cx.update(|window, cx| cx.new(|cx| TextareaState::new(window, cx)));
+        for (anchor, caret, at) in [
+            (7, 7, "the caret at its end"),
+            (1, 6, "selected forward"),
+            (6, 1, "selected backward"),
+        ] {
+            cx.update(|window, cx| {
+                let read = |cx: &App| {
+                    let field = field.read(cx);
+                    (
+                        field.value().to_string(),
+                        field.selected_range(),
+                        field.cursor(),
+                    )
+                };
+                field.update(cx, |field, cx| {
+                    field.set_value("one\ntwo", window, cx);
+                    field.set_selected_range(anchor..caret, cx);
+                });
+                let left = (
+                    "one\ntwo".to_owned(),
+                    anchor.min(caret)..anchor.max(caret),
+                    caret,
+                );
+                assert_eq!(read(cx), left, "{at}: as the tab is left");
+                let snapshot = FieldSnapshot::capture(&field, window, cx);
+                FieldSnapshot::default().restore(&field, window, cx);
+                assert_eq!(read(cx), (String::new(), 0..0, 0), "{at}: emptied");
+                snapshot.restore(&field, window, cx);
+                assert_eq!(read(cx), left, "{at}: as it was left");
+            });
+        }
+    }
+
     /// A field given text while unfocused stays still: History's search
     /// field, unfocused with the commit list focused, given "abc" draws the
     /// frame that shows it, and over the next five seconds the field
