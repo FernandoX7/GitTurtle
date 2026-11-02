@@ -73,14 +73,11 @@ impl Strategy {
                 gap,
                 scale_factor,
             } => {
-                let scale_factor = scale_factor.max(f32::EPSILON);
-                let row = (f32::from(position.y) * scale_factor).floor();
-                let top = px(row / scale_factor) - gap;
-                let bottom = px((row + 1.) / scale_factor) + gap;
+                let (top, bottom) = point_row_clear_by(position.y, gap, scale_factor);
                 Self::Side {
                     trigger_bounds: Bounds::from_corners(
-                        point(position.x, top.floor()),
-                        point(position.x, bottom.ceil()),
+                        point(position.x, top),
+                        point(position.x, bottom),
                     ),
                     placement: Some(Placement::Bottom),
                     align: Align::Start,
@@ -105,6 +102,22 @@ impl Strategy {
         let above = trigger_bounds.top() - margin;
         Some(below.max(above).max(px(0.)))
     }
+}
+
+/// GitTurtle patch: where a popup opened at a pointer's place, `y`, may end
+/// above it and begin below it on a display of `scale_factor`: `gap` clear
+/// of the device pixel row the point lies in, the far edges rounded out to
+/// whole pixels, as [`Positioner::point`] places a popup. A popup that
+/// draws a ring of `gap` outside its fill and starts at the second edge
+/// draws it from the device row below the pointer's, never on it, at a
+/// fractional scale too, where GPUI paints the ring over the device pixels
+/// it touches.
+pub fn point_row_clear_by(y: Pixels, gap: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
+    let scale_factor = scale_factor.max(f32::EPSILON);
+    let row = (f32::from(y) * scale_factor).floor();
+    let top = px(row / scale_factor) - gap;
+    let bottom = px((row + 1.) / scale_factor) + gap;
+    (top.floor(), bottom.ceil())
 }
 
 /// The bounds a popup resolved to, and the side it ended up on.

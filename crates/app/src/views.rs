@@ -21865,7 +21865,8 @@ pub(crate) mod tests {
     /// than the room below the pointer, goes wholly above the row it was
     /// opened on, its edge clear of the row: it ran 19.5 px over the bar at
     /// 13 pt, and then the kit's clamp moved it up over the row. In a
-    /// 1480 × 800 window, with room below, it opens at the pointer.
+    /// 1480 × 800 window, with room below, it opens at the pointer, its
+    /// drawn edge on the device pixel row below the pointer's.
     #[gpui::test]
     async fn menus_keep_their_edge_8_px_above_the_status_bar(cx: &mut TestAppContext) {
         const BROWSE: &str = "menu-item: Browse stashes… · MenuItem";
@@ -21947,10 +21948,15 @@ pub(crate) mod tests {
             .map(|(_, item)| *item)
             .expect("the first row's menu");
         let surface = menu_surface(cx, item);
+        // Its drawn edge starts on the device pixel row below the pointer's.
+        let scale = cx.update(|window, _| window.scale_factor());
+        let below = px(((f32::from(pointer.y) * scale).floor() + 1.) / scale);
+        let drawn = surface.dilate(edge);
         assert!(
-            (surface.top() - pointer.y).abs() <= px(1.)
+            drawn.top() >= below - px(0.01)
+                && drawn.top() < below + px(1.)
                 && (surface.left() - pointer.x).abs() <= px(1.),
-            "the first row's menu {surface:?} opens at the pointer {pointer:?} in 1480 × 800"
+            "the first row's menu {surface:?} opens at the pointer {pointer:?}, its edge just below it, in 1480 × 800"
         );
         cx.simulate_keystrokes("escape");
         draw(cx);

@@ -65,8 +65,8 @@ pub(super) fn bind_keys(cx: &mut App) {
 /// ([`RowAnchor::pointer`]). It holds where the menu's leading edge starts,
 /// the row's top edge, above which a menu that does not fit below ends
 /// [`menu_offset`] clear of it, and where the menu's top goes when it opens
-/// below: [`menu_offset`] below the row's foot, or the pointer, where a
-/// right-click's menu starts as macOS's does. A menu can end at the
+/// below: [`menu_offset`] below the row's foot, or just below the pointer's
+/// device pixel row, where a right-click's menu starts as macOS's does. A menu can end at the
 /// list's trailing inset instead ([`RowAnchor::trailing`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RowAnchor {
@@ -87,13 +87,19 @@ impl RowAnchor {
         apart(self.x, other.x) || apart(self.top, other.top) || apart(self.below, other.below)
     }
 
-    /// The row painted at `row` that a pointer pressed at `pointer`: its menu
-    /// starts at the pointer, below it, or lies wholly above the row.
-    pub(super) fn pointer(pointer: Point<Pixels>, row: Bounds<Pixels>) -> Self {
+    /// The row painted at `row` that a pointer pressed at `pointer`, on a
+    /// display of `scale`: its menu starts at the pointer, below it, its
+    /// drawn edge, [`MENU_EDGE`] outside its fill, on the device pixel row
+    /// below the pointer's, as a text field's drawn menu starts
+    /// (`gpui_kit::base::point_row_clear_by`), or lies wholly above the row.
+    /// With its fill at the pointer, its edge lay on the pixel row above the
+    /// pointer's, over the row clicked.
+    pub(super) fn pointer(pointer: Point<Pixels>, row: Bounds<Pixels>, scale: f32) -> Self {
+        let y = pointer.y.clamp(row.top(), row.bottom());
         Self {
             x: pointer.x,
             top: row.top(),
-            below: pointer.y.clamp(row.top(), row.bottom()),
+            below: gpui_kit::base::point_row_clear_by(y, MENU_EDGE, scale).1,
             trailing: None,
         }
     }
@@ -1740,9 +1746,10 @@ pub(super) struct Pressed {
 }
 
 impl Pressed {
-    /// A press at `pointer` on the row painted at `row`.
-    fn at(pointer: Point<Pixels>, row: Bounds<Pixels>) -> Self {
-        let opened = RowAnchor::pointer(pointer, row);
+    /// A press at `pointer` on the row painted at `row`, on a display of
+    /// `scale`.
+    fn at(pointer: Point<Pixels>, row: Bounds<Pixels>, scale: f32) -> Self {
+        let opened = RowAnchor::pointer(pointer, row, scale);
         Self {
             pointer: pointer - row.origin,
             place: std::rc::Rc::new(std::cell::Cell::new(opened)),
@@ -1750,10 +1757,10 @@ impl Pressed {
         }
     }
 
-    /// The row lies at `row` in this frame.
-    fn place(&self, row: Bounds<Pixels>) {
+    /// The row lies at `row` in this frame, on a display of `scale`.
+    fn place(&self, row: Bounds<Pixels>, scale: f32) {
         self.place
-            .set(RowAnchor::pointer(row.origin + self.pointer, row));
+            .set(RowAnchor::pointer(row.origin + self.pointer, row, scale));
     }
 }
 
@@ -1959,7 +1966,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         // Where the row lies in this frame, which its menu, prepainted
         // after the window's other elements, is placed beside.
         if let Some(pressed) = pressed {
-            pressed.place(bounds);
+            pressed.place(bounds, window.scale_factor());
         }
         element.prepaint(window, cx);
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
@@ -1987,7 +1994,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
             // an earlier right-click menu holds it, this row's or another's,
             // where that one returns it ([`OpenPointerMenus`]).
             let previous = OpenPointerMenus::restore_target(window, cx);
-            let row = RowAnchor::pointer(event.position, hitbox.bounds);
+            let row = RowAnchor::pointer(event.position, hitbox.bounds, window.scale_factor());
             {
                 let mut state = shared.borrow_mut();
                 // Its dismissal, which no longer reaches this state, would
@@ -1997,7 +2004,11 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 }
                 state._dismiss = None;
                 state.open = true;
-                state.pressed = Some(Pressed::at(event.position, hitbox.bounds));
+                state.pressed = Some(Pressed::at(
+                    event.position,
+                    hitbox.bounds,
+                    window.scale_factor(),
+                ));
             }
             // Built after this event, as the kit builds its own, with the
             // builder of the frame it was opened in, or a later one that the
