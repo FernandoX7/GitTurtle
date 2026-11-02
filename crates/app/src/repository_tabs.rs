@@ -4521,7 +4521,10 @@ mod tests {
     /// of a pixel narrower; the floor is now rounded up to a device pixel, as
     /// the label is. The insets are each snapped as layout snaps the label's
     /// padding: at 17 pt their scaled sum rounded a device pixel short of
-    /// the two paddings.
+    /// the two paddings. The window is too narrow on every platform's strip:
+    /// where its 160 px leave the drawn tab room past its floor, it gives
+    /// that room up (macOS 15, without Linux's Menu, drew the tab 56 px wide
+    /// there at 13 pt).
     #[gpui::test]
     async fn a_tab_at_its_floor_keeps_it_whole_at_a_fractional_scale(cx: &mut TestAppContext) {
         use crate::tags::tests::rendered;
@@ -4552,6 +4555,18 @@ mod tests {
             });
             let device_floor = f32::from(floor) * 1.5;
             off_grid += usize::from((device_floor - device_floor.round()).abs() > 0.01);
+            // Too narrow for the name on every platform: 160 px leaves the
+            // tab at its floor beside Linux's Menu, but macOS's strip holds
+            // no Menu (`TabStripLabels`), and there the list kept 84 px at
+            // 13 pt and the tab 56. Where the drawn tab has room past its
+            // floor, the window gives up that room and a pixel more.
+            let past = rendered(cx, "repository-tab-0").size.width - (insets + floor);
+            if past >= device {
+                let narrower = 160. - (f32::from(past) * 1.5).ceil() / 1.5 - 1.;
+                resize_strip(cx, &app, (interface, narrower, 490.)).await;
+                cx.update(|window, _| window.set_scale_factor(1.5));
+                crate::tags::tests::draw(cx);
+            }
             let tab = rendered(cx, "repository-tab-0");
             assert!(
                 tab.size.width >= insets + floor - px(0.01),
