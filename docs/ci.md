@@ -421,7 +421,10 @@ Steps, in order:
    test packages: `base-devel clang cmake git openssh python rustup ca-certificates`
    plus the GPUI native libraries (`fontconfig freetype2 wayland libxkbcommon
    libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`),
-   the Arch counterparts of the Ubuntu jobs' packages. It checks their `pkg-config`
+   the Arch counterparts of the Ubuntu jobs' packages, and `shared-mime-info`, the
+   MIME database GIO types files with: without it `gio` types every file
+   `application/octet-stream` and the real-GIO check in `system_preview::launch`
+   fails, naming the missing database. It checks the libraries' `pkg-config`
    modules and prints the installed versions of the main packages. Git must be installed
    before checkout, which otherwise downloads a tarball without `.git`.
 2. As root, create a `builder` account with the UID that owns `RUNNER_TEMP` (the
@@ -504,11 +507,12 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
   link (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
   wayland`). `freetype-sys` links the system FreeType, `yeslogic-fontconfig-sys`
   and `aws-lc-sys` probe pkg-config (the latter for `libcrypto` and `openssl`),
-  and the app links `libxcb` and `libxkbcommon`. The job's other libraries,
-  `vulkan-headers`, `vulkan-icd-loader` and `zstd` (`ARCH_RUNTIME_PACKAGES`), are
-  used only at run time and by its `pkg-config --exists` check. No build script
-  probes them and nothing links them at build time. Nothing else in the rolling
-  inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
+  and the app links `libxcb` and `libxkbcommon`. The job's other packages
+  (`ARCH_RUNTIME_PACKAGES`) are used only at run time: `vulkan-headers`,
+  `vulkan-icd-loader` and `zstd` by the tests and its `pkg-config --exists`
+  check, and `shared-mime-info` by the tests, as the MIME database `gio` reads.
+  No build script probes them and nothing links them at build time. Nothing else
+  in the rolling inventory is keyed, so an update to, say, `git`, `python`, `systemd` or Vulkan
   keeps the entry. An update to any listed package gives a new key and a full cold
   build, never objects built against the old libraries. A test compares both
   lists with the job's install line, so a library added to the job but in neither
