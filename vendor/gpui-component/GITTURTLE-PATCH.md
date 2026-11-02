@@ -1190,8 +1190,8 @@ short row's. Remove this part of the patch when upstream keeps a menu inside its
 window and its rows on one line, and that test passes without it.
 
 The window-margin patch modifies `src/styled.rs`, `src/popover.rs`,
-`src/menu/context_menu.rs`, `src/menu/popup_menu.rs` and
-`src/native_menu/fallback.rs`, with the base patch's `Popup::margin`,
+`src/menu/context_menu.rs`, `src/menu/popup_menu.rs`,
+`src/menu/app_menu_bar.rs` and `src/native_menu/fallback.rs`, with the base patch's `Popup::margin`,
 `Popover::margin` and its whole-pixel rounding at a popup's side margins
 ([base patch](../gpui-base/GITTURTLE-PATCH.md)). Upstream's popup hosts keep a
 popup's box 8 px inside the window, the base `Popup` host and the kit's
@@ -1208,7 +1208,9 @@ so a dropdown menu and a popover keep it; `dropdown_popup`, the Select,
 Combobox and DatePicker surface, and the context menu give it to their
 positioner; the fallback menu takes it in place of its own constant; and
 `PopupMenu::max_width` caps a menu at the window less it on either side, so a
-menu as wide as its cap keeps its edge 8 px in on both. A submenu keeps GPUI's
+menu as wide as its cap keeps its edge 8 px in on both. `AppMenuBar`'s
+menus, which GPUI's anchor moves in only once they run past the window, snap
+with it in place of 8 px. A submenu keeps GPUI's
 anchor, which decides the side it opens on and so which of Left and Right
 enters and leaves it, and is drawn through `InsideWindow`, which moves the
 submenu as its anchor placed it, its offset from the corner included, by
@@ -1234,7 +1236,11 @@ edge 8 px from that side, or less than a pixel more;
 reads the Main Menu's 8 px from the window's left side, where its button
 leads the tab strip; and
 `the_profile_menu_keeps_a_long_identity_inside_a_narrow_window` reads a menu
-at its width cap, its fill 443 px wide in a 461 px window. Remove this part
+at its width cap, its fill 443 px wide in a 461 px window;
+`scripts/vendor-crate-test.sh vendor/gpui-component app_menu_bar::` opens
+a bar's Edit menu past a 150 px window's right side
+(`a_bar_menu_keeps_its_drawn_edge_8_px_from_the_windows_side`), and no app
+view has a menu bar. Remove this part
 when upstream keeps a popup's drawn edge, not its box, inside the window's
 margin, and those tests pass without it.
 

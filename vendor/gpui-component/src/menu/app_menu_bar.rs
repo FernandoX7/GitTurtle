@@ -295,10 +295,15 @@ impl Render for AppMenu {
             )
             .on_hover(cx.listener(Self::handle_hover))
             .when(is_selected, |this| {
+                // GitTurtle patch: moved in from the window's side, the
+                // menu's drawn edge, the ring outside its fill, stands the
+                // popup margin in, as every menu's does
+                // ([`crate::popup_fill_margin`]); 8 px to the fill left the
+                // ring 7 px from it.
                 this.child(deferred(
                     anchored()
                         .anchor(gpui::Anchor::TopLeft)
-                        .snap_to_window_with_margin(px(8.))
+                        .snap_to_window_with_margin(crate::popup_fill_margin())
                         .child(
                             div()
                                 .size_full()
@@ -431,6 +436,52 @@ mod tests {
             cx.debug_bounds(NEW).is_some(),
             cx.debug_bounds(COPY).is_some(),
         )
+    }
+
+    /// GitTurtle patch: a bar's menu that runs past the window's right side
+    /// is moved in until its drawn edge, the ring outside its fill, stands
+    /// 8 px from that side, as every menu's does. With 8 px to its fill,
+    /// its ring stood 7 px from the side.
+    #[gpui::test]
+    fn a_bar_menu_keeps_its_drawn_edge_8_px_from_the_windows_side(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::init(cx);
+            GlobalState::global_mut(cx).set_app_menus(menus());
+        });
+        let (_, cx) = cx.add_window_view(|_, cx| BarRoot {
+            bar: Some(AppMenuBar::new(cx)),
+        });
+        let width = px(150.);
+        cx.simulate_resize(gpui::size(width, px(300.)));
+        draw(cx);
+        cx.simulate_click(point(px(4.), px(16.)), Default::default());
+        draw(cx);
+        cx.simulate_keystrokes("right");
+        draw(cx);
+        let copy = cx.debug_bounds(COPY).expect("Edit's menu");
+        let fill = cx.update(|window, cx| {
+            let popover = gpui::Background::from(crate::ActiveTheme::theme(cx).popover);
+            let scale = window.scale_factor();
+            let logical = |value: gpui::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == popover)
+                .map(|quad| {
+                    gpui::Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .filter(|fill| fill.contains(&copy.center()))
+                .max_by(|a, b| a.size.width.partial_cmp(&b.size.width).unwrap())
+                .expect("the menu's surface")
+        });
+        let side = width - (fill.right() + crate::POPOVER_EDGE_WIDTH);
+        assert!(
+            side >= px(8.) - px(0.01) && side < px(9.),
+            "Edit's menu {fill:?} draws its edge {side:?} from the window's side, not 8 px"
+        );
     }
 
     /// A menu bar taken away goes with its menus and their popup menus. Each
