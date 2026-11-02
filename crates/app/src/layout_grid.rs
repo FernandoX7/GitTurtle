@@ -256,9 +256,11 @@ const OFFSETS: &[Offset] = &[
     },
     Offset {
         panel: Some((&[Surface::Working], "working files")),
-        by: || px(17.) + appearance::ui_size(6.5),
-        reason: "the Changes header's 17 px commit icon stands in the list's column, with \
-                 the headings' icons and the file rows' tiles, its label after the 0.5 rem gap",
+        by: || px(17. - 2.) + appearance::ui_size(6.5),
+        reason: "the Changes header shares the filter's and the composer's inset, the list's 1 \
+                 px margin and border before the list's column, where the headings' icons and \
+                 the file rows' tiles stand inside their rings' room, and starts its label after \
+                 its 17 px commit icon and the 0.5 rem gap",
     },
     Offset {
         panel: Some((&[Surface::Working], "composer")),

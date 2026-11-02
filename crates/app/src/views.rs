@@ -19989,13 +19989,17 @@ pub(crate) mod tests {
                     count.right() <= action.left(),
                     "{at}: {count:?} before {action:?}"
                 );
-                // The Changes header's icon and the file rows' tiles stand in the
-                // headings' column, the list's (DESIGN.md, "One left edge").
+                // The file rows' tiles stand in the headings' column, the list's,
+                // and the Changes header's icon, at the filter's inset, the list's
+                // 1 px margin and border before it (DESIGN.md, "One left edge").
                 if let Some(heading) = cx.debug_bounds(glyph) {
                     let rows = app.read_with(cx, |app, _| app.working_rows.len());
                     let mut column: Vec<(&str, Bounds<Pixels>)> = cx
                         .debug_bounds("working-header-icon")
-                        .map(|icon| ("the header's icon", icon))
+                        .map(|icon| {
+                            let on = icon.origin + point(px(2.), px(0.));
+                            ("the header's icon, 2 px on", Bounds::new(on, icon.size))
+                        })
                         .into_iter()
                         .collect();
                     for row in 0..rows {

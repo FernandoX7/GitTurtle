@@ -1345,15 +1345,39 @@ async fn the_github_panel_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext)
 /// it: at 18 pt in a 515 × 980 window "turtle.png", 99.7 px in the unit
 /// tests' text system, was drawn whole in its 99 px box and cut by half a
 /// pixel, since GPUI ends a line in an ellipsis only once its width, rounded
-/// down, exceeds the room.
+/// down, exceeds the room. The window is the first from 515 px whose room
+/// leaves the name less than a pixel too wide, as the row's padding sets it.
 #[gpui::test]
 async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = open(Page::Working, cx).await;
     cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-    cx.simulate_resize(size(px(515.), px(980.)));
-    frame(cx);
-    app.update(cx, |_, cx| cx.notify());
-    frame(cx);
+    let whole = cx.update(|window, _| {
+        shaped_width(
+            "turtle.png",
+            appearance::ui_text(12.),
+            FontWeight::MEDIUM,
+            window,
+        )
+    });
+    for width in (515..535).map(|width| width as f32 * 0.5 + 257.5) {
+        cx.simulate_resize(size(px(width), px(980.)));
+        frame(cx);
+        app.update(cx, |_, cx| cx.notify());
+        frame(cx);
+        let short = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().unwrap().entries;
+            app.working_rows.iter().position(|row| {
+                matches!(row, crate::workspace::WorkingRow::File(index, _)
+                    if entries[*index].path == std::path::Path::new("assets/turtle.png"))
+            })
+        });
+        let room = short
+            .and_then(|row| cx.debug_bounds(format!("working-name-{row}").leak()))
+            .map(|name| name.size.width);
+        if room.is_some_and(|room| whole > room && whole < room + px(1.)) {
+            break;
+        }
+    }
     let row = app.read_with(cx, |app, _| {
         let entries = &app.work_status.as_ref().unwrap().entries;
         app.working_rows
@@ -1366,14 +1390,6 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
     });
     let selector: &'static str = format!("working-name-{row}").leak();
     let name = cx.debug_bounds(selector).expect("the row's name");
-    let whole = cx.update(|window, _| {
-        shaped_width(
-            "turtle.png",
-            appearance::ui_text(12.),
-            FontWeight::MEDIUM,
-            window,
-        )
-    });
     assert!(
         whole > name.size.width && whole < name.size.width + px(1.),
         "less than a pixel too wide, as the rounding misses: {whole:?} in {name:?}"
