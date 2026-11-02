@@ -120,10 +120,15 @@ pub fn point_row_clear_by(y: Pixels, gap: Pixels, scale_factor: f32) -> (Pixels,
 /// GitTurtle patch: the device pixel row a pointer's place, `y`, lies in on
 /// a display of `scale_factor`, as its top and bottom edges in logical
 /// pixels: where what a popup opened at the point opened from begins and
-/// ends, which nothing the popup draws reaches.
+/// ends, which nothing the popup draws reaches. A point within a thousandth
+/// of a device pixel of a row's top lies in that row: a pointer on a whole
+/// device pixel, `k / scale_factor` in logical pixels, can come back from
+/// that division a hair short of `k` times the scale, as at 1.1, 1.333 and
+/// 1.75, and took the row above.
 pub fn point_device_row(y: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
+    const TOLERANCE: f32 = 1e-3;
     let scale_factor = scale_factor.max(f32::EPSILON);
-    let row = (f32::from(y) * scale_factor).floor();
+    let row = (f32::from(y) * scale_factor + TOLERANCE).floor();
     (px(row / scale_factor), px((row + 1.) / scale_factor))
 }
 
@@ -830,6 +835,28 @@ mod tests {
                             "{at}: the ring {ring:?} reaches device row {pointer_row}"
                         ),
                     }
+                }
+            }
+        }
+    }
+
+    /// GitTurtle patch: a pointer on a whole device pixel, or part way into
+    /// one, lies in that pixel's row at scales 1.1, 1.25, 1.333, 1.5, 1.75
+    /// and 2, for rows 0 to 3,999: `k / scale` times the scale came back a
+    /// hair short of `k` at some of them, and the row above was taken.
+    #[test]
+    fn a_pointer_on_a_whole_device_pixel_lies_in_that_pixels_row() {
+        for scale in [1.1_f32, 1.25, 4. / 3., 1.333, 1.5, 1.75, 2.] {
+            for row in 0..4000_u32 {
+                let k = row as f32;
+                for (into, expected) in [(0., k), (0.5, k), (0.99, k)] {
+                    let y = px((k + into) / scale);
+                    let (top, bottom) = point_device_row(y, scale);
+                    assert!(
+                        (f32::from(top) * scale - expected).abs() < 1e-2
+                            && (f32::from(bottom) * scale - expected - 1.).abs() < 1e-2,
+                        "scale {scale}: a pointer {into} into device row {row}, at {y:?}, lies in {top:?}..{bottom:?}"
+                    );
                 }
             }
         }
