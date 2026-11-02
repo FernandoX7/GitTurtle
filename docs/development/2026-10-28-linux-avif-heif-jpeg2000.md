@@ -100,3 +100,5 @@ Research for the owner decision of 2026-10-28 in [full Omarchy support](omarchy-
 ## Outcome
 
 Not implemented. JPEG 2000 and AVIF await implementation tasks; HEIF/HEIC awaits the owner's patent and licensing decisions.
+
+The [architecture review of 2026-11-02](2026-11-02-linux-avif-jpeg2000-architecture.md) refreshes these facts and decodes AVIF and JPEG 2000 in the confined helper process.
