@@ -696,7 +696,11 @@ impl GitTurtle {
         true
     }
 
-    pub(super) fn render_file_history(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_file_history(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(lineage) = self.file_history.lineage.as_ref() else {
             return div().into_any_element();
         };
@@ -839,7 +843,12 @@ impl GitTurtle {
                     )),
             )
             .child(div().flex_1().min_h_0().flex().flex_col()
-                .children(entry.map(|entry| self.render_commit_message(&entry.commit, true, None, cx)))
+                // As tall as the message and the revision's details where
+                // they fit, as History's panel is, at most its share here.
+                .children(entry.map(|entry| {
+                    let extent = self.message_extent(&entry.commit, Some(entry), window, cx);
+                    self.render_commit_message(&entry.commit, true, extent, cx)
+                }))
             .children(lineage.error.as_ref().map(|error| {
                 crate::native_accessibility::clips_children(div()
                     .id("file-history-failure")
@@ -1495,6 +1504,107 @@ mod tests {
                 && app.files.first() == Some(&selected)
                 && app.content.is_some()),
             "back through its tab, File history loads its selected revision"
+        );
+    }
+
+    /// Opens File History on the selected commit's first file and waits for
+    /// its first page, which the window's reader reads on a thread
+    /// `run_until_parked` cannot wait for.
+    async fn open_landed(app: &gpui_kit::Entity<GitTurtle>, cx: &mut gpui_kit::VisualTestContext) {
+        use crate::views::tests::settle;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+        for _ in 0..8 {
+            let landed = app.read_with(cx, |app, _| {
+                app.file_history
+                    .lineage
+                    .as_ref()
+                    .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
+            });
+            if landed {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        settle(app, cx).await;
+    }
+
+    /// File History's message panel is as tall as the message and the
+    /// revision's details where they fit, with one inset after the paths, as
+    /// History's panel ends one inset below P1
+    /// (`views::tests::changed_files_follow_the_last_parent`), so the
+    /// revisions follow at the inspector's rhythm, at 13 pt in 1,000 × 980,
+    /// 461 × 980 and 1,280 × 800 and at 18 pt in 1,480 × 1,200, where they
+    /// fit its 45% share: it kept that fixed share of the room between File
+    /// History's header and footer, which left 93 px from the paths to the
+    /// revisions at 13 pt in 1,000 × 980. Nothing scrolls where everything
+    /// fits.
+    #[gpui::test]
+    async fn file_revisions_follow_the_revisions_paths(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_script, history_window_from, settle};
+        use gpui_kit::px;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        open_landed(&app, cx).await;
+        for (text, width, height) in [
+            (13, 1000., 980.),
+            (13, 461., 980.),
+            (13, 1280., 800.),
+            (18, 1480., 1200.),
+        ] {
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(gpui_kit::size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let paths = cx.debug_bounds("file-revision-paths").unwrap();
+            let revisions = cx.debug_bounds("file-revision-list").unwrap();
+            // The inset, then the panel's 1 px bottom border.
+            let rhythm = cx.update(|window, _| window.rem_size() * 0.75) + px(1.);
+            let gap = revisions.top() - paths.bottom();
+            assert!(
+                (gap - rhythm).abs() <= px(0.5),
+                "{at}: {gap:?} from the paths {paths:?} to the revisions {revisions:?}, \
+                 not {rhythm:?}"
+            );
+            assert_eq!(
+                cx.read(|cx| app.read(cx).inspector_message.overflow()),
+                Some(px(0.)),
+                "{at}: nothing to scroll"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A revision's message too long for 45% of the room between File
+    /// History's header and footer keeps that 45% and scrolls, as History's
+    /// does (`views::tests::a_long_message_keeps_its_share_and_scrolls`).
+    #[gpui::test]
+    async fn a_long_revision_message_keeps_its_share_and_scrolls(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_window_from};
+        use gpui_kit::px;
+        let body: String = (1..=80).map(|line| format!("Body line {line}\n")).collect();
+        let message = format!("fixture notes\n\n{body}");
+        let script = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata 5\nnote\n\ndone\n",
+            message.len(),
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        open_landed(&app, cx).await;
+        cx.simulate_resize(gpui_kit::size(px(1000.), px(680.)));
+        draw(cx);
+        let panel = cx.debug_bounds("commit-message-panel").unwrap();
+        // The panel tops the room it shares with the revisions, which end it.
+        let revisions = cx.debug_bounds("file-revision-list").unwrap();
+        let room = revisions.bottom() - panel.top();
+        assert!(
+            (panel.size.height - room * 0.45).abs() <= px(1.),
+            "{panel:?} keeps 45% of the {room:?} above {revisions:?}"
+        );
+        assert!(
+            cx.read(|cx| app.read(cx).inspector_message.overflow())
+                .is_some_and(|overflow| overflow > px(0.)),
+            "a long message scrolls"
         );
     }
 

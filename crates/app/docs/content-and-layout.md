@@ -87,9 +87,13 @@ variable-height `ListState`, and keyboard focus. History/Compare allocate at mos
 metadata where they fit: `GitTurtle::message_extent` lays the pieces and the
 metadata out at the inspector's drawn width, as the list does, while the frame
 builds the inspector, stops at the panel's 45% cap, and keeps the result with
-the presentation per width, bound and font, so a commit is measured once. Its
-copy toolbar remains outside the scroll viewport. File History shares the presentation inside the remaining
-height between its bounded header and footer, leaving revision rows usable.
+the presentation per width, bound, font and details, so a commit is measured
+once. Its copy toolbar remains outside the scroll viewport. File History shares
+the presentation inside the remaining height between its bounded header and
+footer, leaving revision rows usable, and shrinks it alike: its 45% is of that
+remaining height, and the extent measures the revision's details
+(`render_revision_metadata`) after the message, kept apart from the commit's
+own metadata, which History measures for the same commit.
 Reading order is title, available body, then author/date/parent/path metadata.
 Empty bodies add neither filler nor a blank clipboard suffix.
 

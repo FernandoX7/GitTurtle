@@ -2483,7 +2483,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.file_history.is_active() {
-            return self.render_file_history(cx);
+            return self.render_file_history(window, cx);
         }
         if self.revision_inspection.is_active() {
             return self.render_revision_inspector(cx);
@@ -2504,7 +2504,7 @@ impl GitTurtle {
                 ))
                 .into_any_element();
         };
-        let extent = self.message_extent(commit, window, cx);
+        let extent = self.message_extent(commit, None, window, cx);
         div()
             .debug_selector(|| "commit-inspector".into())
             .size_full()

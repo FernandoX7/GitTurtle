@@ -11,6 +11,7 @@ pub(crate) use selection::Selection;
 
 use crate::views::{LineKey, cached_width, compact_control_name, line_widths};
 use crate::*;
+use gitturtle_core::FileHistoryEntry;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::{Cell, RefCell};
@@ -48,7 +49,57 @@ struct Extent {
     width: Pixels,
     bound: Pixels,
     key: LineKey,
+    details: Details,
     height: Pixels,
+}
+
+/// The metadata a measured [`Extent`] holds after the message: the
+/// commit's own, as History and Compare show it, or a File History
+/// revision's, its file's change against its first parent. File History
+/// presents the same commit as History does, so one commit's extent once
+/// measured in History would otherwise stand for its revision's details.
+#[derive(PartialEq)]
+enum Details {
+    Commit,
+    Revision(FileChange, Option<String>),
+}
+
+impl Details {
+    fn of(revision: Option<&FileHistoryEntry>) -> Self {
+        revision.map_or(Self::Commit, |entry| {
+            Self::Revision(entry.change.clone(), entry.parent_oid.clone())
+        })
+    }
+
+    /// The bytes the revision's paths, object IDs and parent hold.
+    fn retained_bytes(&self) -> usize {
+        let Self::Revision(change, parent) = self else {
+            return 0;
+        };
+        let path = |path: &Option<std::path::PathBuf>| {
+            path.as_ref().map_or(0, |path| path.as_os_str().len())
+        };
+        let text = |text: &Option<String>| text.as_ref().map_or(0, String::capacity);
+        path(&change.old_path)
+            + path(&change.new_path)
+            + text(&change.old_oid)
+            + text(&change.new_oid)
+            + change.old_mode.capacity()
+            + change.new_mode.capacity()
+            + text(parent)
+    }
+
+    /// Whether these are `revision`'s details, or the commit's own where
+    /// there is none; comparing allocates nothing.
+    fn describe(&self, revision: Option<&FileHistoryEntry>) -> bool {
+        match (self, revision) {
+            (Self::Commit, None) => true,
+            (Self::Revision(change, parent), Some(entry)) => {
+                *change == entry.change && *parent == entry.parent_oid
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -236,20 +287,38 @@ impl State {
     }
 
     /// The height the presented message and metadata were last measured at
-    /// for `width`, `bound` and `key` (`GitTurtle::message_extent`).
-    fn extent(&self, width: Pixels, bound: Pixels, key: &LineKey) -> Option<Pixels> {
+    /// for `width`, `bound` and `key`, with `revision`'s details or the
+    /// commit's own (`GitTurtle::message_extent`).
+    fn extent(
+        &self,
+        width: Pixels,
+        bound: Pixels,
+        key: &LineKey,
+        revision: Option<&FileHistoryEntry>,
+    ) -> Option<Pixels> {
         let state = self.0.borrow();
         let extent = state.as_ref()?.extent.as_ref()?;
-        (extent.width == width && extent.bound == bound && extent.key == *key)
-            .then_some(extent.height)
+        (extent.width == width
+            && extent.bound == bound
+            && extent.key == *key
+            && extent.details.describe(revision))
+        .then_some(extent.height)
     }
 
-    fn remember_extent(&self, width: Pixels, bound: Pixels, key: LineKey, height: Pixels) {
+    fn remember_extent(
+        &self,
+        width: Pixels,
+        bound: Pixels,
+        key: LineKey,
+        revision: Option<&FileHistoryEntry>,
+        height: Pixels,
+    ) {
         if let Some(state) = self.0.borrow_mut().as_mut() {
             state.extent = Some(Extent {
                 width,
                 bound,
                 key,
+                details: Details::of(revision),
                 height,
             });
         }
@@ -315,6 +384,10 @@ impl State {
                 // Reserve list tree/measurement bookkeeping as well as pieces.
                 + state.pieces.capacity() * (std::mem::size_of::<Piece>() + 256)
                 + state.selection.retained_bytes()
+                + state
+                    .extent
+                    .as_ref()
+                    .map_or(0, |extent| extent.details.retained_bytes())
         })
     }
 
@@ -522,13 +595,19 @@ impl GitTurtle {
     /// metadata's inset above its first: the height the message's viewport
     /// takes where they fit, so Changed files follows the last parent at the
     /// inspector's rhythm rather than below the rest of a fixed 45%, which
-    /// left about 60 px blank under P1 at 13 pt. Measured once for each
-    /// commit, width and font, and only as far as the panel's cap, past which
-    /// nothing more shows, so a long message shapes only what can be drawn.
-    /// `None` where no window lays the inspector out.
+    /// left about 60 px blank under P1 at 13 pt. File History's panel, which
+    /// holds `revision`'s details after the message rather than the commit's,
+    /// shrinks to them alike, so its revisions follow their paths at that
+    /// rhythm. Measured once for each commit, details, width and font, and
+    /// only as far as the panel's cap, past which nothing more shows, so a
+    /// long message shapes only what can be drawn: in File History, whose
+    /// panel takes its share of the room between the header and the footer,
+    /// as far as the inspector's share, which holds it. `None` where no
+    /// window lays the inspector out.
     pub(super) fn message_extent(
         &self,
         commit: &Commit,
+        revision: Option<&FileHistoryEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Pixels> {
@@ -536,7 +615,7 @@ impl GitTurtle {
         let (width, bound) = (toolbar.viewport, toolbar.cap);
         let key = LineKey::current(window);
         let (pieces, _, _, selection) = self.inspector_message.presentation(commit, cx);
-        if let Some(height) = self.inspector_message.extent(width, bound, &key) {
+        if let Some(height) = self.inspector_message.extent(width, bound, &key, revision) {
             return Some(height);
         }
         let mut height = px(0.);
@@ -548,12 +627,15 @@ impl GitTurtle {
             height += crate::in_frame::measured_height(row, width, window, cx);
         }
         if height <= bound {
-            let metadata = self.render_commit_metadata(commit, &selection, window, cx);
+            let metadata = match revision {
+                Some(entry) => self.render_revision_metadata(entry, &selection, cx),
+                None => self.render_commit_metadata(commit, &selection, window, cx),
+            };
             height += crate::in_frame::measured_height(metadata, width, window, cx);
         }
         let height = height + window.rem_size() * 0.75;
         self.inspector_message
-            .remember_extent(width, bound, key, height);
+            .remember_extent(width, bound, key, revision, height);
         Some(height)
     }
 
