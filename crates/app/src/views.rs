@@ -12081,6 +12081,29 @@ pub(crate) mod tests {
         (columns, regions, fields)
     }
 
+    /// Answers and handles every read the window has asked for, and holds
+    /// its reader until the guard drops, so a test can count the frames an
+    /// interaction draws with no answer to a read landing among them. The
+    /// reader answers on its own thread, which `run_until_parked` does not
+    /// wait for: a read made before a width step once answered during it.
+    async fn quiet_reader(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> crate::worker::ReaderHeld {
+        for _ in 0..8 {
+            let asked = app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.submissions()
+            });
+            settle(app, cx).await;
+            draw(cx);
+            if app.read_with(cx, |app, _| app.worker.submissions()) == asked {
+                break;
+            }
+        }
+        app.read_with(cx, |app, _| app.worker.hold())
+    }
+
     /// Steps a window from `from` to `to` at 13 and 18 pt, in History or,
     /// given `path`, comparing that file of [`file_commits`]' image, text and
     /// forty more files, with the inspector at its 320 px default where the
@@ -12159,19 +12182,23 @@ pub(crate) mod tests {
                 })
             });
             draw(cx);
+            let held = quiet_reader(&app, cx).await;
             frames();
-            // The step's frames as the window asks for them: the resize, the
-            // update it ends drawing the frame and every frame its effects
-            // ask for, and then the frame callbacks it left, with what they
-            // draw. Neither waits for the window's reads on other threads,
-            // whose answers draw content, not the step.
+            // The step's frames as the window asks for them: the resize and
+            // every frame its update and the foreground tasks it leaves draw,
+            // then the frame callbacks it left, with what they draw. The
+            // reader is held, so no answer to a read lands among them: an
+            // answer draws the content it brings, not the step.
             cx.simulate_resize(to);
+            cx.run_until_parked();
             assert_eq!(frames(), 1, "{at}: the step draws one frame");
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
             });
+            cx.run_until_parked();
             assert_eq!(frames(), 0, "{at}: the step asks for no further frame");
             let step = step_layout(&app, path.is_none(), cx);
+            drop(held);
             // As a window opened at this width with these panels: History's
             // width, the lists' layouts and the placeholders as a new window
             // starts them, then every frame it asks for.
