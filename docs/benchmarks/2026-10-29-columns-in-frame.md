@@ -404,7 +404,7 @@ This measures `a50eae8e` (the branch head: WS1, NT3, NT4, PC3, WS2, WS3 and the 
   - *Where the base drew two frames:* the last frame comes sooner in the candidate in all 14 of those rows at p50, by 3.4 to 35.9 ms. Four intervals exclude zero: History 1000 → 1480 at 13 pt, −24.1 [−50.6, −2.2] ms, and at 18 pt, −35.7 [−52.0, −9.7]; History 980 → 461 at 13 pt, −9.1 [−25.1, −2.4], and at 18 pt, −8.3 [−16.9, −0.2]. The removed frame was the base's paced second draw: 4.3–7.8 ms at p50 per row, and up to 13.0 ms counting draws one to two ticks after their `done`.
   - *The single frame does more work.* On the narrow steps its configure-to-first-request p50 is higher than the base's first frame: 980 → 461, 29.4 against 20.1 ms (History, 13 pt), 33.0 against 25.0 (History, 18 pt), 24.6 against 17.4 (text) and 25.6 against 17.3 (image). That is the work the base split over two frames, now in one. UI CPU per step moved −23.5 to +11.1 ms at p50, with no interval excluding zero.
   - *Compare at 1480 ↔ 1000, one frame in both builds:* no resolved change in last frame or UI CPU (Δp50 −14.1 to +8.8 ms, every interval including zero).
-- **Benchmarks, candidate only.** Every timed width step drew 1 frame and left no frame for the next callback, in all 2,400 steps: History, text and image Compare at 13 and 18 pt, 5 rounds. The handler p50 was 1.80–3.47 ms, p95 1.83–4.42 ms and max 4.72 ms. Every one of 800 warm-tab switches drew 1 frame with nothing left over, at a handler p50 of 3.03–3.51 ms and a max of 4.08 ms. **`quiet_landing_release_benchmark` does not run at the head.** Its `5000_rows` series panics before it writes any output (`views.rs:14084`, "5000_rows: the rows shown", left 500, right 5000), in 2 of 2 runs, so it has no result.
+- **Benchmarks, candidate only.** Every timed width step drew 1 frame and left no frame for the next callback, in all 2,400 steps: History, text and image Compare at 13 and 18 pt, 5 rounds. The handler p50 was 1.80–3.47 ms, p95 1.83–4.42 ms and max 4.72 ms. Every one of 800 warm-tab switches drew 1 frame with nothing left over, at a handler p50 of 3.03–3.51 ms and a max of 4.08 ms. **`quiet_landing_release_benchmark` did not run at the head.** Its `5000_rows` series panicked before it wrote any output (`views.rs:14084`, "5000_rows: the rows shown", left 500, right 5000), in 2 of 2 runs. The test was wrong, not the product: see "Quiet landing, 2026-11-02" below.
 - **PC1 and PC2 interactions: no resolved change.** Paced-draw Δp50: History +0.09 [−0.85, +0.85] ms, text Compare −0.26 [−1.26, +0.77], image Compare +0.08 [−0.65, +0.50].
   - *PC2's commit selection.* A held arrow key in History draws its input-led frames at 4.94 against 5.03 ms p50 (Δ +0.09 [−0.43, +0.91]). Its UI CPU per 1 s hold is 408.5 against 413.9 ms (+5.4 [−47.2, +70.1]).
   - *PC1's caption cache.* Pan drags at 200% cost 235.1 against 231.2 ms of UI CPU (−3.9 [−22.3, +28.3]) and draw 109–128 frames per drag in both builds.
@@ -419,7 +419,7 @@ This measures `a50eae8e` (the branch head: WS1, NT3, NT4, PC3, WS2, WS3 and the 
 
 ### Verdict
 
-No regression. WS1 does what it claims: every width step on every surface, at both widths and both text sizes, draws one frame and ends settled. Where the base drew two frames, the last frame now comes 3–36 ms sooner at p50, resolved in 4 of 14 rows. The 2026-10-30 rerun's remaining two-frame case, narrow tiled Compare, is gone too. WS2's warm-tab switch draws one frame in all 800 timed switches. The interaction protocol, the PC1 and PC2 rows and the allocation counts show no resolved change in per-frame cost (intervals about ±0.5–1.3 ms at p50 on paced draws, about ±40 allocation calls per frame). One benchmark finding needs the owner: `quiet_landing_release_benchmark` panics at the head in its `5000_rows` series, so WS3's landing timing has no release figure. A likely cause, inferred and not traced: `9a8d3574` itself, the commit that added the benchmark, made a landing that finds the repository unchanged skip rereading the history. Raising `app.limit` and rescanning would then no longer install 5,000 rows. The smallest fix is in the test: make the `5000_rows` case install its rows through a path that reads the history again, such as an explicit refresh or a changed tip, before it asserts the row count. Product source was not changed.
+No regression. WS1 does what it claims: every width step on every surface, at both widths and both text sizes, draws one frame and ends settled. Where the base drew two frames, the last frame now comes 3–36 ms sooner at p50, resolved in 4 of 14 rows. The 2026-10-30 rerun's remaining two-frame case, narrow tiled Compare, is gone too. WS2's warm-tab switch draws one frame in all 800 timed switches. The interaction protocol, the PC1 and PC2 rows and the allocation counts show no resolved change in per-frame cost (intervals about ±0.5–1.3 ms at p50 on paced draws, about ±40 allocation calls per frame). One benchmark finding needed the owner: `quiet_landing_release_benchmark` panicked at the head in its `5000_rows` series, so WS3's landing timing had no release figure. The cause guessed here, that `9a8d3574` made an unchanged landing skip rereading the history, was wrong; the traced cause and the figure are in "Quiet landing, 2026-11-02" below. Product source was not changed.
 
 ### Setup
 
@@ -534,7 +534,7 @@ No regression. WS1 does what it claims: every width step on every surface, at bo
 |  | 1480 × 980, 13 pt | 5 | 200 | 3.506 / 3.921 / 3.966 / 4.084 | 3.474–3.553 | 1 (200) | 0 (200) |
 |  | 461 × 490, 18 pt | 5 | 200 | 3.031 / 3.382 / 3.582 / 3.590 | 2.727–3.047 | 1 (200) | 0 (200) |
 |  | 1480 × 980, 18 pt | 5 | 200 | 3.388 / 3.766 / 3.828 / 3.909 | 3.289–3.476 | 1 (200) | 0 (200) |
-| `quiet_landing_release_benchmark` | `500_rows_followed`, `5000_rows` | — | — | not measured: panics in `5000_rows` before writing output (2 of 2 runs) | — | — | — |
+| `quiet_landing_release_benchmark` | `500_rows_followed`, `5000_rows` | — | — | not measured here: panicked in `5000_rows` before writing output (2 of 2 runs); measured 2026-11-02 below | — | — | — |
 
 `next_frame_ms` was at most 0.004 ms in every series: callback delivery with no frame drawn.
 
@@ -609,7 +609,7 @@ No regression. WS1 does what it claims: every width step on every surface, at bo
 - The session was suspended for 4 h 49 min between the width steps and the rest. The benchmarks and the interaction phase therefore ran in a later window than the width steps, each phase comparing both builds within itself.
 - PC1, PC2 and CH2 landed before the base, so their rows check for regressions since and do not measure those commits. NT3's allocation saving is below this run's noise of about ±40 calls per frame. Its own counting-allocator test is the finer evidence.
 - NT4's `tag-preparation-error` line was not exercised with a long report, because no user path puts a hook's report there. The live resizes measure the window-wide notice that does show it. A native resize burst of seven `hyprctl` commands is not a pointer drag on a border, though both deliver a configure per step.
-- `quiet_landing_release_benchmark` has no result. No base figure exists for any of the three benchmarks.
+- `quiet_landing_release_benchmark` had no result in this run; it was measured on 2026-11-02 (below). No base figure exists for any of the three benchmarks.
 - The allocation counter counts calls, not frees or peak heap, and only the main thread.
 - The per-launch Wayland logs, marks, screenshots and fixture copies stayed on the measuring host. Screenshots hold local paths and were not privacy-checked for publication.
 - Product source was not changed.
@@ -633,3 +633,20 @@ python3 tools2/phase3-summary.py raw/phase3 > raw/phase3/phase3-table.md; python
 ```
 
 The run used `run-bench.sh` with the round as its argument. `BENCH_QL` was a later edit that put round 1's quiet-landing run behind a switch; round 1 ran it unconditionally.
+
+### Quiet landing, 2026-11-02
+
+**Cause of the panic: the test, not the product.** The `5000_rows` case raised the window's `limit` to 5,000 and rescanned, expecting the landing to install 5,000 rows. Every history read is one page of at most 500 rows: the worker clamps the limit to `MAX_HISTORY_PAGE` (`read_page`, `worker.rs:922`), and the core refuses a larger page. A probe that failed in 3 of 3 runs (debug, 1,200 commits, a commit made outside before the rescan, `limit` 1,200) showed the landing installing a fresh read, the outside commit on top and the installed-history count bumped, of 500 rows with the next page at 500. The product sets `limit` only to 500; History holds more than one page only by paging Older, which makes it deep, so a quiet landing stops following it and keeps its rows, as documented. `0a1def0a` makes the case page Older to 5,000 rows, as a person does, before it times the landings.
+
+**Result.** No landing drew a frame: 160 of 160 timed landings found the repository as History showed it and drew nothing. A landing took 1.27 ms at p50 with History following its first 500 rows, which it installs again, and 1.17 ms with 5,000 rows paged in, which it does not.
+
+| Series | Rows | Branches | Runs | n | Landing p50 / p95 / p99 / max (ms) | Run p50s (ms) | Frames per landing |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| `500_rows_followed` | 500 | 3,001 | 2 | 80 | 1.274 / 1.977 / 2.928 / 2.928 | 1.278, 1.272 | 0 (80) |
+| `5000_rows` | 5,000 | 3,001 | 2 | 80 | 1.165 / 1.626 / 2.387 / 2.387 | 1.182, 1.126 | 0 (80) |
+
+Setup: test binary of `0a1def0a` built with `cargo test --locked --release -p gitturtle --bin gitturtle --no-run` into `.local/target-coord`, pinned to the performance cores (`taskset -c 4-11`) of the same Apple M2 Pro host under Asahi Linux, with the build hold (`.local/build-slots/quiet`) in place and no other build running. Each run: one untimed pass of 40 landings, then 40 timed. Raw JSON in `.local/bench-quiet-2026-11-02/` on the measuring host. Limits: candidate only, no base figure (the benchmark did not exist before WS3); the test platform draws without a GPU, compositor or display link.
+
+```sh
+GITTURTLE_QUIET_LANDING_BENCH_OUTPUT=run1.json taskset -c 4-11 <test-exe> --ignored --exact views::tests::quiet_landing_release_benchmark
+```
