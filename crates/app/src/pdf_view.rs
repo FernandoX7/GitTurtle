@@ -1772,11 +1772,17 @@ pub(crate) mod tests {
             assert!(moved, "at some width the run starts a line of its own");
         }
 
-        /// A side's heading gives way rather than be cut: it lies inside its
-        /// header at every side width from 80 to 400 px at 13 and 18 pt, and
-        /// where a line holds "Before · PDF" it reads whole. At 18 pt in a
-        /// 461 × 490 window it was laid out whole in a 121 px side and cut
-        /// at the side's edge, "Before · PD".
+        /// A side's heading gives way rather than be cut, a step at a time,
+        /// at every side width from 50 to 400 px at 13 and 18 pt: where a
+        /// line of the header holds "Before · PDF" it reads whole; where it
+        /// holds only "Before", it reads the side's name alone, as wide as
+        /// "Before" is laid out; and where not even that fits, it reads the
+        /// name, ending in an ellipsis at its header's edge where it does not
+        /// fit there either. It always lies inside its header. At
+        /// 18 pt in a 461 × 490 window it was laid out whole in a 121 px
+        /// side and cut at the side's edge, "Before · PD"; a heading kept
+        /// whole where a line holds only "Before" is wider than "Before",
+        /// whole or cut, and fails the middle step.
         #[gpui::test]
         fn a_side_s_heading_gives_way_rather_than_be_cut(cx: &mut gpui_kit::TestAppContext) {
             let (content, document) = before_only(&pdf("a side's heading"), 3, 0);
@@ -1789,11 +1795,24 @@ pub(crate) mod tests {
                 .cache
                 .insert(0, PreparedPage::from(page()));
             let (view, cx) = window(cx, content);
+            let mut reached = std::collections::BTreeSet::new();
             for text in [13, 18] {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-                let whole = cx.update(|window, _| side_heading(0, "Before", px(1000.), window));
-                assert_eq!(whole.0, "Before · PDF");
-                for width in (160..=800).step_by(4) {
+                // Each reading as the heading's text lays it out, semibold.
+                let (whole, name) = cx.update(|window, _| {
+                    let size = window.text_style().font_size.to_pixels(window.rem_size());
+                    let width = |text: &str| {
+                        crate::views::shaped_width(text, size, FontWeight::SEMIBOLD, window).ceil()
+                    };
+                    (width("Before · PDF"), width("Before"))
+                });
+                assert_eq!(
+                    cx.update(|window, _| side_heading(0, "Before", px(1000.), window)),
+                    ("Before · PDF".to_owned(), whole)
+                );
+                // Narrowing, as a window does, so each step follows the one
+                // before it.
+                for width in (100..=800).rev().step_by(2) {
                     view.update(cx, |view, cx| {
                         view.width = px(width as f32);
                         cx.notify();
@@ -1801,9 +1820,13 @@ pub(crate) mod tests {
                     crate::tags::tests::draw(cx);
                     let header = cx.debug_bounds("pdf-side-header-0").expect("a header");
                     let heading = cx.debug_bounds("pdf-side-heading-0").expect("a heading");
-                    let half = cx.update(|window, _| window.rem_size()) * 0.5;
+                    let (half, line) = cx.update(|window, _| {
+                        let half = window.rem_size() * 0.5;
+                        let side = px(width as f32) / 2.;
+                        (half, crate::system_preview::header_line_room(side, half))
+                    });
                     let at = format!(
-                        "{text} pt, side {} px: {heading:?} in {header:?}",
+                        "{text} pt, side {} px, line {line:?}: {heading:?} in {header:?}",
                         width / 2
                     );
                     assert!(
@@ -1811,12 +1834,39 @@ pub(crate) mod tests {
                             && heading.right() <= header.right() - half + px(0.5),
                         "{at}: the heading lies inside its header"
                     );
-                    if width == 800 {
+                    let step = if whole <= line {
                         assert!(
-                            (heading.size.width - whole.1).abs() <= px(1.),
-                            "{at}: a wide side reads the heading whole"
+                            (heading.size.width - whole).abs() <= px(1.),
+                            "{at}: where a line holds \"Before · PDF\" the heading reads it whole"
                         );
-                    }
+                        "whole"
+                    } else if name <= line {
+                        assert!(
+                            (heading.size.width - name).abs() <= px(1.),
+                            "{at}: where a line holds only \"Before\" the heading reads it, as wide as {name:?}"
+                        );
+                        "name"
+                    } else {
+                        // The heading's own box ends at the header's padding.
+                        let content = header.size.width - half * 2.;
+                        assert!(
+                            (heading.size.width - name.min(content)).abs() <= px(1.),
+                            "{at}: where a line does not hold \"Before\" the heading reads it, cut at its header's edge"
+                        );
+                        if name <= content {
+                            continue;
+                        }
+                        "ellipsis"
+                    };
+                    reached.insert((text, step));
+                }
+            }
+            for text in [13, 18] {
+                for step in ["whole", "name", "ellipsis"] {
+                    assert!(
+                        reached.contains(&(text, step)),
+                        "at {text} pt the heading reaches its {step} step"
+                    );
                 }
             }
         }
