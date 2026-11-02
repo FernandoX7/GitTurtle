@@ -62,6 +62,13 @@ fn placement(position: Point<Pixels>, window: &Window, cx: &App) -> gpui_base::P
         .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
 }
 
+/// GitTurtle patch: the device pixel row the menu opened at `position` was
+/// opened from, which nothing it draws reaches ([`crate::Opener::Row`]).
+fn pointer_row(position: Point<Pixels>, window: &Window) -> crate::Opener {
+    let (top, bottom) = gpui_base::point_device_row(position.y, window.scale_factor());
+    crate::Opener::Row { top, bottom }
+}
+
 impl FallbackMenuOverlay {
     pub(crate) fn new() -> Self {
         Self { active: None }
@@ -225,12 +232,15 @@ impl Render for FallbackMenuOverlay {
                     // the row clicked ([`crate::ClearOfOpener`]): the ring
                     // keeps that row clear by its own width, and a menu
                     // above the pointer cast 4 px of blurred shadow over it.
+                    // The shadow ends where that device row begins, as a
+                    // dropdown's ends where its button begins: cut at the
+                    // ring, it stopped up to two device pixels short of the
+                    // row where the menu moved up to a whole pixel, as at
+                    // scale 2, while below the pointer GPUI's outward
+                    // rounding of the mask carried it to the row at 1.5.
                     placement(active.position, window, cx).child(crate::ClearOfOpener::new(
                         active.menu.clone(),
-                        crate::Opener::At {
-                            y: active.position.y,
-                            gap: crate::POPOVER_EDGE_WIDTH,
-                        },
+                        pointer_row(active.position, window),
                     )),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),

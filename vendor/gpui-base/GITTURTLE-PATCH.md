@@ -253,8 +253,9 @@ however short its window. The
 consumer is the component's `NativeMenu` fallback, the drawn menu a
 right-click in an input, text area or editor shows on Linux
 ([component patch](../gpui-component/GITTURTLE-PATCH.md)), which sets the
-gap to its ring's width. `point_row_clear_by` gives the two edges that gap
-places a popup from, above and below the device row a point lies in, so a
+gap to its ring's width. `point_device_row` gives the device row's own edges, where the
+component's input menu ends its shadow, and `point_row_clear_by` the two
+edges that gap places a popup from, above and below the device row a point lies in, so a
 popup the positioner does not place starts where `Positioner::point` would
 start it: the app's right-click row menus (`RowAnchor::pointer` in
 `crates/app/src/native_accessibility.rs`) start below the pointer there,

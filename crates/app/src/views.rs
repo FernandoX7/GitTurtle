@@ -22433,12 +22433,17 @@ pub(crate) mod tests {
     }
 
     /// A text field's menu draws nothing on the pixel row the pointer lies
-    /// in, its soft shadow included: opened above the pointer, low in a code
-    /// editor, all it draws ends where that row begins, and opened below it,
-    /// high in the editor, all it draws begins where the row ends, its fill
-    /// and its drawn edge, the ring outside the fill, whole either way. Its
-    /// shadow, which falls 4 px with a 3 px blur, darkened the row clicked
-    /// below a menu above the pointer.
+    /// in, its soft shadow included, and cuts nothing short of it: opened
+    /// above the pointer, low in a code editor, all it draws ends where that
+    /// device row begins, and opened below it, high in the editor, all it
+    /// draws begins where the row ends, its fill and its drawn edge, the
+    /// ring outside the fill, whole either way, at scales 1, 1.5 and 2, for
+    /// a pointer on a whole pixel and part way into one, as a dropdown's
+    /// shadow ends where its button begins. Its shadow, which falls 4 px
+    /// with a 3 px blur, darkened the row clicked below a menu above the
+    /// pointer; then cut at the ring, it stopped up to two device pixels
+    /// short of the row above the pointer at scale 2, where the menu moves
+    /// up to a whole pixel, while below it at 1.5 it reached the row.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[gpui::test]
     async fn an_inputs_menu_draws_nothing_on_the_pointers_row(cx: &mut TestAppContext) {
@@ -22464,46 +22469,52 @@ pub(crate) mod tests {
         });
         let editor = editor.borrow().clone().expect("the editor");
         cx.update(|window, cx| appearance::ThemeChoice::Daylight.apply(Some(window), cx));
-        cx.simulate_resize(size(px(461.), px(330.)));
-        draw(cx);
-        let field = cx.debug_bounds("code-editor-probe").expect("the editor");
-        let scale = cx.update(|window, _| window.scale_factor());
-        for (y, above) in [
-            (field.top() + px(10.3), false),
-            (field.bottom() - px(9.7), true),
-        ] {
-            let at = format!("13 pt in 461 × 330, the pointer at {y:?}");
-            let pointer = point(field.center().x, y);
-            cx.update(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx));
-            let surface = right_click_field(cx, pointer, "Go to Definition", &at);
-            let item = menu_rows(cx, &["Go to Definition"])[0].1;
-            let mask = menu_mask(cx, item);
-            let drawn = surface.dilate(edge);
-            // The device pixel row the pointer lies in.
-            let device = (f32::from(pointer.y) * scale).floor();
-            let (row_top, row_bottom) = (px(device / scale), px((device + 1.) / scale));
-            if above {
-                assert!(
-                    drawn.bottom() <= row_top + px(0.01),
-                    "{at}: the menu {surface:?} opens above the pointer"
-                );
-                assert!(
-                    mask.bottom() <= row_top + px(0.01)
-                        && mask.bottom() >= drawn.bottom() - px(0.01),
-                    "{at}: the menu {surface:?} draws within {mask:?}, ending where the pointer's row {row_top:?} begins, its edge whole"
-                );
-            } else {
-                assert!(
-                    drawn.top() >= row_bottom - px(0.01),
-                    "{at}: the menu {surface:?} opens below the pointer"
-                );
-                assert!(
-                    mask.top() >= row_bottom - px(0.01) && mask.top() <= drawn.top() + px(0.01),
-                    "{at}: the menu {surface:?} draws within {mask:?}, beginning where the pointer's row {row_bottom:?} ends, its edge whole"
-                );
-            }
-            cx.simulate_keystrokes("escape");
+        for scale in [1., 1.5, 2.] {
+            // A resize takes the test window's own factor, 2.
+            cx.simulate_resize(size(px(461.), px(330.)));
+            cx.update(|window, _| window.set_scale_factor(scale));
             draw(cx);
+            let field = cx.debug_bounds("code-editor-probe").expect("the editor");
+            for into in [0., 0.3, 0.6, 0.9] {
+                for (y, above) in [
+                    (field.top().floor() + px(10. + into), false),
+                    (field.bottom().floor() - px(10. - into), true),
+                ] {
+                    let at = format!("13 pt in 461 × 330 at scale {scale}, the pointer at {y:?}");
+                    let pointer = point(field.center().x, y);
+                    cx.update(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx));
+                    let surface = right_click_field(cx, pointer, "Go to Definition", &at);
+                    let item = menu_rows(cx, &["Go to Definition"])[0].1;
+                    let mask = menu_mask(cx, item);
+                    let drawn = surface.dilate(edge);
+                    // The device pixel row the pointer lies in.
+                    let device = (f32::from(pointer.y) * scale).floor();
+                    let (row_top, row_bottom) = (px(device / scale), px((device + 1.) / scale));
+                    if above {
+                        assert!(
+                            drawn.bottom() <= row_top + px(0.01),
+                            "{at}: the menu {surface:?} opens above the pointer"
+                        );
+                        assert!(
+                            (mask.bottom() - row_top).abs() <= px(0.01)
+                                && mask.bottom() >= drawn.bottom() - px(0.01),
+                            "{at}: the menu {surface:?} draws within {mask:?}, ending where the pointer's row {row_top:?} begins, its edge whole"
+                        );
+                    } else {
+                        assert!(
+                            drawn.top() >= row_bottom - px(0.01),
+                            "{at}: the menu {surface:?} opens below the pointer"
+                        );
+                        assert!(
+                            (mask.top() - row_bottom).abs() <= px(0.01)
+                                && mask.top() <= drawn.top() + px(0.01),
+                            "{at}: the menu {surface:?} draws within {mask:?}, beginning where the pointer's row {row_bottom:?} ends, its edge whole"
+                        );
+                    }
+                    cx.simulate_keystrokes("escape");
+                    draw(cx);
+                }
+            }
         }
     }
 

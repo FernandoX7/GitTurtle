@@ -113,11 +113,18 @@ impl Strategy {
 /// fractional scale too, where GPUI paints the ring over the device pixels
 /// it touches.
 pub fn point_row_clear_by(y: Pixels, gap: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
+    let (top, bottom) = point_device_row(y, scale_factor);
+    ((top - gap).floor(), (bottom + gap).ceil())
+}
+
+/// GitTurtle patch: the device pixel row a pointer's place, `y`, lies in on
+/// a display of `scale_factor`, as its top and bottom edges in logical
+/// pixels: where what a popup opened at the point opened from begins and
+/// ends, which nothing the popup draws reaches.
+pub fn point_device_row(y: Pixels, scale_factor: f32) -> (Pixels, Pixels) {
     let scale_factor = scale_factor.max(f32::EPSILON);
     let row = (f32::from(y) * scale_factor).floor();
-    let top = px(row / scale_factor) - gap;
-    let bottom = px((row + 1.) / scale_factor) + gap;
-    (top.floor(), bottom.ceil())
+    (px(row / scale_factor), px((row + 1.) / scale_factor))
 }
 
 /// The bounds a popup resolved to, and the side it ended up on.

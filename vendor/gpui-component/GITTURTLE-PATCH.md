@@ -726,16 +726,31 @@ the side taken from where the fill lies; the fill and its drawn edge lie
 inside the mask, and only the shadow's tail on the opener's side is cut. It
 adds no layout node, as GPUI's `deferred` adds none, so the popup host
 measures and places the popup as before. The popover wraps its content on
-its anchor's side, and the fallback menu wraps its menu about the pointer,
-`POPOVER_EDGE_WIDTH` past the fill, the far edge of the pixel row the
-pointer lies in. The consumers are the app's dropdowns (`AppDropdown`), its
+its anchor's side, and the fallback menu wraps its menu at the device pixel
+row the pointer lies in (`Opener::Row`, its edges from the base
+`point_device_row`), so the mask ends exactly where that row begins, above
+the menu or below it, wherever the menu's whole-pixel placement put its
+fill. Cut at the ring instead, `POPOVER_EDGE_WIDTH` past the fill, the
+shadow stopped up to two device pixels short of the row above a pointer at
+scale 2, where a menu half a pixel taller than a whole one moves up to a
+whole pixel, while below a pointer at 1.5 GPUI's outward rounding of the
+mask carried it to the row. The mask's band reaches 10,000 px past its line
+rather than a million, so the f32 size that holds the line keeps it to a
+thousandth of a pixel, where it kept it to a sixteenth and GPUI's outward
+rounding could carry a mask a whole device pixel past its line at a
+fractional scale; and a row's edges are drawn a hundredth of a pixel toward
+the popup, so that the rounding of their product with the scale lands on
+the row's own boundary. The consumers are the app's dropdowns (`AppDropdown`), its
 row menus, which mask themselves through `ClearOfOpener::mask` at their row
 (`RowMenu`), and the drawn menu of every input on Linux.
 `cargo test --locked -p gitturtle menus_draw_nothing_over_their_button_or_row`
 reads the content mask of a dropdown's surface below and above its button
 and of a right-click menu above its row, and
 `an_inputs_menu_draws_nothing_on_the_pointers_row` that of a code editor's
-menu below and above the pointer's pixel row; each fails without the mask.
+menu below and above the pointer's pixel row, at scales 1, 1.5 and 2 for a
+pointer on a whole pixel and part way into one, beginning or ending exactly
+at that device row's edge; each fails without the mask, and the last with a
+mask cut at the ring.
 Remove this part when upstream keeps a popup's shadow off what it opened
 from, and those tests pass without it.
 

@@ -195,6 +195,17 @@ pub enum Opener {
         /// How far past the fill what it opened from begins.
         gap: Pixels,
     },
+    /// The pixel row a pointer lies in, from `top` to `bottom`: above the
+    /// popup where the popup's fill starts at or below `bottom`, the mask
+    /// beginning there, and below it where the fill ends at or above `top`,
+    /// the mask ending there, wherever the popup's placement rounded its
+    /// fill to. A popup whose fill spans the row is not clipped.
+    Row {
+        /// The row's upper edge.
+        top: Pixels,
+        /// The row's lower edge.
+        bottom: Pixels,
+    },
 }
 
 /// GitTurtle patch: a popup drawn only on its own side of what it opened
@@ -227,14 +238,30 @@ impl ClearOfOpener {
     /// draws on its own side of `opener`, or `None` where the fill spans the
     /// opener's place.
     pub fn mask(fill: Bounds<Pixels>, opener: Opener) -> Option<ContentMask<Pixels>> {
-        // Past any window: the mask is a band across the whole window.
-        const FAR: Pixels = px(1.0e6);
+        // Past any window: the mask is a band across the whole window. Its
+        // near edge is kept as the band's size from the far one, so the far
+        // edge stays near enough for that size to hold the edge to a
+        // thousandth of a pixel: a million pixels out, an f32 size held it
+        // to a sixteenth, and 200.67 px stood as 200.69, which GPUI's
+        // outward rounding carried a whole device pixel on at scale 1.5.
+        const FAR: Pixels = px(1.0e4);
+        // Well under a device pixel at any scale, and well over the
+        // rounding error of a window's coordinates times its scale.
+        const ROW_SNAP: Pixels = px(0.01);
         let (top, bottom) = match opener {
             Opener::Above(gap) => (fill.top() - gap, FAR),
             Opener::Below(gap) => (-FAR, fill.bottom() + gap),
             Opener::At { y, gap } if fill.top() >= y => (fill.top() - gap, FAR),
             Opener::At { y, gap } if fill.bottom() <= y => (-FAR, fill.bottom() + gap),
             Opener::At { .. } => return None,
+            // A row's edges lie on device pixel boundaries, which GPUI
+            // rounds a mask out to from their product with the scale: an
+            // edge that came out a hair past its boundary, as 200.67 px at
+            // scale 1.5 does, took the row's own pixel. Drawn a hundredth of
+            // a pixel toward the popup, it rounds onto the boundary.
+            Opener::Row { bottom, .. } if fill.top() >= bottom => (bottom + ROW_SNAP, FAR),
+            Opener::Row { top, .. } if fill.bottom() <= top => (-FAR, top - ROW_SNAP),
+            Opener::Row { .. } => return None,
         };
         Some(ContentMask {
             bounds: Bounds::from_corners(point(-FAR, top), point(FAR, bottom)),
