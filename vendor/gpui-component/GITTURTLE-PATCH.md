@@ -734,13 +734,22 @@ fill. Cut at the ring instead, `POPOVER_EDGE_WIDTH` past the fill, the
 shadow stopped up to two device pixels short of the row above a pointer at
 scale 2, where a menu half a pixel taller than a whole one moves up to a
 whole pixel, while below a pointer at 1.5 GPUI's outward rounding of the
-mask carried it to the row. The mask's band reaches 10,000 px past its line
-rather than a million, so the f32 size that holds the line keeps it to a
-thousandth of a pixel, where it kept it to a sixteenth and GPUI's outward
-rounding could carry a mask a whole device pixel past its line at a
-fractional scale; and a row's edges are drawn a hundredth of a pixel toward
-the popup, so that the rounding of their product with the scale lands on
-the row's own boundary. The consumers are the app's dropdowns
+mask carried it to the row. `ClearOfOpener::mask` takes the window's
+viewport, and the mask's band reaches the least power of two at least twice
+its larger side past the window's origin on every side
+(`ClearOfOpener::reach`), so it crosses any window whole and the f32 size
+from its far edge keeps the line it ends at to a few thousandths of a pixel:
+a band a million pixels out kept the line to a sixteenth, and GPUI's outward
+rounding could carry a mask a whole device pixel past it at a fractional
+scale, and one 10,000 px out clipped a popup in a window wider than that, as
+an X11 window across three 4K monitors is. A row's edges are drawn a
+hundredth of a pixel toward the popup, so that the rounding of their product
+with the scale lands on the row's own boundary.
+`scripts/vendor-crate-test.sh vendor/gpui-component styled::` reads every
+opener's band across a 12,000 × 800 and a 600 × 12,000 window
+(`an_openers_mask_crosses_a_window_of_any_size`) and a pointer row's line on
+its device pixel at scale 1.5
+(`an_openers_mask_keeps_its_line_on_its_device_pixel`). The consumers are the app's dropdowns
 (`AppDropdown`), the theme editor's `ColorPicker` popover
 (`crates/app/src/theme_editor.rs`), its row menus, which mask themselves
 through `ClearOfOpener::mask` at their row (`RowMenu`), and the drawn menu of

@@ -235,37 +235,49 @@ impl ClearOfOpener {
     }
 
     /// The content mask that keeps what a popup with its fill at `fill`
-    /// draws on its own side of `opener`, or `None` where the fill spans the
-    /// opener's place.
-    pub fn mask(fill: Bounds<Pixels>, opener: Opener) -> Option<ContentMask<Pixels>> {
-        // Past any window: the mask is a band across the whole window. Its
-        // near edge is kept as the band's size from the far one, so the far
-        // edge stays near enough for that size to hold the edge to a
-        // thousandth of a pixel: a million pixels out, an f32 size held it
-        // to a sixteenth, and 200.67 px stood as 200.69, which GPUI's
-        // outward rounding carried a whole device pixel on at scale 1.5.
-        const FAR: Pixels = px(1.0e4);
+    /// draws on its own side of `opener` in a window whose viewport is
+    /// `viewport`, or `None` where the fill spans the opener's place.
+    pub fn mask(
+        fill: Bounds<Pixels>,
+        opener: Opener,
+        viewport: gpui::Size<Pixels>,
+    ) -> Option<ContentMask<Pixels>> {
+        let far = Self::reach(viewport);
         // Well under a device pixel at any scale, and well over the
         // rounding error of a window's coordinates times its scale.
         const ROW_SNAP: Pixels = px(0.01);
         let (top, bottom) = match opener {
-            Opener::Above(gap) => (fill.top() - gap, FAR),
-            Opener::Below(gap) => (-FAR, fill.bottom() + gap),
-            Opener::At { y, gap } if fill.top() >= y => (fill.top() - gap, FAR),
-            Opener::At { y, gap } if fill.bottom() <= y => (-FAR, fill.bottom() + gap),
+            Opener::Above(gap) => (fill.top() - gap, far),
+            Opener::Below(gap) => (-far, fill.bottom() + gap),
+            Opener::At { y, gap } if fill.top() >= y => (fill.top() - gap, far),
+            Opener::At { y, gap } if fill.bottom() <= y => (-far, fill.bottom() + gap),
             Opener::At { .. } => return None,
             // A row's edges lie on device pixel boundaries, which GPUI
             // rounds a mask out to from their product with the scale: an
             // edge that came out a hair past its boundary, as 200.67 px at
             // scale 1.5 does, took the row's own pixel. Drawn a hundredth of
             // a pixel toward the popup, it rounds onto the boundary.
-            Opener::Row { bottom, .. } if fill.top() >= bottom => (bottom + ROW_SNAP, FAR),
-            Opener::Row { top, .. } if fill.bottom() <= top => (-FAR, top - ROW_SNAP),
+            Opener::Row { bottom, .. } if fill.top() >= bottom => (bottom + ROW_SNAP, far),
+            Opener::Row { top, .. } if fill.bottom() <= top => (-far, top - ROW_SNAP),
             Opener::Row { .. } => return None,
         };
         Some(ContentMask {
-            bounds: Bounds::from_corners(point(-FAR, top), point(FAR, bottom)),
+            bounds: Bounds::from_corners(point(-far, top), point(far, bottom)),
         })
+    }
+
+    /// How far past the window's origin the mask's band reaches on every
+    /// side: the least power of two at least twice the viewport's larger
+    /// side, so the band crosses any window whole, and so near enough that
+    /// the f32 size from its far edge holds the line it ends at to a few
+    /// thousandths of a pixel. A band a million pixels out held that line
+    /// to a sixteenth, and 200.67 px stood as 200.69, which GPUI's outward
+    /// rounding carried a whole device pixel on at scale 1.5; one 10,000 px
+    /// out clipped a popup in a window wider than that, as an X11 window
+    /// across three 4K monitors is.
+    fn reach(viewport: gpui::Size<Pixels>) -> Pixels {
+        let side = f32::from(viewport.width.max(viewport.height)).max(1.) * 2.;
+        px(2f32.powi(side.log2().ceil() as i32))
     }
 }
 
@@ -311,7 +323,7 @@ impl Element for ClearOfOpener {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<ContentMask<Pixels>> {
-        let mask = Self::mask(bounds, self.opener);
+        let mask = Self::mask(bounds, self.opener, window.viewport_size());
         window.with_content_mask(mask, |window| self.child.prepaint(window, cx));
         mask
     }
@@ -531,5 +543,73 @@ impl<T: Styled + Sized> ThemeStyled for T {
             .text_color(theme.popover_foreground)
             .shadow(popover_shadow(popover_ring(cx), 1.))
             .rounded(theme.radius)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::size;
+
+    fn fill(top: f32, bottom: f32) -> Bounds<Pixels> {
+        Bounds::from_corners(point(px(100.), px(top)), point(px(300.), px(bottom)))
+    }
+
+    /// GitTurtle patch: an opener's mask crosses its window whole, however
+    /// wide or tall: in a 12,000 × 800 window, as an X11 window across three
+    /// 4K monitors is, and a 600 × 12,000 one, every kind of opener's band
+    /// reaches past both sides. A band 10,000 px out clipped a popup past
+    /// that line.
+    #[test]
+    fn an_openers_mask_crosses_a_window_of_any_size() {
+        let openers = [
+            (fill(40., 200.), Opener::Above(px(5.))),
+            (fill(40., 200.), Opener::Below(px(5.))),
+            (fill(40., 200.), Opener::At { y: px(35.), gap: px(5.) }),
+            (fill(40., 200.), Opener::At { y: px(205.), gap: px(5.) }),
+            (fill(40., 200.), Opener::Row { top: px(36.), bottom: px(37.) }),
+            (fill(40., 200.), Opener::Row { top: px(201.), bottom: px(202.) }),
+        ];
+        for viewport in [size(px(12_000.), px(800.)), size(px(600.), px(12_000.))] {
+            for (fill, opener) in openers {
+                let mask = ClearOfOpener::mask(fill, opener, viewport).expect("a mask");
+                let band = mask.bounds;
+                assert!(
+                    band.left() <= px(0.) && band.right() >= viewport.width,
+                    "{opener:?} in {viewport:?}: {band:?} crosses the window's width"
+                );
+                assert!(
+                    band.top() <= px(0.) || band.bottom() >= viewport.height,
+                    "{opener:?} in {viewport:?}: {band:?} reaches the window's far edge"
+                );
+            }
+        }
+    }
+
+    /// GitTurtle patch: the line a mask ends at keeps its place to a
+    /// thousandth of a pixel, so GPUI's outward rounding of it, from its
+    /// product with the scale, lands on the device pixel the line lies on:
+    /// a pointer's device row at 200.67 to 201.33 px at scale 1.5, below a
+    /// menu above it, ends the mask at device pixel 301. A band a million
+    /// pixels out held the line as 200.69 px, rounded out to 302.
+    #[test]
+    fn an_openers_mask_keeps_its_line_on_its_device_pixel() {
+        let scale = 1.5_f32;
+        let (top, bottom) = (px(301. / scale), px(302. / scale));
+        let viewport = size(px(461.), px(330.));
+        let mask = ClearOfOpener::mask(fill(17., 198.), Opener::Row { top, bottom }, viewport)
+            .expect("a mask");
+        assert_eq!(
+            (f32::from(mask.bounds.bottom()) * scale).ceil(),
+            301.,
+            "{mask:?} ends where the row begins"
+        );
+        let mask = ClearOfOpener::mask(fill(203., 380.), Opener::Row { top, bottom }, viewport)
+            .expect("a mask");
+        assert_eq!(
+            (f32::from(mask.bounds.top()) * scale).floor(),
+            302.,
+            "{mask:?} begins where the row ends"
+        );
     }
 }

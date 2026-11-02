@@ -791,6 +791,7 @@ impl Element for RowMenu {
                 y: row.top,
                 gap: menu_offset(),
             },
+            window.viewport_size(),
         );
         window.with_content_mask(mask, |window| {
             window.with_element_offset(origin - laid.origin, |window| {
