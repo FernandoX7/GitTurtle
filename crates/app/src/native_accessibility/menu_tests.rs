@@ -1473,3 +1473,275 @@ fn a_row_menu_stays_with_a_row_moved_a_fraction_of_a_pixel() {
         );
     }
 }
+
+/// A row `inset` in from the window's sides and `top` below its top, with
+/// the app's right-click menu of four items. Layout puts those lengths on
+/// device pixels, so at a fractional scale the row can start part way into
+/// a logical pixel: 3 px in is 4 device pixels at 1.5, 2.67 px, where the
+/// overlay GPUI's anchor moves by whole pixels lies half a device pixel off
+/// the grid.
+struct InsetRowProbe {
+    inset: Pixels,
+    top: Pixels,
+}
+
+impl Render for InsetRowProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().pt(self.top).px(self.inset).child(
+            div()
+                .id("inset-row")
+                .debug_selector(|| "inset-row".into())
+                .h(px(24.))
+                .w_full()
+                .child("A row")
+                .app_context_menu(|menu, _, _| {
+                    ["One", "Two", "Three", "Four"]
+                        .into_iter()
+                        .fold(menu, |menu, name| menu.item(PopupMenuItem::new(name)))
+                }),
+        )
+    }
+}
+
+/// Where a menu's fill starts or ends, in device pixels, clamped to the
+/// side of a window `extent` long at `start` or its far end on a display of
+/// `scale`: on the first device pixel at or inside the margin and the
+/// menu's edge (`super::menu_bounds`), so the edge outside it is drawn from
+/// the device pixel holding the 8 px line.
+fn clamped_fill(start: bool, extent: Pixels, scale: f32) -> f32 {
+    let inside = f32::from(super::MENU_MARGIN + super::MENU_EDGE) * scale;
+    if start {
+        (inside - 1e-3).ceil()
+    } else {
+        (f32::from(extent) * scale - inside + 1e-3).floor()
+    }
+}
+
+/// A row's right-click menu opened 3 px from either side of a 460 px
+/// window, the row 3 px in from the window's sides too, draws its fill on
+/// the first device pixel inside the 8 px margin and its edge, at the
+/// fractional scales 1.2 (as Hyprland gives a panel it cannot set to 1.25),
+/// 1.25 (as Omarchy sets) and 1.5: there the ring outside the fill starts
+/// 8 px from the side, 10 and 12 device pixels, and at 1.2 on the device
+/// pixel holding the 8 px line. The row at 3 px lies 4 device pixels in at
+/// 1.5, 2.67 px, so the overlay GPUI's anchor moves by whole pixels lies
+/// half a device pixel off the grid, which `RowMenu::prepaint` takes back
+/// from a clamped menu: the side row at 2 px, 3 device pixels at 1.5, left
+/// it nothing to correct there.
+#[gpui::test]
+fn a_rows_menu_off_the_pixel_grid_keeps_its_edge_8_px_from_the_sides(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    // A whole number of device pixels at each scale.
+    let (width, height) = (px(460.), px(480.));
+    let mut failures = Vec::new();
+    for scale in [1.2, 1.25, 1.5] {
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| InsetRowProbe {
+                inset: px(3.),
+                top: px(41.),
+            });
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        cx.simulate_resize(size(width, height));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        draw(cx);
+        let row = cx.debug_bounds("inset-row").expect("the row");
+        for (x, left) in [(row.left() + px(1.), true), (row.right() - px(1.), false)] {
+            let at = format!("scale {scale}, the row {row:?}'s menu {x:?} across");
+            let pointer = point(x, row.center().y);
+            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+            draw(cx);
+            draw(cx);
+            let fill = open_menu_fill_in_device_pixels(cx);
+            let (drawn, expected) = if left {
+                (fill.left().as_f32(), clamped_fill(true, width, scale))
+            } else {
+                (fill.right().as_f32(), clamped_fill(false, width, scale))
+            };
+            if drawn != expected {
+                failures.push(format!(
+                    "{at}: the fill {fill:?} lies at device pixel {drawn}, not {expected}"
+                ));
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The fill of the open menu whose item `selector` names, as painted, in
+/// device pixels: the last fill of the popover colour around the item's
+/// first device pixel, which lies inside the fill wherever the fill shows
+/// any of the item, as a menu capped shorter than its row does.
+fn menu_fill_at_item(
+    cx: &mut VisualTestContext,
+    selector: &'static str,
+) -> Option<Bounds<gpui_kit::ScaledPixels>> {
+    let item = cx.debug_bounds(selector)?;
+    cx.update(|window, cx| {
+        let popover = Background::from(Theme::global(cx).popover);
+        let scale = window.scale_factor();
+        let first = point(
+            gpui_kit::ScaledPixels((f32::from(item.left()) * scale).floor() + 0.5),
+            gpui_kit::ScaledPixels((f32::from(item.top()) * scale).floor() + 0.5),
+        );
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == popover && quad.bounds.contains(&first))
+            .max_by_key(|quad| quad.order)
+            .map(|quad| quad.bounds)
+    })
+}
+
+/// A row's right-click menu that fits neither below its row nor wholly above
+/// it, in a window too short for even one of its items on either side,
+/// stands with its top clamped to the room's, its fill on the first device
+/// pixel inside the 8 px margin and its edge, at the fractional scales 1.2
+/// (as Hyprland gives a panel it cannot set to 1.25) and 1.25 (as Omarchy
+/// sets): there the ring outside the fill starts 8 px from the window's
+/// top, 10 device pixels, and at 1.2 on the device pixel holding the 8 px
+/// line. The row lies 34 px down, 3 px in, off a whole pixel at both
+/// scales, so the overlay GPUI's anchor moves by whole pixels lies off the
+/// device pixel grid, half a device pixel at 1.25 (laid out 42 device
+/// pixels down, 33.6 px, and moved by 34 px), which `RowMenu::prepaint`
+/// takes back from a menu clamped to the top as from one clamped to a
+/// side; at 1.2 it lies less than half one off, which rounding absorbs. A menu capped to the
+/// larger room keeps whole rows within the cap, so only a room shorter than
+/// one row clamps it: here about 19 px above the row and none below it.
+#[gpui::test]
+fn a_rows_menu_clamped_to_the_top_keeps_its_edge_8_px_from_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    // A whole number of device pixels at each scale.
+    let (width, height) = (px(460.), px(80.));
+    let mut failures = Vec::new();
+    for scale in [1.2, 1.25] {
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| InsetRowProbe {
+                inset: px(3.),
+                top: px(34.),
+            });
+            Root::new(probe, window, cx)
+        });
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        cx.simulate_resize(size(width, height));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        draw(cx);
+        let row = cx.debug_bounds("inset-row").expect("the row");
+        let at = format!("scale {scale}, the row {row:?}");
+        let pointer = point(row.left() + px(40.), row.center().y);
+        cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+        draw(cx);
+        draw(cx);
+        let Some(fill) = menu_fill_at_item(cx, "menu-item: One · MenuItem") else {
+            failures.push(format!("{at}: no menu's fill"));
+            continue;
+        };
+        let expected = clamped_fill(true, height, scale);
+        if fill.top().as_f32() != expected {
+            failures.push(format!(
+                "{at}: the fill {fill:?} starts at device pixel {}, not {expected}",
+                fill.top().as_f32()
+            ));
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A menu the keyboard opens (Shift-F10) on the changed file highlighted in
+/// History's inspector, at 18 pt in a 460 × 480 window, at the fractional
+/// scales 1.2 and 1.25, lies on device pixels inside the room the window
+/// leaves it: wider than the inspector beside the window's right side, its
+/// fill is clamped to the first device pixel inside the 8 px margin and its
+/// edge there, so the edge is 8 px from the side (10 device pixels at
+/// 1.25, the device pixel holding the 8 px line at 1.2), and its drawn edge
+/// stands the menu gap from its row, below it or wholly above it. Right-click
+/// menus were walked at fractional scales; the keyboard's, placed from the
+/// list's row rather than a pointer, by none.
+#[gpui::test]
+async fn a_keyboard_s_row_menu_at_a_fractional_scale_lies_on_device_pixels(
+    cx: &mut TestAppContext,
+) {
+    const HISTORY: &str = "menu-item: File history… · MenuItem";
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        super::bind_keys(cx);
+    });
+    let (width, height) = (px(460.), px(480.));
+    let edge = f32::from(super::MENU_EDGE);
+    let mut failures = Vec::new();
+    for scale in [1.2, 1.25] {
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(width, height));
+        cx.update(|window, _| window.set_scale_factor(scale));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.files.is_empty(), "the commit's changed files");
+                app.selected_file = Some(0);
+                app.pane = crate::Pane::Files;
+                window.focus(&app.file_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let row = cx
+            .debug_bounds("selected-changed-file")
+            .expect("the highlighted row");
+        let at = format!("scale {scale}, the row {row:?}");
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        draw(cx);
+        let Some(fill) = menu_fill_at_item(cx, HISTORY) else {
+            failures.push(format!("{at}: the file's menu and its fill"));
+            continue;
+        };
+        let (right, last) = (fill.right().as_f32(), clamped_fill(false, width, scale));
+        if right != last {
+            failures.push(format!(
+                "{at}: the fill {fill:?} ends at device pixel {right}, not {last}, clamped \
+                 to the right side"
+            ));
+        }
+        if fill.left().as_f32() < clamped_fill(true, width, scale) {
+            failures.push(format!("{at}: the fill {fill:?} runs past the left side"));
+        }
+        // The menu gap between the row and the drawn edge, the edge's device
+        // pixels and the row's edge both read in logical pixels. A menu
+        // beside its row keeps the place rounding gives it, unclamped, and
+        // its edge covers the device pixel its band touches, so the gap
+        // can fall short by up to two device pixels: at 1.2, above its row,
+        // the fill lies a device pixel nearer the row than its place rounds
+        // to, and the edge 4.17 px from it.
+        let (top, bottom) = (fill.top().as_f32(), fill.bottom().as_f32());
+        let gap = if top >= f32::from(row.bottom()) * scale {
+            px((top - edge * scale + 1e-3).floor() / scale) - row.bottom()
+        } else {
+            row.top() - px((bottom + edge * scale - 1e-3).ceil() / scale)
+        };
+        if (gap - appearance::popup_gap()).abs() > px(2. / scale) {
+            failures.push(format!(
+                "{at}: the fill {fill:?} draws its edge {gap:?} from the row, not about {:?}",
+                appearance::popup_gap()
+            ));
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(HISTORY).is_none(), "{at}: Escape closed it");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    cx.update(|window, _| window.set_scale_factor(2.));
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}

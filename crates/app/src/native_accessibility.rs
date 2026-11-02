@@ -803,13 +803,16 @@ impl Element for RowMenu {
         // its place plus the whole element offset on the device pixel,
         // halves toward zero, and `laid` holds the offset this overlay
         // inherits already rounded. The overlay's anchor moves it by whole
-        // pixels, half a device pixel off one at scale 1.25 or 1.5, so moving
-        // the menu by `origin - laid.origin` left the sum half a device pixel
-        // short and put a fill clamped to the left side a device pixel nearer
-        // it, its edge 7.2 px from it at 1.25, and a fill below the pointer a
-        // device pixel above its place, its edge on the pointer's own device
-        // row, at 1.25 with the row 42 px down. A menu beside its row keeps
-        // the place that rounding gives it, as the row does.
+        // pixels, which at a fractional scale can lie part way into a device
+        // pixel (a quarter, a half or three quarters of one at 1.25, a half
+        // at 1.5), so moving the menu by `origin - laid.origin` left the sum
+        // that part of a device pixel off its place, which the rounding took
+        // to the device pixel before it: a fill clamped to the left side lay
+        // a device pixel nearer it, its edge 7.2 px from it at 1.25, and a
+        // fill below the pointer a device pixel above its place, its edge on
+        // the pointer's own device row, at 1.25 with the row 42 px down. A
+        // menu beside its row keeps the place that rounding gives it, as the
+        // row does.
         let inherited = window.element_offset();
         let room = self.room;
         let unrounded = |value: Pixels, on_device_pixel: bool| {
@@ -823,7 +826,8 @@ impl Element for RowMenu {
         let unrounded = point(
             unrounded(
                 inherited.x,
-                origin.x <= room.left() || origin.x + laid.size.width >= room.right() - px(0.01),
+                origin.x <= room.left()
+                    || origin.x + laid.size.width >= room.right() - SIDE_TOLERANCE,
             ),
             unrounded(inherited.y, origin.y <= room.top() || below_pointer),
         );
@@ -874,6 +878,12 @@ const MENU_MARGIN: Pixels = gpui_kit::component::POPUP_WINDOW_MARGIN;
 /// the popup's shadow. A menu whose fill ended [`MENU_MARGIN`] above the
 /// status bar showed its edge 7 px above it.
 const MENU_EDGE: Pixels = gpui_kit::component::POPOVER_EDGE_WIDTH;
+/// How near a menu's trailing edge lies to its room's right side to stand
+/// on it ([`RowMenu`]): the clamp that moves it there subtracts, and can
+/// leave it a rounding error short. The kit's positioner keeps the same
+/// tolerance for the same clamp (`SIDE_TOLERANCE` in `gpui-base`'s
+/// `positioner.rs`), which it does not export.
+const SIDE_TOLERANCE: Pixels = px(0.01);
 /// How far a row's menu's fill stands from the row it lies beside, below its
 /// foot or above its top: the gap every menu keeps from what it opened from
 /// ([`appearance::popup_gap`]) past its drawn edge ([`MENU_EDGE`]), as the
