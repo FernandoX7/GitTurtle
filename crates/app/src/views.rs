@@ -12298,34 +12298,39 @@ pub(crate) mod tests {
         Vec<(SharedString, Option<String>)>,
     );
 
-    /// The placeholder `field` reports to assistive technology, as its
-    /// editing element writes it from the accessible metadata the field was
-    /// given as the last frame built it. The element is built in a test
-    /// frame of its own, which then draws the window again.
-    fn accessible_placeholder(
-        field: &Entity<InputState>,
+    /// The placeholder each of `fields` reports to assistive technology, as
+    /// its editing element writes it from the accessible metadata the field
+    /// was given as the last frame built it. The elements are built in one
+    /// test frame of their own, which then draws the window again, so each
+    /// field is read from the frame being checked: read one at a time, the
+    /// window drawn after the first refreshed what the second reported.
+    fn accessible_placeholders(
+        fields: &[Entity<InputState>],
         cx: &mut VisualTestContext,
-    ) -> Option<String> {
-        let written = std::rc::Rc::new(RefCell::new(None));
-        let (placeholder, field) = (written.clone(), field.clone());
+    ) -> Vec<Option<String>> {
+        let written = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let (placeholders, fields) = (written.clone(), fields.to_vec());
         cx.draw(
             point(px(0.), px(0.)),
             size(px(1.), px(1.)),
             move |window, cx| {
-                *placeholder.borrow_mut() = field.update(cx, |state, cx| {
-                    let element = Render::render(state, window, cx).into_element();
-                    let mut node = gpui::accesskit::Node::new(
-                        element
-                            .a11y_role()
-                            .expect("the editing focus owner has a role"),
-                    );
-                    element.write_a11y_info(&mut node);
-                    node.placeholder().map(str::to_owned)
-                });
+                for field in &fields {
+                    let placeholder = field.update(cx, |state, cx| {
+                        let element = Render::render(state, window, cx).into_element();
+                        let mut node = gpui::accesskit::Node::new(
+                            element
+                                .a11y_role()
+                                .expect("the editing focus owner has a role"),
+                        );
+                        element.write_a11y_info(&mut node);
+                        node.placeholder().map(str::to_owned)
+                    });
+                    placeholders.borrow_mut().push(placeholder);
+                }
                 div()
             },
         );
-        written.borrow_mut().take()
+        written.take()
     }
 
     /// The layout [`StepLayout`] reads, as the last frame drew it.
@@ -12356,13 +12361,18 @@ pub(crate) mod tests {
             .collect();
         let (filter, search) =
             app.read_with(cx, |app, _| (app.file_filter.clone(), app.search.clone()));
-        let fields = std::iter::once(filter)
+        let fields: Vec<_> = std::iter::once(filter)
             .chain(history.then_some(search))
-            .map(|field| {
-                let drawn =
-                    field.read_with(cx, |field, _| field.presentation().placeholder().clone());
-                (drawn, accessible_placeholder(&field, cx))
-            })
+            .collect();
+        // Every field's drawn placeholder, then every field's accessible
+        // one, before anything draws the window again.
+        let drawn: Vec<SharedString> = fields
+            .iter()
+            .map(|field| field.read_with(cx, |field, _| field.presentation().placeholder().clone()))
+            .collect();
+        let fields = drawn
+            .into_iter()
+            .zip(accessible_placeholders(&fields, cx))
             .collect();
         (columns, regions, fields)
     }
@@ -12372,11 +12382,14 @@ pub(crate) mod tests {
     /// interaction draws with no answer to a read landing among them. The
     /// reader answers on its own thread, which `run_until_parked` does not
     /// wait for: a read made before a width step once answered during it.
+    /// A window still asking for reads after eight passes fails the test
+    /// here, where it once went on with a read in flight.
     async fn quiet_reader(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
     ) -> crate::worker::ReaderHeld {
-        for _ in 0..8 {
+        const PASSES: usize = 8;
+        for _ in 0..PASSES {
             let asked = app.read_with(cx, |app, _| {
                 app.worker.wait_idle();
                 app.worker.submissions()
@@ -12384,10 +12397,10 @@ pub(crate) mod tests {
             settle(app, cx).await;
             draw(cx);
             if app.read_with(cx, |app, _| app.worker.submissions()) == asked {
-                break;
+                return app.read_with(cx, |app, _| app.worker.hold());
             }
         }
-        app.read_with(cx, |app, _| app.worker.hold())
+        panic!("the window still asks for reads after {PASSES} passes");
     }
 
     /// Steps a window from `from` to `to` at 13 and 18 pt, in History or,
