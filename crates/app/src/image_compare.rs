@@ -593,10 +593,11 @@ impl GitTurtle {
         } else {
             widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window) - inset
         };
-        // Predicted from the widths alone, the zoom menu gave its inset back
-        // on a row it shared at 13 pt in a 478.5 px window, half a pixel
-        // from the mode menu, its ring over the mode menu's
-        // (`ToolbarForms::zooms_lead`).
+        // The rows follow this choice (`ToolbarForms::zooms_lead`): left to
+        // the layout, which breaks the row from the column's width before
+        // rounding, the zoom menu gave its inset back on a row it shared at
+        // 13 pt in a 478.5 px window, half a pixel from the mode menu, its
+        // ring over the mode menu's.
         let zooms_lead = forms.zooms_lead(source, modes_drawn + widths.gap + zoom_row, room);
         // Which ways the zoomed images can still move, in PANS' order: a pan
         // control that cannot move them is unavailable.
@@ -1491,15 +1492,31 @@ impl GitTurtle {
                     .border_color(rgb(p.border))
                     .debug_selector(|| "image-toolbar".into())
                     // Where the zooms lead the next row, the modes take
-                    // theirs whole, so the zooms never share it.
-                    .when(!source, |element| {
-                        element.child(if zooms_lead {
-                            div().w_full().flex().child(modes).into_any_element()
+                    // theirs whole, so the zooms never share it; where the
+                    // zoom menu shares the modes' row, the two are one run
+                    // that never breaks, so the rows are the ones decided
+                    // here, whatever fraction of a pixel the layout rounds
+                    // the column's width by.
+                    .map(|element| {
+                        if source {
+                            element.child(zoom_group)
+                        } else if zooms_lead {
+                            element
+                                .child(div().w_full().flex().child(modes))
+                                .child(zoom_group)
+                        } else if !forms.zooms_labelled {
+                            element.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(modes)
+                                    .child(zoom_group),
+                            )
                         } else {
-                            modes
-                        })
+                            element.child(modes).child(zoom_group)
+                        }
                     })
-                    .child(zoom_group)
                     .children(open_group)
                     // Only overlaid or wiped does the adjustment have controls;
                     // side by side it takes no place in the row.
@@ -1991,19 +2008,23 @@ struct ToolbarForms {
 impl ToolbarForms {
     /// Whether the zoom menu leads a row, where the modes, the gap and the
     /// zoom menu at its widest take `row` of a toolbar `room` wide inside
-    /// its padding, or where it is a `source` image's first group. These
-    /// widths are the layout's to within a pixel, which breaks the row from
-    /// the column's unsnapped width: within a pixel of fitting it leads, and
-    /// the modes then take their row whole, so it never gives its inset
-    /// back on a row it shares. Beside the Pan menu, which
-    /// [`ToolbarWidths::forms`] chose only where the whole row fits, it
-    /// never leads: with the margin there, choosing 100% at 13 pt in a
-    /// toolbar 355.5 to 356.5 px wide drew the Pan menu and took the modes
-    /// a row of their own where Fit drew one. Within a pixel of fitting
-    /// beside the modes alone, the zoom menu leaves the Pan menu no room, so
-    /// choosing a zoom never changes the rows.
+    /// its padding, past that room, or where it is a `source` image's first
+    /// group. The menus are as wide as their widest choices, so `row` is
+    /// the row as drawn; where the zoom menu does not lead, it and the modes
+    /// are one run the layout never breaks, and where it leads the modes
+    /// take their row whole, so the rows are the ones chosen here even where
+    /// the layout rounds the column's width otherwise, and the zoom menu
+    /// never gives its inset back on a row it shares. Leading within a
+    /// pixel of fitting, it took a row of its own at 13 pt in a 461 × 490
+    /// window, where in the bundled interface font the 157.25 px row fits
+    /// the toolbar's 157.5 px, and the captions and the image moved down
+    /// 34.5 px. Beside the Pan menu, which [`ToolbarWidths::forms`] chose
+    /// only where the whole row fits, it never leads, so choosing a zoom
+    /// never changes the rows: with a margin there, choosing 100% at 13 pt
+    /// in a toolbar 355.5 to 356.5 px wide drew the Pan menu and took the
+    /// modes a row of their own where Fit drew one.
     fn zooms_lead(self, source: bool, row: Pixels, room: Pixels) -> bool {
-        !self.zooms_labelled && self.pan != Some(Pan::Menu) && (source || row > room - px(1.))
+        !self.zooms_labelled && self.pan != Some(Pan::Menu) && (source || row > room)
     }
 }
 
@@ -2843,12 +2864,14 @@ mod tests {
             }
         );
     }
-    /// The zoom menu leads a row past the room and within a pixel of
-    /// fitting, which the layout's unsnapped row can break where the widths
-    /// fit, and always as a source image's first group; never beside the Pan
-    /// menu, which is chosen only where the whole row fits, nor labelled.
+    /// The zoom menu leads a row only past the room, and always as a source
+    /// image's first group; never beside the Pan menu, which is chosen only
+    /// where the whole row fits, nor labelled. Leading within a pixel of
+    /// fitting, it took a row of its own at 13 pt in a 461 × 490 window,
+    /// where in the bundled interface font the 157.25 px row fits the
+    /// toolbar's 157.5 px.
     #[test]
-    fn the_zoom_menu_leads_a_row_within_a_pixel_of_fitting() {
+    fn the_zoom_menu_leads_a_row_only_past_the_room() {
         let menu = ToolbarForms {
             zooms_labelled: false,
             pan: None,
@@ -2856,12 +2879,16 @@ mod tests {
         let room = px(300.);
         assert!(menu.zooms_lead(false, px(300.5), room), "past the room");
         assert!(
-            menu.zooms_lead(false, px(299.5), room),
-            "within a pixel of fitting"
+            !menu.zooms_lead(false, px(300.), room),
+            "a row as wide as the room"
         );
         assert!(
-            !menu.zooms_lead(false, px(298.5), room),
-            "a pixel and more inside it"
+            !menu.zooms_lead(false, px(299.5), room),
+            "within a pixel of filling it"
+        );
+        assert!(
+            !menu.zooms_lead(false, px(157.25), px(157.5)),
+            "13 pt in 461 × 490, in the bundled interface font"
         );
         assert!(
             menu.zooms_lead(true, px(10.), room),
@@ -2871,7 +2898,8 @@ mod tests {
             pan: Some(Pan::InZoomMenu),
             ..menu
         };
-        assert!(in_zoom_menu.zooms_lead(false, px(299.5), room));
+        assert!(in_zoom_menu.zooms_lead(false, px(300.5), room));
+        assert!(!in_zoom_menu.zooms_lead(false, px(299.5), room));
         let pan_menu = ToolbarForms {
             pan: Some(Pan::Menu),
             ..menu
@@ -3305,6 +3333,99 @@ mod render_tests {
             assert!(
                 shared && led,
                 "{text} pt: about {holds} px the zoom menu shares the modes' row and leads its own"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The zoom menu keeps the mode menu's row wherever the toolbar holds
+    /// the mode menu, the gap and the zoom menu, each as wide as its widest
+    /// choice, as they are drawn, and takes a row of its own only past that
+    /// room. Leading within a pixel of fitting, it took a row of its own at
+    /// 13 pt in a 461 × 490 window, where in the bundled interface font the
+    /// 157.25 px row fits the toolbar's 157.5 px, and the captions and the
+    /// image moved down 34.5 px. At 13 and 18 pt, at the test window's
+    /// scale factor, 2, and at 1.5, a changed image is walked in 1/16 px
+    /// steps through the windows whose toolbar holds the row by less than a
+    /// pixel and a half: in each the zoom menu keeps the modes' row a gap
+    /// after the mode menu, ending inside the toolbar's padding, and the
+    /// toolbar is one row, as tall as one 8 px wider, so the captions and
+    /// the image stay where a wider toolbar has them; the walk
+    /// meets a toolbar within a pixel of the row. Left to the layout, which
+    /// breaks the row before it rounds the column to device pixels, the
+    /// zoom menu wrapped at 1.5 where the row fit.
+    #[gpui::test]
+    async fn the_zoom_menu_keeps_the_modes_row_wherever_the_row_fits(cx: &mut TestAppContext) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let input = image_commits(&[Some(&before), Some(&after)]);
+        let (_fixture, app, cx) = history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let slack = px(0.5);
+        // At the test window's scale, 2, and at 1.5, where the layout rounds
+        // the column to device pixels otherwise than whole pixels.
+        for (text, scale) in [(13, 2.), (18, 2.), (13, 1.5), (18, 1.5)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let toolbar = |width: f32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width), px(490.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                cx.debug_bounds("image-toolbar").expect("the toolbar")
+            };
+            toolbar(461., cx);
+            // The mode menu, given its inset back, the gap and the zoom menu
+            // at its widest, as they are drawn.
+            let (gap, rem, row) = cx.update(|window, _| {
+                let gap = window.rem_size() * 0.5;
+                let inset = appearance::ui_size(crate::ICON_INSET);
+                let mode = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window);
+                let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
+                (gap, window.rem_size(), mode - inset + gap + zoom)
+            });
+            // The first whole window whose toolbar holds the row.
+            let mut holds = 400.;
+            while toolbar(holds, cx).size.width - rem * 1.5 < row {
+                holds += 1.;
+                assert!(holds < 1200., "{text} pt: a window holds the row");
+            }
+            // A toolbar with room to spare is one row, the captions beneath it.
+            let one_row = toolbar(holds + 8., cx).size.height;
+            let mut within = 0;
+            for step in 0..=40 {
+                let width = holds - 1. + step as f32 / 16.;
+                let bar = toolbar(width, cx);
+                let room = bar.size.width - rem * 1.5;
+                if room < row {
+                    continue;
+                }
+                if room < row + px(1.) {
+                    within += 1;
+                }
+                let at = format!(
+                    "{text} pt at scale {scale} in {width} × 490, a {room:?} room for the {row:?} row"
+                );
+                let (Some(modes), Some(zooms)) = (
+                    cx.debug_bounds("image-mode-menu"),
+                    cx.debug_bounds("image-zoom-menu"),
+                ) else {
+                    panic!("{at}: the modes and the zooms are each a menu");
+                };
+                assert!(
+                    zooms.top() < modes.bottom()
+                        && (zooms.left() - modes.right() - gap).abs() <= slack
+                        && zooms.right() <= bar.right() - rem * 0.75 + slack,
+                    "{at}: the zoom menu {zooms:?} keeps the mode menu's {modes:?} row, a gap \
+                     after it, inside the toolbar {bar:?}"
+                );
+                assert!(
+                    (bar.size.height - one_row).abs() <= slack,
+                    "{at}: the toolbar {bar:?} is one row, {one_row:?} tall as with room to spare"
+                );
+            }
+            assert!(
+                within > 0,
+                "{text} pt at scale {scale}: the walk meets a toolbar within a pixel of the row"
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
