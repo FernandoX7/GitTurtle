@@ -9034,8 +9034,10 @@ pub(crate) mod tests {
 
     /// On Linux, Compare offers Open in default app for what the captured
     /// bytes are, never for what the file is called: a PDF named like a
-    /// launcher offers it in its After header, a PNG in its After caption and
-    /// a text model in its After header, and an ELF stub offers nothing.
+    /// launcher offers it in its After header, a PNG in its After caption (in
+    /// the image toolbar's row where the captions cannot hold it beside
+    /// Before's name) and a text model in its After header, and an ELF stub
+    /// offers nothing.
     ///
     /// The control lies whole inside the part of its side's header or
     /// caption that the preview's clip leaves visible, its focus ring
@@ -9126,6 +9128,16 @@ pub(crate) mod tests {
                 let bounds = cx
                     .debug_bounds(control)
                     .unwrap_or_else(|| panic!("{at}: {path} offers the action"));
+                // Where the captions cannot hold an image's open control
+                // beside Before's name, it stands in the toolbar's row, as a
+                // changed image's do (`image_compare::render_tests`).
+                let area = if control == "image-system-preview-1"
+                    && cx.debug_bounds("image-open-controls").is_some()
+                {
+                    "image-toolbar"
+                } else {
+                    area
+                };
                 let side = cx
                     .debug_bounds(area)
                     .unwrap_or_else(|| panic!("{at}: {path}: {area}"));
@@ -9459,10 +9471,10 @@ pub(crate) mod tests {
     /// are labelled or both icons. At 13 and 18 pt in 461 × 490, 461 × 980,
     /// 640 × 680 and 1,480 × 980 windows, the controls share their top and
     /// their width, and the walk meets both places. Where only Before offers
-    /// its control, its place is chosen from Before's room alone, and both
-    /// names and both sides' dimensions stay level (beneath the names they
-    /// once ended about 36 px apart). A source image's one caption places
-    /// its control by the same rule.
+    /// its control, its place is chosen from both captions' rooms, as with
+    /// both offered, and both names and both sides' dimensions stay level
+    /// (beneath the names they once ended about 36 px apart). A source
+    /// image's one caption places its control by the same rule.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn image_caption_controls_take_one_place(cx: &mut TestAppContext) {
@@ -9495,6 +9507,22 @@ pub(crate) mod tests {
             (true, true, true),
             "with Before alone offered, the walk meets its control on the names' line, in the toolbar, and level dimensions beneath the names"
         );
+        // After alone, beside the shorter name, stands where both do too.
+        let offer = app.read_with(cx, |app, _| match app.content.as_deref() {
+            Some(Content::Images { old, .. }) => old.system_preview,
+            _ => None,
+        });
+        assert!(offer.is_some(), "Before still offers its control");
+        edit_image_sides(&app, cx, |side, image| {
+            image.system_preview = offer.filter(|_| side == 1);
+        });
+        let after =
+            caption_controls_take_one_place(cx, "After alone offered", &[1], ["Before", "After"]);
+        assert_eq!(
+            after,
+            (true, true, true),
+            "with After alone offered, the walk meets its control on the names' line, in the toolbar, and level dimensions beneath the names"
+        );
         show_source(&app, cx, "image").await;
         let source = caption_controls_take_one_place(cx, "a source", &[1], ["Source", "Source"]);
         assert!(
@@ -9507,8 +9535,9 @@ pub(crate) mod tests {
     /// At 13 and 18 pt in 461 × 490, 461 × 980, 640 × 680 and 1,480 × 980
     /// windows, the open controls of the sides `offered` (each side's caption
     /// named `names`) share one top and one width, on their names' line
-    /// where the narrower caption among them holds the scaled 28 px icon
-    /// beside its name, and otherwise in the toolbar's row, above the
+    /// where the narrower drawn caption, whether or not its side offers one,
+    /// holds the scaled 28 px icon beside its name, and otherwise in the
+    /// toolbar's row, above the
     /// captions, where every drawn side's name and dimensions stay level with
     /// the other's. Whether the walk met controls on the names' line, in the
     /// toolbar, and both sides' dimensions drawn beneath the names with the
@@ -9569,11 +9598,13 @@ pub(crate) mod tests {
             let captions: Vec<_> = [0, 1]
                 .map(|index| cx.debug_bounds(format!("image-side-caption-{index}").leak()))
                 .to_vec();
+            // Chosen from every drawn caption, whether or not its side
+            // offers a control, so one side's control stands where both do.
             let fits = cx.update(|window, _| {
-                offered
+                drawn
                     .iter()
                     .map(|&index| {
-                        let caption = captions[index].expect("an offered side's caption");
+                        let caption = captions[index].expect("a drawn side's caption");
                         crate::image_compare::caption_room(
                             index,
                             caption.size.width,

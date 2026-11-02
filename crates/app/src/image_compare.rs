@@ -519,14 +519,19 @@ impl GitTurtle {
         // scaled 28 px icon fits there; otherwise both as their icons in the
         // toolbar's row, never over the image nor on a line of their own
         // beneath the names, which took the image 48 px at 18 pt in a
-        // 461 × 490 window.
+        // 461 × 490 window. The room is every drawn caption's, whether or
+        // not its side offers a control, so an added or deleted image's one
+        // control takes the place and form a changed image's two do: chosen
+        // from After's room alone, an added image's stayed beside its name
+        // at 18 pt in a 461 × 490 window while the zoom menu stood alone on
+        // a toolbar row beneath the modes.
         let caption_width = width / if source { 1. } else { 2. };
-        let open_room = offers
-            .iter()
-            .enumerate()
-            .filter(|(_, offered)| offered.is_some())
-            .map(|(index, _)| caption_room(index, caption_width, names[index], window))
-            .reduce(|narrower, room| narrower.min(room));
+        let open_room = offers.iter().any(Option::is_some).then(|| {
+            (0..2)
+                .filter(|&index| !source || index == 1)
+                .map(|index| caption_room(index, caption_width, names[index], window))
+                .fold(px(f32::MAX), Pixels::min)
+        });
         // The icon as layout draws it, snapped to the device's pixels, in
         // both the captions' choice and the toolbar's count.
         let open_icon = window.pixel_snap(crate::appearance::ui_size(28.));
@@ -2870,5 +2875,174 @@ mod tests {
         assert_eq!(origin, [-940., 0.]);
         let (scale, _, _) = layout([300., 200.], [1600., 800.], 0., [0., 0.]);
         assert!((scale - 268. / 1600.).abs() < 0.001);
+    }
+}
+
+/// Rendered regressions of an image comparison's toolbar and captions.
+#[cfg(all(test, target_os = "linux"))]
+mod render_tests {
+    use crate::views::tests::{draw, history_window_from, settle};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// The text sizes and windows each comparison is drawn at.
+    const SIZES: [(u8, f32, f32); 4] = [
+        (13, 461., 490.),
+        (18, 461., 490.),
+        (13, 1000., 680.),
+        (18, 1000., 680.),
+    ];
+
+    /// A `git fast-import` stream of one commit per step on `main`, oldest
+    /// first, each writing `image.png` with its bytes or, without, deleting
+    /// it.
+    fn image_commits(steps: &[Option<&[u8]>]) -> Vec<u8> {
+        let mut input = Vec::new();
+        for (index, step) in steps.iter().enumerate() {
+            let message = format!("step {index}");
+            input.extend_from_slice(
+                format!(
+                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n",
+                    1_700_000_000 + index,
+                    message.len(),
+                )
+                .as_bytes(),
+            );
+            match step {
+                Some(bytes) => {
+                    input.extend_from_slice(
+                        format!("M 100644 inline image.png\ndata {}\n", bytes.len()).as_bytes(),
+                    );
+                    input.extend_from_slice(bytes);
+                    input.push(b'\n');
+                }
+                None => input.extend_from_slice(b"D image.png\n"),
+            }
+        }
+        input.extend_from_slice(b"done\n");
+        input
+    }
+
+    /// Where a comparison draws its toolbar's modes and zooms, each side's
+    /// open control, the toolbar and the image.
+    struct Drawn {
+        modes: Bounds<Pixels>,
+        zooms: Bounds<Pixels>,
+        opens: [Option<Bounds<Pixels>>; 2],
+        toolbar: Bounds<Pixels>,
+        image: Bounds<Pixels>,
+    }
+
+    /// The comparison of `image.png` in the last commit `steps` write, as
+    /// drawn at each of [`SIZES`], in Midnight.
+    async fn drawn(cx: &mut TestAppContext, steps: &[Option<&[u8]>]) -> Vec<Drawn> {
+        let (_fixture, app, cx) = history_window_from(cx, image_commits(steps)).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |cx: &mut VisualTestContext, selectors: &[&'static str]| {
+            selectors
+                .iter()
+                .find_map(|selector| cx.debug_bounds(selector))
+                .unwrap_or_else(|| panic!("one of {selectors:?} is drawn"))
+        };
+        let mut drawn = Vec::new();
+        for (text, width, height) in SIZES {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            drawn.push(Drawn {
+                modes: bounds(cx, &["image-modes", "image-mode-menu"]),
+                zooms: bounds(cx, &["image-zooms", "image-zoom-menu"]),
+                opens: [
+                    cx.debug_bounds("image-system-preview-0"),
+                    cx.debug_bounds("image-system-preview-1"),
+                ],
+                toolbar: bounds(cx, &["image-toolbar"]),
+                image: bounds(cx, &["image-canvas-area"]),
+            });
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drawn
+    }
+
+    /// An added or a deleted image offers one side's open control, which
+    /// takes the place a changed image gives both. Chosen from the present
+    /// side's caption alone, an added image's After control stayed beside
+    /// its name at 18 pt in a 461 × 490 window, while the zoom menu, as wide
+    /// as its widest choice, stood alone on a toolbar row beneath the modes.
+    /// At 13 and 18 pt in 461 × 490 and 1000 × 680 windows, a zoom control
+    /// on a row of its own shares it with the open control, which stands
+    /// where the changed image's control of its side does: on the zooms' row
+    /// at the toolbar's trailing edge, or after its side's name. The zooms
+    /// keep their row, the toolbar its height, and the image's box is no
+    /// lower or shorter than the changed image's.
+    #[gpui::test]
+    async fn an_added_or_deleted_image_s_open_control_stands_where_a_changed_one_s_do(
+        cx: &mut TestAppContext,
+    ) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let changed = drawn(cx, &[Some(&before), Some(&after)]).await;
+        let slack = px(0.5);
+        let level =
+            |a: Bounds<Pixels>, b: Bounds<Pixels>| (a.center().y - b.center().y).abs() <= slack;
+        for (what, present, steps) in [
+            ("added", 1, vec![Some(after.as_slice())]),
+            ("deleted", 0, vec![Some(before.as_slice()), None]),
+        ] {
+            let one = drawn(cx, &steps).await;
+            for (((text, width, height), one), changed) in SIZES.iter().zip(&one).zip(&changed) {
+                let at = format!("{what} at {text} pt in {width} × {height}");
+                let control = one.opens[present]
+                    .unwrap_or_else(|| panic!("{at}: the present side offers its control"));
+                assert!(
+                    one.opens[1 - present].is_none(),
+                    "{at}: the absent side offers none"
+                );
+                if !level(one.zooms, one.modes) {
+                    assert!(
+                        level(control, one.zooms),
+                        "{at}: the zooms {:?} take a row of their own beneath the modes {:?}, which the open control {control:?} leaves them alone on",
+                        one.zooms,
+                        one.modes
+                    );
+                }
+                let theirs = changed.opens[present].expect("a changed image offers both");
+                let in_toolbar = changed.toolbar.contains(&theirs.center());
+                assert!(
+                    one.toolbar.contains(&control.center()) == in_toolbar
+                        && (control.top() - theirs.top()).abs() <= slack,
+                    "{at}: the control {control:?} stands where the changed image's {theirs:?} does"
+                );
+                let edge = if in_toolbar {
+                    // The toolbar's trailing control ends at its edge.
+                    let trailing = changed.opens[1].expect("a changed image offers both");
+                    (control.right() - trailing.right()).abs()
+                } else {
+                    (control.left() - theirs.left()).abs()
+                };
+                assert!(
+                    edge <= slack,
+                    "{at}: the control {control:?} keeps the changed image's edge ({theirs:?})"
+                );
+                assert!(
+                    (one.zooms.top() - changed.zooms.top()).abs() <= slack
+                        && (one.toolbar.size.height - changed.toolbar.size.height).abs() <= slack,
+                    "{at}: the zooms {:?} and the toolbar {:?} stay as the changed image draws them ({:?}, {:?})",
+                    one.zooms,
+                    one.toolbar,
+                    changed.zooms,
+                    changed.toolbar
+                );
+                assert!(
+                    one.image.top() <= changed.image.top() + slack
+                        && one.image.size.height >= changed.image.size.height - slack,
+                    "{at}: the image's box {:?} is no lower or shorter than the changed image's {:?}",
+                    one.image,
+                    changed.image
+                );
+            }
+        }
     }
 }
