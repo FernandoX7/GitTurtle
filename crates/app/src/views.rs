@@ -6513,6 +6513,11 @@ thread_local! {
     /// every window, measured each window's line again on the other's
     /// frames while Keyboard Shortcuts was open in both.
     static STATUS_TEXT: StatusLineWidths = const { RefCell::new(Measured::new()) };
+    /// The laid-out widths of the status line's leading whole parts, each
+    /// with the byte where it ends, and its whole width (`status_parts_end`),
+    /// kept for each text, font, size and scale factor drawn lately, as
+    /// [`STATUS_TEXT`] keeps the whole width the spare hints ask for.
+    static STATUS_PARTS: StatusPartWidths = const { RefCell::new(Measured::new()) };
     /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
     /// drawn lately, so the windows, pages and text sizes drawn in turn keep
     /// their own; its gaps and the warning's controls snap to the window's
@@ -6598,12 +6603,15 @@ struct StatusWidths {
 }
 
 /// How the status bar lays out in a window (`GitTurtle::fit_status_bar`):
-/// the form of the keyboard hints it has room for, if any, and whether the
-/// watch warning's Details… is drawn as its icon.
+/// the form of the keyboard hints it has room for, if any, whether the
+/// watch warning's Details… is drawn as its icon, and where the status
+/// line's text ends where it keeps only some of its parts
+/// ([`status_parts_end`]).
 #[derive(Debug, PartialEq, Eq)]
 struct StatusFit {
     hints: Option<String>,
     details_icon: bool,
+    parts: Option<usize>,
 }
 
 /// The navigation's keyboard hint, line by line.
@@ -6993,6 +7001,11 @@ thread_local! {
 /// ([`status_line_width`]).
 type StatusLineWidths = RefCell<Measured<(LineKey, u32, String), Pixels>>;
 
+/// The laid-out widths of status line texts' leading whole parts, each with
+/// the byte where it ends, and last their whole widths, by text, line key and
+/// scale factor ([`status_part_widths`]).
+type StatusPartWidths = RefCell<Measured<(LineKey, u32, String), Vec<(usize, Pixels)>>>;
+
 /// The width of `text` in the status line, kept in `cache` for each text,
 /// font, size and scale factor drawn lately, so windows drawn in turn keep
 /// their own; `measure` lays it out where it is not kept. Finding a kept
@@ -7013,6 +7026,72 @@ fn status_line_width(
             |_| measure(),
         )
     })
+}
+
+/// The status line's whole `text` as it is laid out ([`STATUS_TEXT`]).
+fn whole_status_width(text: &str, window: &Window) -> Pixels {
+    status_line_width(&STATUS_TEXT, text, window, || {
+        #[cfg(test)]
+        STATUS_TEXT_MEASURED.with(|measured| measured.set(measured.get() + 1));
+        line_widths(&[(text, appearance::ui_text(10.))], window)
+    })
+}
+
+/// What separates the parts of a status line, such as "1 changed file",
+/// "content read 12.3 ms" and "captured snapshot".
+const STATUS_SEPARATOR: &str = " · ";
+
+/// Where the status line's `text` ends in a box `room` wide: all of it
+/// where it fits (`None`), else after the last of its whole parts
+/// ([`STATUS_SEPARATOR`]) that fit with those before it, else after its
+/// first, which ends in an ellipsis. A part so reads whole or gives way
+/// whole with the parts after it: at 18 pt in a 461 px half tile, Compare's
+/// whole keyboard hints left "1 changed file · content read 12.3 ms" too
+/// little room, and the app drew its timing cut mid-number. The widths are
+/// kept for each text, from one layout of it ([`status_part_widths`]).
+fn status_parts_end(text: &str, room: Pixels, window: &Window) -> Option<usize> {
+    if !text.contains(STATUS_SEPARATOR) {
+        return None;
+    }
+    let (line, scale) = (LineKey::current(window), window.scale_factor().to_bits());
+    STATUS_PARTS.with_borrow_mut(|cache| {
+        let widths = cache.get_where(
+            |(kept, kept_scale, kept_text)| {
+                *kept == line && *kept_scale == scale && kept_text == text
+            },
+            || (line.clone(), scale, text.to_owned()),
+            |_| status_part_widths(text, window),
+        );
+        let (whole, leading) = widths.split_last()?;
+        (whole.1 > room).then(|| {
+            leading
+                .iter()
+                .rev()
+                .find(|(_, width)| *width <= room)
+                .or(leading.first())
+                .map_or(whole.0, |(end, _)| *end)
+        })
+    })
+}
+
+/// The laid-out widths of `text`'s leading whole parts, each with the byte
+/// where it ends, and last its whole width, all read from one layout of the
+/// line: a new status line costs one layout, however many parts it has.
+fn status_part_widths(text: &str, window: &Window) -> Vec<(usize, Pixels)> {
+    #[cfg(test)]
+    LINE_LAYOUTS.with(|count| count.set(count.get() + 1));
+    let style = window.text_style();
+    let layout = window.text_system().layout_line(
+        text,
+        appearance::ui_text(10.),
+        &[style.to_run(text.len())],
+        None,
+    );
+    text.match_indices(STATUS_SEPARATOR)
+        .map(|(end, _)| end)
+        .chain([text.len()])
+        .map(|end| (end, laid_out_text_width(layout.x_for_index(end), window)))
+        .collect()
 }
 
 /// `width` for `key`, computed again only when `key` changes, so a steady
@@ -7573,7 +7652,11 @@ impl GitTurtle {
     /// (`shortcuts::KeyHints::giving_way`), else none, with
     /// any spare hints after them, whole, only where the status line keeps
     /// its whole text beside them (Keyboard Shortcuts' page and end keys,
-    /// `shortcuts::KeyHints::spare`); and
+    /// `shortcuts::KeyHints::spare`); the status line's own text, in the
+    /// room left, keeps its whole parts that fit, the last leaving first,
+    /// so a measured timing reads whole or leaves whole, its first part
+    /// ending in an ellipsis where even that does not fit
+    /// ([`status_parts_end`]); and
     /// Details… keeps its label unless the labelled warning would leave the
     /// status line, beside any room kept for Cancel, less than it keeps with
     /// every hint gone, where it becomes its icon. At 18 pt in a 461 × 490
@@ -7625,9 +7708,12 @@ impl GitTurtle {
         // no room for does (`OperationPlace::StatusBar`), the line keeps
         // Cancel's room beside it, whether or not a write runs: its coming
         // moves nothing. Elsewhere the hints and Details… keep that room.
-        if bar_room {
-            room -= gap + window.pixel_snap(appearance::ui_size(WATCH_CONTROL));
-        }
+        let cancel = if bar_room {
+            gap + window.pixel_snap(appearance::ui_size(WATCH_CONTROL))
+        } else {
+            px(0.)
+        };
+        room -= cancel;
         STATUS_WIDTHS.with_borrow_mut(|cache| {
             let key = (
                 LineKey::current(window),
@@ -7659,28 +7745,48 @@ impl GitTurtle {
             // whose status the header draws leaves the line its text, and
             // the hints with it; they once hid through every write.
             let spare = widths.spare.as_ref().filter(|(_, width)| {
-                !carried && {
-                    let text = self.status_text();
-                    let whole = status_line_width(&STATUS_TEXT, text, window, || {
-                        #[cfg(test)]
-                        STATUS_TEXT_MEASURED.with(|measured| measured.set(measured.get() + 1));
-                        line_widths(&[(text, appearance::ui_text(10.))], window)
-                    });
-                    whole + gap + *width <= room
-                }
+                !carried && whole_status_width(self.status_text(), window) + gap + *width <= room
             });
+            let hints = spare.or_else(|| {
+                widths
+                    .forms
+                    .iter()
+                    .find(|(_, width)| line + gap + *width <= room)
+            });
+            // The status line's own text, where neither a fresh outcome nor
+            // a write's status takes its place, keeps the whole parts that
+            // fit the box the warning and the hints leave it, Cancel's room
+            // with it while no write comes there.
+            let parts = (!carried && self.fresh_outcome().is_none())
+                .then(|| {
+                    let hints = hints.map_or(px(0.), |(_, width)| {
+                        gap + laid_out_text_width(*width, window)
+                    });
+                    status_parts_end(self.status_text(), room + cancel - hints, window)
+                })
+                .flatten();
             StatusFit {
-                hints: spare
-                    .or_else(|| {
-                        widths
-                            .forms
-                            .iter()
-                            .find(|(_, width)| line + gap + *width <= room)
-                    })
-                    .map(|(form, _)| form.clone()),
+                hints: hints.map(|(form, _)| form.clone()),
                 details_icon,
+                parts,
             }
         })
+    }
+
+    /// The status line's text as the bar draws it for `fit`: its whole
+    /// parts that fit ([`status_parts_end`]), or all of it.
+    fn status_line_text(&self, fit: &StatusFit) -> &str {
+        let text = self.status_text();
+        fit.parts.map_or(text, |end| &text[..end])
+    }
+
+    /// The status line's text as the status bar draws it
+    /// ([`Self::status_line_text`]).
+    #[cfg(test)]
+    pub(super) fn status_line_drawn(&self, window: &mut Window, cx: &mut App) -> String {
+        let plan = self.frame_plan(window, cx);
+        let fit = self.fit_status_bar(plan, window, cx);
+        self.status_line_text(&fit).to_owned()
     }
 
     /// What [`Self::fit_status_bar`] measures for `hints`.
@@ -8032,8 +8138,9 @@ impl Render for GitTurtle {
                             colors.accent
                         },
                     )))
-                    // The status line ends in an ellipsis inside the room the
-                    // warning and the hints leave it; those two stay whole. A
+                    // The status line keeps the whole parts that fit the room
+                    // the warning and the hints leave it, its first ending in
+                    // an ellipsis where even it does not; those two stay whole. A
                     // running write's status the header has no room for takes
                     // its place, Cancel in the room the bar keeps beside it.
                     .child({
@@ -8053,7 +8160,7 @@ impl Render for GitTurtle {
                                         .px(crate::appearance::ui_size(2.))
                                         .h(watch_control_height(cx))
                                 })),
-                            None => line.truncate().child(self.status_text().to_owned()),
+                            None => line.truncate().child(self.status_line_text(&status).to_owned()),
                         }
                     })
                     .when(watch_warning, |footer| {
@@ -15759,6 +15866,74 @@ pub(crate) mod tests {
         assert_eq!(status(cx), "1 changed file");
     }
 
+    /// A measured timing in the status line reads whole or gives way whole,
+    /// with the parts after it, never cut mid-number: at 18 pt in Compare
+    /// and History, in a 461 × 490 half tile and the default 1,000 × 680
+    /// window, the line draws the whole parts of its text that fit its box,
+    /// all of them where they fit, the hints beside it in the form they
+    /// take for the line's ellipsis. In the half tile Compare's whole hints,
+    /// "Esc Back to history · ↑↓ Files", 250 px, left the 307 px of
+    /// "1 changed file · content read 12.3 ms" a 161 px line, Cancel's room
+    /// in it, which cut it inside a part; the app showed it cut mid-number.
+    #[gpui::test]
+    async fn the_status_lines_timing_reads_whole_or_gives_way_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let weight = cx.update(|window, _| window.text_style().font_weight);
+        let mut gave_way = Vec::new();
+        for (mode, status) in [
+            ("Compare", "1 changed file · content read 12.3 ms"),
+            ("History", "History rows 1–1 · 12.3 ms · captured snapshot"),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| match mode {
+                    "Compare" => app.select_file(0, window, cx),
+                    _ => app.back_to_history(window, cx),
+                })
+            });
+            settle(&app, cx).await;
+            app.update(cx, |app, cx| {
+                app.status = status.into();
+                cx.notify();
+            });
+            for (width, height) in [(461., 490.), (1000., 680.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{mode} at 18 pt in {width} × {height}");
+                let drawn = cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.status_line_drawn(window, cx))
+                });
+                let line = cx.debug_bounds("status-line").expect("the status line");
+                let hints = cx.debug_bounds("status-hints");
+                let need = cx.update(|window, _| {
+                    shaped_width(&drawn, appearance::ui_text(10.), weight, window)
+                });
+                let parts: Vec<&str> = status.split(STATUS_SEPARATOR).collect();
+                let kept = (1..=parts.len())
+                    .find(|&count| drawn == parts[..count].join(STATUS_SEPARATOR))
+                    .unwrap_or_else(|| panic!("{at}: {drawn:?} is whole parts of {status:?}"));
+                assert!(
+                    kept == 1 || need <= line.size.width,
+                    "{at}: {drawn:?}, {need:?} wide, whole in the line {line:?}"
+                );
+                assert!(
+                    hints.is_none_or(|hints| line.right() <= hints.left()),
+                    "{at}: the line {line:?} before the hints {hints:?}"
+                );
+                if width == 1000. {
+                    assert_eq!(drawn, status, "{at}: the whole line");
+                } else if kept < parts.len() {
+                    gave_way.push(mode);
+                }
+            }
+        }
+        assert!(
+            gave_way.contains(&"Compare"),
+            "Compare's timing gives way in the half tile"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// At an 18 pt interface size the column and inspector minimums grow with
     /// the text: in a 461 × 490 half tile History's compact paging stays in
     /// the column, the inspector ends at the window's edge, its message
@@ -16135,8 +16310,10 @@ pub(crate) mod tests {
         click(cx, "load-more");
         settle(&app, cx).await;
         assert_eq!(paging(cx), (0, page + 20, None), "after Older");
-        // Only the new count is laid out.
-        assert_eq!(layouts(), before + 1, "after Older");
+        // Only the new count is laid out, and the status line's new text,
+        // once, for the whole parts the status bar keeps of it
+        // (`status_part_widths`).
+        assert_eq!(layouts(), before + 2, "after Older");
         // Latest reads current history again and shows its newest rows.
         click(cx, "history-newest");
         settle(&app, cx).await;
