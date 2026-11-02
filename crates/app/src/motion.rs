@@ -6394,14 +6394,15 @@ mod tests {
     /// watcher's refresh shorter than the delay changes no word a screen
     /// reader reads: the names once came at once, and each such refresh
     /// renamed a focused Commit "Commit 1 file, unavailable. …" and back.
-    /// The selection's Stage and Unstage are read as drawn, by the name the
-    /// node each writes gives it and by the tooltip shown under the
-    /// pointer, as is Commit's tooltip. A control refused for a reason of
-    /// its own, as Commit without a title, states no wait. Both go as the
-    /// rows land. A refused press once showed these controls dimmed with
-    /// nothing to say why.
+    /// Each is read as the window draws it too, by the name the node it
+    /// writes gives it, and the selection's Stage and Unstage and Commit by
+    /// the tooltip shown under the pointer. A control refused for a reason
+    /// of its own, as Commit without a title, states no wait. Both go as
+    /// the rows land. A refused press once showed these controls dimmed
+    /// with nothing to say why.
     #[gpui::test]
     async fn controls_the_rows_refuse_say_why(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
         use crate::working_selection::Preparation;
         use crate::workspace::{FILTERING_ROWS_REASON, REFRESHING_ROWS_REASON, refusals};
         let (_fixture, app, cx, repository) = narrow_notes(cx).await;
@@ -6460,29 +6461,25 @@ mod tests {
                 .collect()
         };
 
-        // The selection's Stage and Unstage, as the window draws them: the
-        // name the node each writes gives it, its visible label at rest.
-        let compact = rest[2].is_some();
-        let drawn_names = |cx: &mut VisualTestContext| -> [Option<String>; 2] {
-            let names = [false, true].map(|staged| {
-                let app = app.clone();
-                crate::views::tests::view_node(cx, move |window, cx| {
-                    use gpui::Element as _;
-                    let action =
-                        app.update(cx, |app, cx| app.selection_action(staged, compact, cx));
-                    let element = gpui::RenderOnce::render(action.base(window, cx), window, cx)
-                        .into_element();
-                    let mut node =
-                        gpui::accesskit::Node::new(element.a11y_role().expect("a button"));
-                    element.write_a11y_info(&mut node);
-                    node
-                })
-                .label()
-                .map(str::to_owned)
+        // Each control as the window draws it, in a frame that builds every
+        // view: the name the node it writes gives it, its visible label or
+        // name at rest.
+        let drawn_names = |cx: &mut VisualTestContext| -> Vec<Option<String>> {
+            written::forget();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
             });
-            // The window's own frame, which the nodes' build drew over.
-            next_frame(cx);
-            names
+            controls
+                .iter()
+                .map(|(key, _)| {
+                    written::get(key)
+                        .unwrap_or_else(|| panic!("{key} is drawn"))
+                        .node
+                        .label()
+                        .map(str::to_owned)
+                })
+                .collect()
         };
         // Whether resting the pointer on `key` shows the tooltip `text`.
         let tooltip_drawn = |cx: &mut VisualTestContext, key: &'static str, text: &str| -> bool {
@@ -6502,7 +6499,10 @@ mod tests {
             shown
         };
         let selection = [("stage-selection", 2), ("unstage-selection", 3)];
-        let named_at_rest = [Some("Stage 1".to_owned()), Some("Unstage 1".to_owned())];
+        let named_at_rest: Vec<Option<String>> = controls
+            .iter()
+            .map(|(_, name)| Some((*name).to_owned()))
+            .collect();
         assert_eq!(drawn_names(cx), named_at_rest, "drawn at rest");
         for (key, index) in selection.into_iter().chain([("commit-staged", 4)]) {
             if let Some(rest) = &rest[index] {
@@ -6545,7 +6545,9 @@ mod tests {
             assert_eq!(built(), said, "{reason}: dimmed, each says why");
             assert_eq!(
                 drawn_names(cx),
-                [2, 3].map(|index| said[index].0.as_ref().map(ToString::to_string)),
+                said.iter()
+                    .map(|(named, _)| named.as_ref().map(ToString::to_string))
+                    .collect::<Vec<_>>(),
                 "{reason}: the drawn names say why"
             );
             for (key, index) in selection.into_iter().chain([("commit-staged", 4)]) {

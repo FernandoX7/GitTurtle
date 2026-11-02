@@ -2730,6 +2730,51 @@ impl<E: Element> Element for Recorded<E> {
     }
 }
 
+/// A kit Button whose node, as the window draws it, is recorded for tests
+/// as [`recorded`] records an element's ([`written`]), so a test reads the
+/// name and state the drawn Button gives assistive technology rather than
+/// a Button it builds again. The kit's Button renders through its base
+/// Button, two components each drawn through a stateless view element that
+/// has no role and reports no ID of its own, though each pushes its type's
+/// name onto the ID path of what it draws, so [`recorded`] around a Button
+/// records nothing. In tests [`RecordedButton`] draws the base Button's
+/// element under one such name in place of the two, so the Button's ID
+/// path is one segment shorter there. Outside tests it is the Button as it
+/// is: nothing is added to the frame.
+pub(crate) trait DrawnButton: Sized {
+    /// The Button, recorded in tests as it is drawn.
+    #[cfg(test)]
+    fn node_recorded(self) -> RecordedButton;
+    /// The Button as it is.
+    #[cfg(not(test))]
+    fn node_recorded(self) -> Self;
+}
+
+impl DrawnButton for Button {
+    #[cfg(test)]
+    fn node_recorded(self) -> RecordedButton {
+        RecordedButton(self)
+    }
+
+    #[cfg(not(test))]
+    fn node_recorded(self) -> Self {
+        self
+    }
+}
+
+/// Test-only: a Button drawn as its base Button's element, recorded
+/// ([`DrawnButton::node_recorded`]).
+#[cfg(test)]
+#[derive(IntoElement)]
+pub(crate) struct RecordedButton(Button);
+
+#[cfg(test)]
+impl RenderOnce for RecordedButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        recorded(RenderOnce::render(self.0.base(window, cx), window, cx))
+    }
+}
+
 /// `element`, which draws text or stands for it, as static text that an
 /// assistive technology reads as `text`: a label whose text is its value, or,
 /// where the caller gives it a role of its own (a heading, a status, an

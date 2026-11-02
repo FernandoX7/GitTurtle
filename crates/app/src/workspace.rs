@@ -4216,6 +4216,7 @@ impl GitTurtle {
                                 .pb_3()
                                 .when(short, |el| el.pb_2())
                                 .child({
+                                    use crate::native_accessibility::DrawnButton as _;
                                     // Disabled, it rests on the composer's own `subtle` and
                                     // keeps its shape with the toolkit's disabled edge; it is
                                     // as wide as the composer.
@@ -4276,23 +4277,22 @@ impl GitTurtle {
                                             commit_disabled,
                                         )
                                     })
-                                    .on_click(cx.listener(
-                                        |this, _, window, cx| {
-                                            // Refused at once, whatever it looks like
-                                            // yet, its look showing why at once
-                                            // (`refuse_busy_press`).
-                                            if this.refuse_busy_press(cx) {
-                                                return;
-                                            }
-                                            let message = this.current_commit_draft(cx).message();
-                                            this.write(
-                                                WriteCommand::Commit { message },
-                                                "Creating commit…",
-                                                window,
-                                                cx,
-                                            );
-                                        },
-                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        // Refused at once, whatever it looks like
+                                        // yet, its look showing why at once
+                                        // (`refuse_busy_press`).
+                                        if this.refuse_busy_press(cx) {
+                                            return;
+                                        }
+                                        let message = this.current_commit_draft(cx).message();
+                                        this.write(
+                                            WriteCommand::Commit { message },
+                                            "Creating commit…",
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                                    .node_recorded()
                                 }),
                         )
                         // Painted after both fields, it fits their placeholders.
@@ -4367,6 +4367,7 @@ impl GitTurtle {
                     .into_any_element()
             }
             WorkingRow::Heading(area, count) => {
+                use crate::native_accessibility::DrawnButton as _;
                 let staged = area == ChangeArea::Staged;
                 let name = if staged { "Staged" } else { "Unstaged" };
                 let (selector, action, detail) = if staged {
@@ -4512,7 +4513,8 @@ impl GitTurtle {
                                     window,
                                     cx,
                                 )
-                            })),
+                            }))
+                            .node_recorded(),
                     )
                     .into_any_element()
             }

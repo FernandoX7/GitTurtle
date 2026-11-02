@@ -1017,6 +1017,7 @@ impl GitTurtle {
         compact: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::native_accessibility::DrawnButton as _;
         let (staged, unstaged) = self.selection_counts();
         let grouped = self.working_selection.grouped;
         let directories = if compact {
@@ -1065,8 +1066,8 @@ impl GitTurtle {
                         div()
                             .flex()
                             .gap_1()
-                            .child(self.selection_action(false, compact, cx))
-                            .child(self.selection_action(true, compact, cx)),
+                            .child(self.selection_action(false, compact, cx).node_recorded())
+                            .child(self.selection_action(true, compact, cx).node_recorded()),
                     ),
             )
             .child(
