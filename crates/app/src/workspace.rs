@@ -2066,7 +2066,9 @@ impl GitTurtle {
                 }
                 this.status_task = None;
                 match result {
-                    Ok(state) => this.apply_worktree_state(state, false, requested, window, cx),
+                    Ok(state) => {
+                        this.apply_worktree_state(state, false, requested, window, cx);
+                    }
                     Err(error) => {
                         this.work_status = None;
                         this.working_paths.reset();
@@ -2105,7 +2107,8 @@ impl GitTurtle {
     }
 
     /// Applies a working-state read asked for as the `requested`th
-    /// ([`Self::request_status_read`]).
+    /// ([`Self::request_status_read`]), and returns whether its entries
+    /// differ from those shown.
     pub(super) fn apply_worktree_state(
         &mut self,
         state: worker::WorkingState,
@@ -2113,7 +2116,7 @@ impl GitTurtle {
         requested: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let worker::WorkingState {
             status,
             profile,
@@ -2267,6 +2270,7 @@ impl GitTurtle {
                 self.selected_file = None;
             }
         }
+        entries_changed
     }
 
     /// Opens Working Changes. Switching pages only reads, so it stays

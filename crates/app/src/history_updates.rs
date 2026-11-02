@@ -33,6 +33,11 @@ pub(super) struct State {
     /// accepted writes do not raise it again after it is dismissed.
     reported_vanished: Option<worker::VanishedScope>,
     pub committed: Option<String>,
+    /// Counts the histories a quiet read installed that differ from the one
+    /// shown ([`GitTurtle::install_current_history`]), the only place its
+    /// landing replaces History's rows, graph or page: the landing compares
+    /// this count, not the rows (`automatic_refresh::QuietDrawn`).
+    pub installed: u64,
 }
 impl State {
     pub fn retained_bytes(&self) -> usize {
@@ -266,6 +271,19 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        // Commits are immutable, so the same pinned tips read from the same
+        // place give the same rows and graph: only a history that differs
+        // from the one shown counts as installed, which the landing draws.
+        let retained = usize::from(self.automatic.retained_commit.is_some());
+        let same = !matches!(snapshot.history_scope, HistoryScope::AllRefs)
+            && self.history_paging.scope.as_ref() == Some(&snapshot.history_scope)
+            && self.history_paging.offset == snapshot.history_offset
+            && self.history_paging.next_offset == snapshot.history_next_offset
+            && self.commits.len().saturating_sub(retained) == snapshot.commits.len()
+            && self.graph_notice == snapshot.graph_notice;
+        if !same {
+            self.history_updates.installed = self.history_updates.installed.wrapping_add(1);
+        }
         self.history_paging = history_paging::State::from_snapshot(&snapshot);
         let selected = self
             .selected_commit

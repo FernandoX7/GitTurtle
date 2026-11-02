@@ -13486,6 +13486,64 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
     }
 
+    /// A History tab left at its newest commits, which History follows, has
+    /// its rescan install the page it reads as it is shown again: the same
+    /// rows draw no frame of their own, and new ones, a commit made outside
+    /// while another tab showed, draw in one, on top. Every page installed
+    /// once counted as new (`history_updates::State::installed`).
+    #[gpui::test]
+    async fn a_followed_history_tab_draws_its_rescan_only_where_its_rows_change(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let clones = tempfile::tempdir().unwrap();
+        open_clone(&app, clones.path(), "second", cx).await;
+        let installed =
+            |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.history_updates.installed);
+        crate::in_frame::probe::watch();
+        let before = installed(cx);
+        assert_eq!(switch_and_land(&app, 0, cx), 1, "the same rows: one frame");
+        assert_eq!(installed(cx), before, "no history that differs installed");
+        assert_eq!(
+            app.read_with(cx, |app, _| app
+                .history_scroll
+                .0
+                .borrow()
+                .base_handle
+                .offset()
+                .y),
+            px(0.),
+            "History follows its newest commits"
+        );
+        switch_and_land(&app, 1, cx);
+        let commit = fixture_git_output(
+            &root,
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "HEAD",
+                "-m",
+                "Made outside",
+            ],
+        );
+        assert!(commit.status.success());
+        let oid = String::from_utf8(commit.stdout).unwrap();
+        fixture_git(&root, &["update-ref", "HEAD", oid.trim()]);
+        assert_eq!(
+            switch_and_land(&app, 0, cx),
+            2,
+            "the new commit: the switch's frame, and the rescan's"
+        );
+        crate::in_frame::probe::stop();
+        assert_eq!(
+            app.read_with(cx, |app, _| app.commits[0].oid.clone()),
+            oid.trim(),
+            "the new commit is on top"
+        );
+    }
+
     /// A reply a warm tab's return asks for that brings something the tab
     /// does not show draws it, in one frame of its own beside the switch's,
     /// while the tab keeps its place: of the first tab's repository, changed
@@ -13799,6 +13857,122 @@ pub(crate) mod tests {
         });
         std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A linear history of `commits` commits on `main`, with `branches` more
+    /// branches spread along it, for fast-import.
+    fn many_refs_script(commits: usize, branches: usize) -> String {
+        let mut input = String::new();
+        for commit in 0..commits {
+            let message = format!("commit {commit}");
+            let notes = format!("{commit}\n");
+            input.push_str(&format!(
+                "commit refs/heads/main\nmark :{}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata {}\n{notes}\n",
+                commit + 1,
+                1_700_000_000 + commit,
+                message.len(),
+                notes.len(),
+            ));
+        }
+        for branch in 0..branches {
+            input.push_str(&format!(
+                "reset refs/heads/branch-{branch:04}\nfrom :{}\n\n",
+                commits - branch * commits / branches,
+            ));
+        }
+        input + "done\n"
+    }
+
+    /// The UI thread's handling of a quiet read's landing that finds the
+    /// repository as History shows it, for a release build: a 5,000-commit
+    /// history with 3,000 branches, in a 1,480 × 980 window at 13 pt, its
+    /// first page of 500 rows shown at the top, which History follows, so
+    /// each landing installs the page it read again, and then all 5,000
+    /// rows, which it does not. Each landing is asked for as a local change
+    /// asks for one, its read answered on the reader's thread off the
+    /// clock, then timed from before the window handles the reply to its
+    /// return (`run_until_parked`): the reply's comparison, applying the
+    /// working state, references, branches and worktrees and, where it
+    /// follows, the page, and any frame drawn, which a landing that finds
+    /// nothing new does not draw (`frames`). Forty landings each, after one
+    /// untimed pass of forty.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_QUIET_LANDING_BENCH_OUTPUT and run with --release --ignored"]
+    async fn quiet_landing_release_benchmark(cx: &mut TestAppContext) {
+        const LANDINGS: usize = 40;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_QUIET_LANDING_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+        let (_fixture, app, cx) = history_window_from(cx, &many_refs_script(5_000, 3_000)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        land_every_reply(&app, cx);
+        draw(cx);
+        let rescan = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.queue_automatic_refresh(
+                        crate::local_refresh::LocalChange {
+                            rescan: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            });
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        };
+        crate::in_frame::probe::watch();
+        let mut series = Vec::new();
+        for (case, limit) in [("500_rows_followed", 500), ("5000_rows", 5_000)] {
+            app.update(cx, |app, _| app.limit = limit);
+            // The landing that installs the rows this case shows.
+            rescan(cx);
+            land_every_reply(&app, cx);
+            draw(cx);
+            let (rows, refs) = app.read_with(cx, |app, _| (app.commits.len(), app.branches.len()));
+            assert_eq!(rows, limit, "{case}: the rows shown");
+            assert!(refs > 3_000, "{case}: every branch listed");
+            let mut landing_ms = Vec::new();
+            let mut frames = Vec::new();
+            for pass in 0..2 {
+                for _ in 0..LANDINGS {
+                    rescan(cx);
+                    repository_frames();
+                    let started = std::time::Instant::now();
+                    cx.run_until_parked();
+                    let landed = started.elapsed().as_secs_f64() * 1000.;
+                    let drawn = repository_frames();
+                    // The watcher's check after the read, untimed.
+                    land_every_reply(&app, cx);
+                    if pass == 1 {
+                        landing_ms.push(landed);
+                        frames.push(drawn + repository_frames());
+                    } else {
+                        repository_frames();
+                    }
+                }
+            }
+            series.push(serde_json::json!({
+                "case": case,
+                "rows": rows,
+                "branches": refs,
+                "landing_ms": landing_ms,
+                "frames": frames,
+            }));
+        }
+        crate::in_frame::probe::stop();
+        let result = serde_json::json!({
+            "schema": 1,
+            "landings": LANDINGS,
+            "warmup_passes": 1,
+            "boundary": "One quiet read's landing on the UI thread, its read already answered on the reader's thread: from before `run_until_parked` hands the window the reply to its return, the comparison, applying the working state, references, branches and worktrees and, where History follows its newest, the page, and any frame drawn (layout, prepaint and paint on the test platform; no GPU, compositor or display link). The watcher's check the landing asks for is answered and landed afterwards, untimed; `frames` counts any frame either drew.",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
 
     /// Every choice the repository page's width makes reads one width: the
