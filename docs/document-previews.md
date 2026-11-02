@@ -78,8 +78,9 @@ leaves the side without pages and offers none, as on macOS. Nothing retries
 by itself, since a hostile page would only burn the CPU again. Read page text
 acts only for a page whose pixels and text result arrived; a page whose text
 alone failed shows its pixels, and its text dialog says why. Until the result
-arrives, Read page text keeps its place in the side's header, disabled, its
-tooltip and accessible name saying “Preparing the page…”, and a failed page's
+arrives, the page's room says “Preparing the page…”, and Read page text keeps
+its place in the side's header, disabled, its tooltip and accessible name
+saying the same sentence, and a failed page's
 Retry page takes the same place at the same width, so the page arrows, the
 page number, the link and the zooms never move while a page is prepared. A reply that
 puts a requested page outside the document is called unreadable rather than

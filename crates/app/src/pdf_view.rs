@@ -21,8 +21,12 @@ use std::{
 const CACHE_BYTES: usize = 16 * 1024 * 1024;
 const CACHE_PAGES: usize = 4;
 
-/// Why Read page text is unavailable while its page is prepared, in its
-/// tooltip and accessible name.
+/// What a page says until it arrives, the one sentence for that wait: in the
+/// page's room, whether or not its request has reached the render lane yet,
+/// and as why Read page text is unavailable, in its tooltip and accessible
+/// name. The room once said "Page preparation pending…" in the frame that
+/// turned to the page and "Preparing selected page…" once a redraw found it
+/// requested.
 const PREPARING: &str = "Preparing the page…";
 
 /// The link's readings, independent and linked.
@@ -790,10 +794,10 @@ pub(super) fn render_comparison<T: 'static>(
             return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding, held }), vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
-        let (page, zoom, pending, error, cached) = {
+        let (page, zoom, error, cached) = {
             let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
             let page = state.page;
-            (page, state.zoom, state.pending, state.error.clone(), state.cache.get(page))
+            (page, state.zoom, state.error.clone(), state.cache.get(page))
         };
         // The page's own control holds one place at one width whatever the
         // page's state, so nothing after it moves while a page prepares:
@@ -893,8 +897,9 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(page) = cached && let Some(render) = &page.render {
             body = body.child(div().id(("pdf-rendered-page",index)).role(Role::Image).aria_label(format!("{label}: PDF page {} of {}. {rendered}",page_number,document.count)).w(relative(zoom)).min_w(px(100.)).aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(crate::gif_playback::static_image(render.clone())));
         } else {
-            // Why the page is not drawn, in the page's room, read as static text.
-            body=body.child(div().text_color(rgb(colors.muted)).child(native_accessibility::text(SharedString::from(format!("pdf-page-message-{index}")), error.unwrap_or_else(|| if pending {"Preparing selected page…"}else{"Page preparation pending…"}.into()))));
+            // Why the page is not drawn, in the page's room, read as static
+            // text: its failure, or until it arrives that it is prepared.
+            body=body.child(div().text_color(rgb(colors.muted)).child(native_accessibility::text(SharedString::from(format!("pdf-page-message-{index}")), error.unwrap_or_else(|| PREPARING.into()))));
         }
         if let Some(other) = &other.pdf && document.linked.load(Ordering::Relaxed) && other.count != document.count {
             body = body.child(div().mt_2().text_size(appearance::ui_text(11.)).child("The revisions have different page counts. Linked navigation stops each side at its own last page."));
@@ -2096,6 +2101,71 @@ pub(crate) mod tests {
                 ["icon", "labelled"].into(),
                 "drawn labelled and as its icon"
             );
+        }
+
+        /// One frame drawn without running the tasks it starts, so what it
+        /// shows is read before the page it asks for can answer.
+        fn one_frame(cx: &mut gpui_kit::VisualTestContext) {
+            crate::native_accessibility::written::forget();
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+
+        /// A page being prepared says so in one sentence, "Preparing the
+        /// page…", in the page's room and as the reason Read page text is
+        /// unavailable, in the frame that turns to it, before its request is
+        /// made, and in the next, while the page lane prepares it; the page
+        /// then arrives in its place. The room once said "Page preparation
+        /// pending…" and then "Preparing selected page…" for the one wait,
+        /// while Read page text said "Preparing the page…".
+        #[gpui::test]
+        fn a_page_being_prepared_says_so_in_one_sentence(cx: &mut gpui_kit::TestAppContext) {
+            let fakes = tempfile::tempdir().unwrap();
+            let bytes = pdf("one sentence for the wait");
+            let frame = page_frame(1, 3, Some("the second page"));
+            name_helper(&bytes, &fakes.path().join("pid"), &printing(&frame), LONG);
+            let (content, document) = before_only(&bytes, 3, 0);
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(0, PreparedPage::from(page()));
+            let (_view, cx) = window(cx, content);
+            crate::tags::tests::draw(cx);
+            // Next, as its click does.
+            document.select(1, None);
+            for (frame, requested) in [("the page turn's frame", false), ("the next frame", true)] {
+                assert_eq!(
+                    document.state.lock().unwrap().pending,
+                    requested,
+                    "{frame} is drawn {} the page is asked for",
+                    if requested { "after" } else { "before" }
+                );
+                one_frame(cx);
+                let message = crate::native_accessibility::written::labels()
+                    .into_iter()
+                    .find(|(written, _)| written == "pdf-page-message-0")
+                    .and_then(|(_, message)| message);
+                assert_eq!(
+                    message.as_deref(),
+                    Some(PREPARING),
+                    "{frame}: the page's room"
+                );
+                let read = crate::system_preview::DRAWN_CONTROLS
+                    .with_borrow(|drawn| drawn["pdf-read-text-0"].clone());
+                assert_eq!(
+                    read.tooltip,
+                    Some(format!("Read page text · {PREPARING}")),
+                    "{frame}: Read page text's reason"
+                );
+            }
+            drain_pages();
+            crate::tags::tests::draw(cx);
+            assert_eq!(page_message(cx, "pdf-page-message-0"), None);
+            assert!(document.state.lock().unwrap().cache.get(1).is_some());
         }
 
         /// The page number's dialog opens with the current page selected in
