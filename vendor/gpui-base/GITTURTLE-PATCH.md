@@ -228,18 +228,63 @@ moved down to the window's top margin lies on the device pixel at or below
 it, and one moved up to the margin above the window's foot, or above an
 application's bottom inset, ends on the device pixel at or above it, its
 drawn height a whole number of device pixels as GPUI lays it out, so its
-ring stands exactly 8 px from the window's top or foot at every scale;
-moved by whole pixels, at 1.25 a popup clamped 9 px down, 11.25 device
-pixels, lay on device pixel 11 and its ring 7.2 px from the top, and at
-1.5 the 13.5 rounded to 13. `Positioner::point_room` measures the room to
-those device pixels, so a popup capped there lies wholly on its side of
-the point and inside them. A popup inside both margins moves as before.
+ring stands exactly 8 px from the window's top or foot at every scale where
+8 px is a whole number of device pixels (1, 1.25, 1.5 and 2); at 1.2, where
+it is 9.6, the 9 px margin's 10.8 device pixels put the fill on device
+pixel 11 and the ring GPUI paints over the device pixels its band touches
+from device pixel 9, 7.5 px from the edge, as at the sides. Moved by whole
+pixels, at 1.25 a popup clamped 9 px down, 11.25 device pixels, lay on
+device pixel 11 and its ring 7.2 px from the top, and at 1.5 the 13.5
+rounded to 13. `Positioner::point_room` measures the room to those device
+pixels, so a popup capped there lies wholly on its side of the point and
+inside them. A popup inside both margins moves as before.
 `a_popup_clamped_to_the_top_or_foot_lies_on_the_device_pixel_at_its_margin`
 reads a popup clamped to the top and to the foot of a window at scale 1,
 1.25, 1.5 and 2 from a positioner laid out at the window's top, 6.5 px and
 4/3 px down, and one inside both margins left where it was asked to be;
-the whole-pixel clamps fail it at 1.25, 1.5 and 2. Remove this part with the
-component's window-margin patch.
+the whole-pixel clamps fail it at 1.25, 1.5 and 2.
+
+A popup clamped at both the top and the foot (2026-11-03), too tall for the
+room between the device pixels at or inside the two margins but no taller
+than the room from the window's top (the client inset, where a window has
+one) to the foot's, keeps the foot's and gives up only as much of the top
+margin as it needs. It took the top margin's, as a popup clamped there
+alone does, and so ran past the foot's device pixel: by one where the
+window was a device pixel too short for it, as at 1.2, where the 9 px
+margins are 10.8 device pixels each and a 300 px window's room between
+their device pixels, 338, is 0.4 of one shorter than its 282 px. Decided
+then: each margin rounds outward, to the device pixel at or inside it, as
+the side, top and foot clamps and `point_room` already round it, not to the
+nearest device pixel, because the margin is the least the design promises a
+popup's edge, and a margin rounded to the nearest pixel puts the fill up to
+half a device pixel across it (at 1.25 the 9 px margin's 11.25 would round
+to 11); the cost is under a device pixel of room at each edge. Where the
+popup cannot keep both, it keeps the foot's, which keeps it off a status
+bar or an application's bottom inset, while the top margin keeps nothing
+beneath it clear. A popup taller still, which crosses the foot's wherever
+it lies, keeps the top margin's, as before (reviewed 2026-11-03: the first
+cut moved it to the window's top, which gave up the top margin and still
+crossed the foot's). `a_popup_clamped_at_both_ends_on_the_device_pixel_at_the_foot_margin`
+reads, in a 300 px window at scale 1, 1.2, 1.25, 1.5 and 2 from a
+positioner laid out at the window's top and 4/3 px down, a popup one
+device pixel too tall, which ends on the foot's device pixel and starts one
+above the top's, one exactly as tall as the window down to the foot's,
+which starts at the window's top and ends on the foot's, one a device pixel
+taller than that and one taller than the window, which both start on the
+top's, and one that fits, on both; placed on the top margin, the first
+ends a device pixel past the foot's at every scale, and moved to the
+window's top, the third and fourth start there. An occluding positioner,
+as every `Popup` host is, blocks the mouse over the bounds its popup is
+drawn at, after this placement (from the 2026-11-03 security re-review):
+it blocked at the bounds resolved before it, so a popup moved up to the
+window's top left an invisible strip below its foot, as tall as the move
+and ending at the window's foot or a status bar's top, that took presses
+from what lay behind it, and its own top strip unblocked.
+`an_occluding_popup_blocks_the_mouse_where_it_is_drawn` presses half a
+device pixel inside the drawn top and foot of such a popup, below its foot
+and beside it, at scale 1, 1.2 and 2, laid out at the window's top and 4/3
+px down; blocking at the resolved bounds fails it at each. Remove this
+part with the component's window-margin patch.
 
 The popup-frame patch also modifies `src/popup.rs` and `src/positioner.rs`.
 Upstream a `Popup` asks for the next frame (`request_animation_frame`) the

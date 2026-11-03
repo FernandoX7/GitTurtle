@@ -586,11 +586,6 @@ impl Element for Positioner {
         // GitTurtle patch: a followed corner as it stands now, and a point
         // on the window's device pixels.
         let position = resolve(self.strategy_in(window), popup_size, viewport, margin);
-        // Ahead of the children so it blocks what is behind the popup without
-        // blocking the popup's own content.
-        if self.occlude {
-            window.insert_hitbox(position.bounds, HitboxBehavior::BlockMouse);
-        }
 
         let offset = position.bounds.origin - bounds.origin;
         let scale_factor = window.scale_factor();
@@ -599,6 +594,18 @@ impl Element for Positioner {
         // rounding to the nearest pixel put a popup ending 8 px above a
         // status bar another half pixel lower.
         let bottom = (viewport.height - margin).max(margin);
+        // GitTurtle patch: the device pixels at or inside the top and foot
+        // margins, where a popup clamped to either lies: each margin rounds
+        // outward, never to the nearest device pixel, so no popup that fits
+        // between them crosses either.
+        let (top, foot) = (
+            device_pixel_at_or_after(margin, scale_factor),
+            device_pixel_at_or_before(bottom, scale_factor),
+        );
+        let height = position.bounds.size.height;
+        // GitTurtle patch: the window's top, or its client inset where it
+        // has one, on the device pixel at or below it.
+        let window_top = device_pixel_at_or_after(margin - self.margin, scale_factor);
         let y = if self.strategy_in(window).clear_of_point(position.bounds) {
             // GitTurtle patch: a popup wholly below or above a point lies on
             // the device pixel its gap ends on ([`Strategy::as_side`]), its
@@ -610,6 +617,24 @@ impl Element for Positioner {
             // at 2 it left a device row empty; above it, moved up to a whole
             // pixel, it ended a device row short of its gap at 2.
             offset.y
+        } else if position.bounds.top() <= margin
+            && height - (foot - top) > SIDE_TOLERANCE
+            && height - (foot - window_top) < SIDE_TOLERANCE
+        {
+            // GitTurtle patch: a popup clamped at both the top and the foot,
+            // too tall for the room between their device pixels but no
+            // taller than the room from the window's top to the foot's,
+            // keeps the foot's, which keeps it off a status bar or an
+            // application's bottom inset, and gives up only as much of the
+            // top margin as it needs. Placed on the top margin, as one
+            // clamped there alone is, it ran past the foot's device pixel:
+            // by a device pixel where the window was a device pixel too
+            // short, as at 1.2, where the 9 px margins are 10.8 device
+            // pixels and leave a room 0.4 of one shorter than the margins'
+            // 282 px. One taller still crosses the foot's wherever it lies,
+            // so it keeps the top margin, as before: moved to the window's
+            // top it gave up the margin and still crossed the foot's.
+            (foot - height).max(window_top) - bounds.origin.y
         } else if position.bounds.top() <= margin {
             // GitTurtle patch: a popup on the top margin, moved down to it,
             // lies on the device pixel at or below it, counted from the
@@ -617,13 +642,11 @@ impl Element for Positioner {
             // pixels, at 1.25 and 1.5 GPUI's rounding of its place, halves
             // toward zero, put its fill a device pixel nearer the top and its
             // ring 7.2 px from it.
-            device_pixel_at_or_after(margin, scale_factor) - bounds.origin.y
+            top - bounds.origin.y
         } else if bottom - position.bounds.bottom() < SIDE_TOLERANCE {
             // GitTurtle patch: and one on the foot's margin, moved up to it,
             // ends on the device pixel at or above it.
-            device_pixel_at_or_before(bottom, scale_factor)
-                - position.bounds.size.height
-                - bounds.origin.y
+            foot - height - bounds.origin.y
         } else {
             match offset.y.round() {
                 y if position.bounds.bottom() <= bottom
@@ -667,6 +690,21 @@ impl Element for Positioner {
             }
         };
         let offset = point(x, y);
+        // Ahead of the children so it blocks what is behind the popup without
+        // blocking the popup's own content. GitTurtle patch: at the bounds
+        // the popup is drawn at, not the bounds it was resolved at: a popup
+        // the placement above moved, as up to the window's top when clamped
+        // at both edges, left a strip below its foot that blocked the mouse
+        // and a strip at its top that did not.
+        if self.occlude {
+            window.insert_hitbox(
+                Bounds {
+                    origin: bounds.origin + offset,
+                    size: position.bounds.size,
+                },
+                HitboxBehavior::BlockMouse,
+            );
+        }
 
         window.with_element_offset(offset, |window| {
             for child in &mut self.children {
@@ -1342,6 +1380,213 @@ mod tests {
                             scale,
                             format!(
                                 "at {corner}, laid out {lead} px down: {popup:?} on device pixel {edge}, not {expected}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures_by_scale(&failures));
+    }
+
+    /// GitTurtle patch: a popup clamped at both the top and the foot of a
+    /// 300 px window with 9 px margins, one device pixel taller than the
+    /// room between the device pixels at or inside them, ends on the foot's
+    /// device pixel and starts one device pixel above the top's, at scale
+    /// 1, 1.2, 1.25, 1.5 and 2, from a positioner laid out at the window's
+    /// top and 4/3 px down; one exactly as tall as the window down to the
+    /// foot's starts at the window's top and ends on the foot's; one a
+    /// device pixel taller than that, or taller than the window, keeps the
+    /// top margin's, since it crosses the foot's wherever it lies; and one
+    /// that fits lies on both. Placed on the top margin, the device pixel
+    /// too tall ran past the foot's, at 1.2 onto device pixel 350 of a foot
+    /// at 349; moved to the window's top, the one a device pixel taller
+    /// than the window down to the foot's gave up the top margin and still
+    /// crossed the foot's.
+    #[gpui::test]
+    fn a_popup_clamped_at_both_ends_on_the_device_pixel_at_the_foot_margin(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        const HEIGHT: f32 = 300.;
+        const MARGIN: Pixels = px(9.);
+
+        struct Harness {
+            lead: Pixels,
+            height: Pixels,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().pt(self.lead).child(
+                    Positioner::corner(Anchor::TopLeft, point(px(100.), px(2.)))
+                        .margin(MARGIN)
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "tall-popup".into())
+                                .w(px(120.))
+                                .h(self.height),
+                        ),
+                )
+            }
+        }
+
+        let mut failures = Vec::new();
+        for scale in [1., 1.2, 1.25, 1.5, 2.] {
+            let device = |value: Pixels| f32::from(value) * scale;
+            let top = (device(MARGIN) - 1e-3).ceil();
+            let foot = (device(px(HEIGHT) - MARGIN) + 1e-3).floor();
+            let room = foot - top;
+            for lead in [0., 4. / 3.] {
+                for (rows, expected_top) in [
+                    // One device pixel too tall: on the foot's, a device
+                    // pixel above the top's.
+                    (room + 1., top - 1.),
+                    // As tall as the window down to the foot's: at the
+                    // window's top, on the foot's.
+                    (foot, 0.),
+                    // A device pixel taller than that, or taller than the
+                    // window: it crosses the foot's anyway, so on the top's.
+                    (foot + 1., top),
+                    (device(px(HEIGHT)), top),
+                    // Fits: on both.
+                    (room, top),
+                ] {
+                    let (_, cx) = cx.add_window_view(move |_, _| Harness {
+                        lead: px(lead),
+                        height: px(rows / scale),
+                    });
+                    cx.simulate_resize(Size::new(px(460.), px(HEIGHT)));
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        window.draw(cx).clear(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let popup = cx.debug_bounds("tall-popup").expect("the popup");
+                    let (start, end) = (device(popup.top()), device(popup.bottom()));
+                    let expected_end = expected_top + rows;
+                    if (start - expected_top).abs() >= 1e-3 || (end - expected_end).abs() >= 1e-3 {
+                        failures.push((
+                            scale,
+                            format!(
+                                "{rows} device pixels tall, laid out {lead} px down: \
+                                 {popup:?} on device pixels {start} to {end}, not \
+                                 {expected_top} to {expected_end} (the foot's is {foot})"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures_by_scale(&failures));
+    }
+
+    /// GitTurtle patch: an occluding popup blocks the mouse over the bounds
+    /// it is drawn at. One as tall as a 300 px window down to the device
+    /// pixel at or inside its 9 px foot margin, clamped at both edges and so
+    /// moved up from the top margin to the window's top, at scale 1, 1.2
+    /// and 2, laid out at the window's top and 4/3 px down, takes a press
+    /// half a device pixel inside its drawn top or foot from what lies
+    /// behind it, and leaves one half a device pixel below its drawn foot,
+    /// or beside it, to that. Blocking at the bounds it was resolved at,
+    /// 9 px lower, it left its top 9 px to what lay behind it and blocked a
+    /// strip as tall below its foot.
+    #[gpui::test]
+    fn an_occluding_popup_blocks_the_mouse_where_it_is_drawn(cx: &mut gpui::TestAppContext) {
+        use gpui::{
+            InteractiveElement as _, Modifiers, MouseButton, ParentElement as _, Styled as _,
+        };
+        const HEIGHT: f32 = 300.;
+        const MARGIN: Pixels = px(9.);
+
+        struct Harness {
+            lead: Pixels,
+            height: Pixels,
+            presses: Rc<Cell<usize>>,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let presses = self.presses.clone();
+                gpui::div()
+                    .size_full()
+                    .pt(self.lead)
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        presses.set(presses.get() + 1);
+                    })
+                    .child(
+                        Positioner::corner(Anchor::TopLeft, point(px(100.), px(2.)))
+                            .margin(MARGIN)
+                            .occlude()
+                            .child(
+                                gpui::div()
+                                    .debug_selector(|| "occluding-popup".into())
+                                    .w(px(120.))
+                                    .h(self.height),
+                            ),
+                    )
+            }
+        }
+
+        let mut failures = Vec::new();
+        for scale in [1., 1.2, 2.] {
+            let foot = (f32::from(px(HEIGHT) - MARGIN) * scale + 1e-3).floor();
+            let half = px(0.5 / scale);
+            for lead in [0., 4. / 3.] {
+                let presses = Rc::new(Cell::new(0));
+                let (_, cx) = cx.add_window_view({
+                    let presses = presses.clone();
+                    move |_, _| Harness {
+                        lead: px(lead),
+                        height: px(foot / scale),
+                        presses,
+                    }
+                });
+                cx.simulate_resize(Size::new(px(460.), px(HEIGHT)));
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    window.draw(cx).clear(cx);
+                    window.draw(cx).clear(cx);
+                });
+                let popup = cx.debug_bounds("occluding-popup").expect("the popup");
+                if f32::from(popup.top()).abs() >= 1e-3 {
+                    failures.push((
+                        scale,
+                        format!("laid out {lead} px down: {popup:?} not moved to the window's top"),
+                    ));
+                    continue;
+                }
+                let x = popup.center().x;
+                for (at, place, blocked) in [
+                    ("inside its drawn top", point(x, popup.top() + half), true),
+                    (
+                        "inside its drawn foot",
+                        point(x, popup.bottom() - half),
+                        true,
+                    ),
+                    (
+                        "below its drawn foot",
+                        point(x, popup.bottom() + half),
+                        false,
+                    ),
+                    (
+                        "beside it",
+                        point(popup.right() + px(20.), popup.center().y),
+                        false,
+                    ),
+                ] {
+                    let before = presses.get();
+                    cx.simulate_mouse_down(place, MouseButton::Left, Modifiers::default());
+                    cx.simulate_mouse_up(place, MouseButton::Left, Modifiers::default());
+                    if (presses.get() > before) == blocked {
+                        failures.push((
+                            scale,
+                            format!(
+                                "laid out {lead} px down, drawn at {popup:?}: a press {at}, at \
+                                 {place:?}, {}",
+                                if blocked {
+                                    "reached what lies behind it"
+                                } else {
+                                    "was blocked"
+                                }
                             ),
                         ));
                     }
