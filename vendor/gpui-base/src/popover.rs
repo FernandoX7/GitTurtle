@@ -57,9 +57,10 @@ pub(crate) fn init(cx: &mut App) {
 /// `NoAction` and takes the key as before, so the key reaches this listener
 /// only where nothing there binds it, and it passes over it. Bound to
 /// [`Confirm`], a still-held Enter or Space that had chosen a dropdown's
-/// item reopened its menu once focus returned to the button. Under X11, and on Wayland with an input method, a held key
-/// arrives as fresh presses, which this cannot tell apart
-/// (`GITTURTLE-PATCH.md`).
+/// item reopened its menu once focus returned to the button. Under X11 a
+/// held key arrives as fresh presses, which this cannot tell apart
+/// (`GITTURTLE-PATCH.md`). On Wayland an input method did the same until
+/// the `gpui-pre-linux` patch kept text input off outside a text field.
 fn open_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
     let in_trigger = OPEN_KEYSTROKES
         .iter()
@@ -684,10 +685,11 @@ mod tests {
     /// content still closes it, through the content's own binding. Bound to
     /// `Confirm` in the trigger, each repeat toggled the popover, so a key
     /// still held after a dropdown's item was chosen reopened its menu.
-    /// A repeat is a key-down marked `is_held`, as macOS and Wayland without
-    /// an input method mark it; under X11, and on Wayland with an input
-    /// method such as fcitx5, a held key arrives as fresh presses, which the
-    /// trigger cannot tell from new ones.
+    /// A repeat is a key-down marked `is_held`, as macOS and Wayland mark it,
+    /// Wayland with an input method such as fcitx5 too since the
+    /// `gpui-pre-linux` patch keeps text input off outside a text field;
+    /// under X11 a held key arrives as fresh presses, which the trigger
+    /// cannot tell from new ones.
     #[gpui::test]
     fn a_held_key_on_the_trigger_opens_nothing(cx: &mut gpui::TestAppContext) {
         cx.update(crate::init);

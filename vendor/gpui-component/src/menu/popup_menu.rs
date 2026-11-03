@@ -1454,8 +1454,9 @@ impl PopupMenu {
     /// that waited ran it on the first repeat after a rebuild made it able
     /// to act, and Enter held on a button acted on the first item of the
     /// menu it opened. A write now waits for a new press wherever the
-    /// platform marks a repeat held: under X11, and on Wayland with an input
-    /// method, a held key arrives as fresh presses (`GITTURTLE-PATCH.md`).
+    /// platform marks a repeat held, as macOS and Wayland do (Wayland with an
+    /// input method too, through the `gpui-pre-linux` patch): under X11 a
+    /// held key arrives as fresh presses (`GITTURTLE-PATCH.md`).
     fn confirm_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
         let mut contexts = None;
         let confirm = CONFIRM_KEYSTROKES
@@ -4579,11 +4580,12 @@ mod tests {
     }
 
     /// The key-down the platform repeats while `keys` is held, marked
-    /// `is_held` as Wayland's repeat timer and macOS's `isARepeat` mark it.
-    /// Under X11, and on Wayland with an input method such as fcitx5
-    /// enabled through text-input, a held key arrives as fresh presses
-    /// instead, which no menu can tell from new ones, so the rule the tests
-    /// below pin does not hold there.
+    /// `is_held` as Wayland's repeat timer and macOS's `isARepeat` mark it;
+    /// on Wayland with an input method such as fcitx5 too, since the
+    /// `gpui-pre-linux` patch keeps text input off outside a text field.
+    /// Under X11 a held key arrives as fresh presses instead, which no menu
+    /// can tell from new ones, so the rule the tests below pin does not hold
+    /// there.
     fn repeat(cx: &mut VisualTestContext, keys: &str) {
         cx.simulate_event(KeyDownEvent {
             keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),

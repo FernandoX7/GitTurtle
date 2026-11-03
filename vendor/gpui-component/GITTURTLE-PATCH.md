@@ -1730,17 +1730,21 @@ press and release land on the item as the menu was last built (above),
 which an assistive technology's Click also produces, since GPUI answers it
 with a press and release at the row's centre (`Window::handle_a11y_action`).
 GPUI's X11 backend marks no key-down held (`gpui-pre-linux`
-`linux/x11/client.rs`), so under X11 a repeat still reads as a fresh press.
-Nor does the rule hold on Wayland with an input method, such as fcitx5,
-enabled through text-input, which GPUI enables whenever the focused element
-has no input handler (`gpui-pre-linux` `src/linux/wayland/window.rs:1039-1046`),
-as on a default Omarchy: a held Enter or Space reaches the app as a release
-and a press at the seat's repeat rate (every 25 ms after about 243 ms on
-the probe's host), each a fresh press GPUI cannot tell from a new one (native probe QA-90, 2026-11-03, fcitx5 5.1.22 on
-Hyprland, `WAYLAND_DEBUG=1`; that the input method forwards its own repeat
-is inferred). The rule holds on macOS and on Wayland without an input
-method. Neither case is a regression, as every repeat acted before; a
-separate queued task enables text-input only while a text input has focus.
+`linux/x11/client.rs`), so under X11 a repeat still reads as a fresh press;
+that is not a regression, as every repeat acted before. Nor did the rule
+hold on Wayland with an input method, such as fcitx5, enabled through
+text-input, which `gpui-pre-linux` 0.3.4 enabled whenever the focused
+element had no input handler, as on a default Omarchy: a held Enter or
+Space reached the app as a release and a press at the seat's repeat rate
+(every 25 ms after about 243 ms on the probe's host), each a fresh press
+GPUI cannot tell from a new one (native probe QA-90, 2026-11-03, fcitx5
+5.1.22 on Hyprland, `WAYLAND_DEBUG=1`; that the input method forwards its
+own repeat is inferred). The
+[Linux backend patch](../gpui-pre-linux/GITTURTLE-PATCH.md), a backport of
+upstream zed-industries/zed#63776, enables text input only while a focused
+text field accepts it, so a focused menu or button gets GPUI's own
+repeats, marked held, and the rule holds on Wayland as on macOS, with or
+without an input method.
 `a_held_enter_runs_no_item_a_rebuild_makes_able_to_act` rests the cursor on
 the waiting Two, presses Enter and repeats it, rebuilds the menu with Two
 able to act and repeats again: nothing runs and the menu stays open, and a

@@ -1036,15 +1036,16 @@ impl WaylandWindowStatePtr {
             return;
         }
         let client = state.client.clone();
-        let ime_enabled = if let Some(mut input_handler) = state.input_handler.take() {
+        let accepts_text_input = if let Some(mut input_handler) = state.input_handler.take() {
             drop(state);
             let accepts_text_input = input_handler.query_accepts_text_input();
             self.state.borrow_mut().input_handler = Some(input_handler);
-            accepts_text_input
+            Some(accepts_text_input)
         } else {
             drop(state);
-            true
+            None
         };
+        let ime_enabled = text_input_enabled(accepts_text_input);
         if Some(ime_enabled) == client.ime_enabled() {
             return;
         }
@@ -1577,6 +1578,19 @@ impl WaylandWindowStatePtr {
     pub fn primary_output_scale(&self) -> i32 {
         self.state.borrow_mut().primary_output_scale()
     }
+}
+
+/// Whether the window turns the Wayland text-input protocol on, given what
+/// the focused element's input handler answers to `query_accepts_text_input`
+/// (`None` when the focused element registered no handler). Text input is on
+/// only while a focused text field accepts it: with it on, an input method
+/// such as fcitx5 takes the keyboard and delivers a held key's repeats as
+/// fresh presses and swallows letter shortcuts, so buttons, menus and lists
+/// would never see GPUI's own key events and repeats. GitTurtle backport of
+/// zed-industries/zed#63776 (first released in `gpui-pre` 0.3.5), which
+/// changed the no-handler fallback from `true` to `false`.
+fn text_input_enabled(accepts_text_input: Option<bool>) -> bool {
+    accepts_text_input.unwrap_or(false)
 }
 
 fn extract_states<'a, S: TryFrom<u32> + 'a>(states: &'a [u8]) -> impl Iterator<Item = S> + 'a
@@ -2293,4 +2307,25 @@ fn inset_by_tiling(mut bounds: Bounds<Pixels>, inset: Pixels, tiling: Tiling) ->
     }
 
     bounds
+}
+
+#[cfg(test)]
+mod text_input_tests {
+    use super::text_input_enabled;
+
+    #[test]
+    fn text_input_follows_a_focused_text_field() {
+        assert!(
+            !text_input_enabled(None),
+            "no focused input handler (a button, menu or list) leaves text input off"
+        );
+        assert!(
+            text_input_enabled(Some(true)),
+            "a focused handler that accepts text input turns text input on"
+        );
+        assert!(
+            !text_input_enabled(Some(false)),
+            "a focused handler that does not accept text input leaves text input off"
+        );
+    }
 }

@@ -195,10 +195,11 @@ fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext)
 /// nothing there; a fresh press runs the item. The menu confirmed on every
 /// repeat, Enter through its own binding and Space through the popover's
 /// it lies in, so a held key ran First as soon as the menu opened.
-/// macOS and Wayland without an input method mark the repeats held; under
-/// X11, and on Wayland with an input method such as fcitx5, as on a default
-/// Omarchy, a held key arrives as fresh presses, which the menu cannot tell
-/// from new ones.
+/// macOS and Wayland mark the repeats held, Wayland with an input method
+/// such as fcitx5 too, as on a default Omarchy, since the vendored
+/// `gpui-pre-linux` turns text input on only for a focused text field;
+/// under X11 a held key arrives as fresh presses, which the menu cannot
+/// tell from new ones.
 #[gpui::test]
 fn a_held_key_that_opened_a_buttons_menu_runs_nothing(cx: &mut TestAppContext) {
     let (cx, chosen) = open_menu(cx);
