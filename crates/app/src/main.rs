@@ -31,6 +31,13 @@ mod history_search;
 mod history_updates;
 mod ignore;
 mod image_compare;
+// Preview images: AVIF and JPEG 2000 in the confined helper on Linux, every
+// other image (and every image on other targets) through `decode_image`.
+#[expect(
+    dead_code,
+    reason = "worker.rs and markdown_view.rs call `image_helper::decode` from the next slice"
+)]
+mod image_helper;
 mod image_lifetime;
 mod in_frame;
 mod integration;
@@ -48,8 +55,8 @@ mod operations;
 mod page_navigation;
 mod partial_view;
 mod path_filter;
-// The confined PDF helper process and its client, which `pdf_view` renders
-// Linux PDF pages through.
+// The confined helper process, its runner and the PDF client, which `pdf_view`
+// renders Linux PDF pages through; `image_helper` shares the runner.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")

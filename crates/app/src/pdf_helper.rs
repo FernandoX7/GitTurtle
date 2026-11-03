@@ -28,6 +28,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -536,6 +538,9 @@ pub(crate) struct Slots {
     running: Mutex<usize>,
     freed: Condvar,
     limit: usize,
+    /// [`Slots::waiting`].
+    #[cfg(test)]
+    waiting: AtomicUsize,
 }
 
 impl Slots {
@@ -544,10 +549,14 @@ impl Slots {
             running: Mutex::new(0),
             freed: Condvar::new(),
             limit,
+            #[cfg(test)]
+            waiting: AtomicUsize::new(0),
         }
     }
 
     fn acquire(&self, check: &dyn Fn() -> anyhow::Result<()>) -> anyhow::Result<Slot<'_>> {
+        #[cfg(test)]
+        let mut waiting = None;
         loop {
             check()?;
             let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
@@ -559,7 +568,40 @@ impl Slots {
                 *running += 1;
                 return Ok(Slot(self));
             }
+            #[cfg(test)]
+            waiting.get_or_insert_with(|| Waiting::count(&self.waiting));
         }
+    }
+
+    /// Requests that found every slot taken for a whole tick and have since
+    /// neither taken a slot nor been cancelled, so tests observe a waiting
+    /// request rather than sleep while it waits.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "tests/image_helper.rs observes it; the app's own tests do not"
+    )]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::SeqCst)
+    }
+}
+
+/// One request counted in [`Slots::waiting`] until it leaves `acquire`.
+#[cfg(test)]
+struct Waiting<'a>(&'a AtomicUsize);
+
+#[cfg(test)]
+impl<'a> Waiting<'a> {
+    fn count(waiting: &'a AtomicUsize) -> Self {
+        waiting.fetch_add(1, Ordering::SeqCst);
+        Self(waiting)
+    }
+}
+
+#[cfg(test)]
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
