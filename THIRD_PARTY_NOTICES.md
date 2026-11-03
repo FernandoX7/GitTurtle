@@ -14,6 +14,7 @@ AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses a
 | `accesskit_atspi_common` 0.19.1 | [MIT](vendor/accesskit_atspi_common/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_atspi_common/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_atspi_common/LICENSE.chromium) | [Patch](vendor/accesskit_atspi_common/GITTURTLE-PATCH.md) |
 | `gpui-base` 0.6.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
 | `gpui-component` 0.6.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
+| `gpui-pre-linux` 0.3.4 | [Apache-2.0](vendor/gpui-pre-linux/LICENSE-APACHE) | [Patch](vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |
 | `gpui-pre-macos` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |
 | `gpui-pre-macros` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macros/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
 | `mermaid-rs-renderer` 0.3.1 | [MIT](vendor/mermaid-rs-renderer/LICENSE) | [Patch](vendor/mermaid-rs-renderer/GITTURTLE-PATCH.md) |
