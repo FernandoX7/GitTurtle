@@ -100,25 +100,25 @@ pub(crate) fn decode(
     timings.decode_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
-    let colour = properties.colour(properties.primary);
-    let mut rgba = convert(&picture, size, colour)?;
-    if let Some(alpha) = &alpha_picture {
+    // The colour signal comes from `nclx`, else from the sequence header, and
+    // is read before the pictures go. `convert` and `apply_alpha` consume the
+    // pictures, so dav1d's planes are freed as soon as they are read and only
+    // the RGBA image reaches colour conversion, orientation and scaling
+    // (security review requirement 18).
+    let colour = properties
+        .colour(properties.primary)
+        .unwrap_or_else(|| Nclx::signalled(&picture));
+    let mut rgba = convert(picture, size, colour)?;
+    if let Some(alpha) = alpha_picture {
         apply_alpha(&mut rgba, alpha)?;
         if context.premultiplied_alpha {
             crate::unpremultiply(rgba.as_mut());
         }
     }
-    let (primaries, transfer) = match colour {
-        Some(nclx) => (nclx.primaries, nclx.transfer),
-        None => (
-            picture.color_primaries() as u8,
-            picture.transfer_characteristic() as u8,
-        ),
-    };
     flags.profile_not_applied = matches!(context.icc_colour_information(), Some(Ok(_)));
-    flags.hdr_not_tone_mapped = matches!(transfer, 16 | 18);
+    flags.hdr_not_tone_mapped = matches!(colour.transfer, 16 | 18);
     if !flags.hdr_not_tone_mapped {
-        rgba = to_srgb(rgba, primaries, transfer);
+        rgba = to_srgb(rgba, colour.primaries, colour.transfer);
     }
     let rgba = orient(rgba, properties.rotation(), properties.mirror());
     let original = rgba.dimensions();
@@ -269,6 +269,18 @@ struct Nclx {
     full_range: bool,
 }
 
+impl Nclx {
+    /// The values the AV1 sequence header signals, for an item without `nclx`.
+    fn signalled(picture: &Picture) -> Self {
+        Self {
+            primaries: picture.color_primaries() as u8,
+            transfer: picture.transfer_characteristic() as u8,
+            matrix: picture.matrix_coefficients() as u8,
+            full_range: picture.color_range() == YUVRange::Full,
+        }
+    }
+}
+
 /// Luma and chroma weights, or the two matrices without them.
 #[derive(Debug, Clone, Copy)]
 enum Matrix {
@@ -292,25 +304,15 @@ fn matrix(code: u8) -> Option<Matrix> {
 }
 
 /// Straight RGBA8 from a colour or monochrome picture of `size`. Chroma is
-/// taken from the nearest sample; the output is downscaled anyway.
-fn convert(
-    picture: &Picture,
-    size: (u32, u32),
-    nclx: Option<Nclx>,
-) -> Result<RgbaImage, ImageErrorKind> {
-    let (layout, bits, planes) = planes(picture, false)?;
-    let (matrix_code, full_range) = match nclx {
-        Some(nclx) => (nclx.matrix, nclx.full_range),
-        None => (
-            picture.matrix_coefficients() as u8,
-            picture.color_range() == YUVRange::Full,
-        ),
-    };
-    let matrix = matrix(matrix_code).ok_or(ImageErrorKind::AvifUnreadable)?;
+/// taken from the nearest sample; the output is downscaled anyway. Takes the
+/// picture so its planes are freed on return.
+fn convert(picture: Picture, size: (u32, u32), nclx: Nclx) -> Result<RgbaImage, ImageErrorKind> {
+    let (layout, bits, planes) = planes(&picture, false)?;
+    let matrix = matrix(nclx.matrix).ok_or(ImageErrorKind::AvifUnreadable)?;
     if matches!(matrix, Matrix::Identity) && layout != PixelLayout::I444 && planes.len() == 3 {
         return Err(ImageErrorKind::AvifUnreadable);
     }
-    let range = Range::new(bits, full_range);
+    let range = Range::new(bits, nclx.full_range);
     let (shift_x, shift_y) = match layout {
         PixelLayout::I420 => (1, 1),
         PixelLayout::I422 => (1, 0),
@@ -390,9 +392,10 @@ fn unit(value: f32) -> u8 {
 }
 
 /// The alpha item's luma, in its own range, into the alpha channel. The
-/// picture has the colour picture's size (`decode_item`).
-fn apply_alpha(rgba: &mut RgbaImage, picture: &Picture) -> Result<(), ImageErrorKind> {
-    let (_, bits, planes) = planes(picture, true)?;
+/// picture has the colour picture's size (`decode_item`) and is freed on
+/// return.
+fn apply_alpha(rgba: &mut RgbaImage, picture: Picture) -> Result<(), ImageErrorKind> {
+    let (_, bits, planes) = planes(&picture, true)?;
     let max = (1u32 << bits) - 1;
     let full = picture.color_range() == YUVRange::Full;
     let range = Range::new(bits, full);
@@ -440,20 +443,24 @@ fn to_srgb(rgba: RgbaImage, primaries: u8, transfer: u8) -> RgbaImage {
 }
 
 /// MIAF order: `clap` (not applied), then `irot` anticlockwise quarter turns,
-/// then `imir` (0 exchanges top and bottom, 1 left and right).
-fn orient(rgba: RgbaImage, rotation: u8, mirror: Option<u8>) -> RgbaImage {
-    use image::imageops::{flip_horizontal, flip_vertical, rotate90, rotate180, rotate270};
-    let rotated = match rotation {
-        1 => rotate270(&rgba),
-        2 => rotate180(&rgba),
-        3 => rotate90(&rgba),
-        _ => rgba,
+/// then `imir` (0 exchanges top and bottom, 1 left and right). Only a quarter
+/// turn needs a second buffer, and the first goes as soon as it is copied.
+fn orient(mut rgba: RgbaImage, rotation: u8, mirror: Option<u8>) -> RgbaImage {
+    use image::imageops::{
+        flip_horizontal_in_place, flip_vertical_in_place, rotate90, rotate180_in_place, rotate270,
     };
-    match mirror {
-        Some(0) => flip_vertical(&rotated),
-        Some(_) => flip_horizontal(&rotated),
-        None => rotated,
+    match rotation {
+        1 => rgba = rotate270(&rgba),
+        2 => rotate180_in_place(&mut rgba),
+        3 => rgba = rotate90(&rgba),
+        _ => {}
     }
+    match mirror {
+        Some(0) => flip_vertical_in_place(&mut rgba),
+        Some(_) => flip_horizontal_in_place(&mut rgba),
+        None => {}
+    }
+    rgba
 }
 
 /// The item properties GitTurtle reads itself (ISO/IEC 23008-12 9.3): the
@@ -787,6 +794,56 @@ mod tests {
             12,
             "first frame",
         );
+    }
+
+    #[test]
+    fn orients_in_place_like_the_copying_operations() {
+        use image::imageops::{flip_horizontal, flip_vertical, rotate90, rotate180, rotate270};
+        let source = RgbaImage::from_fn(5, 3, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+        for rotation in 0..4 {
+            for mirror in [None, Some(0), Some(1)] {
+                let rotated = match rotation {
+                    1 => rotate270(&source),
+                    2 => rotate180(&source),
+                    3 => rotate90(&source),
+                    _ => source.clone(),
+                };
+                let expected = match mirror {
+                    Some(0) => flip_vertical(&rotated),
+                    Some(_) => flip_horizontal(&rotated),
+                    None => rotated,
+                };
+                assert_eq!(
+                    orient(source.clone(), rotation, mirror),
+                    expected,
+                    "irot {rotation}, imir {mirror:?}"
+                );
+            }
+        }
+    }
+
+    /// Requirement 18: `convert` and `apply_alpha` take dav1d's pictures by
+    /// value, so their planes are freed before colour conversion, orientation
+    /// and scaling allocate, and `decode` keeps no copy of either.
+    #[test]
+    fn decoded_pictures_are_freed_before_the_rgba_steps() {
+        let source = include_str!("avif.rs");
+        let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(code.contains("fn convert(picture: Picture, "));
+        assert!(code.contains("fn apply_alpha(rgba: &mut RgbaImage, picture: Picture)"));
+        let body = code
+            .split("pub(crate) fn decode(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .unwrap();
+        assert!(!body.contains(".clone()"));
+        let consumed = body.find("apply_alpha(&mut rgba, alpha)").unwrap();
+        assert!(body.find("convert(picture, ").unwrap() < consumed);
+        let rest = &body[consumed..];
+        assert!(!rest.contains("picture"), "{rest}");
+        for step in ["to_srgb(", "orient(", "finish("] {
+            assert!(rest.contains(step), "{step}");
+        }
     }
 
     /// Replaces the `index`th `kind` box's first bytes after its header.
