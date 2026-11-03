@@ -888,6 +888,21 @@ mod tests {
         assert_eq!(reply.image.format, "AVIF · first image");
         assert_quadrants(&reply.image, P3_PROFILE_IN_SRGB, 12, "icc");
 
+        // The profile takes precedence over the `nclx` beside it: a PQ transfer
+        // flags nothing, and Display P3 primaries do not convert the pixels a
+        // second time.
+        for (case, nclx) in [
+            ("P3 primaries and a PQ transfer", [0, 12, 0, 16]),
+            ("P3 primaries", [0, 12, 0, 13]),
+        ] {
+            let bytes = patched(&icc, b"nclx", 0, 0, &nclx);
+            let reply = decoded(ConfinedFormat::Avif, 1600, &bytes)
+                .unwrap_or_else(|kind| panic!("{case}: {kind:?}"));
+            assert_eq!(reply.flags, ImageFlags::default(), "{case}");
+            assert_eq!(reply.image.format, "AVIF · first image", "{case}");
+            assert_quadrants(&reply.image, P3_PROFILE_IN_SRGB, 12, case);
+        }
+
         // Each profile is refused, so the stored values stay as they are (the
         // `nclx` beside it is BT.709) and the caption says so. Offsets are
         // into the ICC header, which starts right after `prof`.
