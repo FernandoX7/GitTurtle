@@ -89,7 +89,11 @@ page text or Retry page, Linked pages (checked while linked) and the open
 control; narrower, Previous, the page number, Next and a “more” menu that
 holds the zooms first, then the same, each item named as the button it
 stands for. Both sides of a comparison take one form, the narrower of the
-two sides' own, so their headings lie level and they show the same controls.
+two sides' own, so their headings lie level and they show the same controls,
+the page number in one reading (labelled, short or its icon) and both
+headings with their format or neither, every control measured on the
+display's device pixels, so their pages lie level at a fractional scale such
+as Hyprland's 1.2 as at a whole one.
 Only a side whose room above its page is shorter than even the narrowest form
 scrolls its header. In either form Read page text, while its
 page is prepared, is an unavailable item with “Preparing the page…” stated
