@@ -63,7 +63,7 @@ Decision: on Linux nothing decodes AVIF or JPEG 2000 in the app process. `decode
 7. One frame only, whatever the file holds (below); output through `scaled_dimensions` and the existing premultiplied resize.
 
 **Bounds before allocation: JPEG 2000:**
-1. Signature; for JP2, brand `jp2 ` or a compatibility list containing `jp2 ` (JPX that is not JP2-compatible is refused on Linux); `ihdr` and SIZ agree and both pass `check_dimensions` (existing `jpeg2000::dimensions`).
+1. Signature; for JP2, brand `jp2 ` or a compatibility list containing `jp2 ` (JPX that is not JP2-compatible is refused on Linux); exactly one `jp2h`, then one `jp2c`, and neither kind after it (`hayro-jpeg2000` 0.4.1 reads every top-level box and decodes the last of each); `ihdr` and SIZ agree and both pass `check_dimensions` (existing `jpeg2000::dimensions`).
 2. SIZ: 1–4 components, precision ≤ 16 bits, tiles `ceil(w / tw) × ceil(h / th)` ≤ 65,535 (SOT's tile index is 16 bits; covers the 25.8 GB tile vector).
 3. `pclr`: 1–1,024 entries, 1–4 columns, depth ≤ 16 bits, with a non-empty `cmap` (covers #1649). A palette turns reduced resolution off, so its budget is at full size.
 4. Resolution: target `scaled_dimensions(size, edge)`; reduced resolution only when every component samples 1 × 1 and there is no palette (0.4.1 panics on subsampled components at reduced resolution, #1409, fixed only on `main`), otherwise full resolution.

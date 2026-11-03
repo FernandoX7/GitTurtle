@@ -223,14 +223,102 @@ mod tests {
     /// declaring 100000 × 100000 that asked hayro-jpeg2000 for about 95 GB.
     const ISSUE_1549: &str = "ff4fff5100290000000186a0000186a00000000000000000000186a0000186a000000000000000000001070101ff52000c00000001000004040001ff5c00044040ff90000a0000000000000001ff9300000000000000000000000000000000ffd9";
 
-    #[test]
-    fn hostile_jpeg2000_ends_in_its_error_kind_before_decoding() {
-        use ImageErrorKind::*;
-        let issue_1549: Vec<u8> = (0..ISSUE_1549.len())
+    fn issue_1549() -> Vec<u8> {
+        let bytes: Vec<u8> = (0..ISSUE_1549.len())
             .step_by(2)
             .map(|at| u8::from_str_radix(&ISSUE_1549[at..at + 2], 16).unwrap())
             .collect();
-        assert_eq!(issue_1549.len(), 97);
+        assert_eq!(bytes.len(), 97);
+        bytes
+    }
+
+    /// A JP2 box of `kind` around `payload`, with an explicit length.
+    fn jp2_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        bytes.extend_from_slice(kind);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// The whole top-level box of `kind` (with an explicit length) in `bytes`.
+    fn whole_box(bytes: &[u8], kind: &[u8; 4]) -> Vec<u8> {
+        let start = position(bytes, kind) - 4;
+        let length = u32::from_be_bytes(bytes[start..start + 4].try_into().unwrap());
+        bytes[start..start + length as usize].to_vec()
+    }
+
+    /// hayro-jpeg2000 0.4.1 decodes the last `jp2c` of a file; the preflight
+    /// checks the first and refuses any after it.
+    #[test]
+    fn a_jp2_codestream_after_the_first_is_refused() {
+        use ImageErrorKind::{Jpeg2000TooManyTiles, Jpeg2000Unreadable};
+        // A 300 × 300 grey grid as one tile, and as 90,000 1 × 1 tiles.
+        let codestream = |tile: u32| {
+            let mut bytes = issue_1549();
+            for offset in [8, 12] {
+                set(&mut bytes, offset, &300u32.to_be_bytes());
+            }
+            for offset in [24, 28] {
+                set(&mut bytes, offset, &tile.to_be_bytes());
+            }
+            bytes
+        };
+        let (one_tile, many_tiles) = (codestream(300), codestream(1));
+        assert_eq!(
+            jpeg2000(&many_tiles, 100).unwrap_err(),
+            Jpeg2000TooManyTiles
+        );
+        let rgb = fixture("jpeg2000-rgb.jp2");
+        // HEIGHT, WIDTH, one component of 8 bits, compression type 7.
+        let mut ihdr = [300u32.to_be_bytes(), 300u32.to_be_bytes()].concat();
+        ihdr.extend_from_slice(&[0, 1, 7, 7, 0, 0]);
+        // The signature and `ftyp` boxes, then a header and the one-tile grid.
+        let mut one_tile_jp2 = rgb[..32].to_vec();
+        one_tile_jp2.extend(jp2_box(b"jp2h", &jp2_box(b"ihdr", &ihdr)));
+        one_tile_jp2.extend(jp2_box(b"jp2c", &one_tile));
+        let reply = jpeg2000(&one_tile_jp2, 100).unwrap();
+        assert_eq!(
+            (reply.image.original_width, reply.image.original_height),
+            (300, 300)
+        );
+        let mut appended = one_tile_jp2;
+        appended.extend(jp2_box(b"jp2c", &many_tiles));
+        assert_eq!(jpeg2000(&appended, 100).unwrap_err(), Jpeg2000Unreadable);
+    }
+
+    /// hayro-jpeg2000 0.4.1 decodes with the last `jp2h` of a file; the
+    /// preflight accepts exactly one, before the codestream.
+    #[test]
+    fn a_second_jp2_header_is_refused_before_or_after_the_codestream() {
+        // The palette fixture's header with a 32-bit column (#1649), which
+        // alone ends in `Jpeg2000TooDeep`, after or before the RGB fixture's
+        // codestream (whose explicit length ends the file).
+        let rgb = fixture("jpeg2000-rgb.jp2");
+        let palette = fixture("jpeg2000-palette.jp2");
+        let mut deep_header = whole_box(&palette, b"jp2h");
+        let pclr = position(&deep_header, b"pclr") + 4;
+        deep_header[pclr + 3] = 31;
+        let mut appended_header = rgb.clone();
+        appended_header.extend_from_slice(&deep_header);
+        let jp2c = position(&rgb, b"jp2c") - 4;
+        assert_eq!(whole_box(&rgb, b"jp2c").len(), rgb.len() - jp2c);
+        let second_header = [&rgb[..jp2c], &deep_header[..], &rgb[jp2c..]].concat();
+        for (case, bytes) in [
+            ("after the jp2c", appended_header),
+            ("before the jp2c", second_header),
+        ] {
+            assert_eq!(
+                jpeg2000(&bytes, 100).unwrap_err(),
+                ImageErrorKind::Jpeg2000Unreadable,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_jpeg2000_ends_in_its_error_kind_before_decoding() {
+        use ImageErrorKind::*;
+        let issue_1549 = issue_1549();
         // https://github.com/LaurenzV/hayro/pull/1558 (comment of 2026-10-22):
         // 16383 × 16383 with 1 × 1 tiles passes hayro's sample budget and still
         // asks for 25.8 GB of tiles; GitTurtle's pixel limit refuses it first.

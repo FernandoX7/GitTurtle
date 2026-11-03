@@ -254,7 +254,8 @@ impl Preflight {
 }
 
 /// Every bound the helper applies before `hayro-jpeg2000` allocates its tiles:
-/// JP2 compatibility, `ihdr` agreeing with SIZ, the source bounds, at most
+/// JP2 compatibility, one `jp2h` and then one `jp2c` with no other of either
+/// kind, `ihdr` agreeing with SIZ, the source bounds, at most
 /// 65,535 tiles by formula B-5, 1 to 4 components of at most 16 bits, and a
 /// palette of 1 to 1,024 entries and 1 to 4 columns of at most 16 bits with a
 /// non-empty component mapping (#1649).
@@ -286,28 +287,41 @@ pub(super) fn preflight(
         if !compatible {
             return Err(JpxNotJp2Compatible);
         }
-        let (mut header, mut palette, mut mapping, mut codestream) = (None, None, None, None);
-        while !boxes.is_empty() && codestream.is_none() {
+        // hayro-jpeg2000 0.4.1 reads every top-level box to the end of the
+        // file and keeps the last `jp2h` and the last `jp2c` (`jp2/mod.rs`
+        // 56-117), so the preflight walks every box too and accepts only the
+        // shape where its first and hayro's last are the same box: one `jp2h`,
+        // then one `jp2c`. A `jp2h` or `jp2c` after the first `jp2c` is
+        // refused (a JP2 reader renders the first codestream, I.5.4; hayro
+        // would decode the last). A second `jp2h` before it is refused as well:
+        // I.5.3 allows exactly one, and hayro keeps only the last one's
+        // `pclr`, `cmap`, `colr` and `cdef`, so checking either alone could
+        // miss what the other holds. Any box that does not frame is refused,
+        // so no box hayro reads goes unseen.
+        let (mut header_box, mut codestream) = (None, None);
+        while !boxes.is_empty() {
             let (kind, payload) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
             match &kind {
-                b"jp2h" => {
-                    let mut children = payload;
-                    while !children.is_empty() {
-                        let (kind, payload) =
-                            next_box(&mut children).map_err(|_| Jpeg2000Unreadable)?;
-                        let slot = match &kind {
-                            b"ihdr" => &mut header,
-                            b"pclr" => &mut palette,
-                            b"cmap" => &mut mapping,
-                            _ => continue,
-                        };
-                        if slot.replace(payload).is_some() {
-                            return Err(Jpeg2000Unreadable);
-                        }
-                    }
+                b"jp2h" if header_box.is_none() && codestream.is_none() => {
+                    header_box = Some(payload);
                 }
-                b"jp2c" => codestream = Some(payload),
+                b"jp2c" if codestream.is_none() => codestream = Some(payload),
+                b"jp2h" | b"jp2c" => return Err(Jpeg2000Unreadable),
                 _ => {}
+            }
+        }
+        let (mut header, mut palette, mut mapping) = (None, None, None);
+        let mut children = header_box.ok_or(Jpeg2000Unreadable)?;
+        while !children.is_empty() {
+            let (kind, payload) = next_box(&mut children).map_err(|_| Jpeg2000Unreadable)?;
+            let slot = match &kind {
+                b"ihdr" => &mut header,
+                b"pclr" => &mut palette,
+                b"cmap" => &mut mapping,
+                _ => continue,
+            };
+            if slot.replace(payload).is_some() {
+                return Err(Jpeg2000Unreadable);
             }
         }
         let header: &[u8] = header.ok_or(Jpeg2000Unreadable)?;
