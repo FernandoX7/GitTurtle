@@ -372,6 +372,9 @@ pub struct State {
     pub library: Vec<LibraryEntry>,
     pub groups: Vec<String>,
     pub switching: bool,
+    /// The bookmark the shown tab, cold until its restore ends, is being
+    /// restored from. It belongs to that tab: a tab left mid-restore takes
+    /// it back (`retain_active_tab`), and closing the tab drops it.
     pub restoring: Option<Bookmark>,
     pub document_restore: Option<Bookmark>,
     /// The focus a warm tab shown again gives back as the frame that draws
@@ -888,10 +891,15 @@ impl GitTurtle {
     }
     fn retain_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(repo) = self.repository.clone() else {
+            self.leave_unread_tab();
             return true;
         };
+        // A cold tab still being restored from its bookmark keeps nothing
+        // warm (below), so it retains nothing.
+        let cold = self.repository_tabs.restoring.is_some();
         let bytes = self.tab_retained_bytes();
-        if self.repository_tabs.retained_bytes().saturating_add(bytes) > MAX_RETAINED_BYTES {
+        if !cold && self.repository_tabs.retained_bytes().saturating_add(bytes) > MAX_RETAINED_BYTES
+        {
             self.error=Some("Retained tabs would exceed the 512 MiB preview allowance. Close a tab to release its retained inspection before switching; drafts stay saved.".into());
             cx.notify();
             return false;
@@ -911,7 +919,15 @@ impl GitTurtle {
             });
             self.repository_tabs.tabs.len() - 1
         };
-        let bookmark = self.tab_bookmark(cx);
+        // The bookmark a cold tab is being restored from belongs to that tab:
+        // left before its restore ends, the tab keeps it and stays cold, so
+        // shown again it is restored from it again. Left in the window, the
+        // next tab took it up: its Refresh restored this tab's zoom, widths
+        // and comparison, read in its own repository, its selection was no
+        // longer revealed, and this tab came back warm without the selection
+        // and comparison it was saved with.
+        let restoring = self.repository_tabs.restoring.take();
+        let bookmark = restoring.unwrap_or_else(|| self.tab_bookmark(cx));
         // The places a restored comparison waits to restore belong to this
         // tab: they go with it, for its return. Left in the window, the next
         // tab shown took them up as it returned from Settings or Projects
@@ -1014,11 +1030,27 @@ impl GitTurtle {
             document_restore,
         };
         self.repository_tabs.tabs[index].saved = bookmark;
-        self.repository_tabs.tabs[index].warm = Some(warm);
+        self.repository_tabs.tabs[index].warm = (!cold).then_some(warm);
         self.repository = None;
         self.path = None;
         self.observe_tab_panels(cx);
         true
+    }
+
+    /// Leaves the shown tab before its repository is read, as a cold tab
+    /// whose snapshot is still being read: the tab keeps the bookmark it is
+    /// restored from, and its read is cancelled. Left to land, that
+    /// snapshot reached the tab shown in its place, which took it for an
+    /// alias of the left tab, closed itself and showed the left tab again.
+    fn leave_unread_tab(&mut self) {
+        let restoring = self.repository_tabs.restoring.take();
+        let Some(index) = self.repository_tabs.active else {
+            return;
+        };
+        if let (Some(saved), Some(tab)) = (restoring, self.repository_tabs.tabs.get_mut(index)) {
+            tab.saved = saved;
+        }
+        self.invalidate_read();
     }
     fn restore_warm_tab(&mut self, warm: WarmTab, window: &mut Window, cx: &mut Context<Self>) {
         self.repository_tabs.switching = true;
@@ -1262,7 +1294,6 @@ impl GitTurtle {
             error: None,
         });
         self.repository_tabs.active = Some(index);
-        self.repository_tabs.restoring = None;
         self.clear_tab_inputs(window, cx);
         false
     }
@@ -1432,6 +1463,10 @@ impl GitTurtle {
             self.automatic.reset();
             self.work_generation = self.work_generation.wrapping_add(1);
             self.status_task = None;
+            // The bookmark the closed tab was being restored from goes with
+            // it, as the places its comparison waited to restore go with its
+            // preview: left, the tab shown next took it up.
+            self.repository_tabs.restoring = None;
             self.clear_preview();
             self.file_history = file_history::State::default();
             self.revision_inspection = revision_inspection::State::default();
@@ -6140,4 +6175,288 @@ mod tests {
             })
         });
     }
+
+    /// Where a cold tab's restore stands as it is left: its snapshot read,
+    /// the changed files of its saved selection, or its saved comparison.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum ColdStage {
+        History,
+        Changes,
+        Comparison,
+    }
+
+    /// The bookmark a cold tab is restored from belongs to that tab. Left
+    /// at any stage of its restore for a warm tab, or closed, it leaves the
+    /// window none: the tab shown reveals its selection as History's
+    /// viewport changes and keeps its own zoom, widths, text mode and
+    /// selection through its Refresh and a commit selection, reading
+    /// nothing of the left tab's. The left tab, left before its comparison
+    /// is read, stays cold with its bookmark, so it comes back with its
+    /// selection, comparison, zoom and widths. Left in the window, the
+    /// bookmark stopped the next tab's reveal, its Refresh took up the left
+    /// tab's zoom, widths and comparison, read in the wrong repository, and
+    /// the left tab came back warm without its selection; left before its
+    /// snapshot landed, that snapshot closed the tab shown.
+    #[gpui::test]
+    async fn a_cold_tab_left_mid_restore_takes_its_bookmark_with_it(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            crate::views::tests::history_script(60, 1),
+        )
+        .await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let first_path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        let json = |saved: &Bookmark| serde_json::to_value(saved).unwrap();
+        // The second tab shows its file in Compare, at its own zoom, text
+        // mode and widths, and is left for the first.
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let second_oid = app.update(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            app.zoom = 2.5;
+            app.text_mode = TextMode::Split;
+            app.settings.navigation_width = 310.;
+            app.settings.inspector_width = 430.;
+            app.commits[0].oid.clone()
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        // The first tab selects its oldest commit, below History's viewport
+        // once scrolled to the top, at a zoom and widths of its own.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.zoom = 1.5;
+                app.settings.navigation_width = 250.;
+                app.settings.inspector_width = 380.;
+                app.select_commit(59, window, cx);
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let (compared, first_oid) = app.read_with(cx, |app, _| {
+            let mut saved = app.repository_tabs.tabs[1].saved.clone();
+            saved.pdf[1] = Some(
+                serde_json::from_value(
+                    serde_json::json!({"page": 3, "zoom": 1.25, "linked": false}),
+                )
+                .unwrap(),
+            );
+            (saved, app.commits[59].oid.clone())
+        });
+        assert!(compared.comparison.is_some() && compared.zoom == 2.5);
+        let mut selected = compared.clone();
+        selected.comparison = None;
+        selected.compare = false;
+        let first_tab = |app: &GitTurtle, tabs: usize, when: &str| {
+            assert_eq!(
+                app.repository_tabs.tabs.len(),
+                tabs,
+                "{when}: no tab closes"
+            );
+            assert_eq!(app.repository_tabs.active, Some(0), "{when}");
+            assert_eq!(app.path.as_ref(), Some(&first_path), "{when}");
+            assert!(
+                app.repository_tabs.restoring.is_none(),
+                "{when}: no bookmark waits"
+            );
+            assert!(app.repository_tabs.document_restore.is_none(), "{when}");
+            assert!(app.mode == WorkspaceMode::History, "{when}: History stays");
+            assert_eq!(app.zoom, 1.5, "{when}: its own zoom");
+            assert!(app.text_mode == TextMode::Unified, "{when}: its text mode");
+            assert_eq!(
+                (app.settings.navigation_width, app.settings.inspector_width),
+                (250., 380.),
+                "{when}: its own widths"
+            );
+            assert!(
+                app.files
+                    .iter()
+                    .all(|file| file.path() != Path::new("second.txt")),
+                "{when}: nothing of the left tab's is read"
+            );
+        };
+        let selected_oid = |app: &GitTurtle| {
+            app.selected_commit
+                .and_then(|index| app.commits.get(index))
+                .map(|commit| commit.oid.clone())
+        };
+        let shows_selection = |app: &GitTurtle| {
+            let scroll = app.history_scroll.0.borrow();
+            let offset = -scroll.base_handle.offset().y;
+            let measured = scroll.last_item_size.as_ref().expect("History's geometry");
+            let row = measured.contents.height / app.visible.len() as f32;
+            let index = app.visible.iter().position(|&i| i == 59).unwrap() as f32;
+            row * index >= offset && row * (index + 1.) <= offset + measured.item.height
+        };
+        let mut height = 680.;
+        for (stage, saved, close) in [
+            (ColdStage::History, &compared, false),
+            (ColdStage::Changes, &selected, false),
+            (ColdStage::Comparison, &compared, false),
+            (ColdStage::Changes, &selected, true),
+        ] {
+            // The second tab is cold, as a launch leaves every tab but the
+            // one shown, and is restored with its read held at `stage`.
+            app.update(cx, |app, _| {
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = saved.clone();
+            });
+            let mut held = app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.switch_repository_tab(1, window, cx);
+                    assert!(app.repository_tabs.restoring.is_some());
+                    assert_eq!(app.loading, Some("Reading local history…"));
+                })
+            });
+            if stage != ColdStage::History {
+                drop(held);
+                held = app.read_with(cx, |app, _| {
+                    app.worker.wait_idle();
+                    app.worker.hold()
+                });
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| {
+                    let label = match stage {
+                        ColdStage::Changes => "Reading changed files…",
+                        _ => RESTORED_PREVIEW_LABEL,
+                    };
+                    assert_eq!(app.loading, Some(label), "{stage:?}");
+                    assert_eq!(
+                        app.repository_tabs.restoring.is_some(),
+                        stage == ColdStage::Changes
+                    );
+                });
+            }
+            let when = format!("{stage:?}{}", if close { ", closed" } else { "" });
+            let tabs = if close { 1 } else { 2 };
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if close {
+                        app.close_repository_tab(1, window, cx);
+                        first_tab(app, tabs, &when);
+                        return;
+                    }
+                    app.switch_repository_tab(0, window, cx);
+                    first_tab(app, tabs, &when);
+                    let left = &app.repository_tabs.tabs[1];
+                    if stage == ColdStage::Comparison {
+                        assert!(
+                            left.warm
+                                .as_ref()
+                                .is_some_and(|warm| warm.document_restore.is_some()),
+                            "{when}: its comparison is read again on return"
+                        );
+                    } else {
+                        assert!(left.warm.is_none(), "{when}: the left tab stays cold");
+                        assert_eq!(json(&left.saved), json(saved), "{when}: its bookmark");
+                    }
+                })
+            });
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                first_tab(app, tabs, &format!("{when}, its read ended"));
+                assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+            });
+            // Scrolled away from its selection, History reveals it as its
+            // viewport changes.
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                app.history_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), px(0.)))
+            });
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| assert!(!shows_selection(app), "{when}"));
+            height = if height == 680. { 600. } else { 680. };
+            cx.simulate_resize(size(px(1000.), px(height)));
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(shows_selection(app), "{when}: the selection is revealed")
+            });
+            // Refreshed, and with a commit selected, the first tab keeps
+            // its own.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                first_tab(app, tabs, &format!("{when}, refreshed"));
+                assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+                assert!(app.content.is_none(), "{when}: no comparison is read");
+            });
+            for index in [58, 59] {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_commit(index, window, cx))
+                });
+                settle_tab_test(&app, cx).await;
+            }
+            app.read_with(cx, |app, _| {
+                first_tab(app, tabs, &format!("{when}, a commit selected"));
+                assert_eq!(selected_oid(app), Some(first_oid.clone()), "{when}");
+                assert!(!app.files.is_empty(), "{when}: its own files");
+            });
+            if close {
+                // The last tab closed mid-restore leaves no bookmark either.
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.repository_tabs.restoring = Some(app.tab_bookmark(cx));
+                        app.close_repository_tab(0, window, cx);
+                        assert!(app.repository_tabs.tabs.is_empty());
+                        assert!(app.repository_tabs.restoring.is_none(), "{when}");
+                    })
+                });
+                break;
+            }
+            // Shown again, the second tab comes back as it was saved.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.repository_tabs.active, Some(1), "{when}");
+                assert_eq!(selected_oid(app), Some(second_oid.clone()), "{when}");
+                let file = app.selected_file.and_then(|index| app.files.get(index));
+                assert_eq!(
+                    file.map(FileChange::path),
+                    Some(Path::new("second.txt")),
+                    "{when}: its file"
+                );
+                assert_eq!(
+                    app.mode == WorkspaceMode::Compare,
+                    saved.compare,
+                    "{when}: its comparison"
+                );
+                if saved.compare {
+                    assert!(app.content.is_some(), "{when}: its comparison shows");
+                    assert_eq!(app.zoom, 2.5, "{when}: at its zoom");
+                    assert!(app.text_mode == TextMode::Split, "{when}");
+                }
+                assert_eq!(
+                    (app.settings.navigation_width, app.settings.inspector_width),
+                    (310., 430.),
+                    "{when}: its widths"
+                );
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: restored");
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+        }
+    }
+
 }
