@@ -1709,7 +1709,7 @@ mod tests {
 
 #[cfg(test)]
 mod bar_tests {
-    use super::{DRAWN_FORMS, FIELD_FLOOR, Forms};
+    use super::{DRAWN_FORMS, FIELD_FLOOR, Forms, MAX_QUERY_BYTES, panel_height};
     use crate::*;
     use core::prelude::v1::test;
 
@@ -1922,6 +1922,14 @@ mod bar_tests {
         }
     }
 
+    /// Pastes `text` into the focused field, as Primary+V does, in one edit.
+    fn paste(cx: &mut VisualTestContext, text: &str) {
+        let item = gpui_kit::ClipboardItem::new_string(text.to_owned());
+        cx.update(|_, cx| cx.write_to_clipboard(item));
+        cx.dispatch_action(gpui_kit::component::input::Paste);
+        crate::width_walk::frame(cx);
+    }
+
     /// The find bar's bounds, its parts' and how many lines they are drawn
     /// on: a line's parts stand on its middle, lines a control apart.
     fn drawn_lines(
@@ -2083,6 +2091,99 @@ mod bar_tests {
             );
             cx.simulate_keystrokes("escape");
             crate::width_walk::frame(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// In Split with Find open on both sides, Before's bar the taller for the
+    /// notice under a query past Find's limit, and then on one side as each
+    /// closes, the two sides' first rows stand level in every frame drawn, as
+    /// with Find open on Before alone
+    /// ([`split_rows_stay_level_in_the_frame_a_resize_changes_the_find_bar`]),
+    /// at 13 and 18 pt: through resizes that change the bars' lines, in the
+    /// frame Escape closes Before's bar, with After's alone through resizes,
+    /// and in the frame it closes too. Each side's Find region takes the
+    /// taller of its own open bar and the other side's.
+    #[gpui::test]
+    async fn split_rows_stay_level_with_find_open_on_both_sides_and_as_each_closes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::diff_view::painted_rows;
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        // Each frame paints Before's rows, then After's, level.
+        let level = |at: &str, sides: [gpui_kit::EntityId; 2]| {
+            let painted = painted_rows::take();
+            assert!(!painted.is_empty(), "{at}: the sides are painted");
+            for (index, frame) in painted.chunks(2).enumerate() {
+                let [(before, before_top), (after, after_top)] = frame else {
+                    panic!("{at}: frame {index} paints both sides: {frame:?}");
+                };
+                assert_eq!([*before, *after], sides, "{at}: frame {index}'s sides");
+                assert!(
+                    before_top.is_some() && before_top == after_top,
+                    "{at}: in frame {index} of {}, Before's first row stands at \
+                     {before_top:?} and After's at {after_top:?}",
+                    painted.len() / 2
+                );
+            }
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            open_find_on(&app, cx, TextMode::Split, 0, 1480.);
+            // Past Find's limit, Before's bar states it below its controls.
+            paste(cx, &"x".repeat(MAX_QUERY_BYTES + 1));
+            open_find_on(&app, cx, TextMode::Split, 1, 1480.);
+            let editors = cx.update(|_, cx| {
+                let split = app.read(cx).split_view.clone().expect("the split view");
+                split.read(cx).editors().clone()
+            });
+            let sides = editors.clone().map(|editor| editor.entity_id());
+            let heights = |cx: &mut VisualTestContext| {
+                cx.update(|_, cx| editors.clone().map(|editor| panel_height(&editor, cx)))
+            };
+            let [before, after] = heights(cx);
+            assert!(
+                before > after,
+                "{text} pt: Before's bar, {before:?}, stands taller than After's, {after:?}"
+            );
+            painted_rows::watch();
+            for width in [461., 1480., 640., 1480.] {
+                cx.simulate_resize(size(px(width), px(490.)));
+                crate::views::tests::draw(cx);
+                level(
+                    &format!("{text} pt, both open, resized to {width} × 490"),
+                    sides,
+                );
+            }
+            // Escape in Before's text closes its bar alone.
+            let before_focus = cx.update(|_, cx| editors[0].focus_handle(cx));
+            cx.update(|window, cx| window.focus(&before_focus, cx));
+            painted_rows::take();
+            cx.simulate_keystrokes("escape");
+            crate::views::tests::draw(cx);
+            level(&format!("{text} pt, as Before's bar closes"), sides);
+            let [before, after] = heights(cx);
+            assert!(
+                before == px(0.) && after > px(0.),
+                "{text} pt: Before's bar closed ({before:?}) and After's open ({after:?})"
+            );
+            for width in [461., 1480.] {
+                cx.simulate_resize(size(px(width), px(490.)));
+                crate::views::tests::draw(cx);
+                level(
+                    &format!("{text} pt, After's alone, resized to {width} × 490"),
+                    sides,
+                );
+            }
+            let after_focus = cx.update(|_, cx| editors[1].focus_handle(cx));
+            cx.update(|window, cx| window.focus(&after_focus, cx));
+            painted_rows::take();
+            cx.simulate_keystrokes("escape");
+            crate::views::tests::draw(cx);
+            level(&format!("{text} pt, as After's bar closes"), sides);
+            assert_eq!(heights(cx), [px(0.); 2], "{text} pt: both bars closed");
+            painted_rows::stop();
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
