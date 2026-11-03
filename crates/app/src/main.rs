@@ -2276,10 +2276,48 @@ fn labelled_button_width(
     cache: &'static std::thread::LocalKey<views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    appearance::ui_size(LABEL_INSET * 2. + 16. + 6.)
-        + views::cached_text_width(cache, label, window, || {
-            views::line_widths(&[(label, appearance::ui_text(LABEL_TEXT))], window)
-        })
+    appearance::ui_size(LABEL_INSET * 2. + 16. + 6.) + label_text_width(label, cache, window)
+}
+
+/// `label` at a compact Button's 12 pt in whole pixels, laid out once per
+/// font and size in `cache` ([`views::line_widths`]).
+fn label_text_width(
+    label: &str,
+    cache: &'static std::thread::LocalKey<views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    views::cached_text_width(cache, label, window, || {
+        views::line_widths(&[(label, appearance::ui_text(LABEL_TEXT))], window)
+    })
+}
+
+/// The width layout gives [`button`] reading a label `text` wide in whole
+/// pixels ([`views::line_widths`]), after its icon where `icon`, on this
+/// display's device pixels: its insets, the 16 px icon and its 6 px gap
+/// each on a whole device pixel, halves toward zero (`Window::pixel_snap`),
+/// as GPUI rounds a length before layout, and the label rounded up to a
+/// device pixel as its text is measured
+/// ([`views::laid_out_text_width`]), at least its 28 px square. Drawn this
+/// wide, the label is never cut, and a row of such controls measured from
+/// these widths is as wide as layout places it. Summed unrounded, as
+/// [`labelled_button_width`] and [`text_button_width_now`] are, a width
+/// fell up to a device pixel short of its label at scale 1.2, so the PDF
+/// page view's "Independent pages" was drawn "Independent pag…", and a row
+/// measured from such sums fit a line that layout wrapped.
+fn placed_button_width(text: Pixels, icon: bool, window: &Window) -> Pixels {
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let icon = if icon {
+        snap(appearance::ui_size(16.)) + snap(appearance::ui_size(6.))
+    } else {
+        Pixels::ZERO
+    };
+    image_compare::on_device_pixel(
+        (snap(appearance::ui_size(LABEL_INSET)) * 2.
+            + icon
+            + views::laid_out_text_width(text, window))
+        .max(snap(appearance::ui_size(28.))),
+        window,
+    )
 }
 
 /// The width [`button`] gives a control that reads one of `labels` without

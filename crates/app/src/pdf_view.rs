@@ -608,27 +608,90 @@ thread_local! {
     /// Each side's format caption, for a side that holds no PDF.
     static BEFORE_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// Read page text's and Retry page's labels, laid out; the link is a
-    /// toggle, laid out at both its readings and drawn at the wider
-    /// (`system_preview::HeaderControl::toggle`).
-    static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// The zoom's widest reading, "400%", laid out.
-    static ZOOM_LEVEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// Fit, −, + and the zoom as one run ([`zoom_run_width`]), and the zoom
-    /// menu at its widest reading ([`zoom_menu_width`]), laid out.
-    static ZOOM_RUN: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static ZOOM_MENU: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The texts every paged side's header draws whatever its page
+    /// ([`header_texts`]), laid out.
+    static HEADER_TEXTS: std::cell::RefCell<Option<(crate::views::LineKey, HeaderTexts)>> =
+        const { std::cell::RefCell::new(None) };
     /// Each side's page number, whole and short, at its widest for a count
     /// of so many digits ([`page_number_widths`]), laid out.
     static BEFORE_PAGE_NUMBER: PageNumberWidths = const { std::cell::RefCell::new(None) };
     static AFTER_PAGE_NUMBER: PageNumberWidths = const { std::cell::RefCell::new(None) };
 }
 
-/// A side's page number laid out whole and short at its widest, by what it
-/// was laid out with and the count's digits.
+/// A side's page number's texts laid out whole and short at their widest,
+/// in whole pixels, by what they were laid out with and the count's digits.
 type PageNumberWidths =
     std::cell::RefCell<Option<(crate::views::LineKey, usize, (Pixels, Pixels))>>;
+
+/// The texts every paged side's header draws whatever its page, each in
+/// whole pixels at its widest reading as a text element lays it out
+/// (`views::line_widths`), laid out once per font and size: the display's
+/// scale, which the cache's key does not hold, places each control on its
+/// device pixels as it is read ([`crate::placed_button_width`]).
+#[derive(Clone, Copy)]
+struct HeaderTexts {
+    /// Read page text and Retry page, the wider, at 12 pt.
+    page: Pixels,
+    /// The link's readings ([`LINK_READINGS`]), the wider, at 12 pt.
+    link: Pixels,
+    /// Fit, − and +, at 12 pt.
+    zooms: [Pixels; 3],
+    /// The zoom's widest reading, "400%", at 10 pt.
+    level: Pixels,
+    /// The compact zoom menu's widest reading, at 12 pt: every zoom from
+    /// 25% to 400% reads at most three digits, so it is measured at three
+    /// of each digit, as a page number is ([`page_number_readings`]).
+    zoom_menu: Pixels,
+}
+
+/// [`HeaderTexts`], laid out once per font and size.
+fn header_texts(window: &Window) -> HeaderTexts {
+    let key = crate::views::LineKey::current(window);
+    HEADER_TEXTS.with_borrow_mut(|cached| match cached {
+        Some((laid_out, texts)) if *laid_out == key => *texts,
+        _ => {
+            let widest = |readings: &[&str], size: Pixels| {
+                readings
+                    .iter()
+                    .map(|reading| crate::views::line_widths(&[(reading, size)], window))
+                    .fold(Pixels::ZERO, Pixels::max)
+            };
+            let label = appearance::ui_text(12.);
+            let menu: Vec<String> = ('0'..='9')
+                .map(|digit| format!("{}%", digit.to_string().repeat(3)))
+                .collect();
+            let menu: Vec<&str> = menu.iter().map(String::as_str).collect();
+            let texts = HeaderTexts {
+                page: widest(&["Read page text", "Retry page"], label),
+                link: widest(&LINK_READINGS, label),
+                zooms: ["Fit", "−", "+"].map(|zoom| widest(&[zoom], label)),
+                level: widest(&["400%"], appearance::ui_text(10.)),
+                zoom_menu: widest(&menu, label),
+            };
+            *cached = Some((key, texts));
+            texts
+        }
+    })
+}
+
+/// Read page text and Retry page as layout places them, labelled after
+/// their icon, at the wider ([`crate::placed_button_width`]): both take
+/// this width, so a page that fails moves nothing after it.
+fn page_control_width(window: &Window) -> Pixels {
+    crate::placed_button_width(header_texts(window).page, true, window)
+}
+
+/// The link labelled as layout places it, at its wider reading
+/// ([`crate::placed_button_width`]), so a click moves nothing after it.
+fn link_width(window: &Window) -> Pixels {
+    crate::placed_button_width(header_texts(window).link, false, window)
+}
+
+/// The zoom's widest reading, "400%", as layout places it: the level keeps
+/// this width, so a zoom never moves what follows it.
+fn zoom_level_width(window: &Window) -> Pixels {
+    crate::views::laid_out_text_width(header_texts(window).level, window)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -724,11 +787,46 @@ fn side_heading(
     }
 }
 
-/// The room the first line of a side's header leaves its open control in a
-/// side `side` wide: the side less its right edge, the header's `p_2` either
-/// side, and its semibold heading, `heading` wide, followed by `gap_2`.
-fn header_room(side: Pixels, heading: Pixels, window: &Window) -> Pixels {
-    side - px(1.) - window.rem_size() * (0.5 * 2. + 0.5) - heading
+/// The room the first line of a side's header leaves its open control, on
+/// lines `line` wide ([`pair_line`]): the line less its semibold heading,
+/// `heading` wide, and the `gap_2` after it on its device pixel.
+fn header_room(line: Pixels, heading: Pixels, window: &Window) -> Pixels {
+    line - window.pixel_snap(window.rem_size() * 0.5) - heading
+}
+
+/// The width of a line of both paged sides' headers in a comparison `width`
+/// wide, on lines that keep the scrollbar's gutter where `scrolls`
+/// (`system_preview::side_line_room`), as layout gives the narrower side on
+/// this display's device pixels: each side is laid out in its own frame
+/// (`system_preview::header_ends_for_room`), whose bounds GPUI rounds at
+/// their edges, halves toward zero, so in a comparison an odd number of
+/// device pixels wide Before's frame is a device pixel narrower than
+/// After's; then less its right rule (at least a device pixel), the
+/// header's `px_2` either side, each on its device pixel, the gutter, and
+/// one device pixel more. Both headers are held to this width
+/// (`render_comparison`), so the two wrap alike: held to a length GPUI
+/// rounds to a whole device pixel before layout, inside frames at least a
+/// device pixel wider, rather than to the narrower frame, whose width
+/// reaches layout through floats (243 device pixels as 242.99999 at scale
+/// 1.2), which then decided whether a run that filled the line wrapped.
+/// Laid out each in its own side, Before's run of a 3-page document wrapped
+/// where After's identical run held one line, at 13 pt and scale 1.2 in
+/// 147 px sides, and the side measured unrounded, less 1 px and an
+/// unsnapped half rem either side, was up to a device pixel wider than
+/// drawn, so a header said to fit its lines wrapped.
+fn pair_line(width: Pixels, quick: bool, scrolls: bool, window: &Window) -> Pixels {
+    let scale = window.scale_factor();
+    let device = |length: Pixels| (f32::from(length) * scale).round();
+    let sides = if quick { 1. } else { 2. };
+    let side = (device(width) / sides).floor();
+    let rule = window.pixel_snap(px(1.)).max(px(1. / scale));
+    let gutter = if scrolls {
+        window.pixel_snap(crate::tags::ScrollCue::gutter())
+    } else {
+        Pixels::ZERO
+    };
+    let inset = window.pixel_snap(window.rem_size() * 0.5);
+    px((side - device(rule) - device(inset) * 2. - device(gutter) - 1.).max(0.) / scale)
 }
 
 /// The readings a page number of `count` pages is measured at, whole
@@ -755,9 +853,12 @@ fn page_number_readings(count: usize) -> [Vec<String>; 2] {
 }
 
 /// The widths of side `index`'s page number labelled and short at their
-/// widest for `count` pages ([`page_number_readings`]), laid out once per
-/// font and size for each number of digits, which alone sets the readings:
-/// the twenty readings were once built and joined on every frame.
+/// widest for `count` pages ([`page_number_readings`]), as layout places
+/// them on this display's device pixels ([`crate::placed_button_width`]),
+/// from their texts laid out once per font and size for each number of
+/// digits, which alone sets the readings: the twenty readings were once
+/// built and joined on every frame. Drawn at their unrounded sum, "Page 1 /
+/// 3" was cut, "Page 1…", at 13 pt and scale 1.2.
 fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, Pixels) {
     let cache = if index == 0 {
         &BEFORE_PAGE_NUMBER
@@ -766,26 +867,35 @@ fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, P
     };
     let digits = count.checked_ilog10().map_or(1, |power| power as usize + 1);
     let key = crate::views::LineKey::current(window);
-    cache.with(|cache| {
+    let (whole, short) = cache.with(|cache| {
         let mut cache = cache.borrow_mut();
         match &*cache {
-            Some((laid_out, measured, widths)) if *laid_out == key && *measured == digits => {
-                *widths
-            }
+            Some((laid_out, measured, texts)) if *laid_out == key && *measured == digits => *texts,
             _ => {
                 #[cfg(test)]
                 PAGE_NUMBER_READINGS_BUILT.with(|built| built.set(built.get() + 1));
-                let width = |readings: &[String]| {
-                    let readings: Vec<&str> = readings.iter().map(String::as_str).collect();
-                    text_button_width_now(&readings, window)
+                let widest = |readings: &[String]| {
+                    readings
+                        .iter()
+                        .map(|reading| {
+                            crate::views::line_widths(
+                                &[(reading, appearance::ui_text(12.))],
+                                window,
+                            )
+                        })
+                        .fold(Pixels::ZERO, Pixels::max)
                 };
                 let [whole, short] = page_number_readings(count);
-                let widths = (width(&whole), width(&short));
-                *cache = Some((key, digits, widths));
-                widths
+                let texts = (widest(&whole), widest(&short));
+                *cache = Some((key, digits, texts));
+                texts
             }
         }
-    })
+    });
+    (
+        crate::placed_button_width(whole, false, window),
+        crate::placed_button_width(short, false, window),
+    )
 }
 
 /// The form a side's own header takes ([`header_layout`]), in the order a
@@ -863,11 +973,40 @@ pub(crate) struct HeaderLayout {
     /// Whether its lines leave the scrollbar's gutter: only where even the
     /// narrowest form is taller than its room, so it scrolls.
     pub(crate) scrolls: bool,
+    /// The reading the page number takes, the same on both sides of a
+    /// comparison ([`pair_layouts`]).
+    pub(crate) reading: NumberReading,
     /// The width the page number is given in a compact form: as wide as the
-    /// form it takes ([`number_room`]).
+    /// reading it takes ([`NumberReading::width`]).
     pub(crate) number: Pixels,
     /// The header's height as its lines lay it out.
     pub(crate) height: Pixels,
+}
+
+/// The reading a side's page number takes in a compact form's run
+/// ([`number_room`]), in the order it gives way as a side narrows: the
+/// full form always labels it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NumberReading {
+    /// "Page 1 / 3".
+    Labelled,
+    /// "1/3".
+    Short,
+    /// Its page icon, its reading its tooltip.
+    Icon,
+}
+
+impl NumberReading {
+    /// The width the page number is given to take this reading
+    /// (`HeaderControl::button`): its labelled or short reading's, or none,
+    /// where it draws its icon in its square.
+    fn width(self, parts: &HeaderParts) -> Pixels {
+        match self {
+            Self::Labelled => parts.full.number,
+            Self::Short => parts.short,
+            Self::Icon => Pixels::ZERO,
+        }
+    }
 }
 
 /// The most lines a full header may take: beyond them, a side gets the
@@ -894,6 +1033,13 @@ fn rhythm(form: HeaderForm, window: &Window) -> (Pixels, Pixels, Pixels) {
     }
 }
 
+/// The scaled 28 px control's square as layout places it, on its device
+/// pixel, halves toward zero: Previous, Next, the "more" menu and a
+/// control drawn as its icon.
+fn square(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(28.))
+}
+
 /// One part of a header's wrapping row, as layout places it: one control or
 /// text `width` wide and `height` tall, or a run of controls one line tall
 /// that moves to the next line whole and wraps within only where it is wider
@@ -910,7 +1056,7 @@ enum Part {
 fn wrapped_height(parts: &[Part], line: Pixels, form: HeaderForm, window: &Window) -> Pixels {
     let (top, bottom, between) = rhythm(form, window);
     let across = window.pixel_snap(window.rem_size() * 0.5);
-    let row = crate::image_compare::on_device_pixel(appearance::ui_size(28.), window);
+    let row = square(window);
     let on_device = |length| crate::image_compare::on_device_pixel(length, window);
     // The run's lines, each control placed greedily as a wrapping row does.
     let run_lines = |widths: &[Pixels]| {
@@ -970,7 +1116,7 @@ fn wrapped_height(parts: &[Part], line: Pixels, form: HeaderForm, window: &Windo
 /// `gap_2` apart, into at most [`FULL_LINES`] lines.
 fn full_fits(parts: &HeaderParts, window: &Window) -> bool {
     let widths = &parts.full;
-    let row = appearance::ui_size(28.);
+    let row = square(window);
     let full = [
         Some(widths.heading),
         widths.open,
@@ -1000,11 +1146,17 @@ fn full_fits(parts: &HeaderParts, window: &Window) -> bool {
     lines <= FULL_LINES
 }
 
-/// The controls of `form`'s run, in order, the page number `number` wide:
-/// Previous, the page number and Next, then the compact form's zoom menu,
-/// then the "more" menu.
-fn run_widths(form: HeaderForm, parts: &HeaderParts, number: Pixels) -> Vec<Pixels> {
-    let row = appearance::ui_size(28.);
+/// The controls of `form`'s run, in order, the page number `number` wide
+/// (its icon's square where that is narrower): Previous, the page number and
+/// Next, then the compact form's zoom menu, then the "more" menu.
+fn run_widths(
+    form: HeaderForm,
+    parts: &HeaderParts,
+    number: Pixels,
+    window: &Window,
+) -> Vec<Pixels> {
+    let row = square(window);
+    let number = number.max(row);
     let mut run = vec![row, number, row];
     if form == HeaderForm::Compact {
         run.push(parts.zoom_menu);
@@ -1013,33 +1165,33 @@ fn run_widths(form: HeaderForm, parts: &HeaderParts, number: Pixels) -> Vec<Pixe
     run
 }
 
-/// The width the page number takes in `form`'s run, which chooses its form
-/// ([`HeaderControl::button`]): the widest of its readings, labelled or
-/// short, with which the whole run, Previous, the page number, Next and the
-/// menus, fits one line, and otherwise its icon. As a side narrows it gives
+/// The reading the page number takes in `form`'s run, whose width chooses
+/// its form ([`HeaderControl::button`]): the widest of its readings, labelled
+/// or short, with which the whole run, Previous, the page number, Next and
+/// the menus, fits one line, and otherwise its icon. As a side narrows it gives
 /// way in one order, labelled, short, then its icon, and stays its icon as
 /// the run wraps. Chosen as the reading that cost the header no line its
 /// icon would not, it went from short to its icon and back to short again
 /// and again as a side narrowed, whenever a wrap of the run left it room.
-fn number_room(form: HeaderForm, parts: &HeaderParts, window: &Window) -> Pixels {
+fn number_room(form: HeaderForm, parts: &HeaderParts, window: &Window) -> NumberReading {
     let gap = window.pixel_snap(window.rem_size() * 0.5);
-    let fits = |number| {
-        let run = run_widths(form, parts, number);
+    let fits = |reading: NumberReading| {
+        let run = run_widths(form, parts, reading.width(parts), window);
         let width =
             run.iter().fold(Pixels::ZERO, |run, width| run + *width) + gap * (run.len() - 1) as f32;
         crate::image_compare::on_device_pixel(width, window) <= parts.line
     };
-    [parts.full.number, parts.short]
+    [NumberReading::Labelled, NumberReading::Short]
         .into_iter()
-        .find(|number| fits(*number))
-        .unwrap_or(Pixels::ZERO)
+        .find(|reading| fits(*reading))
+        .unwrap_or(NumberReading::Icon)
 }
 
 /// The height of a header in `form` drawing `parts`, its page number
 /// `number` wide where compact ([`wrapped_height`]).
 fn header_height(form: HeaderForm, parts: &HeaderParts, number: Pixels, window: &Window) -> Pixels {
     let full = &parts.full;
-    let row = appearance::ui_size(28.);
+    let row = square(window);
     let mut drawn = vec![Part::One(full.heading, row)];
     if form == HeaderForm::Full {
         let controls = [
@@ -1060,7 +1212,7 @@ fn header_height(form: HeaderForm, parts: &HeaderParts, number: Pixels, window: 
         drawn.extend(parts.counts.map(|(width, height)| Part::One(width, height)));
     } else {
         // A number of no width draws its icon, in the 28 px square.
-        drawn.push(Part::Run(run_widths(form, parts, number.max(row))));
+        drawn.push(Part::Run(run_widths(form, parts, number, window)));
     }
     wrapped_height(&drawn, parts.line, form, window)
 }
@@ -1070,7 +1222,7 @@ fn header_height(form: HeaderForm, parts: &HeaderParts, number: Pixels, window: 
 /// compact form is taken only there, never wrapping.
 fn compact_fits(parts: &HeaderParts, window: &Window) -> bool {
     let gap = window.pixel_snap(window.rem_size() * 0.5);
-    let controls = run_widths(HeaderForm::Compact, parts, parts.short);
+    let controls = run_widths(HeaderForm::Compact, parts, parts.short, window);
     let width = controls
         .iter()
         .fold(Pixels::ZERO, |run, width| run + *width)
@@ -1120,14 +1272,16 @@ pub(crate) fn header_layout(
     window: &Window,
 ) -> HeaderLayout {
     let laid_out = |form, parts: &HeaderParts, scrolls| {
-        let number = if form == HeaderForm::Full {
-            parts.full.number
+        let reading = if form == HeaderForm::Full {
+            NumberReading::Labelled
         } else {
             number_room(form, parts, window)
         };
+        let number = reading.width(parts);
         HeaderLayout {
             form,
             scrolls,
+            reading,
             number,
             height: header_height(form, parts, number, window),
         }
@@ -1150,18 +1304,26 @@ pub(crate) fn header_layout(
 /// side's width wherever a wider one does, and is laid out within its room
 /// by that side's own steps, so each side keeps a header that fits; and
 /// should a side's room still take it narrower, the pair is laid out again
-/// at that form, so they never differ. Each side once chose its form alone:
-/// beside an After of 111 pages, whose short page number is wider, a Before
-/// of 3 took the compact form while After took the narrowest in 234 to
-/// 260 px sides at 13 pt, After's heading 3.5 px higher at scale 2, and
-/// the full form beside the compact one at 292 to 304 px.
+/// at that form, so they never differ. In that form both draw the page
+/// number in one reading too, the narrower of the two sides' own
+/// ([`number_room`]): labelled only where both sides' labelled readings
+/// keep their runs on one line, short only where both short ones do, and
+/// otherwise both draw its icon, so the two runs lie on as many lines and
+/// the pages lie level. A narrower reading never lengthens a run, so each
+/// side's header still fits where it fit. Each side once chose its form
+/// alone: beside an After of 111 pages, whose short page number is wider, a
+/// Before of 3 took the compact form while After took the narrowest in 234
+/// to 260 px sides at 13 pt, After's heading 3.5 px higher at scale 2, and
+/// the full form beside the compact one at 292 to 304 px; and then its page
+/// number alone, so at scale 1.2 in 156.5 px sides Before drew "1/3" while
+/// After drew its icon, and the pages lay 38 device pixels apart.
 fn pair_layouts(
     parts: [Option<&[HeaderParts; 2]>; 2],
     rooms: [Pixels; 2],
     window: &Window,
 ) -> [Option<HeaderLayout>; 2] {
     let mut form = HeaderForm::Full;
-    loop {
+    let mut layouts = loop {
         let layouts = [0, 1].map(|at| {
             parts[at].map(|parts| header_layout(&parts[0], &parts[1], rooms[at], form, window))
         });
@@ -1174,10 +1336,22 @@ fn pair_layouts(
             .max()
             .unwrap_or(form);
         if narrower == form {
-            return layouts;
+            break layouts;
         }
         form = narrower;
+    };
+    let narrower = layouts.iter().flatten().map(|layout| layout.reading).max();
+    for (layout, parts) in layouts.iter_mut().zip(parts) {
+        if let (Some(layout), Some(parts), Some(reading)) = (layout, parts, narrower)
+            && layout.reading != reading
+        {
+            let parts = &parts[usize::from(layout.scrolls)];
+            layout.reading = reading;
+            layout.number = reading.width(parts);
+            layout.height = header_height(layout.form, parts, layout.number, window);
+        }
     }
+    layouts
 }
 
 /// What both sides of a comparison draw in their headers in one frame
@@ -1213,31 +1387,28 @@ impl Pair {
         {
             return layouts;
         }
-        let parts = self
-            .parts
-            .each_ref()
-            .map(|side| side.as_ref().map(|side| &side.parts));
+        let parts = self.parts.each_ref().map(Option::as_ref);
         let layouts = pair_layouts(parts, rooms, window);
         self.laid_out.set(Some((rooms, layouts)));
         layouts
     }
 }
 
-/// The open control's width in the form the heading's line leaves it, for a
-/// side `side_width` wide that offers `offer`.
+/// The open control's width as layout places it, in the form the heading's
+/// line leaves it, on lines `line` wide, for a side that offers `offer`.
 fn open_width(
     offer: Option<crate::system_preview::Offer>,
-    side_width: Pixels,
+    line: Pixels,
     heading: &Heading,
     window: &Window,
 ) -> Option<Pixels> {
     offer.map(|offer| {
-        if offer.form(header_room(side_width, heading.width, window), window)
+        if offer.form(header_room(line, heading.width, window), window)
             == crate::system_preview::Form::Labelled
         {
-            offer.labelled_width(window)
+            offer.placed_width(window)
         } else {
-            appearance::ui_size(28.)
+            square(window)
         }
     })
 }
@@ -1258,57 +1429,39 @@ fn counts_line(document: &Document, other: &rich_preview::Side, quick: bool) -> 
         })
 }
 
-/// A paged side's heading on its lines without the scrollbar's gutter and
-/// with it, and what its header draws on each ([`header_layout`]).
-struct SideParts {
-    headings: [Heading; 2],
-    parts: [HeaderParts; 2],
-}
+/// What a paged side's header draws on its lines without the scrollbar's
+/// gutter and with it ([`header_layout`]).
+type SideParts = [HeaderParts; 2];
 
-/// What side `index`, headed `label`, draws in its header in a side
-/// `side_width` wide beside `other` ([`SideParts`]), or nothing for a side
-/// without pages. Both sides' are measured once a frame and laid out as a
-/// pair ([`Pair`]), so the two take one form and their headings lie level,
-/// and a side without pages takes its partner's rhythm from them
+/// What side `index` draws in its header beside `other` ([`SideParts`]),
+/// headed `headings` on lines `lines` wide without the scrollbar's gutter
+/// and with it ([`pair_line`]), or nothing for a side without pages, each
+/// control as wide as layout places it on this display's device pixels.
+/// Both sides' are measured once a frame and laid out as a pair ([`Pair`]),
+/// so the two take one form and their headings lie level, and a side
+/// without pages takes its partner's rhythm from them
 /// ([`render_comparison`]).
 fn side_parts(
     index: usize,
-    label: &'static str,
     (side, other): (&rich_preview::Side, &rich_preview::Side),
     quick: bool,
-    side_width: Pixels,
+    (lines, headings): ([Pixels; 2], [Heading; 2]),
     window: &Window,
 ) -> Option<SideParts> {
     let document = side.pdf.as_ref()?;
-    let inset = window.rem_size() * 0.5;
-    let lines = [false, true]
-        .map(|scrolls| crate::system_preview::side_line_room(side_width, inset, scrolls));
-    let headings = lines.map(|line| side_heading(index, label, side, line, window));
     let offer = side.system_preview.filter(|_| side.captured.is_some());
     // Read page text and Retry page take the wider's width
     // (`render_comparison`).
-    let slot = labelled_button_width("Read page text", &READ_TEXT, window)
-        .max(labelled_button_width("Retry page", &RETRY_PAGE, window));
+    let slot = page_control_width(window);
     let (labelled, short) = page_number_widths(index, document.count, window);
-    // Measured at both readings, as it is drawn (`HeaderControl::toggle`).
-    let link = (!quick && other.pdf.is_some()).then(|| {
-        HeaderControl::toggle(
-            ("pdf-link", index),
-            format!("pdf-link-{index}"),
-            LINK_READINGS,
-            "",
-            "link",
-            false,
-            window,
-        )
-        .widest()
-    });
+    // At its wider reading, as it is drawn (`HeaderControl::placed`).
+    let link = (!quick && other.pdf.is_some()).then(|| link_width(window));
     let counts = counts_line(document, other, quick);
     let parts = [0, 1].map(|at| HeaderParts {
         line: lines[at],
         full: FullHeader {
             heading: headings[at].width,
-            open: open_width(offer, side_width, &headings[at], window),
+            open: open_width(offer, lines[at], &headings[at], window),
             page: slot,
             number: labelled,
             link,
@@ -1326,36 +1479,43 @@ fn side_parts(
             )
         }),
     });
-    Some(SideParts { headings, parts })
+    Some(parts)
 }
 
 /// Fit, −, + and the zoom at its widest reading ("400%"), `gap_2` apart,
-/// as the full header's zoom run draws them: each button its label's width
-/// with its insets, at least its 28 px square, laid out once per font and
-/// size.
+/// as layout places the full header's zoom run on this display's device
+/// pixels: each button its label's width with its insets, at least its
+/// 28 px square ([`crate::placed_button_width`]), each gap on its device
+/// pixel, and the level as wide as its widest reading
+/// ([`zoom_level_width`]).
 fn zoom_run_width(window: &Window) -> Pixels {
-    crate::views::cached_text_width(&ZOOM_RUN, "Fit − + 400%", window, || {
-        let gap = window.pixel_snap(window.rem_size() * 0.5);
-        let level = crate::views::line_widths(&[("400%", appearance::ui_text(10.))], window);
-        ["Fit", "−", "+"]
-            .iter()
-            .map(|label| text_button_width_now(&[label], window))
-            .fold(level + gap * 3., |run, button| run + button)
-    })
+    let texts = header_texts(window);
+    let gap = window.pixel_snap(window.rem_size() * 0.5);
+    let buttons = texts
+        .zooms
+        .map(|text| crate::placed_button_width(text, false, window));
+    crate::image_compare::on_device_pixel(
+        buttons
+            .into_iter()
+            .fold(zoom_level_width(window) + gap * 3., |run, button| {
+                run + button
+            }),
+        window,
+    )
 }
 
 /// The compact header's zoom menu labelled at its widest reading, whatever
-/// the zoom: every zoom from 25% to 400% reads at most three digits, so it
-/// is measured at three of each digit, as a page number is
-/// ([`page_number_readings`]), laid out once per font and size.
+/// the zoom ([`HeaderTexts::zoom_menu`]), as layout places it on this
+/// display's device pixels: the label's control
+/// ([`crate::placed_button_width`]), then the shared `button` helper's 6 px
+/// gap and the kit's 0.875 rem caret, each on its device pixel.
 fn zoom_menu_width(window: &Window) -> Pixels {
-    crate::views::cached_text_width(&ZOOM_MENU, "zoom menu", window, || {
-        let readings: Vec<String> = ('0'..='9')
-            .map(|digit| format!("{}%", digit.to_string().repeat(3)))
-            .collect();
-        let readings: Vec<&str> = readings.iter().map(String::as_str).collect();
-        crate::model_view::menu_width_now(&readings, window)
-    })
+    crate::image_compare::on_device_pixel(
+        crate::placed_button_width(header_texts(window).zoom_menu, false, window)
+            + window.pixel_snap(appearance::ui_size(6.))
+            + window.pixel_snap(window.rem_size() * 0.875),
+        window,
+    )
 }
 
 /// A side's message line where its page would be: a wait, a failure, a
@@ -1427,8 +1587,16 @@ pub(super) fn render_comparison<T: 'static>(
 ) -> AnyElement {
     let colors = palette(cx);
     let (muted, border) = (colors.muted, colors.border);
-    let side_width = width / if quick { 1. } else { 2. };
     let inset = window.rem_size() * 0.5;
+    // A line of either side's header to itself, without the gutter a
+    // scrollbar takes and with it, as layout gives the narrower side, to
+    // which both are held ([`pair_line`]): the header keeps the gutter only
+    // where even its narrowest form is taller than its room, so it scrolls
+    // ([`header_layout`]). A labelled control wider than its line draws its
+    // icon or a shorter reading rather than be cut at the side's edge, its
+    // whole label in its tooltip and its accessible name the one it has
+    // labelled.
+    let lines = [false, true].map(|scrolls| pair_line(width, quick, scrolls, window));
     let sides = [
         ("Before", &preview.old, &preview.new),
         (
@@ -1459,37 +1627,41 @@ pub(super) fn render_comparison<T: 'static>(
     let mut answers = opens
         .each_ref()
         .map(|open| open.as_ref().and_then(|(target, _)| target.answered(cx)));
+    // Each side's heading on each line ([`side_heading`]).
+    let headings = [0, 1].map(|index| {
+        let (label, side, _) = sides[index];
+        lines.map(|line| side_heading(index, label, side, line, window))
+    });
     // What both sides' headers draw, measured once for the frame, laid out
     // as a pair in it ([`Pair`]).
     let pair = std::rc::Rc::new(Pair {
         parts: [0, 1].map(|index| {
-            let (label, side, other) = sides[index];
+            let (_, side, other) = sides[index];
             drawn_side(index)
-                .then(|| side_parts(index, label, (side, other), quick, side_width, window))
+                .then(|| {
+                    side_parts(
+                        index,
+                        (side, other),
+                        quick,
+                        (lines, headings[index].clone()),
+                        window,
+                    )
+                })
                 .flatten()
         }),
         answered: answers.each_ref().map(Option::is_some),
         laid_out: std::cell::Cell::new(None),
     });
     div().size_full().flex().min_w_0().children(sides.into_iter().enumerate().filter(|(index, _)| drawn_side(*index)).map(|(index,(label, side, other))| {
-        // A line of the header to itself, without the gutter a scrollbar
-        // takes and with it: the header keeps it only where even its
-        // narrowest form is taller than its room, so it scrolls
-        // ([`header_layout`]). A labelled control wider than its line draws
-        // its icon or a shorter reading rather than be cut at the side's
-        // edge, its whole label in its tooltip and its accessible name the
-        // one it has labelled.
-        let lines = [false, true].map(|scrolls| crate::system_preview::side_line_room(side_width, inset, scrolls));
-        let headings = match &pair.parts[index] {
-            Some(measured) => measured.headings.clone(),
-            None => lines.map(|line| side_heading(index, label, side, line, window)),
-        };
+        let headings = headings[index].clone();
         // The header's padding, which its floor in `header_ends` counts.
         let padding = rems(0.5);
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's; the header's
         // padding beneath and its rule end it beneath the line saying why a
         // click opened nothing (`system_preview::header_ends`).
+        // The header's `px_2` on its device pixel, as layout places it.
+        let inset_drawn = window.pixel_snap(inset);
         let header_for = move |heading: &Heading, line: Pixels, form: HeaderForm| {
             // Tests read what the heading reads after its selector and a
             // `/`, a selector only a test build sets (`debug_selector` is a
@@ -1504,7 +1676,10 @@ pub(super) fn render_comparison<T: 'static>(
             // The narrowest form's lines lie a quarter rem apart and from
             // the header's top and rule ([`rhythm`]).
             let tight = if form == HeaderForm::Narrowest { rems(0.25) } else { rems(0.5) };
-            let header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_x(rems(0.5)).gap_y(tight).px(rems(0.5)).pt(tight).pb(tight);
+            // Held to the pair's line, so both sides wrap alike: the side
+            // laid out in the wider frame once kept on one line a run that
+            // wrapped in its partner's ([`pair_line`]).
+            let header = div().debug_selector(move || format!("pdf-side-header-{index}")).max_w(line + inset_drawn * 2.).flex().flex_wrap().items_center().gap_x(rems(0.5)).gap_y(tight).px(rems(0.5)).pt(tight).pb(tight);
             // The heading's bounds in every frame painted, its first child,
             // for a test that reads a frame the test harness draws itself.
             #[cfg(test)]
@@ -1533,7 +1708,7 @@ pub(super) fn render_comparison<T: 'static>(
         let (answer, open) = (answers[index].take(), opens[index].take());
         // The open control in the form the heading's line leaves it.
         let offered = open.as_ref().map(|(_, offer)| *offer);
-        let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
+        let mut body = div().id(("pdf-scroll",index)).debug_selector(move || format!("pdf-scroll-{index}")).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
             // A side without pages has no page controls, so its header is
             // its heading and its open control, which keep the gutter only
@@ -1552,15 +1727,15 @@ pub(super) fn render_comparison<T: 'static>(
                     _ => HeaderForm::Full,
                 };
                 let height = |heading: &Heading, line| {
-                    let row = appearance::ui_size(28.);
-                    let parts: Vec<Part> = std::iter::once(heading.width).chain(open_width(offered, side_width, heading, window)).map(|width| Part::One(width, row)).collect();
+                    let row = square(window);
+                    let parts: Vec<Part> = std::iter::once(heading.width).chain(open_width(offered, line, heading, window)).map(|width| Part::One(width, row)).collect();
                     wrapped_height(&parts, line, rhythm, window)
                 };
                 let scrolls = height(&headings[0], lines[0]) > room.most;
                 let at = usize::from(scrolls);
                 let mut header = header_for(&headings[at], lines[at], rhythm);
                 if let Some((target, offer)) = &open {
-                    header = header.child(target.held_control(offer.form(header_room(side_width, headings[at].width, window), window), &tracker, cx));
+                    header = header.child(target.held_control(offer.form(header_room(lines[at], headings[at].width, window), window), &tracker, cx));
                 }
                 header.into_any_element()
             };
@@ -1582,7 +1757,7 @@ pub(super) fn render_comparison<T: 'static>(
         // unlinked the pages. Both readings take the form and width of the
         // wider, Read page text, so a failure that brings Retry page moves
         // nothing either.
-        let slot = labelled_button_width("Read page text", &READ_TEXT, window).max(labelled_button_width("Retry page", &RETRY_PAGE, window));
+        let slot = page_control_width(window);
         // "1/3" where "Page 1 / 3" does not fit, and its page icon where
         // "1/3" does not either, its whole reading its tooltip; each form
         // measured at its widest for the count, and drawn that wide on every
@@ -1634,7 +1809,8 @@ pub(super) fn render_comparison<T: 'static>(
         let (tracker, turn_view, shown, header_cached, pair) = (held.clone(), view.clone(), document.clone(), cached.clone(), pair.clone());
         let header = move |room: crate::system_preview::HeaderRoom, window: &mut Window, cx: &mut App| {
             let (held, view, document, cached) = (tracker, turn_view, shown, header_cached);
-            let link = partner.as_ref().map(|_| HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), LINK_READINGS, link_name.clone(), "link", linked, window));
+            // As wide as the pair measured it ([`link_width`]).
+            let link = partner.as_ref().map(|_| HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), LINK_READINGS, link_name.clone(), "link", linked, window).placed(link_width(window)));
             // The form and lines the room chooses from what each line draws,
             // with and without the gutter ([`side_parts`]), the narrower of
             // the two sides' forms ([`pair_layouts`]): a function of the
@@ -1673,7 +1849,7 @@ pub(super) fn render_comparison<T: 'static>(
             let [back, forward]: [Button; 2] = turns.try_into().unwrap_or_else(|_| unreachable!("Previous and Next"));
             if layout.form == HeaderForm::Full {
                 if let Some((target, offer)) = &open {
-                    header = header.child(target.held_control(offer.form(header_room(side_width, headings[at].width, window), window), &held, cx));
+                    header = header.child(target.held_control(offer.form(header_room(lines[at], headings[at].width, window), window), &held, cx));
                 }
                 let page_control = if failed {
                     let retry = HeaderControl::new(("pdf-retry",index), format!("pdf-retry-{index}"), "Retry page", retry_name.clone(), "refresh", slot).labelled_with_icon().button(line_room);
@@ -1716,7 +1892,7 @@ pub(super) fn render_comparison<T: 'static>(
                 }
                 // At its widest reading, so a zoom never changes the run's
                 // width.
-                let widest = crate::views::cached_text_width(&ZOOM_LEVEL, "400%", window, || crate::views::line_widths(&[("400%", appearance::ui_text(10.))], window));
+                let widest = zoom_level_width(window);
                 zooms = zooms.child(div().debug_selector(move || format!("pdf-zoom-level-{index}")).min_w(widest).whitespace_nowrap().text_size(appearance::ui_text(10.)).child(level.clone()));
                 header = header.child(zooms);
                 if let Some(counts) = counts {
@@ -2254,6 +2430,10 @@ pub(crate) mod tests {
                     .h(self.height)
                     .flex()
                     .flex_col()
+                    // Behind every text run a mark a test finds among the
+                    // painted quads, as wide as the run drawn, its ellipsis
+                    // included (`width_walk::text_mark`).
+                    .text_bg(crate::width_walk::text_mark())
                     .child(rich_preview::render_comparison(
                         comparison, false, opener, self.width, window, cx,
                     ))
@@ -2873,15 +3053,14 @@ pub(crate) mod tests {
                     crate::tags::tests::draw(cx);
                     let header = cx.debug_bounds("pdf-side-header-0").expect("a header");
                     let heading = cx.debug_bounds("pdf-side-heading-0").expect("a heading");
-                    // The line the header was laid out on: less the gutter
-                    // its scrollbar takes only where it scrolls.
+                    // The line the header was laid out on, as layout gives
+                    // the narrower side ([`pair_line`]): less the gutter its
+                    // scrollbar takes only where it scrolls.
                     let scrolls = DRAWN_LAYOUTS.with_borrow(|drawn| drawn[&0].scrolls);
                     let (half, line) = cx.update(|window, _| {
-                        let half = window.rem_size() * 0.5;
-                        let side = px(width as f32) / 2.;
                         (
-                            half,
-                            crate::system_preview::side_line_room(side, half, scrolls),
+                            window.rem_size() * 0.5,
+                            pair_line(px(width as f32), false, scrolls, window),
                         )
                     });
                     let at = format!(
@@ -3024,17 +3203,39 @@ pub(crate) mod tests {
             name: &str,
             counts: [usize; 2],
         ) -> (crate::worker::Content, [Arc<Document>; 2]) {
+            sides_offering(name, counts, false)
+        }
+
+        /// [`sides_of`], each side offering its captured bytes to another
+        /// app where `open` and the platform does for a PDF
+        /// (`system_preview::offer`), as the app's worker decides it.
+        fn sides_offering(
+            name: &str,
+            counts: [usize; 2],
+            open: bool,
+        ) -> (crate::worker::Content, [Arc<Document>; 2]) {
+            let bytes = [0, 1].map(|side| pdf(&format!("{name}: side {side}")));
             let documents = [0, 1].map(|side| {
-                let bytes = pdf(&format!("{name}: side {side}"));
-                let document =
-                    Document::new(Arc::from(bytes), counts[side], None, || Ok(())).unwrap();
+                let document = Document::new(
+                    Arc::from(bytes[side].clone()),
+                    counts[side],
+                    None,
+                    || Ok(()),
+                )
+                .unwrap();
                 show(&document, 0);
                 Arc::new(document)
             });
             let name = Path::new("document.pdf");
-            let [old, new] = documents.clone().map(|document| {
+            let [old, new] = [0, 1].map(|at| {
                 let mut side = rich_preview::Side::unavailable(name, true, None);
-                side.pdf = Some(document);
+                side.pdf = Some(documents[at].clone());
+                if open {
+                    let bytes: Arc<[u8]> = Arc::from(bytes[at].clone());
+                    side.system_preview =
+                        crate::system_preview::offer(&bytes, &|| Ok(())).expect("an offer");
+                    side.captured = Some(bytes);
+                }
                 Arc::new(side)
             });
             let content = crate::worker::Content::Rich(rich_preview::Comparison { old, new });
@@ -3624,6 +3825,284 @@ pub(crate) mod tests {
             eprintln!("took {:?}", started.elapsed());
         }
 
+        /// What one side's header draws in a frame, as the walk in
+        /// [`both_sides_draw_one_header_and_level_pages_at_every_width`]
+        /// compares the two.
+        #[derive(Clone, Debug, PartialEq)]
+        struct DrawnSide {
+            form: HeaderForm,
+            /// The page number's form: "labelled", "short" or "icon".
+            number: &'static str,
+            /// The lines its heading and controls lie on.
+            lines: usize,
+            height: Pixels,
+            page: Pixels,
+        }
+
+        /// Side `index`'s header as the last frame drew it, and every
+        /// labelled control in it whose label was cut short of its whole
+        /// text: each run of text behind which the view paints its mark
+        /// (`width_walk::text_mark`) inside a labelled control is as wide
+        /// as the label laid out whole, where an ellipsis ends a cut one.
+        fn drawn_side(
+            cx: &mut gpui_kit::VisualTestContext,
+            index: usize,
+        ) -> (DrawnSide, Vec<String>) {
+            let selector = |name: &str| -> &'static str { format!("{name}-{index}").leak() };
+            let form = DRAWN_FORMS.with_borrow(|drawn| drawn[&index]);
+            let controls = crate::system_preview::DRAWN_CONTROLS.with_borrow(Clone::clone);
+            let number = controls[selector("pdf-page-number")].form;
+            let parts: Vec<&'static str> = vec![
+                selector("pdf-side-heading"),
+                selector("pdf-system"),
+                selector("pdf-read-text"),
+                selector("pdf-back"),
+                selector("pdf-page-number"),
+                selector("pdf-forward"),
+                selector("pdf-link"),
+                selector("pdf-zooms"),
+                selector("pdf-zoom-menu"),
+                selector("pdf-more"),
+            ];
+            let mut tops: Vec<Pixels> = Vec::new();
+            for part in &parts {
+                if let Some(bounds) = cx.debug_bounds(part)
+                    && !tops.iter().any(|top| (*top - bounds.top()).abs() < px(1.))
+                {
+                    tops.push(bounds.top());
+                }
+            }
+            let header = cx
+                .debug_bounds(selector("pdf-side-header"))
+                .expect("a header");
+            let page = cx
+                .debug_bounds(selector("pdf-scroll"))
+                .expect("a page's room");
+            // The labelled controls, with what each reads.
+            let mut labelled: Vec<(&'static str, String)> = [
+                selector("pdf-read-text"),
+                selector("pdf-page-number"),
+                selector("pdf-link"),
+                selector("pdf-zoom-menu"),
+            ]
+            .into_iter()
+            .filter_map(|part| {
+                let drawn = controls.get(part)?;
+                (drawn.form != "icon").then(|| (part, drawn.shows.clone()))
+            })
+            .collect();
+            if form == HeaderForm::Full {
+                labelled.push((["pdf-zoom-1", "pdf-zoom-4"][index], "Fit".to_owned()));
+            }
+            // This module runs on Linux, whose open control is Open in
+            // default app, drawn labelled where its text is drawn.
+            let open = selector("pdf-system");
+            if cx
+                .debug_bounds(format!("{open}/rest/text").leak())
+                .is_some()
+            {
+                labelled.push((open, "Open in default app".to_owned()));
+            }
+            let labelled: Vec<(&'static str, String, Bounds<Pixels>)> = labelled
+                .into_iter()
+                .filter_map(|(part, shows)| Some((part, shows, cx.debug_bounds(part)?)))
+                .collect();
+            let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+            let cut = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let quads = window.painted_quads();
+                let weight = window.text_style().font_weight;
+                labelled
+                    .iter()
+                    .filter_map(|(part, shows, bounds)| {
+                        let painted: Pixels = quads
+                            .iter()
+                            .filter(|quad| quad.background == mark)
+                            .filter(|quad| {
+                                let middle = point(
+                                    px((quad.bounds.left() + quad.bounds.size.width / 2.).0
+                                        / scale),
+                                    px((quad.bounds.top() + quad.bounds.size.height / 2.).0
+                                        / scale),
+                                );
+                                bounds.contains(&middle)
+                            })
+                            .map(|quad| px(quad.bounds.size.width.0 / scale))
+                            .fold(Pixels::ZERO, |sum, width| sum + width);
+                        let whole = crate::views::shaped_width(
+                            shows,
+                            appearance::ui_text(12.),
+                            weight,
+                            window,
+                        );
+                        (painted < whole - px(0.5)).then(|| {
+                            format!(
+                                "{part} reads {shows:?} cut, {painted:?} of {whole:?} in {bounds:?}"
+                            )
+                        })
+                    })
+                    .collect()
+            });
+            (
+                DrawnSide {
+                    form,
+                    number,
+                    lines: tops.len(),
+                    height: header.size.height,
+                    page: page.top(),
+                },
+                cut,
+            )
+        }
+
+        /// Both sides of a comparison draw one header and lie level at every
+        /// width, as the pair lays them out (`pair_layouts`): at scales 1.2,
+        /// as Hyprland gives a panel it cannot set to 1.25, and 2, at 13 and
+        /// 18 pt, beside each other a Before of 3 pages and an After of 111,
+        /// each offering its bytes to another app as the platform does (Open
+        /// in default app on Linux, in the full form's first line), the
+        /// comparison widened a device pixel at a time wherever either
+        /// side's header changes between steps of 4 px and across the side
+        /// widths QA-91 named natively (156.5, 184.8 to 185.7, 191.5 to
+        /// 192.3 and 314 px), every side: takes the same form as its partner,
+        /// draws the page number in the same form (labelled, short or its
+        /// icon), its heading and controls on as many lines, a header as tall
+        /// and its page's top level with its partner's; a full header lies on
+        /// at most [`FULL_LINES`] lines; and no labelled control's label is
+        /// cut. Natively at scale 1.2, laid out from each side's own sums of
+        /// unrounded widths, After's full header took a fourth line beside
+        /// Before's three in 314 px sides (a 956 px window) and "Independent
+        /// pages" was cut on both, and in 156.5 px sides Before drew "1/3"
+        /// and its run wrapped while After drew the page icon on one line, so
+        /// the pages lay 38 device pixels apart. Here, in the tests' font, the
+        /// walk found 386 such widths: at 13 pt and scale 1.2, Before's run of
+        /// icons wrapped beside After's identical run on one line in 147.08 px
+        /// sides (a comparison of 353 device pixels, whose Before frame GPUI
+        /// rounds a device pixel narrower), Before drew "1/3" beside After's
+        /// icon from 160 px and "Page 1 / 3", cut to "Page 1…", beside After's
+        /// "1/111" from 210 px; and at both scales and sizes each side chose
+        /// its page number's reading alone.
+        #[gpui::test]
+        fn both_sides_draw_one_header_and_level_pages_at_every_width(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let started = std::time::Instant::now();
+            let (content, _documents) = sides_offering("level pages", [3, 111], true);
+            let (view, cx) = window(cx, content);
+            let mut failures: Vec<String> = Vec::new();
+            let mut table = Vec::new();
+            let mut drawn_count = 0usize;
+            for scale in [1.2f32, 2.] {
+                cx.update(|window, _| window.set_scale_factor(scale));
+                for (text, least, most) in [(13u8, 140f32, 440f32), (18, 190., 600.)] {
+                    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                    crate::tags::tests::draw(cx);
+                    // The comparison `device` device pixels wide, each side
+                    // half of it, as the app's comparison is laid out.
+                    let mut at = |cx: &mut gpui_kit::VisualTestContext, device: i32| {
+                        drawn_count += 1;
+                        view.update(cx, |view, cx| {
+                            view.width = px(device as f32 / scale);
+                            cx.notify();
+                        });
+                        DRAWN_FORMS.with_borrow_mut(|drawn| drawn.clear());
+                        crate::system_preview::DRAWN_CONTROLS
+                            .with_borrow_mut(|drawn| drawn.clear());
+                        cx.update(|window, cx| {
+                            window.simulate_next_frame(cx);
+                            window.draw(cx).clear(cx);
+                        });
+                        let side = device as f32 / scale / 2.;
+                        let [(before, before_cut), (after, after_cut)] =
+                            [0, 1].map(|index| drawn_side(cx, index));
+                        let place = format!("scale {scale}, {text} pt, side {side:.2} px");
+                        let mut fail = |what: String| failures.push(format!("{place}: {what}"));
+                        if before.form != after.form {
+                            fail(format!("forms {:?} beside {:?}", before.form, after.form));
+                        } else if before.number != after.number {
+                            fail(format!(
+                                "page numbers {} beside {}",
+                                before.number, after.number
+                            ));
+                        } else if before.lines != after.lines {
+                            fail(format!("{} lines beside {}", before.lines, after.lines));
+                        }
+                        if (before.height - after.height).abs() > px(0.01)
+                            || (before.page - after.page).abs() > px(0.01)
+                        {
+                            fail(format!("not level: {before:?} beside {after:?}"));
+                        }
+                        for side in [&before, &after] {
+                            if side.form == HeaderForm::Full && side.lines > FULL_LINES {
+                                fail(format!("a full header on {} lines", side.lines));
+                            }
+                        }
+                        for cut in before_cut.into_iter().chain(after_cut) {
+                            fail(cut);
+                        }
+                        (before, after)
+                    };
+                    let device = |side: f32| (side * 2. * scale).round() as i32;
+                    let mut last: Option<(i32, (DrawnSide, DrawnSide))> = None;
+                    let mut side = least;
+                    while side <= most {
+                        let here = device(side);
+                        let drawn = at(cx, here);
+                        if let Some((there, was)) = &last
+                            && *was != drawn
+                        {
+                            // Something changed between the steps: every
+                            // device pixel between them, noting where it
+                            // changes.
+                            let mut previous = was.clone();
+                            for between in there + 1..=here {
+                                let now = if between == here {
+                                    drawn.clone()
+                                } else {
+                                    at(cx, between)
+                                };
+                                if now != previous {
+                                    let side = &now.0;
+                                    table.push((
+                                        scale,
+                                        text,
+                                        between as f32 / scale / 2.,
+                                        side.form,
+                                        side.number,
+                                        side.lines,
+                                    ));
+                                    previous = now;
+                                }
+                            }
+                        }
+                        last = Some((here, drawn));
+                        side += 4.;
+                    }
+                    if text == 13 {
+                        for named in [156.5f32, 184.8, 185.7, 191.5, 192.3, 314.] {
+                            for step in -2..=2 {
+                                at(cx, device(named) + step);
+                            }
+                        }
+                    }
+                }
+            }
+            cx.update(|window, cx| {
+                window.set_scale_factor(2.);
+                appearance::apply_text_sizes(13, 12, window, cx)
+            });
+            eprintln!(
+                "from each side width on (scale, pt, side px, form, page number, lines): {table:?}"
+            );
+            eprintln!("{drawn_count} widths drawn in {:?}", started.elapsed());
+            assert!(
+                failures.is_empty(),
+                "{} widths where the sides differ:\n{}",
+                failures.len(),
+                failures.join("\n")
+            );
+        }
+
         /// The room fallback takes the compact form only where its run fits
         /// one line: a side whose full form fits its width but not its room,
         /// and whose compact run wraps, takes the narrowest, never a wrapping
@@ -3661,7 +4140,7 @@ pub(crate) mod tests {
                     header_height(
                         form,
                         &unscrolled,
-                        number_room(form, &unscrolled, window),
+                        number_room(form, &unscrolled, window).width(&unscrolled),
                         window,
                     )
                 };

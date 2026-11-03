@@ -494,6 +494,14 @@ impl Offer {
     pub(crate) fn labelled_width(self, window: &Window) -> Pixels {
         labelled_button_width(self.label(), &LABEL, window)
     }
+
+    /// The control's width labelled as layout places it on this display's
+    /// device pixels (`crate::placed_button_width`), for a header that lays
+    /// its controls out in lines by their drawn widths, as the PDF page
+    /// view's does (`pdf_view::full_fits`).
+    pub(crate) fn placed_width(self, window: &Window) -> Pixels {
+        placed_button_width(label_text_width(self.label(), &LABEL, window), true, window)
+    }
 }
 
 /// One open control, with what its click opens: the type the copy is handed
@@ -1272,10 +1280,15 @@ impl HeaderControl {
         }
     }
 
-    /// Its labelled form's width at its widest reading, which it is drawn
-    /// at labelled ([`Self::button`]).
-    pub(crate) fn widest(&self) -> Pixels {
-        self.widest
+    /// Its labelled form `widest` wide, its readings' widest as layout
+    /// places it on this display's device pixels
+    /// (`crate::placed_button_width`), for a header that lays its controls
+    /// out in lines by those widths, as the PDF page view's does with its
+    /// link (`pdf_view::HeaderTexts`): its form, and its width labelled, are
+    /// then the width that header measured.
+    pub(crate) fn placed(mut self, widest: Pixels) -> Self {
+        self.widest = widest;
+        self
     }
 
     /// Labelled, it draws its icon before its label, as Read page text does.

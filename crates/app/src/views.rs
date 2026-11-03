@@ -17130,18 +17130,25 @@ pub(crate) mod tests {
                         "{at}, side {side}: the header {header:?} is as tall as its layout {layout:?}"
                     );
                     assert_eq!(layout.scrolls, falls_back, "{at}, side {side}: {layout:?}");
+                    // Both sides' headers are held to the pair's line, as
+                    // layout gives the narrower side less a device pixel
+                    // (`pdf_view::pair_line`): a device pixel short of the
+                    // narrower side's region, and two of the wider's.
+                    let held = px(2. / scale) + px(0.01);
+                    let short = region.size.width - header.size.width;
                     if falls_back {
                         assert!(
                             layout.form == crate::pdf_view::HeaderForm::Narrowest
                                 && header.size.height > region.size.height
-                                && (region.size.width - header.size.width - gutter).abs()
-                                    < px(0.51),
+                                && short - gutter > px(-0.51)
+                                && short - gutter < held + px(0.5),
                             "{at}, side {side}: the narrowest header {header:?} scrolls in {region:?}, less the gutter"
                         );
                     } else {
                         assert!(
                             header.size.height <= region.size.height + px(0.01)
-                                && (region.size.width - header.size.width).abs() < px(0.01),
+                                && short >= px(-0.01)
+                                && short <= held,
                             "{at}, side {side}: the header {header:?} fits its region {region:?}, keeping no gutter"
                         );
                     }
