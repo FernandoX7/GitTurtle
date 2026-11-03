@@ -473,9 +473,9 @@ async fn working_changes_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext
     assert_whole(failures);
 }
 
-/// Settings and the theme editor it opens.
+/// Settings.
 #[gpui::test]
-async fn settings_and_the_theme_editor_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+async fn settings_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
     cx.update(|_, cx| theme_editor::init(cx));
     prepare(&app, cx);
@@ -485,6 +485,23 @@ async fn settings_and_the_theme_editor_draw_a_whole_ring_at_every_stop(cx: &mut 
     for interface in SIZES {
         interface_size(cx, interface);
         walk(&app, cx, "Settings", interface, &mut failures);
+    }
+    assert_whole(failures);
+}
+
+/// The theme editor, opened over Settings. Walked in the same test as
+/// Settings, the two surfaces' 196 stops took 68 s on a hosted Ubuntu
+/// runner, past nextest's 60 s slow mark.
+#[gpui::test]
+async fn the_theme_editor_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    cx.update(|_, cx| theme_editor::init(cx));
+    prepare(&app, cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    views::tests::settle(&app, cx).await;
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
         walk_dialog(
             &app,
             cx,
