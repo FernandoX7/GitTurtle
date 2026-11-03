@@ -463,9 +463,15 @@ fn to_srgb(rgba: RgbaImage, primaries: u8, transfer: u8) -> RgbaImage {
 /// moxcms, the conversion hayro-jpeg2000 gives a JP2 profile: an RGB profile,
 /// RGBA8 in and out, default options. False, with `rgba` unchanged, for a
 /// profile over [`MAX_ICC_PROFILE_BYTES`] (never parsed), one moxcms refuses or
-/// panics on while parsing or building the transform, or one that does not
-/// describe RGB. Converting then fails only on lane sizes, which every step
-/// meets, so the first step's result stands for all of them.
+/// panics on while parsing it or building the transform, or one that does not
+/// describe RGB: the image then draws without it and is flagged. Running the
+/// transform is not caught here. A panic there fails the whole image as
+/// `DecoderFailed` through `image_helper::serve`'s `catch_unwind`, and the
+/// helper serves one request per process, so no half-converted pixels leave
+/// it: catching each step would leave the image half converted, and
+/// converting a copy would double the RGBA's memory (security review
+/// requirement 18). Converting otherwise fails only on lane sizes, which every
+/// step meets, so the first step's result stands for all of them.
 fn apply_profile(rgba: &mut RgbaImage, icc: &[u8]) -> bool {
     if icc.len() > MAX_ICC_PROFILE_BYTES {
         return false;
