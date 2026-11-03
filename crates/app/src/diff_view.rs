@@ -79,6 +79,9 @@ pub struct DiffView {
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
     gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
+    /// The other Split side's editor, whose rows this view's stay level
+    /// with under Find ([`Self::align_find_with`]).
+    find_partner: Option<Entity<EditorState>>,
     _subscription: Subscription,
 }
 
@@ -117,8 +120,10 @@ impl DiffView {
         cx.notify();
     }
 
-    pub fn find_header_height(&self, cx: &App) -> Pixels {
-        crate::editor_find::panel_height(&self.editor, cx)
+    /// Keeps this view's rows level with `partner`'s under Find, as Split's
+    /// sides are ([`crate::editor_find::Editor::aligned_with`]).
+    pub fn align_find_with(&mut self, partner: Entity<EditorState>) {
+        self.find_partner = Some(partner);
     }
 
     pub fn refresh(
@@ -228,6 +233,7 @@ pub fn new_numbered(
             viewport,
             pending_scroll: Rc::default(),
             gutter_origin: Rc::default(),
+            find_partner: None,
             _subscription: subscription,
         }
     })
@@ -252,92 +258,96 @@ impl Render for DiffView {
         };
         let width = action_width + column_width * if single_column { 1. } else { 2. };
         let controls = self.render_partial_controls(width, cx);
+        let find_partner = self.find_partner.clone();
+        // The gutter and the partial actions stand beside the text under
+        // Find's bar, which spans them (`editor_find::Editor::beside`), so a
+        // narrow side's bar keeps the line numbers' width as well. The editor
+        // paints first: it records its current scrolled bounds during paint,
+        // and the later gutter canvas reads those same-frame coordinates,
+        // avoiding a one-frame lag during wheel scrolling.
+        let gutter = div()
+            .id("diff-line-gutter")
+            .absolute()
+            .left_0()
+            .top_0()
+            .w(px(width))
+            .h_full()
+            .on_scroll_wheel(move |event, _, cx| {
+                scroll_editor.update(cx, |state, cx| {
+                    let (Some(line_height), Some(text_bounds)) =
+                        (state.line_height(), state.text_bounds())
+                    else {
+                        return;
+                    };
+                    let delta = event.delta.pixel_delta(line_height);
+                    let old_offset = state.scroll_offset();
+                    // Match Editor's default trailing space; bound the deferred
+                    // scroll before layout, which applies its own final clamp.
+                    let bottom_padding = (text_bounds.size.height / 2.).max(line_height * 3.);
+                    let content_height = (line_height * row_count as f32 + bottom_padding)
+                        .max(text_bounds.size.height);
+                    let min_y = (state.input_bounds().size.height - content_height).min(px(0.));
+                    if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
+                        // The gutter stays fixed horizontally, including when
+                        // a trackpad gesture includes both axes.
+                        state.set_scroll_offset(next, cx);
+                        cx.stop_propagation();
+                    }
+                });
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        // Editor has painted and applied its deferred offset.
+                        // Notifications alone do not mark that boundary.
+                        painted_scroll.clear();
+                        gutter_origin.set(Some(bounds.origin));
+                        #[cfg(test)]
+                        painted_rows::record(&editor, cx);
+                        if action_width > 0. {
+                            window.paint_quad(fill(bounds, rgb(palette(cx).panel)));
+                        }
+                        let numbered_bounds = Bounds::new(
+                            point(bounds.origin.x + px(action_width), bounds.origin.y),
+                            size(bounds.size.width - px(action_width), bounds.size.height),
+                        );
+                        if scroll_trace_enabled() {
+                            trace_editor_paint(&editor, &trace_label, bounds, window, cx);
+                        }
+                        paint_gutter(
+                            &editor,
+                            &rows,
+                            column_width,
+                            single_column,
+                            numbered_bounds,
+                            window,
+                            cx,
+                        );
+                    },
+                )
+                .size_full(),
+            )
+            .children(controls);
+        let editor = crate::editor_find::Editor::new(&self.editor)
+            .h(relative(1.))
+            .readonly(true)
+            .bordered(false)
+            .aria_label(self.label.clone())
+            .text_size(crate::appearance::code_text());
+        let editor = match &find_partner {
+            Some(partner) => editor.aligned_with(partner),
+            None => editor,
+        };
         let content = div()
             .size_full()
             .flex_1()
             .min_h_0()
             .relative()
             .overflow_hidden()
-            .pl(px(width))
             .code_font(cx)
             .text_size(crate::appearance::code_text())
-            // Paint the editor first. It records its current scrolled bounds
-            // during paint; the later gutter canvas reads those same-frame
-            // coordinates, avoiding a one-frame lag during wheel scrolling.
-            .child(
-                crate::editor_find::Editor::new(&self.editor)
-                    .h(relative(1.))
-                    .readonly(true)
-                    .bordered(false)
-                    .aria_label(self.label.clone())
-                    .text_size(crate::appearance::code_text()),
-            )
-            .child(
-                div()
-                    .id("diff-line-gutter")
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .w(px(width))
-                    .h_full()
-                    .on_scroll_wheel(move |event, _, cx| {
-                        scroll_editor.update(cx, |state, cx| {
-                            let (Some(line_height), Some(text_bounds)) =
-                                (state.line_height(), state.text_bounds())
-                            else {
-                                return;
-                            };
-                            let delta = event.delta.pixel_delta(line_height);
-                            let old_offset = state.scroll_offset();
-                            // Match Editor's default trailing space; bound the deferred
-                            // scroll before layout, which applies its own final clamp.
-                            let bottom_padding =
-                                (text_bounds.size.height / 2.).max(line_height * 3.);
-                            let content_height = (line_height * row_count as f32 + bottom_padding)
-                                .max(text_bounds.size.height);
-                            let min_y =
-                                (state.input_bounds().size.height - content_height).min(px(0.));
-                            if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
-                                // The gutter stays fixed horizontally, including when
-                                // a trackpad gesture includes both axes.
-                                state.set_scroll_offset(next, cx);
-                                cx.stop_propagation();
-                            }
-                        });
-                    })
-                    .child(
-                        canvas(
-                            |_, _, _| (),
-                            move |bounds, _, window, cx| {
-                                // Editor has painted and applied its deferred offset.
-                                // Notifications alone do not mark that boundary.
-                                painted_scroll.clear();
-                                gutter_origin.set(Some(bounds.origin));
-                                if action_width > 0. {
-                                    window.paint_quad(fill(bounds, rgb(palette(cx).panel)));
-                                }
-                                let numbered_bounds = Bounds::new(
-                                    point(bounds.origin.x + px(action_width), bounds.origin.y),
-                                    size(bounds.size.width - px(action_width), bounds.size.height),
-                                );
-                                if scroll_trace_enabled() {
-                                    trace_editor_paint(&editor, &trace_label, bounds, window, cx);
-                                }
-                                paint_gutter(
-                                    &editor,
-                                    &rows,
-                                    column_width,
-                                    single_column,
-                                    numbered_bounds,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )
-                        .size_full(),
-                    )
-                    .children(controls),
-            );
+            .child(editor.beside(px(width), vec![gutter.into_any_element()]));
         div()
             .size_full()
             .flex()
@@ -905,6 +915,49 @@ fn parse_side(range: &str) -> Option<HunkSide> {
         next.checked_add(remaining - 1)?;
     }
     Some(HunkSide { next, remaining })
+}
+
+/// Test-only: where each painted frame put each patch view's rows, as the
+/// gutter, painted after its editor, reads them. A test window draws a
+/// frame a layout asks for inside the update that asked, so bounds read
+/// after it show only the last frame; this record keeps each.
+#[cfg(test)]
+pub(crate) mod painted_rows {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A painted view's editor and the top of its first row.
+    pub(crate) type Painted = (gpui_kit::EntityId, Option<Pixels>);
+
+    thread_local! {
+        static ROWS: RefCell<Option<Vec<Painted>>> = const { RefCell::new(None) };
+    }
+
+    /// Starts recording, forgetting anything recorded before.
+    pub(crate) fn watch() {
+        ROWS.with_borrow_mut(|rows| *rows = Some(Vec::new()));
+    }
+
+    /// Each painted view's editor and the top of its first row, its text's
+    /// scrolled origin, in paint order since [`watch`] or the last call;
+    /// recording goes on.
+    pub(crate) fn take() -> Vec<Painted> {
+        ROWS.with_borrow_mut(|rows| rows.as_mut().map(std::mem::take).unwrap_or_default())
+    }
+
+    /// Stops recording.
+    pub(crate) fn stop() {
+        ROWS.with_borrow_mut(|rows| *rows = None);
+    }
+
+    pub(super) fn record(editor: &Entity<EditorState>, cx: &App) {
+        ROWS.with_borrow_mut(|rows| {
+            if let Some(rows) = rows {
+                let top = editor.read(cx).text_bounds().map(|bounds| bounds.origin.y);
+                rows.push((editor.entity_id(), top));
+            }
+        });
+    }
 }
 
 #[cfg(test)]

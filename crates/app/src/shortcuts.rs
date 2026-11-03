@@ -506,6 +506,18 @@ pub(super) const SHIFT_CLICK: &str = if cfg!(target_os = "macos") {
     "Shift+click"
 };
 
+/// `key` held with Shift, as prose and accessible names name it in the
+/// platform's modifier style, as [`SHIFT_CLICK`] names a click:
+/// "Shift-Return" on a Mac and "Shift+Enter" elsewhere for [`ENTER`].
+pub(super) fn shifted(key: &str) -> String {
+    let shift = if cfg!(target_os = "macos") {
+        "Shift-"
+    } else {
+        "Shift+"
+    };
+    format!("{shift}{key}")
+}
+
 pub(super) fn key_label(key: &str) -> String {
     // Use the same platform renderer as native GPUI popup-menu accelerators.
     Kbd::format(

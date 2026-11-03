@@ -279,7 +279,6 @@ pub struct SplitView {
     editors: [Entity<EditorState>; 2],
     views: [Entity<diff_view::DiffView>; 2],
     decorations: [crate::editor_find::PatchDecorations; 2],
-    search_heights: [Pixels; 2],
     scroll: LinkedScroll,
     initial_row: Option<usize>,
     change_index: Option<usize>,
@@ -409,14 +408,14 @@ pub fn new(
                 }
             }));
         }
+        // Each side's rows stay level with the other's under Find: its Find
+        // region takes the taller of the two bars in the layout pass that
+        // draws them (`editor_find::Editor::aligned_with`). Padded a frame
+        // later from the bars' measured heights, the sides' rows stood a line
+        // apart in the first frame after a resize that changed a bar's lines.
         for (side, view) in views.iter().enumerate() {
-            subscriptions.push(cx.observe(view, move |this: &mut SplitView, view, cx| {
-                let height = view.read(cx).find_header_height(cx);
-                if (this.search_heights[side] - height).abs() > px(0.5) {
-                    this.search_heights[side] = height;
-                    cx.notify();
-                }
-            }));
+            let partner = editors[1 - side].clone();
+            view.update(cx, |view, _| view.align_find_with(partner));
         }
         SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
@@ -425,7 +424,6 @@ pub fn new(
             editors,
             views,
             decorations,
-            search_heights: [px(0.); 2],
             scroll: LinkedScroll::default(),
             focus_ring,
             _subscriptions: subscriptions,
@@ -521,8 +519,6 @@ impl SplitView {
 impl Render for SplitView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let search_heights = self.search_heights;
-        let reserved_height = search_heights[0].max(search_heights[1]);
         let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
         // A side whose editor holds keyboard focus rings its text's edge,
         // over its lines, so none of them moves.
@@ -532,7 +528,6 @@ impl Render for SplitView {
         });
         div().size_full().relative().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
-            let padding = reserved_height - search_heights[side];
             let presentation = Arc::clone(&self.presentation);
             div()
                 .flex_1()
@@ -573,7 +568,6 @@ impl Render for SplitView {
                         .relative()
                         .flex()
                         .flex_col()
-                        .pt(padding)
                         .child(div().flex_1().min_h_0().child(self.views[side].clone()))
                         .children(edges[side].take()),
                 )
