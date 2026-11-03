@@ -1891,9 +1891,11 @@ mod tests {
     }
 
     /// Redraw so a modal's TextViews register and their bounds are stable for
-    /// the subsequent drag. The modal is at rest in its first frame, since
-    /// [`setup_modal`] reduces motion; advancing the test clock does not move
-    /// GPUI's wall-clock animations.
+    /// the subsequent drag. Advancing the test clock first runs the work the
+    /// open queued, the TextView's background parse and the update it sends
+    /// back among it, and any executor timer due within 500 ms. It does not
+    /// move the modal, which GPUI animates from the wall clock and which is
+    /// at rest in its first frame, since [`setup_modal`] reduces motion.
     fn settle(cx: &mut VisualTestContext) {
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.update(|window, cx| {
@@ -2010,10 +2012,12 @@ mod tests {
 
     /// A behind-the-modal selectable TextView covered by a full-window
     /// occluding overlay (mirroring a Dialog/Sheet overlay), plus a `front`
-    /// TextView marked with an opaque modal scope and painted on top of the
-    /// overlay. This reproduces the modal stacking at fixed coordinates without a
-    /// real modal's open animation (which cannot be settled under the test
-    /// clock).
+    /// TextView painted on top of the overlay and marked with the opaque
+    /// scope Root gives a dialog or sheet it opens without mounting its layer
+    /// ([`activate_dialog_scope`], [`activate_sheet_scope`]). This reproduces
+    /// the modal stacking at fixed coordinates, drawn where it stays from the
+    /// first frame, with no open animation; the tests of real modals open
+    /// them at rest by reducing motion ([`setup_modal`]).
     struct SyntheticModalView {
         focus_handle: FocusHandle,
         behind: Entity<TextViewState>,

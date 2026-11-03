@@ -2081,7 +2081,8 @@ test clock that `settle` advanced, so the dialog's 250 ms `slide-down`
 (`src/dialog/dialog.rs`) went on in real time between the frame whose
 bounds `drag_inside_dialog_still_selects_its_text` read and the frames
 its drag hit; on a loaded host the dialog moved under the press and the
-test failed, upstream's code and GitTurtle's alike (2 and 4 of 20 runs
-under full CPU load at `40b6bd43` and after it; with 100 ms slept between
-the bounds and the drag, 20 of 20, and none with the patch). Remove it
+test failed, on the vendored tree at `40b6bd43` and with the next round's
+changes, none of which lies on the test's path (2 and 4 of 20 runs under
+full CPU load; with 100 ms slept between the bounds and the drag, 20 of 20,
+and none with the patch); upstream's own tree was not run. Remove it
 when upstream's tests open their modals at rest.
