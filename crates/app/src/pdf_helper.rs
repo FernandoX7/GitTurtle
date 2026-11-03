@@ -9,7 +9,9 @@
 //! app process. [`Client::render`] starts one helper per page from
 //! `/proc/self/exe`, at most two across the app, and kills and reaps it on the
 //! calling thread at the deadline, when the caller's check fails, or when its
-//! reply exceeds the cap. The contract is section 6 of the
+//! reply exceeds the request's cap. [`Runner`] does that for every request:
+//! the image client (`crate::image_helper`) shares it, with the same helper,
+//! deadline and two slots. The contract is section 6 of the
 //! [architecture review](../../../docs/development/2026-11-02-linux-pdf-pages-architecture.md).
 //!
 //! The module depends only on std, `libc`, `anyhow` and `gitturtle-preview`:
@@ -545,9 +547,9 @@ impl Slots {
         }
     }
 
-    fn acquire(&self, check: &dyn Fn() -> anyhow::Result<()>) -> Result<Slot<'_>, Failure> {
+    fn acquire(&self, check: &dyn Fn() -> anyhow::Result<()>) -> anyhow::Result<Slot<'_>> {
         loop {
-            check().map_err(Failure::Cancelled)?;
+            check()?;
             let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
             let (mut running, _) = self
                 .freed
@@ -628,14 +630,16 @@ impl HelperCommand {
     }
 }
 
-/// Renders PDF pages in confined helper processes, one per request.
-pub(crate) struct Client<'a> {
+/// Runs one request in a new confined helper, for every frame: the helper
+/// program, its deadline and the slots it shares. [`Client`] renders PDF
+/// pages through it and `crate::image_helper::Client` decodes images.
+pub(crate) struct Runner<'a> {
     command: HelperCommand,
     deadline: Duration,
     slots: &'a Slots,
 }
 
-impl Client<'static> {
+impl Runner<'static> {
     /// This executable as the helper, with the 10 s deadline and the app's
     /// two helper slots.
     pub(crate) fn new() -> Self {
@@ -647,14 +651,14 @@ impl Client<'static> {
     }
 }
 
-impl<'a> Client<'a> {
-    /// The helper command, deadline and slots a client uses.
+impl<'a> Runner<'a> {
+    /// The helper command, deadline and slots a runner uses.
     #[cfg(test)]
     pub(crate) fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
         (&self.command, self.deadline, self.slots)
     }
 
-    /// A client for tests: another helper, a shorter deadline, own slots.
+    /// A runner for tests: another helper, a shorter deadline, own slots.
     #[cfg(test)]
     pub(crate) fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
         Self {
@@ -664,10 +668,123 @@ impl<'a> Client<'a> {
         }
     }
 
-    /// Zero-based `page` of `pdf` and its text, from a new helper. Blocks the
-    /// calling thread, which starts, feeds, waits for, kills and reaps the
-    /// helper: the parent-death signal follows the thread that spawned it.
-    /// `check` runs at least every 25 ms, also while waiting for a slot.
+    /// Writes `request` to a new helper and collects at most `cap` reply
+    /// bytes until it exits. Blocks the calling thread, which starts, feeds,
+    /// waits for, kills and reaps the helper: the parent-death signal follows
+    /// the thread that spawned it. `check` runs at least every 25 ms, also
+    /// while waiting for a slot; the deadline counts from the helper's start.
+    pub(crate) fn run(
+        &self,
+        request: [&[u8]; 2],
+        cap: usize,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> Outcome {
+        let _slot = match self.slots.acquire(check) {
+            Ok(slot) => slot,
+            Err(error) => return Outcome::Cancelled(error),
+        };
+        if let Err(error) = check() {
+            return Outcome::Cancelled(error);
+        }
+        let Ok(child) = self.command.spawn() else {
+            return Outcome::CouldNotStart;
+        };
+        let started = Instant::now();
+        let Some(mut running) = Running::new(child) else {
+            return Outcome::CouldNotStart;
+        };
+        let (ending, reply) = running.exchange(request, cap, started + self.deadline, check);
+        Outcome::of(ending, reply)
+    }
+}
+
+/// How a helper run ended, the same for every frame: a reply counts only
+/// after exit status 0, and the frame's own reader decides the rest.
+pub(crate) enum Outcome {
+    /// The helper exited with status 0 after writing this, at most the cap.
+    Replied(Vec<u8>),
+    /// The caller's check failed; a helper that had started was killed and
+    /// reaped first.
+    Cancelled(anyhow::Error),
+    /// The helper ran past the deadline, its CPU limit or its own alarm.
+    TimedOut,
+    /// The helper died on `signal`, or exited with a code other than 0 and
+    /// the setup codes, or could not be waited for.
+    Stopped { signal: Option<i32> },
+    /// The reply grew past the request's cap; the helper was killed.
+    Oversized,
+    /// The helper could not be started or could not confine itself.
+    CouldNotStart,
+}
+
+impl Outcome {
+    /// Signals and exit codes as section 6 maps them.
+    fn of(ending: Ending, reply: Vec<u8>) -> Self {
+        let status = match ending {
+            Ending::Killed(Kill::Deadline) => return Self::TimedOut,
+            Ending::Killed(Kill::Cancelled(error)) => return Self::Cancelled(error),
+            Ending::Killed(Kill::Oversized) => return Self::Oversized,
+            Ending::Killed(Kill::Unwaitable) => return Self::Stopped { signal: None },
+            Ending::Exited(status) => status,
+        };
+        if let Some(signal) = status.signal() {
+            return match signal {
+                libc::SIGXCPU | libc::SIGALRM => Self::TimedOut,
+                _ => Self::Stopped {
+                    signal: Some(signal),
+                },
+            };
+        }
+        match status.code() {
+            Some(0) => Self::Replied(reply),
+            Some(code) if (exit::ARGUMENTS..=exit::CONFINEMENT).contains(&code) => {
+                Self::CouldNotStart
+            }
+            _ => Self::Stopped { signal: None },
+        }
+    }
+
+    /// The outcome of a helper that ended with `status` after writing
+    /// `reply`, so tests can cover the signals that would make a fake helper
+    /// dump core.
+    #[cfg(test)]
+    pub(crate) fn exited(status: ExitStatus, reply: &[u8]) -> Self {
+        Self::of(Ending::Exited(status), reply.to_vec())
+    }
+}
+
+/// Renders PDF pages in confined helper processes, one per request.
+pub(crate) struct Client<'a> {
+    runner: Runner<'a>,
+}
+
+impl Client<'static> {
+    /// This executable as the helper, with the 10 s deadline and the app's
+    /// two helper slots.
+    pub(crate) fn new() -> Self {
+        Self {
+            runner: Runner::new(),
+        }
+    }
+}
+
+impl<'a> Client<'a> {
+    /// The helper command, deadline and slots a client uses.
+    #[cfg(test)]
+    pub(crate) fn parts(&self) -> (&HelperCommand, Duration, &'a Slots) {
+        self.runner.parts()
+    }
+
+    /// A client for tests: another helper, a shorter deadline, own slots.
+    #[cfg(test)]
+    pub(crate) fn with(command: HelperCommand, deadline: Duration, slots: &'a Slots) -> Self {
+        Self {
+            runner: Runner::with(command, deadline, slots),
+        }
+    }
+
+    /// Zero-based `page` of `pdf` and its text, from a new helper through
+    /// [`Runner::run`], with the page frame's cap.
     pub(crate) fn render(
         &self,
         pdf: &[u8],
@@ -675,13 +792,10 @@ impl<'a> Client<'a> {
         check: &dyn Fn() -> anyhow::Result<()>,
     ) -> Result<PageReply, Failure> {
         let header = encode_request(page, pdf).map_err(Failure::Refused)?;
-        let _slot = self.slots.acquire(check)?;
-        check().map_err(Failure::Cancelled)?;
-        let child = self.command.spawn().map_err(|_| Failure::CouldNotStart)?;
-        let started = Instant::now();
-        let mut running = Running::new(child)?;
-        let (ending, reply) = running.exchange([&header, pdf], started + self.deadline, check);
-        classify(ending, &reply, page)
+        classify(
+            self.runner.run([&header, pdf], MAX_REPLY_BYTES, check),
+            page,
+        )
     }
 }
 
@@ -712,7 +826,8 @@ struct Running {
 }
 
 impl Running {
-    fn new(mut child: Child) -> Result<Self, Failure> {
+    /// `None` when its pipes cannot be set up; dropping it reaps the child.
+    fn new(mut child: Child) -> Option<Self> {
         let running = Self {
             input: child.stdin.take(),
             output: child.stdout.take(),
@@ -723,18 +838,17 @@ impl Running {
             running.input.as_ref().map(AsRawFd::as_raw_fd),
             running.output.as_ref().map(AsRawFd::as_raw_fd),
         ] {
-            fd.ok_or(Failure::CouldNotStart)
-                .and_then(|fd| non_blocking(fd).map_err(|_| Failure::CouldNotStart))?;
+            non_blocking(fd?).ok()?;
         }
-        Ok(running)
+        Some(running)
     }
 
-    /// Writes `request` and collects the whole reply, at most
-    /// [`MAX_REPLY_BYTES`], until the helper exits, the deadline passes or
-    /// `check` fails.
+    /// Writes `request` and collects the whole reply, at most `cap` bytes,
+    /// until the helper exits, the deadline passes or `check` fails.
     fn exchange(
         &mut self,
         request: [&[u8]; 2],
+        cap: usize,
         deadline: Instant,
         check: &dyn Fn() -> anyhow::Result<()>,
     ) -> (Ending, Vec<u8>) {
@@ -791,7 +905,7 @@ impl Running {
             if polled[1].revents != 0 {
                 self.write(request, &mut written);
             }
-            if polled[0].revents != 0 && !self.read(&mut reply, &mut chunk, &mut reading) {
+            if polled[0].revents != 0 && !self.read(&mut reply, cap, &mut chunk, &mut reading) {
                 return (self.kill(Kill::Oversized), reply);
             }
         }
@@ -825,8 +939,14 @@ impl Running {
         }
     }
 
-    /// Reads what the pipe holds into `reply`; false once it exceeds the cap.
-    fn read(&mut self, reply: &mut Vec<u8>, chunk: &mut [u8], reading: &mut bool) -> bool {
+    /// Reads what the pipe holds into `reply`; false once it exceeds `cap`.
+    fn read(
+        &mut self,
+        reply: &mut Vec<u8>,
+        cap: usize,
+        chunk: &mut [u8],
+        reading: &mut bool,
+    ) -> bool {
         let Some(output) = self.output.as_mut() else {
             *reading = false;
             return true;
@@ -839,7 +959,7 @@ impl Running {
                     return true;
                 }
                 Ok(count) => {
-                    if reply.len() + count > MAX_REPLY_BYTES {
+                    if reply.len() + count > cap {
                         return false;
                     }
                     reply.extend_from_slice(&chunk[..count]);
@@ -906,34 +1026,20 @@ pub(crate) fn classify_exit(
     reply: &[u8],
     page: usize,
 ) -> Result<PageReply, Failure> {
-    classify(Ending::Exited(status), reply, page)
+    classify(Outcome::exited(status, reply), page)
 }
 
 /// Success needs a valid frame for the requested page and exit status 0.
-fn classify(ending: Ending, reply: &[u8], page: usize) -> Result<PageReply, Failure> {
-    let status = match ending {
-        Ending::Killed(Kill::Deadline) => return Err(Failure::TimedOut),
-        Ending::Killed(Kill::Cancelled(error)) => return Err(Failure::Cancelled(error)),
-        Ending::Killed(Kill::Oversized) => return Err(Failure::Unreadable),
-        Ending::Killed(Kill::Unwaitable) => return Err(Failure::Stopped { signal: None }),
-        Ending::Exited(status) => status,
+fn classify(outcome: Outcome, page: usize) -> Result<PageReply, Failure> {
+    let reply = match outcome {
+        Outcome::Replied(reply) => reply,
+        Outcome::Cancelled(error) => return Err(Failure::Cancelled(error)),
+        Outcome::TimedOut => return Err(Failure::TimedOut),
+        Outcome::Stopped { signal } => return Err(Failure::Stopped { signal }),
+        Outcome::Oversized => return Err(Failure::Unreadable),
+        Outcome::CouldNotStart => return Err(Failure::CouldNotStart),
     };
-    if let Some(signal) = status.signal() {
-        return Err(match signal {
-            libc::SIGXCPU | libc::SIGALRM => Failure::TimedOut,
-            _ => Failure::Stopped {
-                signal: Some(signal),
-            },
-        });
-    }
-    match status.code() {
-        Some(0) => {}
-        Some(code) if (exit::ARGUMENTS..=exit::CONFINEMENT).contains(&code) => {
-            return Err(Failure::CouldNotStart);
-        }
-        _ => return Err(Failure::Stopped { signal: None }),
-    }
-    match read_reply(reply) {
+    match read_reply(&reply[..]) {
         Ok(Ok(rendered)) if rendered.page == page => Ok(rendered),
         // A count the request contradicts is a malformed reply.
         Ok(Err(ErrorKind::PageOutOfRange { page_count })) if page_count > page => {
