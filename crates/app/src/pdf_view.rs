@@ -13,7 +13,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use std::{
     collections::VecDeque,
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -41,7 +41,7 @@ const LINK_READINGS: [&str; 2] = ["Independent pages", "Linked pages"];
 fn renderer() -> &'static SerialExecutor {
     #[cfg(not(test))]
     {
-        static RENDERER: OnceLock<SerialExecutor> = OnceLock::new();
+        static RENDERER: std::sync::OnceLock<SerialExecutor> = std::sync::OnceLock::new();
         RENDERER.get_or_init(|| SerialExecutor::new("gitturtle-pdf-pages"))
     }
     #[cfg(test)]
@@ -1200,7 +1200,8 @@ pub(crate) mod tests {
             {
                 return client.clone();
             }
-            static UNSTARTABLE: OnceLock<Arc<Client<'static>>> = OnceLock::new();
+            static UNSTARTABLE: std::sync::OnceLock<Arc<Client<'static>>> =
+                std::sync::OnceLock::new();
             UNSTARTABLE
                 .get_or_init(|| {
                     Arc::new(Client::with(
