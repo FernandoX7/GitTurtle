@@ -28,12 +28,15 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # libdav1d through pkg-config, never a copy built from source. `dav1d-sys` is
 # pinned exactly because its C struct layouts are written by hand, so a version
 # change needs a layout review; it is direct only for reading `dav1d_version`.
+# `moxcms` is the version `image` and `hayro-jpeg2000` already use, direct only
+# for converting an AVIF's ICC profile in `avif.rs`; it adds no features.
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 hayro = { version = "=0.8.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 hayro-jpeg2000 = { version = "=0.4.1", default-features = false, features = ["std", "simd", "image"] }
 mp4parse = "=0.17.0"
 dav1d = "=0.11.1"
 dav1d-sys = "=0.8.3"
+moxcms = { version = "=0.8.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

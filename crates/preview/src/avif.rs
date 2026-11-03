@@ -23,6 +23,7 @@ use image::metadata::{
     CicpVideoFullRangeFlag,
 };
 use image::{ConvertColorOptions, DynamicImage, RgbaImage};
+use moxcms::{ColorProfile, DataColorSpace, Layout, ParsingOptions, TransformOptions};
 use mp4parse::{Feature, ParseStrictness};
 
 use crate::image_helper::{self, Decoded, ImageErrorKind, ImageFlags, ImageTimings};
@@ -35,6 +36,13 @@ const MAX_DECODE_STEPS: usize = 16;
 /// dav1d refuses a frame over `frame_size_limit` with `DAV1D_ERR(ERANGE)`;
 /// ERANGE is 34 on Linux for both helper architectures.
 const ERANGE: i32 = 34;
+/// The largest ICC profile converted. RGB display and working-space profiles
+/// take kilobytes and LUT-based ones hundreds; a larger `colr` is flagged
+/// without being parsed (moxcms's own default allows 10 MB).
+const MAX_ICC_PROFILE_BYTES: usize = 4 << 20;
+/// Pixels converted from a profile per step, so the conversion needs no second
+/// full-size buffer.
+const PROFILE_STEP_PIXELS: usize = 1 << 14;
 const ALPHA_URNS: [&[u8]; 2] = [
     b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
     b"urn:mpeg:hevc:2015:auxid:1",
@@ -115,10 +123,19 @@ pub(crate) fn decode(
             crate::unpremultiply(rgba.as_mut());
         }
     }
-    flags.profile_not_applied = matches!(context.icc_colour_information(), Some(Ok(_)));
-    flags.hdr_not_tone_mapped = matches!(colour.transfer, 16 | 18);
-    if !flags.hdr_not_tone_mapped {
-        rgba = to_srgb(rgba, colour.primaries, colour.transfer);
+    // An ICC profile describes the colour in place of the `nclx` or sequence
+    // header primaries and transfer, as libavif reads it. One that cannot be
+    // applied is disclosed, and those signals convert as without it.
+    let profile = match context.icc_colour_information() {
+        Some(Ok(icc)) => Some(apply_profile(&mut rgba, icc)),
+        _ => None,
+    };
+    flags.profile_not_applied = profile == Some(false);
+    if profile != Some(true) {
+        flags.hdr_not_tone_mapped = matches!(colour.transfer, 16 | 18);
+        if !flags.hdr_not_tone_mapped {
+            rgba = to_srgb(rgba, colour.primaries, colour.transfer);
+        }
     }
     let rgba = orient(rgba, properties.rotation(), properties.mirror());
     let original = rgba.dimensions();
@@ -440,6 +457,50 @@ fn to_srgb(rgba: RgbaImage, primaries: u8, transfer: u8) -> RgbaImage {
         DynamicImage::ImageRgba8(rgba) if converted => rgba,
         image => image.into_rgba8(),
     }
+}
+
+/// Converts straight RGBA from the item's ICC profile to sRGB in place with
+/// moxcms, the conversion hayro-jpeg2000 gives a JP2 profile: an RGB profile,
+/// RGBA8 in and out, default options. False, with `rgba` unchanged, for a
+/// profile over [`MAX_ICC_PROFILE_BYTES`] (never parsed), one moxcms refuses or
+/// panics on while parsing or building the transform, or one that does not
+/// describe RGB. Converting then fails only on lane sizes, which every step
+/// meets, so the first step's result stands for all of them.
+fn apply_profile(rgba: &mut RgbaImage, icc: &[u8]) -> bool {
+    if icc.len() > MAX_ICC_PROFILE_BYTES {
+        return false;
+    }
+    let transform = std::panic::catch_unwind(|| {
+        let options = ParsingOptions {
+            // moxcms refuses a profile of this many bytes or more.
+            max_profile_size: MAX_ICC_PROFILE_BYTES + 1,
+            ..ParsingOptions::default()
+        };
+        let source = ColorProfile::new_from_slice_with_options(icc, options).ok()?;
+        if source.color_space != DataColorSpace::Rgb {
+            return None;
+        }
+        source
+            .create_transform_8bit(
+                Layout::Rgba,
+                &ColorProfile::new_srgb(),
+                Layout::Rgba,
+                TransformOptions::default(),
+            )
+            .ok()
+    });
+    let Ok(Some(transform)) = transform else {
+        return false;
+    };
+    let mut converted = vec![0; PROFILE_STEP_PIXELS * 4];
+    for pixels in rgba.chunks_mut(PROFILE_STEP_PIXELS * 4) {
+        let converted = &mut converted[..pixels.len()];
+        if transform.transform(pixels, converted).is_err() {
+            return false;
+        }
+        pixels.copy_from_slice(converted);
+    }
+    true
 }
 
 /// MIAF order: `clap` (not applied), then `irot` anticlockwise quarter turns,
@@ -796,6 +857,90 @@ mod tests {
         );
     }
 
+    /// The Display P3 quadrants stored in both P3 fixtures.
+    const P3_STORED: [[u8; 4]; 4] = [
+        [200, 80, 60, 255],
+        [60, 180, 90, 255],
+        [70, 90, 200, 255],
+        [128, 128, 128, 255],
+    ];
+    /// Their sRGB values under the fixtures' 2.2-gamma Display P3 profile (the
+    /// script prints them; the JP2 fixture converts to the same).
+    const P3_PROFILE_IN_SRGB: [[u8; 4]; 4] = [
+        [218, 67, 47, 255],
+        [0, 185, 77, 255],
+        [62, 90, 209, 255],
+        [129, 129, 129, 255],
+    ];
+
+    /// Where the ICC fixture's profile starts, after its `colr` type `prof`.
+    fn profile_start(bytes: &[u8]) -> usize {
+        let at = bytes.windows(4).position(|w| w == b"prof").unwrap();
+        assert_eq!(&bytes[at - 4..at], b"colr", "the first `prof` is the type");
+        at + 4
+    }
+
+    #[test]
+    fn converts_an_icc_profile_and_flags_one_it_cannot_apply() {
+        let icc = fixture("avif-display-p3-icc.avif");
+        let reply = avif("avif-display-p3-icc.avif", 1600).unwrap();
+        assert_eq!(reply.flags, ImageFlags::default());
+        assert_eq!(reply.image.format, "AVIF · first image");
+        assert_quadrants(&reply.image, P3_PROFILE_IN_SRGB, 12, "icc");
+
+        // Each profile is refused, so the stored values stay as they are (the
+        // `nclx` beside it is BT.709) and the caption says so. Offsets are
+        // into the ICC header, which starts right after `prof`.
+        profile_start(&icc);
+        for (case, at, with) in [
+            ("no `acsp` signature", 36, *b"acsx"),
+            // A tag table running past the end of the profile.
+            ("2^32 - 1 tags", 128, u32::MAX.to_be_bytes()),
+            ("a grey profile", 16, *b"GRAY"),
+        ] {
+            let bytes = patched(&icc, b"prof", 0, at, &with);
+            let reply = decoded(ConfinedFormat::Avif, 1600, &bytes)
+                .unwrap_or_else(|kind| panic!("{case}: {kind:?}"));
+            assert!(reply.flags.profile_not_applied, "{case}");
+            assert_eq!(
+                reply.image.format, "AVIF · first image · colour profile not applied",
+                "{case}"
+            );
+            assert_quadrants(&reply.image, P3_STORED, 12, case);
+        }
+    }
+
+    #[test]
+    fn profile_size_cap_refuses_before_parsing() {
+        let bytes = fixture("avif-display-p3-icc.avif");
+        let start = profile_start(&bytes);
+        let colr = start - 12;
+        let end = colr + u32::from_be_bytes(bytes[colr..colr + 4].try_into().unwrap()) as usize;
+        let profile = &bytes[start..end];
+        let stored = RgbaImage::from_pixel(4, 2, image::Rgba(P3_STORED[0]));
+        // The same profile padded to the cap converts; one byte more does not
+        // reach moxcms.
+        for (length, applies) in [
+            (profile.len(), true),
+            (MAX_ICC_PROFILE_BYTES, true),
+            (MAX_ICC_PROFILE_BYTES + 1, false),
+        ] {
+            let mut padded = profile.to_vec();
+            padded.resize(length, 0);
+            padded[..4].copy_from_slice(&(length as u32).to_be_bytes());
+            let mut rgba = stored.clone();
+            assert_eq!(apply_profile(&mut rgba, &padded), applies, "{length}");
+            let expected = if applies {
+                P3_PROFILE_IN_SRGB[0]
+            } else {
+                P3_STORED[0]
+            };
+            for pixel in rgba.pixels() {
+                assert_near(pixel.0, expected, 1, &format!("{length}"));
+            }
+        }
+    }
+
     #[test]
     fn orients_in_place_like_the_copying_operations() {
         use image::imageops::{flip_horizontal, flip_vertical, rotate90, rotate180, rotate270};
@@ -993,10 +1138,15 @@ mod tests {
                 assert!(!code.contains(needle.as_str()), "{path} uses {needle}");
             }
         }
-        // Every dav1d call is in that module.
+        // Every dav1d call is in that module, and so is every direct moxcms
+        // call (an AVIF's ICC profile; `image` and hayro-jpeg2000 call it
+        // themselves).
         for (path, text) in &sources {
             if !path.ends_with("/avif.rs") && !path.ends_with("/lib.rs") {
                 assert!(!text.contains(["dav1d", "::"].concat().as_str()), "{path}");
+            }
+            if !path.ends_with("/avif.rs") {
+                assert!(!text.contains(["moxcms", "::"].concat().as_str()), "{path}");
             }
         }
         for module in ["avif.rs", "jpeg2000_hayro.rs", "image_helper.rs"] {

@@ -59,6 +59,10 @@ decode both formats with ImageIO.
   ship it. A package that ever bundles libdav1d must ship its notice too.
 - `hayro-jpeg2000` 0.4.1 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
   reached Linux builds through hayro and now adds its `image` integration.
+- `moxcms` 0.8.1 (`BSD-3-Clause OR Apache-2.0`, with its own license files)
+  converts an AVIF's embedded ICC profile to sRGB. It already reached every
+  build through `image`, with the same features; on these Linux targets the
+  AVIF decoder also calls it directly.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
 preserve inspected upstream texts with immutable source URLs and hashes. Five

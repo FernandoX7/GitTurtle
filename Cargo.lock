@@ -2431,6 +2431,7 @@ dependencies = [
  "image",
  "mermaid-rs-renderer",
  "meshopt",
+ "moxcms",
  "mp4parse",
  "resvg 0.48.1",
  "roxmltree 0.21.2",

@@ -55,6 +55,7 @@ or 10 (lossy).
 | `avif-irot-imir.avif` | 8-bit 4:2:0 with essential `irot` 1 (90° anticlockwise) and `imir` 1 (left and right exchanged) | 48 × 64 (original 48 × 64): top-left white, top-right green, bottom-left blue, bottom-right red |
 | `avif-film-grain.avif` | aomenc `--film-grain-test=1` | the quadrants with grain applied |
 | `avif-display-p3.avif` | quadrants (200, 80, 60), (60, 180, 90), (70, 90, 200), (128, 128, 128) in Display P3, `nclx` 12/13/6 | converted to sRGB: (216, 69, 50), (0, 183, 78), (64, 91, 207), (128, 128, 128) |
+| `avif-display-p3-icc.avif` | the same pixels with a `colr` of type `prof` holding the JP2 fixture's minimal ICC v2 Display P3 profile (2.2 gamma), beside `nclx` 1/13/6 | converted by the profile with moxcms: (218, 67, 47), (0, 185, 77), (62, 90, 209), (129, 129, 129), with no flag; the test patches the profile's signature, tag count or colour space, and each draws the stored values with "colour profile not applied" |
 | `avif-animation.avif` | Pillow `save_all` of two frames (the quadrants, then reversed), libavif with its primary still item and an `avis` track | the first frame, flagged as an animation |
 | `avif-frame-larger-than-ispe.avif` | hostile: 64 × 64 `ispe` over a grey frame whose sequence header the script rewrites to 16384 × 16384 (security review question 5) | refused by dav1d's `frame_size_limit` with `AvifSizeMismatch`, before the frame is allocated |
 | `avif-alpha-smaller-than-image.avif` | hostile: a 32 × 32 alpha item (with its own 32 × 32 `ispe`) under the 64 × 48 image | `AvifSizeMismatch`; with its `ispe` patched to 64 × 48 in the test, the decoded picture is refused the same way |
@@ -75,7 +76,8 @@ fixtures that `mp4parse` parses as such: retyping the item or dropping `pitm` in
 these files makes it refuse them as unreadable instead.
 
 SHA-256: `avif-alpha-smaller-than-image.avif` bba1b359…98c66, `avif-animation.avif`
-8ca39dd4…6aea8, `avif-display-p3.avif` 5fd20363…723ab, `avif-film-grain.avif`
+8ca39dd4…6aea8, `avif-display-p3-icc.avif` ea319924…07b26f,
+`avif-display-p3.avif` 5fd20363…723ab, `avif-film-grain.avif`
 6951abbb…3de18, `avif-frame-larger-than-ispe.avif` b41003d2…9aa332,
 `avif-irot-imir.avif` 7b432e26…45f692, `avif-yuv400-8bit.avif` 4134b530…c186f,
 `avif-yuv400-10bit.avif` ef2bd33f…8af9, `avif-yuv400-12bit.avif` bf91ce04…e8b,

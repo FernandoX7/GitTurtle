@@ -473,6 +473,10 @@ def avif_fixtures(work: Path) -> dict[str, bytes]:
 
     p3 = aomenc(work, "p3", colour_source(8, "420", P3_QUADRANTS), 8)
     out["avif-display-p3.avif"] = avif([colour_item(p3, 8, 3, [(nclx(12, 13, 6, False), False)])])
+    # The same pixels described by the JP2 fixture's ICC profile (`colr` type
+    # `prof`) beside a BT.709 `nclx`, whose primaries the profile overrides.
+    icc = box(b"colr", b"prof" + display_p3_icc())
+    out["avif-display-p3-icc.avif"] = avif([colour_item(p3, 8, 3, [bt601, (icc, False)])])
 
     # Hostile: a 64 x 64 ispe over a 16384 x 16384 frame header.
     square = aomenc(work, "square", grey_source(8, lambda x, y: 128), 8, monochrome=True)
