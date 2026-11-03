@@ -190,6 +190,109 @@ fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext)
     assert_eq!(*chosen.borrow(), ["First"]);
 }
 
+/// Enter or Space held on a button opens its menu on its first item that
+/// can act, and the key's repeats, which the platform marks held, run
+/// nothing there; a fresh press runs the item. The menu confirmed on every
+/// repeat, Enter through its own binding and Space through the popover's
+/// it lies in, so a held key ran First as soon as the menu opened.
+/// macOS and Wayland without an input method mark the repeats held; under
+/// X11, and on Wayland with an input method such as fcitx5, as on a default
+/// Omarchy, a held key arrives as fresh presses, which the menu cannot tell
+/// from new ones.
+#[gpui::test]
+fn a_held_key_that_opened_a_buttons_menu_runs_nothing(cx: &mut TestAppContext) {
+    let (cx, chosen) = open_menu(cx);
+    let focus = TRIGGER
+        .with(|trigger| trigger.borrow().clone())
+        .expect("the button's focus");
+    for key in ["enter", "space"] {
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("menu-item: First · MenuItem").is_some(),
+            "{key} on the button opened the menu"
+        );
+        for _ in 0..3 {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        }
+        assert!(
+            chosen.borrow().is_empty(),
+            "{key} held runs nothing: {:?}",
+            chosen.borrow()
+        );
+        assert!(
+            cx.debug_bounds("menu-item: First · MenuItem").is_some(),
+            "{key} held leaves the menu open"
+        );
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(
+            std::mem::take(&mut *chosen.borrow_mut()),
+            ["First"],
+            "a fresh {key} runs First"
+        );
+    }
+}
+
+/// Enter or Space that chose an item from a button's menu, still held once
+/// the menu has closed and focus is back on the button, reopens nothing:
+/// the button opens its menu only on a fresh press, as the menu confirms an
+/// item only on one, and a fresh press opens it again. The popover's own
+/// binding toggled it on every repeat, so the held key reopened the menu
+/// once, a flicker in which no item ran.
+#[gpui::test]
+fn a_held_key_that_chose_from_a_buttons_menu_reopens_nothing(cx: &mut TestAppContext) {
+    let (cx, chosen) = open_menu(cx);
+    let focus = TRIGGER
+        .with(|trigger| trigger.borrow().clone())
+        .expect("the button's focus");
+    let open =
+        |cx: &mut VisualTestContext| cx.debug_bounds("menu-item: First · MenuItem").is_some();
+    for key in ["enter", "space"] {
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert!(open(cx), "{key} on the button opened the menu");
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(
+            std::mem::take(&mut *chosen.borrow_mut()),
+            ["First"],
+            "a fresh {key} runs First"
+        );
+        assert!(!open(cx), "and closes the menu");
+        assert!(
+            cx.update(|window, _| focus.is_focused(window)),
+            "the closed menu returns focus to its button"
+        );
+        for _ in 0..3 {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            draw(cx);
+            assert!(!open(cx), "{key} still held reopens nothing");
+        }
+        assert!(chosen.borrow().is_empty(), "{key} held runs nothing");
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert!(open(cx), "a fresh {key} opens the menu again");
+    }
+}
+
 /// A menu with an item that says why it is unavailable, built as the app
 /// builds one ([`super::detailed_item`]), a disabled item that says nothing
 /// and an item that can act, with the button's focus that opens it.

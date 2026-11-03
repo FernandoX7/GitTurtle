@@ -1689,6 +1689,76 @@ presses Undo, commits outside the app and refreshes before the release: no
 review opens. Remove this part when upstream ties a click to the item it
 was pressed on.
 
+A key confirms a menu only as a fresh press. GPUI hands an action no key
+event, so upstream's Enter binding (`Confirm`) ran on every key-down the
+platform repeats while the key is held, each marked `is_held` (Wayland's
+repeat timer, macOS's `isARepeat`). Enter held on an item that waited ran
+it on the first repeat after a rebuild made it able to act, as old as the
+rest above (found in the QA89F-A security re-review). Enter or Space held on
+a dropdown's button acted on the first item of the menu it opened: the
+popover (`gpui-base` `popover.rs`) opens on the key-down, the menu opened
+from the keyboard starts on that item, and the popover's own Space binding
+confirms the menu inside it. The keys that confirm a menu
+(`CONFIRM_KEYS` in `src/menu/popup_menu.rs`: Enter in every menu, Space in
+one inside a `Popover`, the secondary Enter, Command- or Control-Enter, in
+one inside a `List`) are now bound to GPUI's `NoAction` in the contexts
+where they confirm, which keeps any binding from taking their key-down, so
+it reaches the menu's own key listener (`PopupMenu::confirm_key`) with its
+repeat flag. A fresh press dispatches the `Confirm` its binding did, on the
+focused menu, so `confirm` and whatever an application captures of it (the
+app's refusal of a paused integration's commit items) run as before; a
+repeat dispatches nothing; either way the key goes no further, as the
+binding took it. The listener matches each key-down against the keys and
+contexts parsed once (`CONFIRM_KEYSTROKES`), as `KeyBinding::new` parses
+them, and reads the focus path's contexts only for a key that matches;
+the first cut parsed the three bindings again on every key-down in a menu
+(simplified after the review, 2026-11-03, with no change in behaviour).
+Space outside a popover and the secondary Enter outside a list reach their
+bindings as before. A dropdown's button opens its menu on a fresh press
+only too, as decided after the review (2026-11-03): the popover's own
+Enter and Space bindings toggled it on every repeat, so a key still held
+after a fresh press had chosen an item reopened the menu once focus
+returned to the button, a flicker in which no item ran; the base crate's
+popover-trigger patch ([base patch](../gpui-base/GITTURTLE-PATCH.md))
+gives the trigger the same `NoAction` and fresh-press listener and lists
+every path that opens a popover. After this change an item runs only
+from `confirm`, which runs the selected item that can act, and `confirm`
+runs only for: a fresh Enter, a fresh Space in a popover's menu or a fresh
+secondary Enter in a list's (the `Confirm` action on the focused menu); a
+`Confirm` an application or a test dispatches itself; and a click whose
+press and release land on the item as the menu was last built (above),
+which an assistive technology's Click also produces, since GPUI answers it
+with a press and release at the row's centre (`Window::handle_a11y_action`).
+GPUI's X11 backend marks no key-down held (`gpui-pre-linux`
+`linux/x11/client.rs`), so under X11 a repeat still reads as a fresh press.
+Nor does the rule hold on Wayland with an input method, such as fcitx5,
+enabled through text-input, which GPUI enables whenever the focused element
+has no input handler (`gpui-pre-linux` `src/linux/wayland/window.rs:1039-1046`),
+as on a default Omarchy: a held Enter or Space reaches the app as a release
+and a press every 25 ms after about 243 ms, each a fresh press GPUI cannot
+tell from a new one (native probe QA-90, 2026-11-03, fcitx5 5.1.22 on
+Hyprland, `WAYLAND_DEBUG=1`; that the input method forwards its own repeat
+is inferred). The rule holds on macOS and on Wayland without an input
+method. Neither case is a regression, as every repeat acted before; a
+separate queued task enables text-input only while a text input has focus.
+`a_held_enter_runs_no_item_a_rebuild_makes_able_to_act` rests the cursor on
+the waiting Two, presses Enter and repeats it, rebuilds the menu with Two
+able to act and repeats again: nothing runs and the menu stays open, and a
+fresh press runs Two. `a_held_enter_that_opened_the_menu_runs_nothing`
+repeats Enter into a menu opened on its first item, and
+`a_held_space_or_secondary_enter_runs_nothing` repeats Space in a menu
+inside a popover's context and the secondary Enter in one inside a list's,
+with those contexts' bindings: nothing runs until a fresh press, and in a
+menu inside neither, neither key runs anything. Each fails with the repeat
+check removed. The app's
+`native_accessibility::menu_tests::a_held_key_that_opened_a_buttons_menu_runs_nothing`
+holds Enter and then Space on a real dropdown's button, and
+`a_held_key_that_chose_from_a_buttons_menu_reopens_nothing` holds the key
+that chose an item on the button the menu returned focus to, which fails
+with the trigger's repeat check removed. Remove this part
+when GPUI hands an action its key event's repeat flag or upstream confirms
+a menu only on a fresh press.
+
 The consumers are every open menu the app builds again, in
 `crates/app/src/native_accessibility.rs`: a keyboard's row menu
 (`KeyboardMenu::rebuild`), a right-click's menu (`PointerMenu`, as writes

@@ -1,9 +1,10 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::LazyLock};
 
 use gpui::{
     Anchor, AnyElement, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, ParentElement as _,
-    Pixels, Render, RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyContext, KeyDownEvent,
+    KeybindingKeystroke, Keystroke, MouseButton, NoAction, ParentElement as _, Pixels, Render,
+    RenderOnce, Role, StatefulInteractiveElement as _, Subscription, Window, div,
     prelude::FluentBuilder as _,
 };
 
@@ -14,12 +15,77 @@ use crate::{
 
 const CONTEXT: &str = "Popover";
 
+/// GitTurtle patch: the key context a popover's trigger has beside
+/// [`CONTEXT`], which its content has alone.
+const TRIGGER_CONTEXT: &str = "PopoverTrigger";
+
+/// GitTurtle patch: the keys that open or close a popover from its trigger.
+/// [`CONTEXT`] binds them to [`Confirm`], in the trigger and the content
+/// alike; in the trigger they are also bound to [`NoAction`], after it,
+/// which outranks it at the same depth, so their key-down reaches the
+/// trigger's listener ([`open_key`]) with its repeat flag instead.
+const OPEN_KEYS: [&str; 2] = ["enter", "space"];
+
+/// GitTurtle patch: [`OPEN_KEYS`] parsed once, as [`KeyBinding::new`]
+/// parses them, for [`open_key`] to match a key-down against as their
+/// bindings match it.
+static OPEN_KEYSTROKES: LazyLock<[KeybindingKeystroke; 2]> = LazyLock::new(|| {
+    OPEN_KEYS.map(|keys| {
+        KeybindingKeystroke::from_keystroke(Keystroke::parse(keys).expect("a popover's open key"))
+    })
+});
+
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
         KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
         KeyBinding::new("space", Confirm { secondary: false }, Some(CONTEXT)),
     ]);
+    cx.bind_keys(OPEN_KEYS.map(|keys| KeyBinding::new(keys, NoAction, Some(TRIGGER_CONTEXT))));
+}
+
+/// GitTurtle patch: a popover's trigger opens or closes it with Enter or
+/// Space only as the key goes down, never on a held key's repeats, as a
+/// menu confirms only on a fresh press. Its key-down, which no binding takes
+/// in the trigger ([`OPEN_KEYS`]), dispatches the [`Confirm`] the binding
+/// did, on the focused element, so whatever an application captures of it
+/// still runs, while an auto-repeat, whose `is_held` is set, does nothing;
+/// either way the key goes no further, as the binding took it. It is taken
+/// in the capture phase, ahead of anything inside the trigger, which the
+/// binding kept it from too. A key that goes down in the content, whose
+/// innermost popover context is not a trigger's, passes on to the content's
+/// own binding, as before. Bound to [`Confirm`], a still-held Enter or Space
+/// that had chosen a dropdown's item reopened its menu once focus returned
+/// to the button. Under X11, and on Wayland with an input method, a held key
+/// arrives as fresh presses, which this cannot tell apart
+/// (`GITTURTLE-PATCH.md`).
+fn open_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
+    let in_trigger = OPEN_KEYSTROKES
+        .iter()
+        .any(|keystroke| event.keystroke.should_match(keystroke))
+        && window
+            .context_stack()
+            .iter()
+            .rfind(|context| context.contains(CONTEXT))
+            .is_some_and(|context| context.contains(TRIGGER_CONTEXT));
+    if !in_trigger {
+        return;
+    }
+    if !event.is_held
+        && let Some(focused) = window.focused(cx)
+    {
+        focused.dispatch_action(&Confirm { secondary: false }, window, cx);
+    }
+    cx.stop_propagation();
+}
+
+/// GitTurtle patch: a trigger's key context, [`CONTEXT`] as before and
+/// [`TRIGGER_CONTEXT`] beside it.
+fn trigger_context() -> KeyContext {
+    let mut context = KeyContext::default();
+    context.add(CONTEXT);
+    context.add(TRIGGER_CONTEXT);
+    context
 }
 
 type OpenChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
@@ -309,7 +375,8 @@ impl RenderOnce for Popover {
             popup = popup.margin(margin);
         }
         let popup = popup
-            .key_context(CONTEXT)
+            .key_context(trigger_context())
+            .capture_key_down(open_key)
             .on_action({
                 let state = state.clone();
                 move |_: &Confirm, window, cx| {
@@ -606,6 +673,77 @@ mod tests {
         );
 
         assert_eq!(&*changes.borrow(), &[true, false, true, false, true, false]);
+    }
+
+    /// GitTurtle patch: Enter or Space on a popover's trigger opens it only
+    /// as the key goes down, never on the repeats of a held key: held on the
+    /// trigger, the key opens nothing, a fresh press opens the popover, and
+    /// once Escape has closed it and returned focus to the trigger, the key
+    /// still held reopens nothing, while a fresh press does. Enter in the
+    /// content still closes it, through the content's own binding. Bound to
+    /// `Confirm` in the trigger, each repeat toggled the popover, so a key
+    /// still held after a dropdown's item was chosen reopened its menu.
+    /// A repeat is a key-down marked `is_held`, as macOS and Wayland without
+    /// an input method mark it; under X11, and on Wayland with an input
+    /// method such as fcitx5, a held key arrives as fresh presses, which the
+    /// trigger cannot tell from new ones.
+    #[gpui::test]
+    fn a_held_key_on_the_trigger_opens_nothing(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, cx| DismissalHarness {
+                trigger_focus: cx.focus_handle(),
+                changes,
+            }
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let held = |cx: &mut gpui::VisualTestContext, key: &str| {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse(key).unwrap().with_simulated_ime(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let open =
+            |cx: &mut gpui::VisualTestContext| cx.debug_bounds("dismissal-content").is_some();
+        let trigger_focus = view.read_with(cx, |view, _| view.trigger_focus.clone());
+        draw(cx);
+        for key in ["enter", "space"] {
+            cx.update(|window, cx| trigger_focus.focus(window, cx));
+            draw(cx);
+            held(cx, key);
+            held(cx, key);
+            assert!(!open(cx), "{key} held on the trigger opens nothing");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert!(open(cx), "a fresh {key} opens it");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(!open(cx), "Escape closes it");
+            assert!(
+                cx.update(|window, _| trigger_focus.is_focused(window)),
+                "Escape returns focus to the trigger"
+            );
+            for _ in 0..3 {
+                held(cx, key);
+            }
+            assert!(!open(cx), "{key} still held reopens nothing");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert!(open(cx), "a fresh {key} reopens it");
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(!open(cx), "Enter in the content closes it");
+        }
+        assert_eq!(
+            &*changes.borrow(),
+            &[true, false, true, false, true, false, true, false]
+        );
     }
 
     /// A view holding only a popover, as a page holds its dropdown. The

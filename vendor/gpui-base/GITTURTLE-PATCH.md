@@ -486,6 +486,59 @@ focus back on the trigger after Escape and the item;
 outside. Remove this part of the patch when upstream's dismiss callback no
 longer holds its state strongly, and those tests pass without it.
 
+The popover-trigger patch (2026-11-03) also modifies `src/popover.rs`. A
+popover's trigger opens or closes it with Enter or Space only as the key
+goes down, never on a held key's repeats, as a menu confirms only on a
+fresh press ([component patch](../gpui-component/GITTURTLE-PATCH.md),
+decided by the coordinator after its review). GPUI hands an action no key
+event, so upstream's Enter and Space bindings (`Confirm` in the `Popover`
+context, which the trigger and the content both have) toggled the popover
+on every repeat the platform sends: after a fresh press had chosen a
+dropdown's item and the closed menu had returned focus to its button, the
+key still held reopened the menu once, a flicker in which no item ran. The
+trigger's element now has the key context `Popover PopoverTrigger`, and
+Enter and Space are bound to GPUI's `NoAction` in `PopoverTrigger`, after
+upstream's bindings, so at the trigger's depth they outrank its `Confirm`
+and their key-down reaches the trigger's capture-phase listener
+(`open_key`) with its repeat flag. A fresh press dispatches the `Confirm`
+the binding did, on the focused element, so the trigger's own `Confirm`
+handler toggles the popover as before and whatever an application captures
+of it still runs; a repeat dispatches nothing; either way the key goes no
+further, as the binding took it, and taken in the capture phase it reaches
+nothing inside the trigger, as the binding kept it from too. In the content
+the innermost popover context is the content's own, whose `Confirm`
+outranks the trigger's `NoAction`, so a key there reaches the content's
+binding, or a menu's own listener, as before; the listener passes over it.
+Both keys are parsed once (`OPEN_KEYSTROKES`). After this change a popover
+opens only by: a press of its mouse button (left by default) on the
+trigger, which an assistive technology's Click also produces; a fresh Enter
+or Space with focus in the trigger; a `Confirm` that reaches the trigger's
+handler from inside the trigger otherwise, as an application or a test
+dispatches it, or as a binding of an enclosing context that the trigger's
+`NoAction` does not outrank produces it (the component's `List` binds the
+secondary Enter, Command- or Control-Enter, to it; no app dropdown lies in
+a `List`); and in code, by `Popover::open(true)`, `default_open(true)` or
+`PopoverState::show`, `set_open` or `toggle_open`, which the app's
+dropdowns do not call. GPUI's X11 backend marks no key-down held, so under
+X11 a repeat still reads as a fresh press there too, as it does on Wayland
+with an input method, such as fcitx5, enabled through text-input, which
+GPUI enables whenever the focused element has no input handler, as on a
+default Omarchy: the held key arrives as a release and a press every 25 ms,
+each a fresh press (native probe QA-90, 2026-11-03; details in the
+component patch). The rule holds on macOS and on Wayland without an input
+method; neither case is a regression, and a separate queued task enables
+text-input only while a text input has focus.
+`popover::tests::a_held_key_on_the_trigger_opens_nothing` holds Enter and
+then Space on a trigger, which opens nothing until a fresh press opens the
+popover, closes it with Escape, which returns focus to the trigger, and
+holds the key again, which reopens nothing until a fresh press, and Enter in
+the content still closes it; the app's
+`native_accessibility::menu_tests::a_held_key_that_chose_from_a_buttons_menu_reopens_nothing`
+chooses a real dropdown's item with a fresh Enter and Space and holds the
+key on the button the menu returned focus to. Both fail with the repeat
+check removed. Remove this part when GPUI hands an action its key event's
+repeat flag or upstream opens a popover only on a fresh press.
+
 The panel-fit patch modifies `src/resizable/mod.rs` and
 `src/resizable/panel.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its

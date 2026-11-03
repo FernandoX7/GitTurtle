@@ -12,11 +12,12 @@ use gpui::{
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use gpui::{
-    ClickEvent, Half, MouseDownEvent, MouseMoveEvent, OwnedMenuItem, Point, ScrollWheelEvent,
-    Subscription,
+    ClickEvent, Half, KeyBindingContextPredicate, KeyDownEvent, KeybindingKeystroke, Keystroke,
+    MouseDownEvent, MouseMoveEvent, NoAction, OwnedMenuItem, Point, ScrollWheelEvent, Subscription,
 };
 
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 const CONTEXT: &str = "PopupMenu";
 
@@ -101,9 +102,43 @@ struct KeptCursor {
     index: usize,
 }
 
+/// GitTurtle patch: the keys that confirm a menu's selected item, each with
+/// the context it confirms in and whether it is the secondary confirm: Enter
+/// in every menu, as upstream bound it here; Space in a menu inside a
+/// popover, as a dropdown's is, whose own binding reached the menu's
+/// [`Confirm`]; and the secondary Enter in a menu inside a list, whose own
+/// binding did. Each is bound to [`NoAction`] where it confirms, so no
+/// binding takes its key-down, which reaches [`PopupMenu::confirm_key`]
+/// with its repeat flag instead.
+const CONFIRM_KEYS: [(&str, &str, bool); 3] = [
+    ("enter", CONTEXT, false),
+    ("space", "Popover > PopupMenu", false),
+    ("secondary-enter", "List > PopupMenu", true),
+];
+
+/// GitTurtle patch: [`CONFIRM_KEYS`] parsed once, each key and context as
+/// [`KeyBinding::new`] parses them, for [`PopupMenu::confirm_key`] to match
+/// every key-down in a menu against as their bindings match it. Parsed on
+/// each key-down, the three bindings were built again for every key typed
+/// in a menu.
+static CONFIRM_KEYSTROKES: LazyLock<[(KeybindingKeystroke, KeyBindingContextPredicate, bool); 3]> =
+    LazyLock::new(|| {
+        CONFIRM_KEYS.map(|(keys, context, secondary)| {
+            (
+                KeybindingKeystroke::from_keystroke(
+                    Keystroke::parse(keys).expect("a menu's confirm key"),
+                ),
+                KeyBindingContextPredicate::parse(context).expect("a confirm key's context"),
+                secondary,
+            )
+        })
+    });
+
 pub fn init(cx: &mut App) {
+    cx.bind_keys(
+        CONFIRM_KEYS.map(|(keys, context, _)| KeyBinding::new(keys, NoAction, Some(context))),
+    );
     cx.bind_keys([
-        KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
         KeyBinding::new("up", SelectUp, Some(CONTEXT)),
         KeyBinding::new("down", SelectDown, Some(CONTEXT)),
@@ -1409,6 +1444,42 @@ impl PopupMenu {
         self.confirm(&Confirm { secondary: false }, window, cx);
     }
 
+    /// GitTurtle patch: a key that confirms the menu ([`CONFIRM_KEYS`])
+    /// confirms it only as a fresh press. Its key-down dispatches the
+    /// [`Confirm`] its binding did, on the focused menu, so whatever an
+    /// application captures of it still runs, while an auto-repeat, whose
+    /// `is_held` is set, confirms nothing; either way the key goes no
+    /// further, as the binding took it. GPUI hands an action no key event,
+    /// so the binding confirmed on every repeat too: Enter held on an item
+    /// that waited ran it on the first repeat after a rebuild made it able
+    /// to act, and Enter held on a button acted on the first item of the
+    /// menu it opened. A write now waits for a new press wherever the
+    /// platform marks a repeat held: under X11, and on Wayland with an input
+    /// method, a held key arrives as fresh presses (`GITTURTLE-PATCH.md`).
+    fn confirm_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {
+        let mut contexts = None;
+        let confirm = CONFIRM_KEYSTROKES
+            .iter()
+            .find_map(|(keystroke, predicate, secondary)| {
+                let bound = event.keystroke.should_match(keystroke)
+                    && predicate
+                        .depth_of(contexts.get_or_insert_with(|| window.context_stack()))
+                        .is_some();
+                bound.then_some(Confirm {
+                    secondary: *secondary,
+                })
+            });
+        let Some(confirm) = confirm else {
+            return;
+        };
+        if !event.is_held
+            && let Some(focused) = window.focused(cx)
+        {
+            focused.dispatch_action(&confirm, window, cx);
+        }
+        cx.stop_propagation();
+    }
+
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         match self.selected_index {
             Some(index) => {
@@ -2411,6 +2482,7 @@ impl Render for PopupMenu {
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::confirm))
+            .on_key_down(Self::confirm_key)
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
             .on_mouse_move(cx.listener(Self::pointer_moved))
@@ -4504,6 +4576,146 @@ mod tests {
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert_eq!(*ran.borrow(), ["One"], "Enter runs One");
+    }
+
+    /// The key-down the platform repeats while `keys` is held, marked
+    /// `is_held` as Wayland's repeat timer and macOS's `isARepeat` mark it.
+    /// Under X11, and on Wayland with an input method such as fcitx5
+    /// enabled through text-input, a held key arrives as fresh presses
+    /// instead, which no menu can tell from new ones, so the rule the tests
+    /// below pin does not hold there.
+    fn repeat(cx: &mut VisualTestContext, keys: &str) {
+        cx.simulate_event(KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap().with_simulated_ime(),
+            is_held: true,
+            prefer_character_input: false,
+        });
+        draw(cx);
+    }
+
+    /// Enter held on Two, which waits, runs nothing as it goes down or
+    /// repeats, nor as it repeats once a rebuild has made Two able to act
+    /// with the cursor still on it: only a fresh press runs Two. Bound to
+    /// Enter, the menu's confirm ran Two on the first repeat after the
+    /// rebuild, so a held Enter ran a write the person had not pressed for.
+    #[gpui::test]
+    fn a_held_enter_runs_no_item_a_rebuild_makes_able_to_act(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        repeat(cx, "enter");
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting Two runs nothing"
+        );
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let mut menu = waiting(menu, &ran, true);
+                    let two = ran.clone();
+                    menu.menu_items[2] = PopupMenuItem::new("Two")
+                        .on_click(move |_, _, _| two.borrow_mut().push("Two"));
+                    menu
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "kept on Two, which can act"
+        );
+        repeat(cx, "enter");
+        repeat(cx, "enter");
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Two"], "a fresh press runs Two");
+        assert_eq!(dismissed.get(), 1, "and closes the menu");
+    }
+
+    /// A menu an Enter on its button opened, its cursor on its first item
+    /// that can act as a menu the keyboard opens starts, runs nothing as
+    /// that Enter, still held, repeats into it; a fresh press runs the item.
+    /// Bound to Enter, the menu's confirm ran One on the first repeat.
+    #[gpui::test]
+    fn a_held_enter_that_opened_the_menu_runs_nothing(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FOUR, &ran);
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "opened on One");
+        repeat(cx, "enter");
+        repeat(cx, "enter");
+        assert!(ran.borrow().is_empty(), "the held Enter runs nothing");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "a fresh press runs One");
+    }
+
+    /// A focused menu inside an element of the key context `context`, as a
+    /// dropdown's lies inside its popover's content.
+    struct Hosted {
+        menu: Entity<PopupMenu>,
+        context: &'static str,
+    }
+
+    impl Render for Hosted {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().key_context(self.context).child(self.menu.clone())
+        }
+    }
+
+    /// Space in a menu inside a popover, and the secondary Enter in one
+    /// inside a list, whose own bindings confirm the menu, run its item for
+    /// a fresh press and not for a repeat; in a menu inside neither, neither
+    /// key runs anything, as before. Confirmed through those bindings, a
+    /// held Space on a dropdown's button ran the first item of the menu it
+    /// opened, as a held Enter did.
+    #[gpui::test]
+    fn a_held_space_or_secondary_enter_runs_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+            // As the base crate's popover and this crate's list bind them.
+            cx.bind_keys([
+                KeyBinding::new("space", Confirm { secondary: false }, Some("Popover")),
+                KeyBinding::new("secondary-enter", Confirm { secondary: true }, Some("List")),
+            ]);
+        });
+        for (context, keys, confirms) in [
+            ("Popover", "space", true),
+            ("List", "secondary-enter", true),
+            ("Pane", "space", false),
+            ("Pane", "secondary-enter", false),
+        ] {
+            let at = format!("{keys} in a menu inside {context}");
+            let ran = Ran::default();
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let menu = cx.new(|cx| {
+                    let mut menu = acting(PopupMenu::new(cx), FOUR, &ran);
+                    menu.select_first_item(cx);
+                    menu
+                });
+                let focus = menu.read(cx).focus_handle.clone();
+                focus.focus(window, cx);
+                Hosted { menu, context }
+            });
+            draw(cx);
+            repeat(cx, keys);
+            repeat(cx, keys);
+            assert!(ran.borrow().is_empty(), "{at}: the held key runs nothing");
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+            let expected: &[&str] = if confirms { &["One"] } else { &[] };
+            assert_eq!(*ran.borrow(), expected, "{at}: a fresh press");
+        }
     }
 
     #[gpui::test]
