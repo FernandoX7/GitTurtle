@@ -128,10 +128,13 @@ impl Element for InFrame {
             probe::open(name, bounds);
         }
         let mut element = build(bounds, window, cx);
+        // Laid out on its bounds' whole device pixels, as a set width is
+        // ([`on_whole_device_pixels`]).
+        let scale = window.scale_factor();
         element.layout_as_root(
             size(
-                AvailableSpace::Definite(bounds.size.width),
-                AvailableSpace::Definite(bounds.size.height),
+                AvailableSpace::Definite(on_whole_device_pixels(bounds.size.width, scale)),
+                AvailableSpace::Definite(on_whole_device_pixels(bounds.size.height, scale)),
             ),
             window,
             cx,
@@ -158,6 +161,31 @@ impl Element for InFrame {
             element.paint(window, cx);
         }
     }
+}
+
+/// `length`, a side of bounds GPUI laid out on whole device pixels on a
+/// display of `scale`, as layout reads it back: never short of those
+/// pixels. GPUI multiplies a definite room by the scale without rounding
+/// (`TaffyLayoutEngine::compute_layout`), while a set length such as
+/// `.w(…)` is rounded to a whole device pixel first (`to_taffy`), so bounds
+/// 243 device pixels wide at scale 1.2, 202.49998 px, reached layout as
+/// 242.99998 device pixels, and what a prediction measured at a set width
+/// of 243 (as [`measured_height`] does) to fill its line wrapped: held to
+/// the narrower side's line (`pdf_view::pair_line`), which kept a device
+/// pixel spare for it, a PDF comparison's Before header took three lines
+/// beside After's two at 18 pt in 203.75 px sides without that pixel. The
+/// smallest length whose product with the scale is the whole device
+/// pixels, or the next float above them where none is exact.
+fn on_whole_device_pixels(length: Pixels, scale: f32) -> Pixels {
+    let device = (f32::from(length) * scale).round();
+    let mut snapped = device / scale;
+    while snapped * scale < device {
+        snapped = snapped.next_up();
+    }
+    while snapped > 0. && snapped.next_down() * scale >= device {
+        snapped = snapped.next_down();
+    }
+    px(snapped)
 }
 
 /// The height `element` takes laid out `width` wide, for a choice made while
@@ -278,5 +306,82 @@ pub(crate) mod probe {
                 frame.parts.push((name, bounds));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// A frame `device` device pixels wide holding a wrapping row of two
+    /// boxes that fill it exactly, each a set width on whole device pixels.
+    struct Filled {
+        device: f32,
+    }
+
+    impl Render for Filled {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let scale = window.scale_factor();
+            let first = (self.device / 2.).floor();
+            let second = self.device - first;
+            div()
+                .w(px(self.device / scale))
+                .h(px(40.))
+                .flex()
+                .flex_col()
+                .child(in_frame(move |_, _, _| {
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .child(
+                            div()
+                                .debug_selector(|| "filled-first".into())
+                                .w(px(first / scale))
+                                .h(px(10.)),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "filled-second".into())
+                                .w(px(second / scale))
+                                .h(px(10.)),
+                        )
+                        .into_any_element()
+                }))
+        }
+    }
+
+    /// What an [`InFrame`] holds is laid out on its frame's whole device
+    /// pixels, as a set width is: at scales 1.1, 1.2, 1.25, 1.5, 1.75 and 2,
+    /// in frames 100 to 400 device pixels wide, a row of two boxes that fill
+    /// the frame exactly lies on one line. Laid out at the frame's width as
+    /// GPUI reads it back, 243 device pixels at scale 1.2 reached layout as
+    /// 242.99998, and the second box wrapped beneath the first.
+    #[gpui::test]
+    fn what_it_holds_is_laid_out_on_whole_device_pixels(cx: &mut gpui_kit::TestAppContext) {
+        let (view, cx) = cx.add_window_view(|_, _| Filled { device: 243. });
+        let mut wrapped = Vec::new();
+        for scale in [1.1f32, 1.2, 1.25, 1.5, 1.75, 2.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for device in 100..=400 {
+                view.update(cx, |view, cx| {
+                    view.device = device as f32;
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                let first = cx.debug_bounds("filled-first").expect("the first box");
+                let second = cx.debug_bounds("filled-second").expect("the second box");
+                if second.top() != first.top() {
+                    wrapped.push((scale, device));
+                }
+            }
+        }
+        assert!(
+            wrapped.is_empty(),
+            "the second box wrapped at (scale, device pixels) {wrapped:?}"
+        );
     }
 }

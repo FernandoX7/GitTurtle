@@ -839,13 +839,13 @@ fn header_room(line: Pixels, heading: Pixels, window: &Window) -> Pixels {
 /// their edges, halves toward zero, so in a comparison an odd number of
 /// device pixels wide Before's frame is a device pixel narrower than
 /// After's; then less its right rule (at least a device pixel), the
-/// header's `px_2` either side, each on its device pixel, the gutter, and
-/// one device pixel more. Both headers are held to this width
-/// (`render_comparison`), so the two wrap alike: held to a length GPUI
-/// rounds to a whole device pixel before layout, inside frames at least a
-/// device pixel wider, rather than to the narrower frame, whose width
-/// reaches layout through floats (243 device pixels as 242.99999 at scale
-/// 1.2), which then decided whether a run that filled the line wrapped.
+/// header's `px_2` either side and the gutter, each on its device pixel.
+/// Both headers are held to this width (`render_comparison`), so the two
+/// wrap alike, each frame laid out on its whole device pixels
+/// (`in_frame::on_whole_device_pixels`): the narrower frame once reached
+/// layout through floats (243 device pixels as 242.99998 at scale 1.2), so
+/// a run that filled the line wrapped there, and the line was a device
+/// pixel narrower to keep it whole.
 /// Laid out each in its own side, Before's run of a 3-page document wrapped
 /// where After's identical run held one line, at 13 pt and scale 1.2 in
 /// 147 px sides, and the side measured unrounded, less 1 px and an
@@ -863,7 +863,7 @@ fn pair_line(width: Pixels, quick: bool, scrolls: bool, window: &Window) -> Pixe
         Pixels::ZERO
     };
     let inset = window.pixel_snap(window.rem_size() * 0.5);
-    px((side - device(rule) - device(inset) * 2. - device(gutter) - 1.).max(0.) / scale)
+    px((side - device(rule) - device(inset) * 2. - device(gutter)).max(0.) / scale)
 }
 
 /// The readings a page number of `count` pages is measured at, whole
