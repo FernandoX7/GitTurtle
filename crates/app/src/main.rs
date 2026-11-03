@@ -17,6 +17,8 @@ mod discard;
 mod editor_find;
 mod empty_state;
 mod file_history;
+#[cfg(test)]
+mod find_bench;
 mod focus_reveal;
 mod focus_ring;
 mod folder_picker;
