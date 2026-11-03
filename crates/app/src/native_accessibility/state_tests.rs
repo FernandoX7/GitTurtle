@@ -583,11 +583,13 @@ async fn dialog_hints_and_the_projects_page_are_read_by_their_lines(cx: &mut Tes
     );
     no_second_title("keyboard-shortcuts-title");
     let count = written::get("shortcut-help-count").expect("the count is written");
-    assert_eq!(count.node.role(), Role::Status);
+    // Static text read by what it draws; the dialog's status, beside it,
+    // announces it with the selected entry once the search rests.
+    assert_eq!(count.node.role(), Role::Label);
     assert_eq!(
-        count.node.label(),
+        count.node.value(),
         Some(format!("{} shortcuts", crate::shortcuts::listed_shortcuts()).as_str()),
-        "the count is named by the count it draws"
+        "the count is read by the count it draws"
     );
     // The legend follows the count where the line, as the interface font
     // lays out the text drawn, fits the view drawn, and is named by its keys.

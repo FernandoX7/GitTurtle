@@ -10,7 +10,7 @@
 //! frames and keeps the objects it puts on the bus.
 
 use accesskit_atspi_common::{
-    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, ObjectEvent,
+    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, NodeIdOrRoot, ObjectEvent,
 };
 use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
@@ -159,11 +159,13 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
 /// What `accesskit_unix` does on the bus for one window: the objects it
 /// keeps there, each node's interfaces as the adapter registers and
 /// unregisters them (a path with none answers every AT-SPI call with
-/// "Unknown object"), and the announcements it makes.
+/// "Unknown object"), the announcements it makes and the objects it reports
+/// newly selected (`object:state-changed:selected`), which Orca speaks.
 #[derive(Clone, Default)]
 struct Registry {
     objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
     announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    selected: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
 }
 
 impl AdapterCallback for Registry {
@@ -184,12 +186,16 @@ impl AdapterCallback for Registry {
     }
 
     fn emit_event(&self, _: &Adapter, event: Event) {
-        if let Event::Object {
-            event: ObjectEvent::Announcement(text, _),
-            ..
-        } = event
-        {
-            self.announced.lock().unwrap().push(text);
+        match event {
+            Event::Object {
+                event: ObjectEvent::Announcement(text, _),
+                ..
+            } => self.announced.lock().unwrap().push(text),
+            Event::Object {
+                target: NodeIdOrRoot::Node(id),
+                event: ObjectEvent::StateChanged(State::Selected, true),
+            } => self.selected.lock().unwrap().push(id),
+            _ => {}
         }
     }
 }
@@ -254,6 +260,17 @@ impl Bus {
     /// What was announced since the last call.
     pub(crate) fn announced(&self) -> Vec<String> {
         std::mem::take(&mut *self.registry.announced.lock().unwrap())
+    }
+
+    /// The names of the objects reported newly selected since the last
+    /// call, each as it reads now. An object added to the bus already
+    /// selected is not among them: the adapter reports no change of state
+    /// for it.
+    pub(crate) fn selected(&self) -> Vec<String> {
+        let ids = std::mem::take(&mut *self.registry.selected.lock().unwrap());
+        ids.into_iter()
+            .map(|id| self.adapter.platform_node(id).name().unwrap())
+            .collect()
     }
 }
 

@@ -1524,7 +1524,7 @@ mod render_tests {
     /// the list less than its full height, a search that leaves one shortcut
     /// ("command palette") shows that entry whole below its group's heading,
     /// its key chip too, and the count above the list reads "1 shortcut",
-    /// the status, followed by the modifier legend exactly where the line,
+    /// as it draws, followed by the modifier legend exactly where the line,
     /// measured from the text drawn, fits the view drawn. The list kept room for
     /// one row, which the heading took: the selected entry's chip was cut at
     /// the list's foot, and the count read "1 shortcuts".
@@ -1564,7 +1564,7 @@ mod render_tests {
             );
         }
         let count = written::get("shortcut-help-count").expect("the count is written");
-        assert_eq!(count.node.label(), Some("1 shortcut"), "the status");
+        assert_eq!(count.node.value(), Some("1 shortcut"), "the count");
         // The legend follows the count exactly where the line, as the
         // interface font lays out the text drawn, fits the view drawn.
         let view = cx
@@ -1618,8 +1618,7 @@ mod render_tests {
 
     /// The count above the shortcut list keeps one line, at 13 and 18 pt in
     /// 400, 461 and 640 px wide windows, at the test window's scale factor,
-    /// 2, and at 1.5: the count, which is the status and named by what it
-    /// draws, and after it on its line the platform's modifier legend where
+    /// 2, and at 1.5: the count, read by what it draws, and after it on its line the platform's modifier legend where
     /// the interface font lays the whole line out on one line in the view,
     /// the count and the legend each as its text lays it out; otherwise the
     /// count alone, its legend giving way first as words beside a count do.
@@ -1691,7 +1690,7 @@ mod render_tests {
                     let status = written::get("shortcut-help-count")
                         .unwrap_or_else(|| panic!("{at}: the count is written"));
                     assert_eq!(
-                        status.node.label(),
+                        status.node.value(),
                         Some(counted.as_str()),
                         "{at}: the count reads what it draws"
                     );
@@ -1730,13 +1729,14 @@ mod render_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// The count above the shortcut list, a polite status, is announced only
-    /// as the count changes: at 18 pt, resizing the window between 640 and
-    /// 400 px wide brings and takes the modifier legend after the count and
-    /// leaves the status's name as it was, "61 shortcuts", while a search
-    /// changes it once the search has rested. Drawn and named as one line,
-    /// the status's name changed as a resize crossed the width where the
-    /// legend fits, and AT-SPI announces a live region whose name changes.
+    /// Keyboard Shortcuts' status, a polite live region that reads the count
+    /// with the selected entry, is announced only as they change: at 18 pt,
+    /// resizing the window between 640 and 400 px wide brings and takes the
+    /// modifier legend after the count line and leaves the status's name as
+    /// it was, "61 shortcuts · Command Palette: …", while a search changes it
+    /// once the search has rested. Drawn and named as one line, the count's
+    /// name changed as a resize crossed the width where the legend fits, and
+    /// AT-SPI announces a live region whose name changes.
     #[gpui::test]
     async fn the_shortcut_count_is_announced_only_as_it_changes(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -1751,18 +1751,27 @@ mod render_tests {
         let read = |cx: &mut VisualTestContext| {
             written::forget();
             draw(cx);
-            let status = written::get("shortcut-help-count").expect("the count is written");
+            let status = written::get("shortcut-help-status").expect("the status is written");
             assert_eq!(
-                written::announced("shortcut-help-count").map(|live| live.live),
+                written::announced("shortcut-help-status").map(|live| live.live),
                 Some(gpui::accesskit::Live::Polite),
-                "the count is a polite status"
+                "the status is polite"
+            );
+            assert_eq!(
+                written::announced("shortcut-help-count"),
+                None,
+                "the count line is no live region of its own"
             );
             (
                 status.node.label().map(str::to_owned),
                 written::get("shortcut-help-legend").is_some(),
             )
         };
-        let counted = format!("{} shortcuts", crate::shortcuts::listed_shortcuts());
+        let opened = format!(
+            "{} shortcuts · Command Palette: {}",
+            crate::shortcuts::listed_shortcuts(),
+            crate::shortcuts::label(crate::shortcuts::ShortcutId::Palette)
+        );
         let mut legends = Vec::new();
         for width in [640., 400., 640.] {
             cx.simulate_resize(size(px(width), px(490.)));
@@ -1770,7 +1779,7 @@ mod render_tests {
             let (name, legend) = read(cx);
             assert_eq!(
                 name.as_deref(),
-                Some(counted.as_str()),
+                Some(opened.as_str()),
                 "in a {width} px window the status keeps its name"
             );
             legends.push(legend);
@@ -1784,9 +1793,12 @@ mod render_tests {
         draw(cx);
         cx.executor().advance_clock(crate::shortcuts::COUNT_REST);
         assert_eq!(
-            read(cx).0.as_deref(),
-            Some("1 shortcut"),
-            "a search changes the count once it rests"
+            read(cx).0,
+            Some(format!(
+                "1 shortcut · Command Palette: {}",
+                crate::shortcuts::label(crate::shortcuts::ShortcutId::Palette)
+            )),
+            "a search changes the count and entry once it rests"
         );
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -1804,7 +1816,8 @@ mod render_tests {
     /// status, which draws nothing, took a gap of its own between the list
     /// and the hint. Compared with Close alone, the hint passed.
     ///
-    /// That status, the selected entry's name, is drawn whole wherever the
+    /// That status, now the dialog's one status, which names the count with
+    /// the selected entry, is drawn whole wherever the
     /// dialog is, so an assistive technology finds it showing: in those
     /// windows, and in a 461 × 400 one, too short for the dialog's content,
     /// where the clip cuts the hint. Along the view's foot, it lay past the
@@ -1837,14 +1850,14 @@ mod render_tests {
                 && (shown.y1 - laid.y1).abs() < 0.5
         };
         let status_is_drawn = |at: &str| {
-            let (status, laid, shown) = drawn("shortcut-help-selected", at);
+            let (status, laid, shown) = drawn("shortcut-help-status", at);
             // A node the window draws none of reports where it lies, so the
             // status is held within the column's drawn part too: above the
             // drawn foot of the hint, its last part.
             let (_, _, hint) = drawn("shortcut-help-keys", at);
             assert!(
                 whole(laid, shown) && laid.y1 <= hint.y1 + 0.5,
-                "{at}: the selected entry's status laid out {laid:?} is drawn, not {shown:?}, \
+                "{at}: the dialog's status laid out {laid:?} is drawn, not {shown:?}, \
                  within the column drawn to {}",
                 hint.y1
             );
@@ -1854,7 +1867,7 @@ mod render_tests {
                 status.node.label()
             );
             assert_eq!(
-                written::announced("shortcut-help-selected").map(|live| live.live),
+                written::announced("shortcut-help-status").map(|live| live.live),
                 Some(gpui::accesskit::Live::Polite),
                 "{at}: the status is a polite live region"
             );
