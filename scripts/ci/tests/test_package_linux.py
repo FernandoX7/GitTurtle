@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,37 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 # The packager always targets the machine it runs on.
 TARGET, ELF_MACHINE = {"x86_64": ("x86_64-unknown-linux-gnu", 62),
                        "aarch64": ("aarch64-unknown-linux-gnu", 183)}.get(platform.machine(), (None, None))
+
+
+def shared_object(message: bytes) -> bytes:
+    """An ELF shared object for the host with no PT_INTERP program header, as a
+    shared library has, that writes `message` to standard output and exits 0
+    when run: one read-execute PT_LOAD of the whole file, at its start, holding
+    position-independent code for write(1, message, length) and exit(0)."""
+    if ELF_MACHINE == 62:
+        code = (b"\xb8\x01\x00\x00\x00"  # mov eax, 1 (write)
+                b"\xbf\x01\x00\x00\x00"  # mov edi, 1
+                b"\x48\x8d\x35\x10\x00\x00\x00"  # lea rsi, [rip + 16], the message
+                + b"\xba" + struct.pack("<I", len(message))  # mov edx, length
+                + b"\x0f\x05"  # syscall
+                b"\xb8\x3c\x00\x00\x00"  # mov eax, 60 (exit)
+                b"\x31\xff"  # xor edi, edi
+                b"\x0f\x05")  # syscall
+    else:
+        code = struct.pack("<8I", 0xD2800020,  # mov x0, #1
+                           0x100000E1,  # adr x1, #28, the message
+                           0xD2800002 | len(message) << 5,  # mov x2, #length
+                           0xD2800808,  # mov x8, #64 (write)
+                           0xD4000001,  # svc #0
+                           0xD2800000,  # mov x0, #0
+                           0xD2800BA8,  # mov x8, #93 (exit)
+                           0xD4000001)  # svc #0
+    entry = 64 + 56  # after the ELF header and the one program header
+    size = entry + len(code) + len(message)
+    header = struct.pack("<4sBBBB8xHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0,
+                         3, ELF_MACHINE, 1, entry, 64, 0, 0, 64, 56, 1, 64, 0, 0)  # ET_DYN
+    load = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, size, size, 0x10000)  # PT_LOAD, R+X
+    return header + load + code + message
 
 
 @unittest.skipUnless(platform.system() == "Linux" and TARGET,
@@ -220,6 +252,24 @@ if "--require-complete" in args:
         self.binary.write_bytes(header)
         result = self.run_package()
         self.assertIn(f"does not match {TARGET}", result.stderr)
+        self.assert_no_output()
+
+    def test_a_shared_library_is_refused_once_its_identity_passes(self):
+        # A shared library in the executable's place: it runs only to print the
+        # fixture's build identity, so the notices and the identity check pass
+        # and the real readelf finds no PT_INTERP. It is the only ELF staged,
+        # so the refusal does not depend on the order find lists the files.
+        revision = subprocess.run(["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        identity = dict(application="GitTurtle", source_revision=revision, version="0.1.0",
+                        target=TARGET, profile="release", source_tree="clean",
+                        rustc="rustc 1.0.0 (fixture)", build_unix_seconds="0")
+        self.binary.write_bytes(shared_object(json.dumps(identity).encode() + b"\n"))
+        result = self.run_package()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("The package ships an ELF that is not an executable: bin/gitturtle has no "
+                      "PT_INTERP program header.", result.stderr)
+        self.assertIn("collector ", self.events.read_text())
         self.assert_no_output()
 
 
