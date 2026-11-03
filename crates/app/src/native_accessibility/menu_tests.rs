@@ -1848,29 +1848,44 @@ fn a_rows_menu_clamped_to_the_top_keeps_its_edge_8_px_from_it(cx: &mut TestAppCo
 }
 
 /// A menu the keyboard opens (Shift-F10) on the changed file highlighted in
-/// History's inspector, at 18 pt in a 460 × 480 window, at the fractional
-/// scales 1.2 and 1.25, lies on device pixels inside the room the window
-/// leaves it: wider than the inspector beside the window's right side, its
-/// fill is clamped to the first device pixel inside the 8 px margin and its
-/// edge there, so the edge is 8 px from the side (10 device pixels at
-/// 1.25, the device pixel holding the 8 px line at 1.2), and its drawn edge
-/// stands the menu gap from its row, below it or wholly above it. Right-click
-/// menus were walked at fractional scales; the keyboard's, placed from the
-/// list's row rather than a pointer, by none.
+/// History's inspector, at 18 pt in a 460 × 480 and a 460 × 900 window, at
+/// the scales 1, 1.2 (as Hyprland gives a panel it cannot set to 1.25),
+/// 1.25 (as Omarchy sets), 1.5 and 2, lies on device pixels inside the room
+/// the window leaves it: wider than the inspector beside the window's right
+/// side, its fill is clamped to the first device pixel inside the 8 px
+/// margin and its edge there, so the edge is 8 px from the side (10 device
+/// pixels at 1.25, the device pixel holding the 8 px line at 1.2). Its
+/// drawn edge stands the menu gap from its row rounded out to the device
+/// pixel, the same way at every scale (`super::RowMenu::origin`): wholly
+/// above the row in the short window, where the room below is too short
+/// for it, its fill ends on the last device pixel at or before the row's
+/// top less the gap and the edge, and the edge stands 6, 5.67, 6.2, 5.67
+/// and 6 px from the row, never nearer than the 5.54 px gap; below it in
+/// the tall one, its fill starts on the first device pixel at or after the
+/// row's foot, the gap and the edge. Left where GPUI's rounding put it, the
+/// fill above the row lay a device pixel nearer the row at 1.2, its edge
+/// 4.83 px from it, and 5.4 and 5.5 px off at 1.25 and 2, and the fill
+/// below it 5.4, 5 and 5.5 px off at 1.25, 1.5 and 2. Right-click menus
+/// were walked at fractional scales; the keyboard's, placed from the list's
+/// row rather than a pointer, by none.
 #[gpui::test]
 async fn a_keyboard_s_row_menu_at_a_fractional_scale_lies_on_device_pixels(
     cx: &mut TestAppContext,
 ) {
+    use gpui_kit::base::{device_pixel_at_or_after, device_pixel_at_or_before};
     const HISTORY: &str = "menu-item: File history… · MenuItem";
     let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
     cx.update(|_, cx| {
         crate::shortcuts::bind_keys(cx);
         super::bind_keys(cx);
     });
-    let (width, height) = (px(460.), px(480.));
-    let edge = f32::from(super::MENU_EDGE);
+    let width = px(460.);
     let mut failures = Vec::new();
-    for scale in [1.2, 1.25] {
+    let scales = [1., 1.2, 1.25, 1.5, 2.];
+    let walk = [px(480.), px(900.)]
+        .into_iter()
+        .flat_map(|height| scales.map(|scale| (height, scale)));
+    for (height, scale) in walk {
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(width, height));
         cx.update(|window, _| window.set_scale_factor(scale));
@@ -1887,7 +1902,7 @@ async fn a_keyboard_s_row_menu_at_a_fractional_scale_lies_on_device_pixels(
         let row = cx
             .debug_bounds("selected-changed-file")
             .expect("the highlighted row");
-        let at = format!("scale {scale}, the row {row:?}");
+        let at = format!("460 × {height:?} at scale {scale}, the row {row:?}");
         cx.simulate_keystrokes("shift-f10");
         draw(cx);
         draw(cx);
@@ -1905,23 +1920,33 @@ async fn a_keyboard_s_row_menu_at_a_fractional_scale_lies_on_device_pixels(
         if fill.left().as_f32() < clamped_fill(true, width, scale) {
             failures.push(format!("{at}: the fill {fill:?} runs past the left side"));
         }
-        // The menu gap between the row and the drawn edge, the edge's device
-        // pixels and the row's edge both read in logical pixels. A menu
-        // beside its row keeps the place rounding gives it, unclamped, and
-        // its edge covers the device pixel its band touches, so the gap
-        // can fall short by up to two device pixels: at 1.2, above its row,
-        // the fill lies a device pixel nearer the row than its place rounds
-        // to, and the edge 4.17 px from it.
+        // The fill's side toward the row lies on the device pixel the gap
+        // and the edge end on, rounded away from the row, and the drawn edge,
+        // `MENU_EDGE` outside the fill, stands the gap from the row, or
+        // less than a device pixel further.
         let (top, bottom) = (fill.top().as_f32(), fill.bottom().as_f32());
-        let gap = if top >= f32::from(row.bottom()) * scale {
-            px((top - edge * scale + 1e-3).floor() / scale) - row.bottom()
-        } else {
-            row.top() - px((bottom + edge * scale - 1e-3).ceil() / scale)
-        };
-        if (gap - appearance::popup_gap()).abs() > px(2. / scale) {
+        let (offset, edge) = (super::menu_offset(), super::MENU_EDGE);
+        let below = top >= f32::from(row.bottom()) * scale;
+        if below != (height > px(480.)) {
             failures.push(format!(
-                "{at}: the fill {fill:?} draws its edge {gap:?} from the row, not about {:?}",
-                appearance::popup_gap()
+                "{at}: the fill {fill:?} lies on the other side of its row, so the walk \
+                 misses a side"
+            ));
+        }
+        let (drawn, place, gap) = if below {
+            let place = device_pixel_at_or_after(row.bottom() + offset, scale);
+            (top, place, px(top / scale) - edge - row.bottom())
+        } else {
+            let place = device_pixel_at_or_before(row.top() - offset, scale);
+            (bottom, place, row.top() - px(bottom / scale) - edge)
+        };
+        let place = (f32::from(place) * scale).round();
+        let popup_gap = appearance::popup_gap();
+        if drawn != place || gap < popup_gap - px(1e-3) || gap >= popup_gap + px(1. / scale) {
+            failures.push(format!(
+                "{at}: the fill {fill:?} meets its row at device pixel {drawn}, not {place}, \
+                 and draws its edge {gap:?} from the row, not the {popup_gap:?} gap rounded \
+                 out to a device pixel"
             ));
         }
         cx.simulate_keystrokes("escape");
