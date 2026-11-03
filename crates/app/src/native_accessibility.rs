@@ -100,13 +100,15 @@ impl RowAnchor {
     /// drawn edge, [`MENU_EDGE`] outside its fill, from the device pixel row
     /// just below the pointer's (`gpui_kit::base::point_device_row`), its
     /// fill on the first device pixel at or after that row's foot and the
-    /// edge (`gpui_kit::base::device_pixel_at_or_after`), at any scale, or
-    /// it lies wholly above the row. With its fill at the pointer, its edge
-    /// lay on the pixel row above the pointer's, over the row clicked; with
-    /// its fill rounded out to a whole logical pixel
-    /// (`gpui_kit::base::point_row_clear_by`), at 1.2 and 1.25 it started
-    /// part way into a device pixel, which GPUI rounds back towards the
-    /// pointer, and its edge covered the pointer's own device row.
+    /// edge (`gpui_kit::base::device_pixel_at_or_after`), at any scale, as
+    /// the kit begins a popup opened at a point below it
+    /// (`gpui_kit::base::point_row_clear_by`), or it lies wholly above the
+    /// row. With its fill at the pointer, its edge lay on the pixel row
+    /// above the pointer's, over the row clicked; with its fill rounded out
+    /// to a whole logical pixel, as that kit function once rounded it, at
+    /// 1.2 and 1.25 it started part way into a device pixel, which GPUI
+    /// rounds back towards the pointer, and its edge covered the pointer's
+    /// own device row.
     pub(super) fn pointer(pointer: Point<Pixels>, row: Bounds<Pixels>, scale: f32) -> Self {
         let y = pointer.y.clamp(row.top(), row.bottom());
         let (_, foot) = gpui_kit::base::point_device_row(y, scale);
