@@ -90,8 +90,13 @@ first page's validated reply). A side without pages, an absent side or a
 document whose first page failed (a password-protected PDF), says why as
 static text, as a page's message is: where the other side has pages, in its
 own room beneath its header in the page view, and on the generic document
-surface only where neither side has pages. System preview is an explicit user
-action on an isolated copy of captured bytes.
+surface only where neither side has pages. Each side is headed by what it
+holds, never by its partner: “Before · PDF” for a side that holds a PDF, and
+for one that holds none, an absent side above all, its name with its own
+format as a caption (“Before” and “Absent”), as the generic surface heads
+every side, so an absent side reads the same beside an added PDF as beside a
+locked one. System preview is an explicit user action on an isolated copy of
+captured bytes.
 
 ## Native Markdown and local resources
 

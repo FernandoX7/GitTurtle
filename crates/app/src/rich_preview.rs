@@ -176,6 +176,16 @@ impl Side {
         side.capture(captured, &check)?;
         Ok(side)
     }
+    /// Whether the side holds a PDF, decided from its captured bytes as its
+    /// pages are, whether or not they could be prepared: a locked PDF holds
+    /// one, an absent side none.
+    pub fn holds_pdf(&self) -> bool {
+        self.pdf.is_some()
+            || self
+                .captured
+                .as_deref()
+                .is_some_and(|bytes| bytes.starts_with(b"%PDF-"))
+    }
     pub fn retained_bytes(&self) -> usize {
         self.captured.as_ref().map_or(0, |b| b.len())
             + self.pdf.as_ref().map_or(0, |pdf| pdf.retained_bytes())
@@ -343,6 +353,42 @@ fn header_room(index: usize, side: Pixels, heading: &str, format: &str, window: 
     side - px(1.) - window.rem_size() * (0.75 * 2. + 0.5 * 2.) - texts
 }
 
+/// What a side holds, as the caption after its heading that names it:
+/// its format, in 11 pt muted text, found by tests as `selector`, `-`, the
+/// side's `index`, `/` and the format, a selector built only when a test
+/// build sets it (`debug_selector` is a no-op in release), so drawing the
+/// caption builds no string for it. Every side of this surface is headed
+/// so, and in the page view a side that holds no PDF, an absent one above
+/// all, so an absent side reads its absence alike beside any partner
+/// (`pdf_view::side_heading`).
+pub(super) fn format_caption(
+    selector: &'static str,
+    index: usize,
+    format: SharedString,
+    muted: u32,
+) -> Div {
+    let reads = format.clone();
+    div()
+        .debug_selector(move || format!("{selector}-{index}/{reads}"))
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .font_weight(FontWeight::NORMAL)
+        .text_size(appearance::ui_text(11.))
+        .text_color(rgb(muted))
+        .child(format)
+}
+
+/// The width [`format_caption`] lays `format` out at, cached in `cache`.
+pub(super) fn format_caption_width(
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    format: &str,
+    window: &Window,
+) -> Pixels {
+    crate::views::cached_text_width(cache, format, window, || {
+        crate::views::line_widths(&[(format, appearance::ui_text(11.))], window)
+    })
+}
+
 /// Render only supplied content. A dialog child must not borrow its parent
 /// entity while that parent is already rendering the dialog layer; `opener`
 /// opens captured bytes for the comparison's open controls, which take the
@@ -416,12 +462,12 @@ pub(super) fn render_comparison<T: 'static>(
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(label),
             )
-            .child(
-                div()
-                    .text_size(appearance::ui_text(11.))
-                    .text_color(rgb(colors.muted))
-                    .child(side.metadata.format.clone()),
-            );
+            .child(format_caption(
+                "rich-side-format",
+                index,
+                side.metadata.format.clone().into(),
+                colors.muted,
+            ));
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(

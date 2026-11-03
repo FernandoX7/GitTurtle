@@ -603,6 +603,9 @@ thread_local! {
     /// Each side's name alone, its heading where the whole does not fit.
     static BEFORE_NAME: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_NAME: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// Each side's format caption, for a side that holds no PDF.
+    static BEFORE_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Read page text's and Retry page's labels, laid out; the link is a
     /// toggle, laid out at both its readings
     /// (`system_preview::HeaderControl::toggle`), and here at the wider,
@@ -629,31 +632,90 @@ thread_local! {
     pub(crate) static PAGE_NUMBER_READINGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Side `index`'s heading, as wide as it is laid out: "Before · PDF" where a
-/// line of the header holds it (`line`), and otherwise the side's name
-/// alone, "Before", whose format, a caption, gives way first, as labels do
-/// in the one responsive order; where even the name does not fit, it ends
-/// in an ellipsis (`render_comparison`). The heading was once laid out whole
-/// in every side and cut at the side's edge, "Before · PD" at 18 pt in a
-/// 461 × 490 window.
-fn side_heading(index: usize, label: &str, line: Pixels, window: &Window) -> (String, Pixels) {
-    let [whole_cache, name_cache] = if index == 0 {
-        [&BEFORE_HEADING, &BEFORE_NAME]
+/// A side's heading as the first line of its header draws it
+/// ([`side_heading`]).
+struct Heading {
+    /// What its semibold text reads.
+    text: String,
+    /// The side's own format, as the caption after that text, for a side
+    /// that holds no PDF ([`rich_preview::format_caption`]).
+    caption: Option<SharedString>,
+    /// Their width together, with the gap between them.
+    width: Pixels,
+}
+
+/// Side `index`'s heading, as wide as layout draws it on this display's
+/// device pixels, headed by what `side` holds and never by its partner: for
+/// a side that holds a PDF, "Before · PDF" where a line of the header holds
+/// it (`line`); for one that holds none, an absent side above all, its name
+/// and its own format as the caption the generic document surface heads
+/// every side with ("Before", "Absent"), so an absent side reads its absence
+/// alike beside an added PDF, whose pages this view draws, and beside a
+/// locked one, which leaves both sides to that surface. Where a line does
+/// not hold it, the heading is the
+/// side's name alone, "Before", the format giving way first as a caption
+/// does in the one responsive order; where even the name does not fit, it
+/// ends in an ellipsis (`render_comparison`). The heading was once laid out
+/// whole in every side and cut at the side's edge, "Before · PD" at 18 pt in
+/// a 461 × 490 window, and every side read "· PDF", so an absent Before
+/// read "Before · PDF", its partner's format, beside an added PDF and
+/// "Before Absent" beside a locked one. Measured in whole pixels alone, the
+/// heading was drawn up to a device pixel wider than measured at scale 1.2,
+/// at 15 pt 130 device pixels for 129, so a line that held the measure cut
+/// the name where its caption had been chosen.
+fn side_heading(
+    index: usize,
+    label: &str,
+    side: &rich_preview::Side,
+    line: Pixels,
+    window: &Window,
+) -> Heading {
+    let [whole_cache, name_cache, format_cache] = if index == 0 {
+        [&BEFORE_HEADING, &BEFORE_NAME, &BEFORE_FORMAT]
     } else {
-        [&AFTER_HEADING, &AFTER_NAME]
+        [&AFTER_HEADING, &AFTER_NAME, &AFTER_FORMAT]
     };
+    // Each text as layout draws it on this display's device pixels: shaped
+    // semibold and rounded up to a whole pixel, cached so, since the cache's
+    // key does not hold the display's scale, then up to a device pixel
+    // (`crate::views::laid_out_text_width`).
     let measure = |cache, text: &str| {
-        crate::views::cached_text_width(cache, text, window, || {
+        let whole = crate::views::cached_text_width(cache, text, window, || {
             let size = window.text_style().font_size.to_pixels(window.rem_size());
             crate::views::shaped_width(text, size, FontWeight::SEMIBOLD, window).ceil()
-        })
+        });
+        crate::views::laid_out_text_width(whole, window)
     };
-    let whole = format!("{label} · PDF");
-    let width = measure(whole_cache, &whole);
-    if width <= line {
-        (whole, width)
+    let name = measure(name_cache, label);
+    let (text, caption, width) = if side.holds_pdf() {
+        let whole = format!("{label} · PDF");
+        let width = measure(whole_cache, &whole);
+        (whole, None, width)
     } else {
-        (label.to_owned(), measure(name_cache, label).min(line))
+        let format = side.metadata.format.as_str();
+        // The name, the `gap_2` on a whole device pixel, halves toward zero
+        // (`Window::pixel_snap`), and the caption as drawn, summed on their
+        // device pixel.
+        let caption = rich_preview::format_caption_width(format_cache, format, window);
+        let width = crate::image_compare::on_device_pixel(
+            name + window.pixel_snap(window.rem_size() * 0.5)
+                + crate::views::laid_out_text_width(caption, window),
+            window,
+        );
+        (label.to_owned(), Some(format.to_owned().into()), width)
+    };
+    if width <= line {
+        Heading {
+            text,
+            caption,
+            width,
+        }
+    } else {
+        Heading {
+            text: label.to_owned(),
+            caption: None,
+            width: name.min(line),
+        }
     }
 }
 
@@ -781,8 +843,8 @@ pub(super) fn render_comparison<T: 'static>(
         // side's edge, its whole label in its tooltip and its accessible
         // name the one it has labelled.
         let line_room = crate::system_preview::header_line_room(side_width, window.rem_size() * 0.5);
-        let (heading, heading_width) = side_heading(index, label, line_room, window);
-        let room = header_room(side_width, heading_width, window);
+        let heading = side_heading(index, label, side, line_room, window);
+        let room = header_room(side_width, heading.width, window);
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's.
         // The header's padding beneath and its rule end it beneath the line
@@ -791,7 +853,17 @@ pub(super) fn render_comparison<T: 'static>(
         // the line scroll (`system_preview::header_ends`).
         // The header's padding, which its floor in `header_ends` counts.
         let padding = rems(0.5);
-        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p(padding).child(div().debug_selector(move || format!("pdf-side-heading-{index}")).min_w_0().max_w_full().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(div().min_w_0().truncate().child(heading)));
+        // Tests read what the heading reads after its selector and a `/`,
+        // a selector only a test build sets (`debug_selector` is a no-op in
+        // release), so only a test build copies the text for it.
+        let text = div().min_w_0().truncate();
+        #[cfg(test)]
+        let text = {
+            let reads = heading.text.clone();
+            text.debug_selector(move || format!("pdf-side-heading-{index}/{reads}"))
+        };
+        let caption = heading.caption.map(|format| rich_preview::format_caption("pdf-side-format", index, format, colors.muted));
+        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p(padding).child(div().debug_selector(move || format!("pdf-side-heading-{index}")).min_w_0().max_w_full().min_h(appearance::ui_size(28.)).flex().items_center().gap_2().font_weight(FontWeight::SEMIBOLD).child(text.child(heading.text)).children(caption));
         let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
         // The header scrolls where a narrow side cannot hold its controls,
@@ -1901,9 +1973,13 @@ pub(crate) mod tests {
                     };
                     (width("Before · PDF"), width("Before"))
                 });
+                let mut holding = rich_preview::Side::unavailable(Path::new("a.pdf"), true, None);
+                holding.pdf = Some(document.clone());
+                let heading =
+                    cx.update(|window, _| side_heading(0, "Before", &holding, px(1000.), window));
                 assert_eq!(
-                    cx.update(|window, _| side_heading(0, "Before", px(1000.), window)),
-                    ("Before · PDF".to_owned(), whole)
+                    (heading.text.as_str(), heading.caption, heading.width),
+                    ("Before · PDF", None, whole)
                 );
                 // Narrowing, as a window does, so each step follows the one
                 // before it.
@@ -2179,6 +2255,263 @@ pub(crate) mod tests {
                 state_now.contains(usable),
                 "once its page has arrived: {state_now:?}"
             );
+        }
+
+        /// A side's heading is measured as layout draws it on this display's
+        /// device pixels, so a line as wide as it is drawn holds it and a
+        /// line a device pixel narrower does not: at scale 1.2, as Hyprland
+        /// gives a panel it cannot set to 1.25, and at each size from 13 to
+        /// 18 pt, an absent Before beside an added PDF, its name and its
+        /// "Absent" caption each rounded up to a device pixel and the gap
+        /// between them on its nearest, and the added After's "After · PDF",
+        /// measure what the page view draws. Rounded to whole pixels alone,
+        /// the heading measured narrower than drawn, at 15, 16 and 17 pt a
+        /// whole device pixel (at 15 pt 107.5 px, 129 device pixels, for
+        /// 108.33, 130), so a line a device pixel narrower than drawn was
+        /// chosen for the caption and its name cut there.
+        #[gpui::test]
+        fn a_side_s_heading_is_measured_as_drawn_at_scale_1_2(cx: &mut gpui_kit::TestAppContext) {
+            use crate::worker::Content;
+            use rich_preview::{Comparison, Side};
+            let name = Path::new("report.pdf");
+            // The added side with its first page prepared, so the page lane
+            // is never asked for one.
+            let document = Arc::new(
+                Document::new(Arc::from(pdf("an added partner")), 3, None, || Ok(())).unwrap(),
+            );
+            document
+                .state
+                .lock()
+                .unwrap()
+                .cache
+                .insert(0, PreparedPage::from(page()));
+            let mut added = Side::unavailable(name, true, None);
+            added.pdf = Some(document);
+            let added = Arc::new(added);
+            let absent = Arc::new(Side::unavailable(name, false, None));
+            let (_view, cx) = window(
+                cx,
+                Content::Rich(Comparison {
+                    old: absent.clone(),
+                    new: added.clone(),
+                }),
+            );
+            let scale = 1.2;
+            cx.update(|window, _| window.set_scale_factor(scale));
+            let device = px(1. / scale);
+            let drawn = |cx: &mut gpui_kit::VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} is drawn"))
+                    .size
+                    .width
+            };
+            // The sizes where whole pixels alone measured the absent side's
+            // heading a device pixel or more narrower than it is drawn.
+            let mut short = Vec::new();
+            for text in 13..=18 {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                crate::tags::tests::draw(cx);
+                assert!(
+                    cx.debug_bounds("pdf-side-heading-0/Before").is_some()
+                        && cx.debug_bounds("pdf-side-format-0/Absent").is_some(),
+                    "at {text} pt the absent Before reads its name and its caption"
+                );
+                let [before, after] = [
+                    drawn(cx, "pdf-side-heading-0"),
+                    drawn(cx, "pdf-side-heading-1"),
+                ];
+                cx.update(|window, _| {
+                    let at = format!("at {text} pt and scale {scale}");
+                    let heading = |line| side_heading(0, "Before", &absent, line, window);
+                    let whole = heading(px(1000.));
+                    assert!(
+                        whole.caption.is_some() && (whole.width - before).abs() < px(0.01),
+                        "{at} the absent Before is measured {:?}, as drawn, {before:?}",
+                        whole.width
+                    );
+                    assert!(
+                        heading(before).caption.is_some(),
+                        "{at} a line as wide as the heading is drawn holds its caption"
+                    );
+                    let narrower = heading(before - device);
+                    assert!(
+                        narrower.caption.is_none() && narrower.text == "Before",
+                        "{at} a line a device pixel narrower holds the name alone"
+                    );
+                    let pdf_heading = side_heading(1, "After", &added, px(1000.), window);
+                    assert!(
+                        pdf_heading.text == "After · PDF"
+                            && (pdf_heading.width - after).abs() < px(0.01),
+                        "{at} \"After · PDF\" is measured {:?}, as drawn, {after:?}",
+                        pdf_heading.width
+                    );
+                    // What whole pixels alone measured the absent side.
+                    let size = window.text_style().font_size.to_pixels(window.rem_size());
+                    let semibold =
+                        crate::views::shaped_width("Before", size, FontWeight::SEMIBOLD, window);
+                    let pixels = semibold.ceil()
+                        + window.rem_size() * 0.5
+                        + crate::views::line_widths(
+                            &[("Absent", appearance::ui_text(11.))],
+                            window,
+                        );
+                    // A device pixel short, within the float error of its
+                    // sixths of a pixel.
+                    if pixels <= before - device + px(0.01) {
+                        short.push((text, pixels, before));
+                    }
+                });
+            }
+            assert!(
+                !short.is_empty(),
+                "a size where whole pixels alone measure the heading a device pixel short"
+            );
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(
+                    appearance::DEFAULT_INTERFACE_TEXT_SIZE,
+                    12,
+                    window,
+                    cx,
+                )
+            });
+        }
+
+        /// A side is headed by what it holds, never by its partner: an
+        /// absent side reads its name and its "Absent" caption alike beside
+        /// an added PDF, whose pages the page view draws, beside a locked
+        /// one, which leaves both sides to the generic document surface, and,
+        /// as After, beside a deleted one; only a side that holds a PDF reads
+        /// "· PDF", the locked one's caption saying "PDF" there. A locked PDF
+        /// beside the same PDF with its pages, which the page view draws
+        /// both sides of, holds a PDF though none of its pages, so it reads
+        /// "After · PDF" with no caption; decided by its pages alone, it
+        /// read "After" and "PDF". Beside an added PDF the absent Before once
+        /// read "Before · PDF", its partner's format, where beside a locked
+        /// one it read "Before" and "Absent".
+        #[gpui::test]
+        fn an_absent_side_is_headed_by_its_absence_beside_any_partner(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use crate::worker::Content;
+            use rich_preview::{Comparison, Side};
+            let fakes = tempfile::tempdir().unwrap();
+            let name = Path::new("report.pdf");
+            // A side with pages, its first prepared, so the page lane is
+            // never asked for one.
+            let with_pages = |bytes: Vec<u8>| {
+                let document =
+                    Arc::new(Document::new(Arc::from(bytes), 3, None, || Ok(())).unwrap());
+                document
+                    .state
+                    .lock()
+                    .unwrap()
+                    .cache
+                    .insert(0, PreparedPage::from(page()));
+                let mut side = Side::unavailable(name, true, None);
+                side.pdf = Some(document);
+                Arc::new(side)
+            };
+            let absent = || Arc::new(Side::unavailable(name, false, None));
+            // A password-protected PDF: its helper reports it locked (kind 6),
+            // so it has no pages.
+            let bytes = pdf("a locked partner");
+            name_helper(
+                &bytes,
+                &fakes.path().join("pid"),
+                &printing(&error_frame(6, 0)),
+                LONG,
+            );
+            let locked = Arc::new(Side::prepare(bytes.clone(), name, || Ok(())).unwrap());
+            assert!(locked.pdf.is_none(), "a locked PDF has no pages");
+            let (view, cx) = window(
+                cx,
+                Content::Rich(Comparison {
+                    old: absent(),
+                    new: with_pages(pdf("an added partner")),
+                }),
+            );
+            let drawn = |cx: &mut gpui_kit::VisualTestContext, selector: String| {
+                cx.debug_bounds(selector.leak()).is_some()
+            };
+            // What side `index` of the page view is headed with: its text,
+            // and its caption if it has one.
+            let page_view = |cx: &mut gpui_kit::VisualTestContext, index: usize, text: &str| {
+                assert!(
+                    drawn(cx, format!("pdf-side-heading-{index}/{text}")),
+                    "the page view's side {index} reads {text:?}"
+                );
+                ["Absent", "PDF"]
+                    .into_iter()
+                    .find(|format| drawn(cx, format!("pdf-side-format-{index}/{format}")))
+            };
+            crate::tags::tests::draw(cx);
+            assert_eq!(
+                page_view(cx, 0, "Before"),
+                Some("Absent"),
+                "beside an added PDF"
+            );
+            assert_eq!(page_view(cx, 1, "After · PDF"), None, "the added PDF");
+
+            let show = |cx: &mut gpui_kit::VisualTestContext, comparison: Comparison| {
+                view.update(cx, |view, cx| {
+                    view.content = Content::Rich(comparison);
+                    cx.notify();
+                });
+                crate::tags::tests::draw(cx);
+            };
+            show(
+                cx,
+                Comparison {
+                    old: with_pages(pdf("a deleted partner")),
+                    new: absent(),
+                },
+            );
+            assert_eq!(page_view(cx, 0, "Before · PDF"), None, "the deleted PDF");
+            assert_eq!(
+                page_view(cx, 1, "After"),
+                Some("Absent"),
+                "beside a deleted PDF"
+            );
+
+            // The same PDF with its pages beside it locked: the page view
+            // draws both sides, and the locked one holds a PDF.
+            show(
+                cx,
+                Comparison {
+                    old: with_pages(bytes),
+                    new: locked.clone(),
+                },
+            );
+            assert_eq!(page_view(cx, 0, "Before · PDF"), None, "the PDF's pages");
+            assert_eq!(
+                page_view(cx, 1, "After · PDF"),
+                None,
+                "a locked PDF beside its pages holds a PDF"
+            );
+
+            show(
+                cx,
+                Comparison {
+                    old: absent(),
+                    new: locked,
+                },
+            );
+            assert!(
+                cx.debug_bounds("pdf-side-header-0").is_none(),
+                "neither side has pages, so the generic surface draws both"
+            );
+            for (index, label, format) in [(0, "Before", "Absent"), (1, "After", "PDF")] {
+                assert!(
+                    cx.debug_bounds(if index == 0 {
+                        "rich-side-heading-0"
+                    } else {
+                        "rich-side-heading-1"
+                    })
+                    .is_some()
+                        && drawn(cx, format!("rich-side-format-{index}/{format}")),
+                    "beside a locked PDF, {label} reads {format:?} as its caption"
+                );
+            }
         }
 
         /// One frame drawn without running the tasks it starts, so what it

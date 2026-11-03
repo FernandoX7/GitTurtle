@@ -1920,7 +1920,7 @@ fn drawn_room(width: Pixels, window: &Window) -> Pixels {
 /// `length`, a sum of lengths on device pixels, on its whole device pixel,
 /// without the float error the sum leaves, so a sum that fills a room on
 /// device pixels exactly compares equal to it.
-fn on_device_pixel(length: Pixels, window: &Window) -> Pixels {
+pub(crate) fn on_device_pixel(length: Pixels, window: &Window) -> Pixels {
     on_device_pixel_at(length, window.scale_factor())
 }
 
