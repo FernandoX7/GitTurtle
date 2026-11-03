@@ -1423,12 +1423,136 @@ mod main_menu_tests {
         }
         draw(cx);
         write(cx, Some("Fetching…"), false);
+        let waits = format!("{stashes}, available when fetching finishes");
         assert_eq!(
             crate::copy_feedback::tests::announced(cx).map(|(_, said)| said),
-            Some(format!("{stashes}, available when fetching finishes")),
+            Some(waits.clone()),
             "the cursor resting on {stashes} says why it waits"
         );
+        assert_eq!(
+            crate::native_accessibility::menu_tests::cursor_among(cx, &[stashes, &waits]),
+            [waits.as_str()],
+            "the cursor stays drawn on {stashes} as it waits"
+        );
         write(cx, None, false);
+    }
+
+    /// Opened with F10 while a fetch runs, the Main Menu's keys rest the
+    /// keyboard's cursor on Browse stashes…, which waits for the fetch: Down
+    /// reaches it from the first item, its row drawn as the cursor and
+    /// named, as AT-SPI reports the selected item, "Browse stashes…,
+    /// available when fetching finishes"; Enter there runs nothing and
+    /// leaves the menu open with the cursor on it, the next Down moves on,
+    /// Up comes back, and End and Home reach the last and first items the
+    /// keys stop on. Passed over as every disabled item was, Down went from
+    /// Compare revisions… to the editor, and Orca never spoke why Browse
+    /// stashes… waited.
+    #[gpui::test]
+    async fn the_main_menu_keys_rest_on_browse_stashes_while_it_waits(cx: &mut TestAppContext) {
+        use crate::native_accessibility::menu_tests::cursor_among;
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "kept"],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        draw(cx);
+        let stashes = label(CommandId::Stashes);
+        let waits = format!("{stashes}, available when fetching finishes");
+        // Every row by the name it is announced with.
+        let names: Vec<&'static str> = super::PrimaryMenu::ORDER
+            .iter()
+            .flatten()
+            .map(|id| match id {
+                CommandId::Stashes => waits.clone().leak() as &str,
+                id => label(*id),
+            })
+            .collect();
+        let on = |cx: &mut VisualTestContext| {
+            let on = cursor_among(cx, &names);
+            assert!(on.len() <= 1, "one cursor: {on:?}");
+            on.first().copied()
+        };
+        let primary = app.read_with(cx, |app, _| app.primary_menu.clone());
+        let open =
+            |cx: &mut VisualTestContext| primary.read_with(cx, |menu, _| menu.menu.is_some());
+
+        cx.simulate_keystrokes("f10");
+        draw(cx);
+        let first = on(cx).expect("F10 opens on the first item that can act");
+        assert_ne!(first, waits, "F10 opens on an item that can act");
+        let mut walked = vec![first];
+        for _ in 0..names.len() {
+            cx.simulate_keystrokes("down");
+            draw(cx);
+            let at = on(cx).expect("Down keeps a cursor");
+            if at == waits {
+                break;
+            }
+            walked.push(at);
+        }
+        assert_eq!(
+            on(cx),
+            Some(waits.as_str()),
+            "Down reaches {stashes} as it waits, after {walked:?}"
+        );
+        assert_eq!(
+            crate::native_accessibility::waiting_names::of(stashes).as_deref(),
+            Some(waits.as_str()),
+            "the row the cursor rests on is named for its wait"
+        );
+        assert!(
+            cx.debug_bounds(format!("menu-item: {waits} · MenuItem disabled").leak())
+                .is_some(),
+            "{waits:?} is announced unavailable"
+        );
+
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx))
+                && cx.debug_bounds("saved-stash-row-0").is_none(),
+            "Enter on the waiting {stashes} opens no Stashes"
+        );
+        assert!(open(cx), "the menu stays open");
+        assert_eq!(on(cx), Some(waits.as_str()), "the cursor stays on it");
+
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        let next = on(cx).expect("Down keeps a cursor");
+        assert_ne!(next, waits, "the next Down moves on");
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(on(cx), Some(waits.as_str()), "Up comes back to it");
+        cx.simulate_keystrokes("home");
+        draw(cx);
+        assert_eq!(on(cx), Some(first), "Home reaches the first item");
+        cx.simulate_keystrokes("end");
+        draw(cx);
+        assert_eq!(
+            on(cx),
+            names.iter().rev().copied().find(|name| {
+                cx.debug_bounds(format!("menu-item: {name} · MenuItem").leak())
+                    .is_some()
+            }),
+            "End reaches the last item that can act"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify();
+        });
+        draw(cx);
     }
 }
 

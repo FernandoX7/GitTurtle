@@ -1048,14 +1048,31 @@ labels by name. Remove this part of the patch when upstream gives menu labels a
 non-item role, a colour distinct from a disabled item's and a style distinct
 from an item's, and those tests pass without it.
 
-The menu-keys patch modifies `src/menu/popup_menu.rs`. Upstream's first Down
+The menu-keys patch modifies `src/menu/popup_menu.rs` and
+`src/menu/menu_item.rs`. Upstream's first Down
 selects a menu's first entry whatever it is, Down past the last item returns
 to it, and Right selects a submenu's first entry, so in a menu that opens with
 a label the first Down highlighted text that cannot act and Enter did nothing.
-Up and Down now move only between items that can act, from the first of them,
-and wrap to the first or last such item; a label, separator or disabled item is
-passed over, and a menu with none that can act selects nothing. A submenu opened
-from the keyboard selects its first item that can act. `PopupMenu::select_first_item`
+Up and Down now move only between the items the keyboard's cursor stops on,
+from the first of them, and wrap to the first or last such item; Home and End,
+which upstream left unbound, move to the first and last (`SelectFirst`,
+`SelectLast`). The cursor stops on an item that can act and on a disabled item
+marked as unavailable for a reason it states (`PopupMenuItem::reason_stated`,
+`is_keyboard_stop`); a label, separator or disabled item that states no reason
+is passed over, and a menu with no stop selects nothing. On a stated reason's
+item the cursor is drawn as on any other (`src/menu/menu_item.rs` draws the
+keyboard's cursor on a disabled item, which only such an item carries) and the
+item is marked selected, so AT-SPI reports it as the menu's selected item, its
+accessible name stating the reason; Enter and a click do nothing there
+(`confirm` acts only on `is_clickable`, and a disabled row is wired to no
+click), and the next key moves on. Passed over as every disabled item was, the
+Linux Main Menu's Browse stashes…, waiting for a fetch, was never reached, and
+Orca, from F10 and Down, never spoke why it waited (QA-89); the owner decided
+that an item stating a reason stays in the keyboard's order. A mark rather than
+an inference from the label keeps a disabled item whose accessible name only
+says more than its label, as "More context, 3 lines shown" does, passed over.
+A submenu opened from the keyboard selects its first item that can act; a
+submenu is never marked, since one opens where it is selected. `PopupMenu::select_first_item`
 places the keyboard's cursor on a menu's first item that can act, as a menu the
 keyboard opened shows it; upstream offers no way to set a menu's selection, so a
 keyboard's menu highlighted nothing until the first Down. The caller decides when
@@ -1080,8 +1097,25 @@ menu with the keyboard and renames the group with Enter alone;
 `a_menu_the_keyboard_opens_starts_on_its_first_action` opens the same menu with
 a click, which highlights nothing, and with Enter on its button, which
 highlights its first available item.
+The crate's own `menu::popup_menu::tests::the_menu_keys_rest_on_an_item_that_states_why_it_waits`
+walks One, Two (disabled, stating why), Three (disabled, stating nothing),
+Four and Five (an element item stating why) with Down, Up, Home and End,
+reads the cursor on Two and Five, drawn in the cursor's fill and announced by
+the names that state their reasons, presses Enter and clicks on Two with
+nothing run and the menu open, and never reads it on Three;
+`the_menu_keys_pass_over_a_disabled_item_that_states_no_reason` builds the
+same items unmarked and reads Down, Up, Home and End passing over Two and
+Five. With the walk back on `is_clickable` the first fails at Two, and with the
+cursor drawn only on an item that can act it fails at Two's fill.
+`cargo test --locked -p gitturtle the_main_menu_keys_rest_on_browse_stashes_while_it_waits`
+opens the Linux Main Menu with F10 during a fetch, walks Down onto Browse
+stashes…, reads the cursor drawn there and the row named "Browse stashes…,
+available when fetching finishes", presses Enter with no Stashes opened and the
+menu open, and moves on and back with Down, Up, Home and End; with the walk on
+`is_clickable` Down passes it by and the test fails.
 Remove this part of the patch when upstream menus move only between items that
-can act and those tests pass without it.
+can act, or state why they wait, and bind Home and End, and those tests pass
+without it.
 
 The dropdown-trigger patch modifies `src/menu/dropdown_menu.rs` and
 `src/popover.rs`. `DropdownMenu` copies its trigger's style into
@@ -1524,14 +1558,18 @@ that name, wherever the builder now puts it; an item without a name is found
 only at its own place, where the entry there has none either. Taken nearest
 its old place, a repeated name let items added above move the cursor to the
 other item of that name. It never moves the cursor to another
-item. Where that item is gone or can no longer act, as while a write refuses
-it or once its name states a condition it waits for, the cursor rests on
+item. Where that item waits for a reason it states
+(`PopupMenuItem::reason_stated`), as while a write refuses it and its name
+says what it waits for, the cursor stays on it, as the menu keys rest it there
+(`place_kept_cursor` places it on any `is_keyboard_stop`). Where that item is
+gone, or can no longer act and states no reason, the cursor rests on
 nothing and the menu remembers the item (`kept_cursor`), at the place it now
 stands where it is still offered, across any further rebuild, until a
-rebuild offers it able to act and the cursor returns to it, or a menu key or
-the pointer moves the selection, which forgets it. From rest, Up moves to the
-last item that can act before the remembered place and Down to the first at
-or after it. A remembered item takes the place of any selection the builder
+rebuild offers it able to act or stating why it waits and the cursor returns
+to it, or a menu key or the pointer moves the selection, which forgets it. From rest, Up moves to the
+last item the keys stop on before the remembered place and Down to the first
+at or after it (`cursor_place`): the stops are the items that can act and
+those that state why they wait (`is_keyboard_stop`). A remembered item takes the place of any selection the builder
 makes (`select_first_item`); with none, the builder's selection stands. A
 capped menu scrolls to the cursor only where the rebuild moves it to another
 row, as its item moved or it returns from rest; the selection of a builder
@@ -1554,14 +1592,20 @@ refused Open project, and after the write; Discard changes… once Ignore… was
 refused; Stage once a file became conflicted, where Enter marked the file
 resolved; Cherry-pick once HEAD left a commit and took Amend and Undo away.
 
-A rebuild that rests the keyboard's cursor because the item it was on is
-still offered but refused now reports that item to the application, once,
-as the rest begins: `PopupMenu` emits `CursorRests` (exported from
-`menu`), carrying the item's name and its accessible name, which an item
-that states why it waits says apart from the command. A rebuild while the
-rest goes on emits nothing more, an item that is gone emits nothing, and a
-menu whose selection the pointer owns keeps no cursor to rest and emits
-nothing. An element item's accessible name is also the name a rebuild
+A rebuild that rests the keyboard's cursor because the item it was on,
+which could act, is still offered but refused, on nothing or on the item
+itself where it states why it waits, now reports that item to the
+application, once, as the rest begins: `PopupMenu` emits `CursorRests`
+(exported from `menu`), carrying the item's name and its accessible name,
+which an item that states why it waits says apart from the command. The app
+announces it because nothing establishes that a screen reader speaks the
+selected item's name changing as it starts to wait (a native Orca read is
+pending), so the reason is said either way. A
+rebuild while the rest goes on emits nothing more, nor does one that finds
+the cursor on a waiting item the menu keys put it on, which they reported
+selected with its name stating the reason; an item that is gone emits nothing,
+and a menu whose selection the pointer owns keeps no cursor to rest and
+emits nothing. An element item's accessible name is also the name a rebuild
 found it by, so an item whose accessible name states its condition ("Open
 project, available when fetching remote finishes") read as a different
 item from the plain one before it, and its refusal as the item having
@@ -1571,6 +1615,12 @@ by, its command, apart from its accessible name. The app subscribes in
 button's, right-click's and keyboard's menu) and announces the accessible
 name politely where it says more than the name. The kit has no
 announcement of its own, which belongs to the application's live regions.
+`a_rebuilt_menu_keeps_the_cursor_on_an_item_that_states_why_it_waits`
+keeps the cursor on Two, where Down rested it, through a rebuild that reports
+nothing, then on One as One starts to wait with a stated reason, drawn there
+and reported once over two rebuilds, Enter running nothing until One can act
+again; with `place_kept_cursor` placing only an item that can act, the cursor
+leaves Two and the test fails.
 `a_rebuild_that_rests_the_cursor_reports_the_waiting_item_once` rests the
 cursor on a refused One, builds the menu again in that rest, returns the
 cursor, rests it on an element item named One that states why, and then

@@ -415,10 +415,12 @@ fn shift_f10_and_the_menu_key_open_the_cursor_rows_menu(cx: &mut TestAppContext)
 /// as its right-click menu does: Open project is disabled in place as a
 /// write starts and available again as it ends, with focus kept in the menu.
 /// It read the write once, as it opened, and kept Open project so. Its
-/// keyboard's cursor, on Open project as it opens, rests on no item while
-/// the write refuses Open project and is back on it once the write ends:
-/// moved to the nearest item that could act, it rested on Rename project…
-/// and stayed there after the write, so Enter renamed instead of opening.
+/// keyboard's cursor, on Open project as it opens, stays on Open project
+/// while the write refuses it and Open project states what it waits for,
+/// and is on it, able to act, once the write ends: moved to the nearest item
+/// that could act, it rested on Rename project… and stayed there after the
+/// write, so Enter renamed instead of opening; rested on no item, it showed
+/// nothing of where the person had put it.
 #[gpui::test]
 fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     const MENU_KEY: &str = if cfg!(target_os = "macos") {
@@ -464,7 +466,11 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     let cursor = |cx: &mut VisualTestContext| {
         crate::native_accessibility::menu_tests::cursor_among(
             cx,
-            &["Open project", "Rename project…"],
+            &[
+                "Open project",
+                "Open project, available when testing finishes",
+                "Rename project…",
+            ],
         )
     };
     for key in ["shift-f10", MENU_KEY] {
@@ -484,8 +490,8 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
         );
         assert_eq!(
             cursor(cx),
-            Vec::<&str>::new(),
-            "{key}: the cursor rests on none while the write refuses Open project"
+            ["Open project, available when testing finishes"],
+            "{key}: the cursor stays on Open project while it waits for the write"
         );
         busy(cx, None);
         assert!(open(cx, false), "{key}: Open project once the write ends");

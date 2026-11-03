@@ -1,6 +1,6 @@
 use crate::ThemeStyled as _;
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
-use crate::actions::{SelectLeft, SelectRight};
+use crate::actions::{SelectFirst, SelectLast, SelectLeft, SelectRight};
 use crate::menu::menu_item::{Entry, MenuItemElement};
 use crate::scroll::{Scrollbar, ScrollbarMode};
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
@@ -109,6 +109,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("left", SelectLeft, Some(CONTEXT)),
         KeyBinding::new("right", SelectRight, Some(CONTEXT)),
+        // GitTurtle patch: Home and End move the keyboard's cursor to the
+        // first and last item it stops on, as a native menu's do.
+        KeyBinding::new("home", SelectFirst, Some(CONTEXT)),
+        KeyBinding::new("end", SelectLast, Some(CONTEXT)),
     ]);
 }
 
@@ -130,6 +134,10 @@ pub enum PopupMenuItem {
         /// GitTurtle patch: the name assistive technology reads, when it
         /// should say more than the label shows.
         accessibility_label: Option<SharedString>,
+        /// GitTurtle patch: disabled for a reason the item states
+        /// ([`PopupMenuItem::reason_stated`]), so the keyboard's cursor
+        /// stops on it.
+        reason_stated: bool,
         is_link: bool,
         action: Option<Box<dyn Action>>,
         // For link item
@@ -145,6 +153,8 @@ pub enum PopupMenuItem {
         /// GitTurtle patch: the name assistive technology reads; an element
         /// item has no label of its own.
         accessibility_label: Option<SharedString>,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        reason_stated: bool,
         /// GitTurtle patch: the name a menu built again finds the item by,
         /// where its accessible name says more than the command it is
         /// ([`PopupMenuItem::named`]).
@@ -178,6 +188,7 @@ impl PopupMenuItem {
             checked: false,
             checkable: false,
             accessibility_label: None,
+            reason_stated: false,
             action: None,
             is_link: false,
             handler: None,
@@ -197,6 +208,7 @@ impl PopupMenuItem {
             checked: false,
             checkable: false,
             accessibility_label: None,
+            reason_stated: false,
             name: None,
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
@@ -346,6 +358,31 @@ impl PopupMenuItem {
         self
     }
 
+    /// GitTurtle patch: marks a disabled item as unavailable for a reason it
+    /// states, as an item that waits for a write says in its accessible name
+    /// what it waits for ("Browse stashes…, available when fetching
+    /// finishes"). The keyboard's cursor stops on such an item while it is
+    /// disabled: Up, Down, Home and End rest the cursor on it, drawn and
+    /// announced as the selected item with its name and reason, Enter and a
+    /// click do nothing, and the next key moves on; a menu built again keeps
+    /// the cursor on it ([`PopupMenu::rebuild`]). A disabled item without
+    /// this mark is passed over, as one that states nothing would only be
+    /// heard as unavailable. A menu the keyboard opens still starts on its
+    /// first item that can act ([`PopupMenu::select_first_item`]), and the
+    /// pointer's hover is unchanged.
+    ///
+    /// Only works for [`PopupMenuItem::Item`] and
+    /// [`PopupMenuItem::ElementItem`]: a submenu opens where it is selected,
+    /// so a disabled one is passed over.
+    pub fn reason_stated(mut self, stated: bool) -> Self {
+        match &mut self {
+            PopupMenuItem::Item { reason_stated, .. }
+            | PopupMenuItem::ElementItem { reason_stated, .. } => *reason_stated = stated,
+            _ => {}
+        }
+        self
+    }
+
     /// Add a click handler for the menu item.
     ///
     /// Only works for [`PopupMenuItem::Item`] and [`PopupMenuItem::ElementItem`].
@@ -376,6 +413,7 @@ impl PopupMenuItem {
             checked: false,
             checkable: false,
             accessibility_label: None,
+            reason_stated: false,
             action: None,
             is_link: true,
             handler: Some(Rc::new(move |_, _, cx| cx.open_url(&href))),
@@ -395,6 +433,26 @@ impl PopupMenuItem {
                     ..
                 } | PopupMenuItem::Submenu {
                     disabled: false,
+                    ..
+                }
+            )
+    }
+
+    /// GitTurtle patch: whether the keyboard's cursor stops on this entry: an
+    /// item that can act, or a disabled one that states why it cannot
+    /// ([`Self::reason_stated`]), so the person hears the reason. A label, a
+    /// separator and a disabled item that states nothing are passed over.
+    fn is_keyboard_stop(&self) -> bool {
+        self.is_clickable()
+            || matches!(
+                self,
+                PopupMenuItem::Item {
+                    disabled: true,
+                    reason_stated: true,
+                    ..
+                } | PopupMenuItem::ElementItem {
+                    disabled: true,
+                    reason_stated: true,
                     ..
                 }
             )
@@ -487,18 +545,25 @@ impl PopupMenuItem {
 }
 
 /// GitTurtle patch: a menu built again left the keyboard's cursor resting
-/// because the item it was on is still offered but can no longer act, as
-/// while a write refuses it ([`PopupMenu::rebuild`]). Emitted once, as the
-/// rest begins, not again for each rebuild while it lasts, and never for a
-/// menu whose selection the pointer owns, which keeps no cursor to rest. An
-/// application can say why the item waits, as an item that states its
-/// condition does in its accessible name.
+/// because the item it was on, which could act, is still offered but can no
+/// longer act, as while a write refuses it ([`PopupMenu::rebuild`]): on
+/// nothing, or on the item itself where it states why it is unavailable or
+/// waits ([`PopupMenuItem::reason_stated`]). Emitted once, as the rest
+/// begins, not again for each rebuild while it lasts nor for a cursor the
+/// menu keys put on such an item, which they report selected with its
+/// reason in its name, and never for a menu whose selection the pointer
+/// owns, which keeps no cursor to rest. An application can say why the item
+/// can no longer act, as the item's accessible name does where it states
+/// the reason: that name gains the reason as the item starts to wait, but
+/// nothing establishes that a screen reader speaks the selected item's name
+/// changing, so the application announces it to have the reason said either
+/// way.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorRests {
     /// The item's name, by which the menu finds it ([`PopupMenuItem::named`]).
     pub name: SharedString,
-    /// The item's accessible name, which says why it waits where the item
-    /// states it.
+    /// The item's accessible name, which says why it is unavailable or waits
+    /// where the item states it.
     pub label: SharedString,
 }
 
@@ -1010,13 +1075,18 @@ impl PopupMenu {
     /// found again by its name ([`PopupMenuItem::name`]) and its order among
     /// the items of that name wherever the builder now places it, as an item
     /// added above it moves it, or, for an item without a name, at its place
-    /// where the item there has none either. It never moves to another item: where its item is gone or
-    /// can no longer act, as while a write refuses it or once its name
-    /// states a condition it waits for, the cursor rests on nothing and the
-    /// menu remembers the item (`kept_cursor`), however often it is
-    /// built again, until a rebuild offers the item able to act and places
-    /// the cursor there again, or a menu key or the pointer moves the
-    /// selection. From rest, Up and Down start from the item's place. A
+    /// where the item there has none either. It never moves to another
+    /// item. Where its item is unavailable or waits for a reason it states
+    /// ([`PopupMenuItem::reason_stated`]), as an item a write refuses says
+    /// what it waits for, the cursor stays on it, as the menu keys rest it
+    /// there, and Enter does nothing until the item can act. Where its item
+    /// is gone, or can no longer act and states no reason, the cursor rests
+    /// on nothing and the menu remembers the item (`kept_cursor`), however
+    /// often it is built again, until a rebuild offers the item able to act
+    /// or stating why it is unavailable or waits and places the cursor there
+    /// again, or a menu key or the pointer moves the selection. From rest,
+    /// Up and Down start from the item's place. A cursor whose item could act and, still
+    /// offered, no longer can is reported once ([`CursorRests`]). A
     /// remembered item takes the place of any selection the builder makes
     /// ([`Self::select_first_item`]); with none, the builder's selection
     /// stands, unless the pointer owns the selection. Upstream cleared the
@@ -1063,7 +1133,14 @@ impl PopupMenu {
     ) {
         let cursor = self.keyboard_cursor();
         let row = self.selected_index;
-        let resting = self.kept_cursor.is_some();
+        // Whether the keyboard's cursor is on an item that can act, not at
+        // rest nor on an item that waits: only such an item's refusal begins
+        // a rest ([`CursorRests`]).
+        let acting = self.kept_cursor.is_none()
+            && cursor
+                .as_ref()
+                .and_then(|cursor| self.menu_items.get(cursor.index))
+                .is_some_and(PopupMenuItem::is_clickable);
         let pointer = cursor.is_none() && self.pointer_selection;
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
@@ -1083,9 +1160,11 @@ impl PopupMenu {
             self.scroll_handle = scroll;
         }
         if let Some(cursor) = cursor {
-            // A rest that begins here, its item still offered but refused,
-            // is reported once; a rest that goes on is not reported again.
-            if let Some(waiting) = self.place_kept_cursor(cursor, row).filter(|_| !resting)
+            // A rest that begins here, its item, which could act, still
+            // offered but refused or waiting, is reported once; a rest that
+            // goes on, or a cursor the keys put on a waiting item, is not
+            // reported again.
+            if let Some(waiting) = self.place_kept_cursor(cursor, row).filter(|_| acting)
                 && let Some(item) = self.menu_items.get(waiting)
                 && let (Some(name), Some(label)) = (item.name().cloned(), item.a11y_label())
             {
@@ -1164,22 +1243,24 @@ impl PopupMenu {
     }
 
     /// GitTurtle patch: places the keyboard's `cursor`, kept across a
-    /// rebuild, on its item where that item can act, scrolling a capped
-    /// menu to it only where that is not `row`, the cursor's row before the
-    /// rebuild; otherwise nothing is selected and the menu remembers the
-    /// item, at the place it now stands where it is still offered, for the
-    /// next rebuild and the menu keys. Returns the item's index where the
-    /// cursor rests because the item is offered but refused.
+    /// rebuild, on its item where the cursor stops on that item, as it does
+    /// on one that can act or one that states why it is unavailable or waits
+    /// ([`PopupMenuItem::is_keyboard_stop`]), scrolling a capped menu to it
+    /// only where that is not `row`, the cursor's row before the rebuild;
+    /// otherwise nothing is selected and the menu remembers the item, at
+    /// the place it now stands where it is still offered, for the next
+    /// rebuild and the menu keys. Returns the item's index where it is
+    /// offered but cannot act, the cursor resting or waiting with it.
     fn place_kept_cursor(&mut self, cursor: KeptCursor, row: Option<usize>) -> Option<usize> {
         let found = self.find_kept(&cursor);
-        match found.filter(|ix| self.menu_items[*ix].is_clickable()) {
+        let refused = found.filter(|ix| !self.menu_items[*ix].is_clickable());
+        match found.filter(|ix| self.menu_items[*ix].is_keyboard_stop()) {
             Some(ix) => {
                 self.selected_index = Some(ix);
                 self.keyboard_selection = true;
                 if row != Some(ix) {
                     self.scroll_handle.scroll_to_item(ix);
                 }
-                None
             }
             None => {
                 self.selected_index = None;
@@ -1187,9 +1268,9 @@ impl PopupMenu {
                     index: found.unwrap_or(cursor.index),
                     ..cursor
                 });
-                found
             }
         }
+        refused
     }
 
     fn add_menu_item(
@@ -1286,6 +1367,18 @@ impl PopupMenu {
             .filter(|(_, item)| item.is_clickable())
     }
 
+    /// GitTurtle patch: the indices of the entries the menu keys move the
+    /// keyboard's cursor between, in order: the items that can act and those
+    /// that state why they are unavailable or wait
+    /// ([`PopupMenuItem::is_keyboard_stop`]).
+    fn keyboard_stops(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {
+        self.menu_items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.is_keyboard_stop())
+            .map(|(ix, _)| ix)
+    }
+
     /// GitTurtle patch: a press went down on the row drawn for the item at
     /// `ix` as the menu stood after `builds` rebuilds. GPUI delivers a press
     /// to the rows of the last frame drawn, which can come before the menu
@@ -1369,8 +1462,8 @@ impl PopupMenu {
         window.dispatch_action(action.boxed_clone(), cx);
     }
 
-    /// Select `ix` for the keyboard, this method's only caller (Up, Down, a
-    /// submenu's first item and a keyboard-opened menu's).
+    /// Select `ix` for the keyboard, this method's only caller (Up, Down,
+    /// Home, End, a submenu's first item and a keyboard-opened menu's).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         // GitTurtle patch: a key that moves the cursor ends a rebuild's
         // remembering of the item it was on, and the pointer's ownership of
@@ -1385,12 +1478,17 @@ impl PopupMenu {
         }
     }
 
-    // GitTurtle patch: Up and Down move only between items that can act.
+    // GitTurtle patch: Up, Down, Home and End move only between the items the
+    // keyboard's cursor stops on: those that can act and those that state why
+    // they are unavailable or wait ([`PopupMenuItem::reason_stated`]).
     // Upstream's first Down, and Down past the last item, selected the first
     // entry whatever it was, so a menu that opens with a label (the project
     // pane's row name, the profile menu's heading) highlighted nothing that
-    // could act, and Enter did nothing. A label, separator or disabled item is
-    // passed over, and a menu with none that can act selects nothing.
+    // could act, and Enter did
+    // nothing. A label, separator or disabled item that states no reason is
+    // passed over, and a menu with no stop selects nothing. Passing over every
+    // disabled item, the keys never reached Browse stashes… while it waited
+    // for a write, so a screen reader never spoke why it waited.
 
     /// The first item that can act, if any.
     fn first_clickable_index(&self) -> Option<usize> {
@@ -1410,9 +1508,9 @@ impl PopupMenu {
 
     /// GitTurtle patch: where Up and Down start from: the cursor's item, and
     /// `true`, or, while a rebuild rests the cursor, the place of the item it
-    /// remembers ([`Self::rebuild`]), and `false`: Up moves to the last item
-    /// that can act before that place, and Down to the first at or after it,
-    /// since the remembered item, refused there or gone, cannot take it.
+    /// remembers ([`Self::rebuild`]), and `false`: Up moves to the last stop
+    /// before that place, and Down to the first at or after it, since the
+    /// remembered item, refused there or gone, cannot take it.
     fn cursor_place(&self) -> Option<(usize, bool)> {
         match (self.selected_index, &self.kept_cursor) {
             (Some(ix), _) => Some((ix, true)),
@@ -1425,13 +1523,8 @@ impl PopupMenu {
         cx.stop_propagation();
         let previous = self
             .cursor_place()
-            .and_then(|(ix, _)| {
-                self.clickable_menu_items()
-                    .filter(|(i, _)| *i < ix)
-                    .last()
-                    .map(|(i, _)| i)
-            })
-            .or_else(|| self.clickable_menu_items().last().map(|(ix, _)| ix));
+            .and_then(|(ix, _)| self.keyboard_stops().filter(|i| *i < ix).last())
+            .or_else(|| self.keyboard_stops().next_back());
         if let Some(ix) = previous {
             self.set_selected_index(ix, cx);
         }
@@ -1442,12 +1535,31 @@ impl PopupMenu {
         let next = self
             .cursor_place()
             .and_then(|(ix, on_it)| {
-                self.clickable_menu_items()
-                    .find(|(i, _)| *i > ix || (!on_it && *i == ix))
-                    .map(|(i, _)| i)
+                self.keyboard_stops()
+                    .find(|i| *i > ix || (!on_it && *i == ix))
             })
-            .or_else(|| self.first_clickable_index());
+            .or_else(|| self.keyboard_stops().next());
         if let Some(ix) = next {
+            self.set_selected_index(ix, cx);
+        }
+    }
+
+    /// GitTurtle patch: Home moves the keyboard's cursor to the menu's first
+    /// stop, as a native menu's does; upstream bound nothing to it.
+    fn select_first(&mut self, _: &SelectFirst, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let first = self.keyboard_stops().next();
+        if let Some(ix) = first {
+            self.set_selected_index(ix, cx);
+        }
+    }
+
+    /// GitTurtle patch: End moves the keyboard's cursor to the menu's last
+    /// stop.
+    fn select_last(&mut self, _: &SelectLast, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let last = self.keyboard_stops().next_back();
+        if let Some(ix) = last {
             self.set_selected_index(ix, cx);
         }
     }
@@ -2294,6 +2406,8 @@ impl Render for PopupMenu {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::select_first))
+            .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::confirm))
@@ -4115,6 +4229,281 @@ mod tests {
             taken(&reports).is_empty(),
             "the pointer's selection reports nothing"
         );
+    }
+
+    /// The names Two and Five, which wait, are announced with.
+    const TWO_WAITS: &str = "Two, available when the write finishes";
+    const FIVE_WAITS: &str = "Five, available when the write finishes";
+
+    /// A menu under a heading of One, which acts, Two, disabled for a reason
+    /// it states, Three, disabled with none, Four, which acts, and Five, an
+    /// element item disabled for a reason it states, as an application's
+    /// waiting rows are built; each adds its name to `ran` when it acts, and
+    /// `waits` gives Two and Five their mark.
+    fn waiting(menu: PopupMenu, ran: &Ran, waits: bool) -> PopupMenu {
+        let item = |name: &'static str| {
+            let ran = ran.clone();
+            PopupMenuItem::new(name).on_click(move |_, _, _| ran.borrow_mut().push(name))
+        };
+        let five = ran.clone();
+        menu.label("Heading")
+            .item(item("One"))
+            .item(
+                item("Two")
+                    .accessibility_label(TWO_WAITS)
+                    .disabled(true)
+                    .reason_stated(waits),
+            )
+            .item(item("Three").disabled(true))
+            .item(item("Four"))
+            .item(
+                PopupMenuItem::element(|_, _| div().child("Five"))
+                    .named("Five")
+                    .accessibility_label(FIVE_WAITS)
+                    .disabled(true)
+                    .reason_stated(waits)
+                    .on_click(move |_, _, _| five.borrow_mut().push("Five")),
+            )
+    }
+
+    /// A focused [`waiting`] menu drawn at the window's top left with its
+    /// fills painted, the menu keys bound, and how often it was dismissed.
+    fn open_waiting<'a>(
+        cx: &'a mut TestAppContext,
+        ran: &Ran,
+    ) -> (
+        Entity<PopupMenu>,
+        Rc<std::cell::Cell<usize>>,
+        &'a mut VisualTestContext,
+    ) {
+        cx.update(|cx| {
+            let mut colors = crate::theme::ThemeColor::default();
+            colors.accent = gpui::red();
+            colors.list_active = gpui::blue();
+            cx.set_global(Theme::from(&colors));
+            init(cx);
+        });
+        let ran = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| waiting(PopupMenu::new(cx), &ran, true));
+            let focus = menu.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        let dismissed = Rc::new(std::cell::Cell::new(0));
+        cx.update(|_, cx| {
+            let dismissed = dismissed.clone();
+            cx.subscribe(&menu, move |_, _: &DismissEvent, _| {
+                dismissed.set(dismissed.get() + 1)
+            })
+            .detach();
+        });
+        (menu, dismissed, cx)
+    }
+
+    /// The selected item's accessible name, which AT-SPI reports for the
+    /// menu's selected item, where the keyboard's cursor is on it.
+    fn announced(menu: &Entity<PopupMenu>, cx: &mut VisualTestContext) -> Option<String> {
+        menu.read_with(cx, |menu, _| {
+            let ix = menu.selected_index.filter(|_| menu.keyboard_selection)?;
+            Some(menu.menu_items.get(ix)?.a11y_label()?.to_string())
+        })
+    }
+
+    /// Whether the row the debug selector `item` names is drawn with the
+    /// keyboard cursor's fill, `list_active`, set to blue by
+    /// [`open_waiting`].
+    fn drawn_as_cursor(cx: &mut VisualTestContext, item: &str) -> bool {
+        let row = cx
+            .debug_bounds(item.to_owned().leak())
+            .unwrap_or_else(|| panic!("{item} drawn"));
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+            };
+            window.painted_quads().iter().any(|quad| {
+                quad.background == gpui::Background::from(gpui::blue())
+                    && near(quad.bounds.left(), row.left())
+                    && near(quad.bounds.top(), row.top())
+                    && near(quad.bounds.right(), row.right())
+                    && near(quad.bounds.bottom(), row.bottom())
+            })
+        })
+    }
+
+    /// A disabled item that states why it waits stays in the keyboard's
+    /// order: Down rests the cursor on Two, drawn as the keyboard's cursor
+    /// and announced by its name with its reason, Enter and a click run
+    /// nothing and leave the menu open, and the next Down moves on, past
+    /// Three, which states no reason, to Four, then to Five, an element
+    /// item that waits, and round to One; Up comes back the same way, and
+    /// Home and End rest it on the first and last stop. Passed over as every
+    /// disabled item was, Down went from One to Four, so a screen reader
+    /// never spoke why Two waited.
+    #[gpui::test]
+    fn the_menu_keys_rest_on_an_item_that_states_why_it_waits(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, dismissed, cx) = open_waiting(cx, &ran);
+        let two = format!("menu-item: {TWO_WAITS} · MenuItem disabled");
+        let walk = |cx: &mut VisualTestContext, key: &str, on: &str| {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some(on), "{key} to {on}");
+        };
+        walk(cx, "down", "One");
+        walk(cx, "down", "Two");
+        assert_eq!(
+            announced(&menu, cx).as_deref(),
+            Some(TWO_WAITS),
+            "Two is announced with why it waits"
+        );
+        assert!(
+            drawn_as_cursor(cx, &two),
+            "Two is drawn as the keyboard's cursor"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let row = cx.debug_bounds(two.clone().leak()).expect("Two drawn");
+        cx.simulate_click(row.center(), Modifiers::default());
+        draw(cx);
+        assert!(ran.borrow().is_empty(), "Enter and a click run nothing");
+        assert_eq!(dismissed.get(), 0, "the menu stays open");
+        walk(cx, "home", "One");
+        walk(cx, "down", "Two");
+        walk(cx, "down", "Four");
+        walk(cx, "down", "Five");
+        assert_eq!(
+            announced(&menu, cx).as_deref(),
+            Some(FIVE_WAITS),
+            "Five is announced with why it waits"
+        );
+        assert!(
+            drawn_as_cursor(cx, &format!("menu-item: {FIVE_WAITS} · MenuItem disabled")),
+            "Five is drawn as the keyboard's cursor"
+        );
+        walk(cx, "down", "One");
+        walk(cx, "up", "Five");
+        walk(cx, "up", "Four");
+        walk(cx, "up", "Two");
+        walk(cx, "up", "One");
+        walk(cx, "end", "Five");
+        walk(cx, "home", "One");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "Enter on One runs it");
+    }
+
+    /// Without the mark, the disabled Two and Five are passed over as any
+    /// disabled item is: Down goes from One to Four and round, and Home and
+    /// End rest on One and Four.
+    #[gpui::test]
+    fn the_menu_keys_pass_over_a_disabled_item_that_states_no_reason(cx: &mut TestAppContext) {
+        let ran = Ran::default();
+        let (menu, _, cx) = open_waiting(cx, &ran);
+        cx.update(|window, cx| {
+            let ran = ran.clone();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| waiting(menu, &ran, false))
+            })
+        });
+        draw(cx);
+        for (key, on) in [
+            ("down", "One"),
+            ("down", "Four"),
+            ("down", "One"),
+            ("up", "Four"),
+            ("home", "One"),
+            ("end", "Four"),
+        ] {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some(on), "{key} to {on}");
+        }
+    }
+
+    /// A menu built again keeps the keyboard's cursor on an item that
+    /// states why it waits: on Two, where the keys rested it, through a
+    /// rebuild that reports nothing; and on One as One, which could act,
+    /// starts to wait, reported once as the rest begins so the application
+    /// can say why, and back on One, able to act, once the wait ends.
+    #[gpui::test]
+    fn a_rebuilt_menu_keeps_the_cursor_on_an_item_that_states_why_it_waits(
+        cx: &mut TestAppContext,
+    ) {
+        let ran = Ran::default();
+        let (menu, _, cx) = open_waiting(cx, &ran);
+        let reports = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|_, cx| {
+            let reports = reports.clone();
+            cx.subscribe(&menu, move |_, rest: &CursorRests, _| {
+                reports.borrow_mut().push(rest.label.to_string())
+            })
+            .detach();
+        });
+        let rebuilt = |cx: &mut VisualTestContext, one_waits: bool| {
+            let ran = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, move |menu, _, _| {
+                        let menu = waiting(menu, &ran, true);
+                        if one_waits {
+                            let mut menu = menu;
+                            menu.menu_items[1] = PopupMenuItem::new("One")
+                                .accessibility_label("One, available when the write finishes")
+                                .disabled(true)
+                                .reason_stated(true);
+                            menu
+                        } else {
+                            menu
+                        }
+                    })
+                })
+            });
+            draw(cx);
+        };
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        rebuilt(cx, false);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "kept on Two");
+        assert!(reports.borrow().is_empty(), "nothing begins to wait");
+
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "Up");
+        rebuilt(cx, true);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "kept on One");
+        assert!(
+            drawn_as_cursor(
+                cx,
+                "menu-item: One, available when the write finishes · MenuItem disabled"
+            ),
+            "drawn on One as it waits"
+        );
+        rebuilt(cx, true);
+        assert_eq!(
+            std::mem::take(&mut *reports.borrow_mut()),
+            ["One, available when the write finishes"],
+            "reported once, as One starts to wait"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter on the waiting One runs nothing"
+        );
+        rebuilt(cx, false);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "One acts again");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["One"], "Enter runs One");
     }
 
     #[gpui::test]

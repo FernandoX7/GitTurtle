@@ -5453,8 +5453,9 @@ mod tests {
     /// A working row's menu, opened as `opening` opens it, its keyboard's
     /// cursor moved down to Delete untracked file…, keeps the cursor on that
     /// item as a Stage of another file starts and ends: while the write
-    /// refuses every item the cursor rests on none, and once the write's
-    /// rows land it is back on Delete untracked file…. Moved up to Ignore…,
+    /// refuses every item the cursor stays on Delete untracked file…, which
+    /// states what it waits for, and once the write's rows land it is on it,
+    /// able to act. Moved up to Ignore…,
     /// which gamma added and edited outside the app can no longer take, it
     /// rests on none, and it is back on Ignore… once gamma is untracked
     /// again. Each build once sent a right-click's cursor away and a
@@ -5491,10 +5492,12 @@ mod tests {
             Some(false),
             "{opening:?}: refused while the write runs"
         );
+        let waiting = crate::native_accessibility::waiting_names::of("Delete untracked file…")
+            .expect("Delete untracked file… states what it waits for");
         assert_eq!(
-            cursor_among(cx, &GAMMA_ITEMS),
-            Vec::<&str>::new(),
-            "{opening:?}: no item holds the cursor while every item is refused"
+            cursor_among(cx, &[GAMMA_ITEMS.as_slice(), &[waiting.as_str()]].concat()),
+            [waiting.as_str()],
+            "{opening:?}: the cursor stays on its item while the write refuses it"
         );
         release(&app, write, cx).await;
         next_frame(cx);

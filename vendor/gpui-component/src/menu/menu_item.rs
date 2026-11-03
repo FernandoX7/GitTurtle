@@ -189,8 +189,11 @@ impl RenderOnce for MenuItemElement {
         // corners so it moves nothing. Upstream drew it in the hover fill,
         // which is the cursor's only cue and stood 1.19:1 off the menu in
         // GitTurtle's Midnight; the marker holds 3:1 against the fill and the
-        // menu. The pointer's hover keeps that quieter fill.
-        let cursor = interactive && self.selected && self.keyboard;
+        // menu. The pointer's hover keeps that quieter fill. The cursor rests
+        // on a disabled item only where it states why it waits
+        // (`PopupMenuItem::reason_stated`), and is drawn there too, the item's
+        // text staying disabled.
+        let cursor = item && self.selected && self.keyboard;
         let marker = cursor.then(|| {
             let mut marker = div()
                 .absolute()
@@ -243,7 +246,6 @@ impl RenderOnce for MenuItemElement {
                     this.bg(cx.theme().tokens.accent)
                         .text_color(cx.theme().accent_foreground)
                 })
-                .when(cursor, |this| this.bg(cx.theme().list_active))
                 .when_some(self.on_click, |this, on_click| {
                     let on_press = self.on_press;
                     this.on_mouse_down(MouseButton::Left, move |event, window, cx| {
@@ -255,6 +257,7 @@ impl RenderOnce for MenuItemElement {
                     .on_click(on_click)
                 })
             })
+            .when(cursor, |this| this.bg(cx.theme().list_active))
             .when(disabled, |this| {
                 this.text_color(cx.theme().disabled_foreground())
             })

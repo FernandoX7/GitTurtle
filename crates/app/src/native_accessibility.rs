@@ -1177,12 +1177,18 @@ fn detail_row(
 /// is still offered but refused (the kit's `CursorRests`): "Open project,
 /// available when fetching remote finishes", the item's accessible name,
 /// from the window's polite announcement node (`copy_feedback::announce`).
-/// Decided by the owner: the cursor rests on no item rather than moving to
-/// another, and the rest itself shows nothing, so a screen reader heard
-/// nothing of why Enter now does nothing. Once per rest, however often the
-/// menu is built again while it lasts; never for a menu the pointer owns,
-/// which keeps no cursor to rest; and nothing for an item that states no
-/// reason, whose name alone would only repeat the item.
+/// Decided by the owner: the cursor never moves to another item; it stays
+/// on an item that states why it waits ([`waiting_item`]) and rests on no
+/// item where its item is refused without a reason. The app says it
+/// because nothing establishes that a screen reader speaks the selected
+/// item's name changing as it starts to wait (a native Orca read is
+/// pending), and without it a screen reader might hear nothing of why
+/// Enter now does nothing. Once per rest, however often the menu is built
+/// again while it lasts, and not for a cursor the keys put on a waiting
+/// item, which they report selected with its name stating the reason;
+/// never for a menu the pointer owns, which keeps no cursor to rest; and
+/// nothing for an item that states no reason, whose name alone would only
+/// repeat the item.
 fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App) {
     window
         .subscribe(menu, cx, |_, rest: &CursorRests, window, cx| {
@@ -1247,6 +1253,15 @@ impl MenuWait {
 /// came and went. An item refused for
 /// a reason of its own states no wait, since the write's end would not make
 /// it available.
+///
+/// A waiting item stays in the keyboard's order (the kit's
+/// `PopupMenuItem::reason_stated`): Up, Down, Home and End rest the
+/// keyboard's cursor on it, drawn there and announced as the selected item
+/// with its reason, Enter does nothing, and the next key moves on; a menu
+/// built again as the write starts keeps the cursor on it. Decided by the
+/// owner: passed over as every disabled item was, Browse stashes… in the
+/// Linux Main Menu was never reached while it waited, so Orca never spoke
+/// why. An item refused with no reason is still passed over.
 pub(crate) fn waiting_item(
     label: impl Into<SharedString>,
     refused: bool,
@@ -1258,7 +1273,9 @@ pub(crate) fn waiting_item(
             let name: SharedString = format!("{label}, {}", wait.spoken()).into();
             #[cfg(test)]
             waiting_names::record(&label, &name);
-            detail_row(label, wait.0.into(), name, Detail::InRoom).disabled(true)
+            detail_row(label, wait.0.into(), name, Detail::InRoom)
+                .disabled(true)
+                .reason_stated(true)
         }
         None => PopupMenuItem::new(label).disabled(refused),
     }
