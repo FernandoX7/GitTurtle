@@ -178,7 +178,8 @@ pub enum ImageErrorKind {
     Jpeg2000Unreadable,
     /// The codestream declares more than 65,535 tiles.
     Jpeg2000TooManyTiles,
-    /// The codestream has more than four components.
+    /// The codestream has more than four components, or a palette's `cmap`
+    /// maps more than four (one output channel each).
     Jpeg2000TooManyComponents,
     /// A component or palette column is deeper than 16 bits.
     Jpeg2000TooDeep,

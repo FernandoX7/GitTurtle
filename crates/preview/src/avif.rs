@@ -1316,6 +1316,20 @@ mod tests {
         sources
     }
 
+    /// Whether a manifest renames a dependency to `package`, with the package
+    /// in a basic or a literal string on one line or several (`"moxcms"`,
+    /// `'moxcms'`, `"""moxcms"""` or `'''moxcms'''`) and the key bare or
+    /// quoted, whatever the spacing. Escapes inside a basic string are not
+    /// decoded.
+    fn renames_to(manifest: &str, package: &str) -> bool {
+        let manifest: String = manifest.split_whitespace().collect();
+        ["package", "\"package\"", "'package'"].iter().any(|key| {
+            ["\"", "'", "\"\"\"", "'''"]
+                .iter()
+                .any(|quote| manifest.contains(&format!("{key}={quote}{package}{quote}")))
+        })
+    }
+
     /// Whether a line names the `moxcms` crate: the whole word anywhere but in
     /// a line that is only a comment. A trailing or block comment naming it
     /// counts too, on the safe side.
@@ -2237,8 +2251,25 @@ mod tests {
                 }
             }
         }
-        let manifest: String = include_str!("../Cargo.toml").split_whitespace().collect();
-        assert!(!manifest.contains("package=\"moxcms\""));
+        for renamed in [
+            "cms = { version = \"=0.8.1\", package = \"moxcms\" }",
+            "cms = { version = \"=0.8.1\", package = 'moxcms' }",
+            "[dependencies.cms]\npackage='moxcms'",
+            "cms = { \"package\" = \"moxcms\" }",
+            "[dependencies.cms]\npackage = \"\"\"moxcms\"\"\"",
+            "[dependencies.cms]\npackage = \"\"\"\nmoxcms\"\"\"",
+            "[dependencies.cms]\npackage = '''moxcms'''",
+            "[dependencies.cms]\npackage = '''\nmoxcms'''",
+        ] {
+            assert!(renames_to(renamed, "moxcms"), "{renamed}");
+        }
+        assert!(!renames_to("moxcms = { version = \"=0.8.1\" }", "moxcms"));
+        // Nor is dav1d-rs or dav1d-sys renamed, which would reach either crate
+        // without the words the dav1d-rs test above looks for.
+        let manifest = include_str!("../Cargo.toml");
+        for package in ["moxcms", "dav1d", "dav1d-sys"] {
+            assert!(!renames_to(manifest, package), "{package}");
+        }
         for module in ["avif.rs", "jpeg2000_hayro.rs", "image_helper.rs"] {
             let (path, text) = sources
                 .iter()
