@@ -3192,18 +3192,27 @@ pub(crate) mod tests {
         }
 
         /// A comparison of two `count`-page documents, each side showing its
-        /// first page prepared ([`show`]) and offering to link its pages,
-        /// independent.
+        /// first page prepared ([`show`]), offering to link its pages,
+        /// independent, and offering its captured bytes to another app as
+        /// the app does on this platform ([`sides_of`]).
         fn both_sides(name: &str, count: usize) -> (crate::worker::Content, [Arc<Document>; 2]) {
             sides_of(name, [count, count])
         }
 
-        /// [`both_sides`] of `counts` pages, Before's and After's.
+        /// [`both_sides`] of `counts` pages, Before's and After's, each side
+        /// offering its captured bytes to another app where the app does on
+        /// this platform, as it does for a PDF on Linux and macOS
+        /// ([`sides_offering`]), so the full form's first line holds the
+        /// open control as the app's does. Without it the tests' full form
+        /// began at a narrower side than with it, where the app's begins: at
+        /// 13 pt and scale 1.2, 307.5 px for 342.5 px in the tests' font
+        /// ([`a_narrow_side_takes_a_compact_header_that_never_scrolls`]),
+        /// and natively 314 px.
         fn sides_of(
             name: &str,
             counts: [usize; 2],
         ) -> (crate::worker::Content, [Arc<Document>; 2]) {
-            sides_offering(name, counts, false)
+            sides_offering(name, counts, true)
         }
 
         /// [`sides_of`], each side offering its captured bytes to another
@@ -3426,7 +3435,15 @@ pub(crate) mod tests {
         /// where it was through the turn and the preparing. At 18 pt in a
         /// 461 × 490 window a header that scrolled kept its controls out of
         /// reach of assistive technology until scrolled, and cut its
-        /// messages.
+        /// messages. Each side offers its bytes to another app, as the app
+        /// does for a PDF here ([`sides_of`]), so the full form's first line
+        /// holds the open control. In the tests' font, from 2026-11-03, the
+        /// compact form begins at a side of 244, 250 and 247 px at 13 pt
+        /// (scales 1, 1.2 and 2) and 343, 345.83 and 342.5 px at 18 pt, and
+        /// the full form at 338, 342.5 and 340 px at 13 pt and 471, 473.33
+        /// and 471 px at 18 pt; with no open control the full form began at
+        /// 303, 307.5 and 305.5 px at 13 pt and 423, 425 and 422.5 px at
+        /// 18 pt, where natively, at 13 pt and scale 1.2, it began at 314 px.
         #[gpui::test]
         fn a_narrow_side_takes_a_compact_header_that_never_scrolls(
             cx: &mut gpui_kit::TestAppContext,
@@ -3564,21 +3581,8 @@ pub(crate) mod tests {
         #[gpui::test]
         fn a_compact_header_s_menus_hold_its_controls(cx: &mut gpui_kit::TestAppContext) {
             let started = std::time::Instant::now();
+            // Each side offers its captured bytes, as the app does here.
             let (content, documents) = both_sides("a compact header's menus", 3);
-            // Before offers its captured bytes, as a build that opens them
-            // does.
-            let crate::worker::Content::Rich(comparison) = content else {
-                unreachable!()
-            };
-            let mut before = Arc::into_inner(comparison.old).expect("the side is held once");
-            let bytes: Arc<[u8]> = Arc::from(pdf("a compact header's menus: side 0"));
-            before.system_preview =
-                crate::system_preview::offer(&bytes, &|| Ok(())).expect("an offer");
-            before.captured = Some(bytes);
-            let content = crate::worker::Content::Rich(rich_preview::Comparison {
-                old: Arc::new(before),
-                new: comparison.new,
-            });
             let (view, cx) = window(cx, content);
             let id = view.entity_id();
             cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -3763,13 +3767,15 @@ pub(crate) mod tests {
         /// in 234 to 260 px sides at 13 pt (322 to 360 px at 18 pt), After's
         /// heading 3.5 px higher at scale 2 (4.5 px at 18 pt), and the full
         /// form beside the compact one at 292 to 304 px (404 to 420 px at
-        /// 18 pt).
+        /// 18 pt). Neither side offers its bytes to another app, as for bytes
+        /// the platform offers no app for, so the full form without an open
+        /// control stays covered.
         #[gpui::test]
         fn both_sides_of_a_comparison_take_one_form_the_narrower(
             cx: &mut gpui_kit::TestAppContext,
         ) {
             let started = std::time::Instant::now();
-            let (content, _documents) = sides_of("one form", [3, 111]);
+            let (content, _documents) = sides_offering("one form", [3, 111], false);
             let (view, cx) = window(cx, content);
             let mut forms = std::collections::BTreeSet::new();
             // Each step's form and heading top below the header's top, where
