@@ -65,6 +65,11 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## November 3 morning the hosted runs stay green as the menu, tab-restore, PDF header and Linux decoder rounds land
+
+- **Hosted CI, FU6-A, FU6-C, PDH1 and LP2-A2 landed:** quality run [`41682244341`](https://github.com/FernandoX7/GitTurtle/actions/runs/41682244341) on `9569cf9e` green on all 12 jobs: macOS 15 1,895 of 1,895 tests (11 skipped), Ubuntu 24.04 and Arch 2,172 of 2,172 each (12 skipped), no test reported SLOW. Dependency advisories run [`41682248750`](https://github.com/FernandoX7/GitTurtle/actions/runs/41682248750) on the same commit green (the lock gained only a direct `moxcms` edge on the Linux helper target).
+- **Build:** `gitturtle-9569cf9`, a clean release of `9569cf9e` (`--build-info` reports that revision and a clean source tree). The AVIF and JPEG 2000 decoders it carries are not reached by the app until LP2 slices A3 and A4 wire the helper; their hostile-input refusals are covered by `gitturtle-preview`'s tests, not by native evidence yet.
+
 ## November 3 the hosted runs stay green as QA-89's fixes, the Linux AVIF and JPEG 2000 dependencies and the Find benchmark land
 
 - **Hosted CI, QA89F landed:** quality run [`41600566637`](https://github.com/FernandoX7/GitTurtle/actions/runs/41600566637) on `b9db23b8` green on all 12 jobs: macOS 15 1,881 of 1,881 tests (10 skipped), Ubuntu 24.04 and Arch 2,118 of 2,118 each (11 skipped), no test reported SLOW.
