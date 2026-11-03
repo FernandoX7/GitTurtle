@@ -2978,10 +2978,7 @@ pub(crate) mod tests {
                         painted.len() >= 2,
                         "{at}: the change and the test each paint a frame: {painted:?}"
                     );
-                    for (frame, heading) in [
-                        (0, painted[0]),
-                        (painted.len() - 1, painted[painted.len() - 1]),
-                    ] {
+                    for (frame, heading) in painted.iter().enumerate() {
                         assert!(
                             heading.right() <= header.left() + line + half + px(0.5),
                             "{at}: in frame {frame} of {} the heading {heading:?} ends at its line's end, short of the gutter",
