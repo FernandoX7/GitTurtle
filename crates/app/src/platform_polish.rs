@@ -1356,6 +1356,13 @@ mod main_menu_tests {
             .unwrap_or_else(|| panic!("once the reload has landed, {stashes} is offered"));
         cx.simulate_click(row.center(), Modifiers::default());
         draw(cx);
+        // Stashes reads its list on an executor of its own, which a draw
+        // does not wait for: read before it landed, the row was missing
+        // whenever the machine was loaded.
+        let (browser, _) = app
+            .read_with(cx, crate::recovery::open_stash_list)
+            .expect("the menu built again opens Stashes");
+        crate::recovery::StashBrowser::lands(&browser, cx);
         assert!(
             cx.update(|window, cx| window.has_active_dialog(cx))
                 && cx.debug_bounds("saved-stash-row-0").is_some(),
