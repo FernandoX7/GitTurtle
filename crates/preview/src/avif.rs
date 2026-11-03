@@ -8,7 +8,12 @@
 //! limit of the declared `ispe` area, operating point 0 and film grain applied;
 //! a bounded send/get loop; only dav1d's default picture allocator; the picture
 //! size equal to `ispe` before any plane is read; and only the luma plane of a
-//! monochrome picture or an alpha item. dav1d-sys 0.8.3 writes some C layouts
+//! monochrome picture or an alpha item. The primary is converted, and its
+//! picture freed, before the alpha item is decoded, so at most one dav1d
+//! picture is alive beside the RGBA image, the primary's while it converts and
+//! then the alpha's, never both items' pictures (requirement 18); with film
+//! grain, an item's decoder also holds its ungrained reference until the decode
+//! returns. dav1d-sys 0.8.3 writes some C layouts
 //! by hand (#126): the picture accessors used here read fields whose offsets
 //! `libdav1d_layouts_match_the_binding` proves, and nothing parses a sequence
 //! header outside libdav1d.
@@ -103,26 +108,38 @@ pub(crate) fn decode(
     timings.parse_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
-    let picture = decode_item(primary, size)?;
-    let alpha_picture = alpha.map(|alpha| decode_item(alpha, size)).transpose()?;
+    let primary = decode_item(primary, size)?;
     timings.decode_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
     // The colour signal comes from `nclx`, else from the sequence header, and
-    // is read before the pictures go. `convert` and `apply_alpha` consume the
-    // pictures, so dav1d's planes are freed as soon as they are read and only
-    // the RGBA image reaches colour conversion, orientation and scaling
-    // (security review requirement 18).
+    // is read before the picture goes. `convert` consumes the primary's
+    // picture, so its planes are freed before the alpha item is decoded, and
+    // `apply_alpha` consumes the alpha's: at most one dav1d picture is alive
+    // beside the RGBA image, never both, and only the RGBA image reaches
+    // colour conversion, orientation and scaling (security review
+    // requirement 18). So a primary that fails to convert is reported before
+    // an alpha item that would fail to decode is read; no test depends on
+    // which of the two comes first.
     let colour = properties
         .colour(properties.primary)
-        .unwrap_or_else(|| Nclx::signalled(&picture));
-    let mut rgba = convert(picture, size, colour)?;
-    if let Some(alpha) = alpha_picture {
+        .unwrap_or_else(|| Nclx::signalled(&primary.picture));
+    let mut rgba = convert(primary, size, colour)?;
+    let mut convert_us = image_helper::elapsed_us(start);
+    if let Some(alpha) = alpha {
+        let start = Instant::now();
+        let alpha = decode_item(alpha, size)?;
+        timings.decode_us = timings
+            .decode_us
+            .saturating_add(image_helper::elapsed_us(start));
+        let start = Instant::now();
         apply_alpha(&mut rgba, alpha)?;
         if context.premultiplied_alpha {
             crate::unpremultiply(rgba.as_mut());
         }
+        convert_us = convert_us.saturating_add(image_helper::elapsed_us(start));
     }
+    let start = Instant::now();
     // An ICC profile describes the colour in place of the `nclx` or sequence
     // header primaries and transfer, as libavif reads it. One that cannot be
     // applied is disclosed, and those signals convert as without it.
@@ -140,7 +157,7 @@ pub(crate) fn decode(
     let rgba = orient(rgba, properties.rotation(), properties.mirror());
     let original = rgba.dimensions();
     let decoded = image_helper::finish(rgba, original, edge, flags);
-    timings.convert_us = image_helper::elapsed_us(start);
+    timings.convert_us = convert_us.saturating_add(image_helper::elapsed_us(start));
     Ok(decoded)
 }
 
@@ -166,10 +183,19 @@ fn supported_libdav1d(version: &str) -> bool {
     }
 }
 
+/// One item's decoded picture. Under test it also counts the pictures alive
+/// at once, so a test holds requirement 18's peak: the primary's picture goes
+/// before the alpha item is decoded.
+struct ItemPicture {
+    picture: Picture,
+    #[cfg(test)]
+    _alive: tests::Alive,
+}
+
 /// One AV1 item on its own decoder: the reviewed settings, the data sent once,
 /// then `send_pending_data` after `Again`, within a fixed number of steps. The
 /// picture must have the declared size before anything reads it.
-fn decode_item(data: &[u8], (width, height): (u32, u32)) -> Result<Picture, ImageErrorKind> {
+fn decode_item(data: &[u8], (width, height): (u32, u32)) -> Result<ItemPicture, ImageErrorKind> {
     let mut settings = Settings::new();
     settings.set_n_threads(1);
     settings.set_max_frame_delay(1);
@@ -189,7 +215,11 @@ fn decode_item(data: &[u8], (width, height): (u32, u32)) -> Result<Picture, Imag
         }
         match decoder.get_picture() {
             Ok(picture) if (picture.width(), picture.height()) == (width, height) => {
-                return Ok(picture);
+                return Ok(ItemPicture {
+                    picture,
+                    #[cfg(test)]
+                    _alive: tests::Alive::new(),
+                });
             }
             Ok(_) => return Err(ImageErrorKind::AvifSizeMismatch),
             // Everything was sent and no picture came out.
@@ -323,8 +353,8 @@ fn matrix(code: u8) -> Option<Matrix> {
 /// Straight RGBA8 from a colour or monochrome picture of `size`. Chroma is
 /// taken from the nearest sample; the output is downscaled anyway. Takes the
 /// picture so its planes are freed on return.
-fn convert(picture: Picture, size: (u32, u32), nclx: Nclx) -> Result<RgbaImage, ImageErrorKind> {
-    let (layout, bits, planes) = planes(&picture, false)?;
+fn convert(item: ItemPicture, size: (u32, u32), nclx: Nclx) -> Result<RgbaImage, ImageErrorKind> {
+    let (layout, bits, planes) = planes(&item.picture, false)?;
     let matrix = matrix(nclx.matrix).ok_or(ImageErrorKind::AvifUnreadable)?;
     if matches!(matrix, Matrix::Identity) && layout != PixelLayout::I444 && planes.len() == 3 {
         return Err(ImageErrorKind::AvifUnreadable);
@@ -411,10 +441,10 @@ fn unit(value: f32) -> u8 {
 /// The alpha item's luma, in its own range, into the alpha channel. The
 /// picture has the colour picture's size (`decode_item`) and is freed on
 /// return.
-fn apply_alpha(rgba: &mut RgbaImage, picture: Picture) -> Result<(), ImageErrorKind> {
-    let (_, bits, planes) = planes(&picture, true)?;
+fn apply_alpha(rgba: &mut RgbaImage, item: ItemPicture) -> Result<(), ImageErrorKind> {
+    let (_, bits, planes) = planes(&item.picture, true)?;
     let max = (1u32 << bits) - 1;
-    let full = picture.color_range() == YUVRange::Full;
+    let full = item.picture.color_range() == YUVRange::Full;
     let range = Range::new(bits, full);
     for (x, y, pixel) in rgba.enumerate_pixels_mut() {
         let sample = planes[0].get(x as usize, y as usize);
@@ -895,6 +925,66 @@ mod tests {
     const BLUE: [u8; 4] = [30, 50, 220, 255];
     const WHITE: [u8; 4] = [240, 240, 240, 255];
 
+    /// The pictures [`decode_item`] returned on this thread, those still
+    /// alive, and the most alive at once.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct Pictures {
+        decoded: usize,
+        alive: usize,
+        most: usize,
+    }
+
+    thread_local! {
+        static PICTURES: std::cell::Cell<Pictures> = const {
+            std::cell::Cell::new(Pictures { decoded: 0, alive: 0, most: 0 })
+        };
+    }
+
+    /// Held in each [`ItemPicture`], so [`PICTURES`] follows the pictures'
+    /// lifetimes, early returns included.
+    pub(super) struct Alive(());
+
+    impl Alive {
+        pub(super) fn new() -> Self {
+            let mut count = PICTURES.get();
+            count.decoded += 1;
+            count.alive += 1;
+            count.most = count.most.max(count.alive);
+            PICTURES.set(count);
+            Self(())
+        }
+    }
+
+    impl Drop for Alive {
+        fn drop(&mut self) {
+            let mut count = PICTURES.get();
+            count.alive -= 1;
+            PICTURES.set(count);
+        }
+    }
+
+    /// Requirement 18's peak: the primary is converted, and its picture
+    /// freed, before the alpha item is decoded, so at most one dav1d picture
+    /// is alive beside the RGBA image, never both.
+    #[test]
+    fn the_primary_picture_goes_before_the_alpha_item_is_decoded() {
+        for (name, decoded) in [
+            ("avif-yuv420-8bit-alpha.avif", 2),
+            ("avif-yuv444-10bit-premultiplied.avif", 2),
+            ("avif-yuv420-12bit-alpha.avif", 2),
+            ("avif-film-grain.avif", 1),
+        ] {
+            PICTURES.set(Pictures::default());
+            avif(name, 1600).unwrap_or_else(|kind| panic!("{name}: {kind:?}"));
+            let expected = Pictures {
+                decoded,
+                alive: 0,
+                most: 1,
+            };
+            assert_eq!(PICTURES.get(), expected, "{name}");
+        }
+    }
+
     fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1153,8 +1243,8 @@ mod tests {
     #[test]
     fn decoded_pictures_are_freed_before_the_rgba_steps() {
         let code = product_code(include_str!("avif.rs"));
-        assert!(code.contains("fn convert(picture: Picture, "));
-        assert!(code.contains("fn apply_alpha(rgba: &mut RgbaImage, picture: Picture)"));
+        assert!(code.contains("fn convert(item: ItemPicture, "));
+        assert!(code.contains("fn apply_alpha(rgba: &mut RgbaImage, item: ItemPicture)"));
         let body = code
             .split("pub(crate) fn decode(")
             .nth(1)
@@ -1162,7 +1252,7 @@ mod tests {
             .unwrap();
         assert!(!body.contains(".clone()"));
         let consumed = body.find("apply_alpha(&mut rgba, alpha)").unwrap();
-        assert!(body.find("convert(picture, ").unwrap() < consumed);
+        assert!(body.find("convert(primary, ").unwrap() < consumed);
         let rest = &body[consumed..];
         assert!(!rest.contains("picture"), "{rest}");
         for step in ["to_srgb(", "orient(", "finish("] {
@@ -1429,7 +1519,9 @@ mod tests {
             Some((64, 48))
         );
         assert_eq!(properties.colour(properties.primary), None);
-        let picture = decode_item(context.primary_item_coded_data().unwrap(), (64, 48)).unwrap();
+        let picture = decode_item(context.primary_item_coded_data().unwrap(), (64, 48))
+            .unwrap()
+            .picture;
         let panics =
             |read: &dyn Fn(&Picture)| catch_unwind(AssertUnwindSafe(|| read(&picture))).is_err();
         assert!(panics(&|picture| {
