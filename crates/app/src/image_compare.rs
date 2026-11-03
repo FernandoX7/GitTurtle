@@ -3479,23 +3479,35 @@ mod render_tests {
     /// room, it ended 0.83 px into the toolbar's padding at 13 pt and scale
     /// 1.2, the run measured unrounded. At 13 and 18 pt, at the test
     /// window's scale factor, 2, and at 1.5, 1.25 (as Omarchy sets) and 1.2
-    /// (as Hyprland gives a panel it cannot set to 1.25), a changed image is
-    /// walked in 1/8 px steps through the windows within 2 px of where the
-    /// toolbar holds the run, beside the mode menu and beside the labelled modes. The
-    /// run and the room are read from what is drawn: the modes from where the
+    /// (as Hyprland gives a panel it cannot set to 1.25), a changed image's
+    /// window is bisected on what its toolbar draws for three widths: the
+    /// first whose modes are labelled, and, beside the mode menu and beside
+    /// the labelled modes, the first whose zoom menu no longer leads a row
+    /// of its own. Each form changes once as the window widens, so each
+    /// search checks that its bracket's ends draw the two forms, and around
+    /// each width found the walk draws every window a device pixel apart
+    /// within 2 px either side and finds each form on its own side. A window
+    /// between two device pixels draws the toolbar of the one it rounds to,
+    /// halves toward zero: measured at every 1/8 px within 2 px of each of
+    /// these widths, the toolbar, the modes and the zoom menu lay out there
+    /// as in that window, but for three windows at 13 pt and scale 1.5,
+    /// 580.375 to 580.625 px wide, which draw that toolbar whole 29.33 px
+    /// lower, where the window a device pixel narrower places it. So a window
+    /// per device pixel meets every toolbar a finer walk meets. The run and
+    /// the room are read from what is drawn: the modes from where the
     /// toolbar's padding starts them, the mode menu an inset before it, the
-    /// gap and the padding on device pixels as layout sets them, and the zoom
-    /// menu's width. Where the zoom menu shares the modes' row it stands the
-    /// gap after them and ends inside the toolbar's padding, and the toolbar
-    /// is one row, as tall as one 8 px wider, so the captions and the image
-    /// stay where a wider toolbar has them; where it leads a row, the run is
-    /// wider than the room. The walk meets both, and a shared row within a
-    /// pixel of its room. Left to the layout, which breaks the row before it
-    /// rounds the column to device pixels, the zoom menu wrapped at 1.5 where
-    /// the row fit. At each size and scale the walk first crosses the labelled modes' own boundary,
-    /// from their menu to their labels, where the labelled modes end inside
-    /// the toolbar's padding: chosen from their width and the room
-    /// unrounded, they ran 1.17 px into it at 13 pt and scale 1.2.
+    /// gap and the padding on device pixels as layout sets them, and the
+    /// zoom menu's width. Where the zoom menu shares the
+    /// modes' row it stands the gap after them and ends inside the toolbar's
+    /// padding, and the toolbar is one row, as tall as one 8 px wider, so
+    /// the captions and the image stay where a wider toolbar has them; where
+    /// it leads a row, the run is wider than the room. The walk meets both,
+    /// and a shared row within a pixel of its room. Left to the layout,
+    /// which breaks the row before it rounds the column to device pixels,
+    /// the zoom menu wrapped at 1.5 where the row fit. Where the modes are
+    /// labelled they end inside the toolbar's padding: chosen from their
+    /// width and the room unrounded, they ran 1.17 px into it at 13 pt and
+    /// scale 1.2.
     #[gpui::test]
     async fn the_zoom_menu_keeps_the_modes_row_wherever_the_row_fits(cx: &mut TestAppContext) {
         let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
@@ -3517,52 +3529,54 @@ mod render_tests {
             (18, 2.),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            let toolbar = |width: f32, cx: &mut VisualTestContext| {
-                cx.simulate_resize(size(px(width), px(490.)));
+            // Windows are counted in device pixels: `pixels(width)` is a
+            // `width` px window's, and one `n` device pixels wide is
+            // `width(n)` px.
+            let pixels = |width: f32| (width * scale).round() as i32;
+            let width = |n: i32| n as f32 / scale;
+            let toolbar = |n: i32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width(n)), px(490.)));
                 cx.update(|window, _| window.set_scale_factor(scale));
                 draw(cx);
                 cx.debug_bounds("image-toolbar").expect("the toolbar")
             };
-            toolbar(461., cx);
-            // The toolbar's padding and gap as layout sets them, and the
-            // runs beside the mode menu and the labelled modes as measured
-            // unrounded, which find the windows to walk.
-            let (padding, gap, rows) = cx.update(|window, _| {
-                let gap = window.rem_size() * 0.5;
-                let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
-                let menu = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window)
-                    - appearance::ui_size(crate::ICON_INSET);
-                let labelled = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
+            // The windows walked either side of a width found, a device
+            // pixel apart: at least 2 px.
+            let reach = (2. * scale).ceil() as i32;
+            toolbar(pixels(461.), cx);
+            // The toolbar's padding and gap as layout sets them.
+            let (padding, gap) = cx.update(|window, _| {
                 (
                     window.pixel_snap(window.rem_size() * 0.75),
-                    window.pixel_snap(gap),
-                    [
-                        ("image-mode-menu", menu + gap + zoom),
-                        ("image-modes", labelled + gap + zoom),
-                    ],
+                    window.pixel_snap(window.rem_size() * 0.5),
                 )
             });
-            // The labelled modes' own boundary: about the first whole window
-            // whose modes are labelled, from where they are a menu, they lie
-            // inside the toolbar's padding wherever they are labelled.
-            // Chosen from their width and the room unrounded, they ran
-            // 1.17 px into the padding at 13 pt and scale 1.2.
+            // The labelled modes' own boundary: the first window whose modes
+            // are labelled, which a 461 px window draws as their menu and a
+            // 1,400 px one labelled. From there they lie inside the toolbar's
+            // padding. Chosen from their width and the room unrounded, they
+            // ran 1.17 px into the padding at 13 pt and scale 1.2.
             let form = format!("{text} pt at scale {scale}, the labelled modes");
-            let labelled = |width: f32,
-                            cx: &mut VisualTestContext|
-             -> (Bounds<Pixels>, Option<Bounds<Pixels>>) {
-                let bar = toolbar(width, cx);
+            let labelled = |n: i32, cx: &mut VisualTestContext| {
+                let bar = toolbar(n, cx);
                 (bar, cx.debug_bounds("image-modes"))
             };
-            let mut first = 461.;
-            while labelled(first, cx).1.is_none() {
-                first += 1.;
-                assert!(first < 1400., "{form}: a window labels the modes");
-            }
+            let first = first_drawn(
+                (pixels(461.), pixels(1400.)),
+                cx,
+                |n, cx| labelled(n, cx).1.is_some(),
+                &form,
+            );
             let (mut menu, mut whole) = (false, false);
-            for step in 0..=32 {
-                let width = first - 2. + step as f32 / 8.;
-                let (bar, modes) = labelled(width, cx);
+            for n in first - reach..=first + reach {
+                let (bar, modes) = labelled(n, cx);
+                let at = format!("{form} in {} × 490", width(n));
+                assert_eq!(
+                    modes.is_some(),
+                    n >= first,
+                    "{at}: the modes are labelled from {} px on, and only there",
+                    width(first)
+                );
                 let Some(modes) = modes else {
                     menu = true;
                     continue;
@@ -3570,7 +3584,7 @@ mod render_tests {
                 whole = true;
                 assert!(
                     modes.right() <= bar.right() - padding + hair,
-                    "{form} in {width} × 490: the modes {modes:?} end inside the toolbar \
+                    "{at}: the modes {modes:?} end inside the toolbar \
                      {bar:?}'s {padding:?} padding"
                 );
             }
@@ -3578,60 +3592,53 @@ mod render_tests {
                 menu && whole,
                 "{form}: the walk meets the modes as a menu ({menu}) and labelled ({whole})"
             );
-            for (modes_id, row) in rows {
+            // Beside the mode menu, from a 461 px window to the last before
+            // the labelled modes, and beside the labelled modes, from the
+            // first of them to a 1,400 px window, the first window whose zoom
+            // menu no longer leads a row of its own: it shares the modes' row
+            // there, or, where no walk reaches, is labelled zooms, which take
+            // a place only where the whole row holds them.
+            for (modes_id, windows) in [
+                ("image-mode-menu", (pixels(461.), first - 1)),
+                ("image-modes", (first, pixels(1400.))),
+            ] {
                 let form = format!("{text} pt at scale {scale} beside {modes_id}");
-                // About the first whole window whose toolbar holds the run as
-                // measured, the toolbar growing no faster than the window,
-                // and from there the first whose zoom menu shares the modes'
-                // row, where the walk is centred.
-                let mut holds = 461.;
-                loop {
-                    let room = toolbar(holds, cx).size.width - padding * 2.;
-                    if room >= row {
-                        break;
-                    }
-                    holds += f32::from(row - room).ceil().max(1.);
-                    assert!(holds < 1400., "{form}: a window holds the run");
-                }
-                let shares = |width: f32, cx: &mut VisualTestContext| {
-                    toolbar(width, cx);
-                    match (
-                        cx.debug_bounds(modes_id),
-                        cx.debug_bounds("image-zoom-menu"),
-                    ) {
-                        (Some(modes), Some(zooms)) => zooms.top() < modes.bottom(),
-                        drawn => {
-                            panic!("{form} in {width} × 490: the modes and the zoom menu {drawn:?}")
-                        }
-                    }
+                let drawn = |n: i32, cx: &mut VisualTestContext| {
+                    let bar = toolbar(n, cx);
+                    let Some(modes) = cx.debug_bounds(modes_id) else {
+                        panic!("{form} in {} × 490: the modes are drawn", width(n));
+                    };
+                    (bar, modes, cx.debug_bounds("image-zoom-menu"))
                 };
-                holds -= 4.;
-                while shares(holds, cx) {
-                    holds -= 1.;
-                }
-                while !shares(holds, cx) {
-                    holds += 1.;
-                    assert!(holds < 1400., "{form}: a window shares the row");
-                }
+                let holds = first_drawn(
+                    windows,
+                    cx,
+                    |n, cx| {
+                        let (_, modes, zooms) = drawn(n, cx);
+                        zooms.is_none_or(|zooms| zooms.top() < modes.bottom())
+                    },
+                    &form,
+                );
                 // A toolbar with room to spare is one row, the captions
                 // beneath it.
-                let one_row = toolbar(holds + 8., cx).size.height;
+                let one_row = toolbar(holds + pixels(8.), cx).size.height;
                 let (mut shared, mut within, mut led) = (false, false, false);
-                // Two pixels either side, as drawn the run can differ from
-                // it by more than one, and finer than any device pixel.
-                for step in 0..=32 {
-                    let width = holds - 2. + step as f32 / 8.;
-                    let bar = toolbar(width, cx);
-                    let at = format!("{form} in {width} × 490");
-                    let (Some(modes), Some(zooms)) = (
-                        cx.debug_bounds(modes_id),
-                        cx.debug_bounds("image-zoom-menu"),
-                    ) else {
-                        panic!("{at}: the modes and the zoom menu are drawn");
+                for n in holds - reach..=holds + reach {
+                    let (bar, modes, zooms) = drawn(n, cx);
+                    let at = format!("{form} in {} × 490", width(n));
+                    let Some(zooms) = zooms else {
+                        panic!("{at}: the zoom menu is drawn");
                     };
                     let room = bar.size.width - padding * 2.;
                     let run = modes.right() - (bar.left() + padding) + gap + zooms.size.width;
-                    if zooms.top() < modes.bottom() {
+                    let sharing = zooms.top() < modes.bottom();
+                    assert_eq!(
+                        sharing,
+                        n >= holds,
+                        "{at}: the zoom menu shares the modes' row from {} px on, and only there",
+                        width(holds)
+                    );
+                    if sharing {
                         shared = true;
                         within |= room - run < px(1.);
                         assert!(
@@ -3662,6 +3669,30 @@ mod render_tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The first of the device widths past `lo` up to `hi` whose window
+    /// draws what `drawn` looks for, bisected on what is drawn: `drawn` is
+    /// false at `lo` and true at `hi`, which the search checks, and once
+    /// true as the window widens it stays true, which the caller's walk
+    /// checks around the width found.
+    fn first_drawn(
+        (mut lo, mut hi): (i32, i32),
+        cx: &mut VisualTestContext,
+        drawn: impl Fn(i32, &mut VisualTestContext) -> bool,
+        what: &str,
+    ) -> i32 {
+        assert!(!drawn(lo, cx), "{what}: not drawn {lo} device pixels wide");
+        assert!(drawn(hi, cx), "{what}: drawn {hi} device pixels wide");
+        while hi - lo > 1 {
+            let middle = lo + (hi - lo) / 2;
+            if drawn(middle, cx) {
+                hi = middle;
+            } else {
+                lo = middle;
+            }
+        }
+        hi
     }
 
     /// The mode menu and the zoom menu are as wide as layout draws them
