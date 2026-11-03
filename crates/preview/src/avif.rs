@@ -1604,6 +1604,65 @@ mod tests {
         sources
     }
 
+    /// What Cargo itself reads from the package manifest in `directory` that
+    /// would compile a file the source scan does not read, sorted: a build
+    /// script (a `custom-build` target, from a `build` key or a `build.rs`
+    /// beside the manifest), which could set `--cfg test`, and a library
+    /// rooted anywhere but `src/lib.rs`. `cargo metadata`, offline and without
+    /// dependencies, reads the manifest as the build does, escaped keys and
+    /// multi-line values included, so no reading of the TOML here can differ
+    /// from it. Paths are relative to `directory`.
+    fn compiled_outside_the_scan(directory: &Path) -> Vec<String> {
+        let directory = directory.canonicalize().unwrap();
+        let output = Command::new(env!("CARGO"))
+            .args([
+                "metadata",
+                "--no-deps",
+                "--offline",
+                "--format-version",
+                "1",
+            ])
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let manifest = directory.join("Cargo.toml");
+        let package = metadata["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| {
+                package["manifest_path"].as_str().map(Path::new) == Some(manifest.as_path())
+            })
+            .unwrap();
+        let mut found = Vec::new();
+        for target in package["targets"].as_array().unwrap() {
+            let path = Path::new(target["src_path"].as_str().unwrap());
+            let relative = path.strip_prefix(&directory).unwrap_or(path).display();
+            let kinds = target["kind"].as_array().unwrap();
+            let kind = |names: &[&str]| {
+                kinds
+                    .iter()
+                    .any(|kind| names.iter().any(|name| kind == name))
+            };
+            if kind(&["custom-build"]) {
+                found.push(format!("build script {relative}"));
+            }
+            // The library, whatever crate type it is built as.
+            let library = !kind(&["bin", "example", "test", "bench", "custom-build"]);
+            if library && path != directory.join("src/lib.rs") {
+                found.push(format!("library {relative}"));
+            }
+        }
+        found.sort();
+        found
+    }
+
     /// Whether a manifest renames a dependency to `package`, with the package
     /// in a basic or a literal string on one line or several (`"moxcms"`,
     /// `'moxcms'`, `"""moxcms"""` or `'''moxcms'''`) and the key bare or
@@ -2011,15 +2070,21 @@ mod tests {
     /// its call is spaced, split by a comment or qualified (`<Picture>::`,
     /// `Decoder::<_>::`), and so does every rename (`type`, `as`, `extern
     /// crate`, `::dav1d`). No preview source includes a file (the word
-    /// `include` anywhere) or takes a module from a `path` in any attribute,
-    /// so every file compiled into the crate is a `.rs` source this reads.
-    /// `dav1d` appears only in `src/avif.rs` and `dav1d_sys` only in `lib.rs`'s
-    /// version call. Every `src/avif*` source, such as a child module, is read
-    /// by `avif.rs`'s rules: it makes nothing but `decode` public, declares no
-    /// module, reads no file's text or bytes (`include_str`, `include_bytes`)
-    /// and defines no `macro_rules` macro. It expands no macro, so one
-    /// elsewhere that assembles a path from its arguments (`<$t>::new()`) is
-    /// left to review.
+    /// `include` anywhere outside literals), takes a module from a `path` in
+    /// any attribute or defines a `macro_rules` macro (the word anywhere
+    /// outside literals), which could build such an attribute from its
+    /// arguments (`#[$a]`, `#[$a = $v]`, `#[$($t)*]`) or assemble a dav1d-rs
+    /// path (`<$t>::new()`), neither of which a word scan sees: so every file
+    /// compiled into the crate is a `.rs` source this reads, and no path is
+    /// built where it does not read. `dav1d` appears only in `src/avif.rs` and
+    /// `dav1d_sys` only in `lib.rs`'s version call. Every `src/avif*` source,
+    /// such as a child module, is read by `avif.rs`'s rules: it makes nothing
+    /// but `decode` public, declares no module and reads no file's text or
+    /// bytes (`include_str`, `include_bytes`). The source test also holds, from
+    /// `OUT_DIR` and `cargo metadata`, that the crate has no build script and
+    /// that its library root is `src/lib.rs`. It expands no
+    /// macro: those the crate calls come from the standard library and its
+    /// reviewed dependencies.
     fn dav1d_rs_outside_the_list(module: &str, code: &str) -> Vec<String> {
         let bare = bare_product_code(code);
         let bare = tokens(&bare);
@@ -2049,6 +2114,17 @@ mod tests {
             });
             if attribute.any(|token| *token == "path") {
                 found.push("#[path".to_owned());
+            }
+        }
+        // Words outside literals, so a message such as "cannot include it"
+        // counts for nothing: `include!` however it is reached
+        // (`std::include!`, `use std::include as inc;`), and a `macro_rules`
+        // macro, which could make a `path` attribute from its arguments
+        // (`#[$a] mod sneak;` called as `m!(path = "sneak.txt")`) or a
+        // dav1d-rs path (`$t::new()`), anywhere.
+        for &name in &bare {
+            if matches!(name, "include" | "macro_rules") {
+                found.push(name.to_owned());
             }
         }
         for (index, &name) in tokens.iter().enumerate() {
@@ -2099,13 +2175,8 @@ mod tests {
                     found.push("pub …".to_owned());
                 }
                 "mod" if avif => found.push("mod".to_owned()),
-                // A macro could assemble a dav1d-rs path from its arguments
-                // (`$t::new()`), which no word scan sees.
-                "macro_rules" if avif => found.push("macro_rules".to_owned()),
-                // `include!` however it is reached (`std::include!`, `use
-                // std::include as inc;`), anywhere; reading a file's bytes
-                // or text outside `src/avif*` is ordinary data.
-                "include" => found.push("include".to_owned()),
+                // Reading a file's bytes or text outside `src/avif*` is
+                // ordinary data.
                 "include_str" | "include_bytes" if avif => found.push(name.to_owned()),
                 _ => {}
             }
@@ -2175,6 +2246,56 @@ mod tests {
         assert!(code("src/lib.rs").contains("dav1d_sys::dav1d_version()"));
         let manifest: String = include_str!("../Cargo.toml").split_whitespace().collect();
         assert!(manifest.contains("dav1d=\"=0.11.1\""));
+        // A build script could set `--cfg test` (`cargo::rustc-cfg=test`),
+        // and a library rooted outside `src/` could compile what this scan
+        // does not read. Cargo sets `OUT_DIR` for a crate with a build script,
+        // and its own reading of the manifest names every target.
+        assert!(option_env!("OUT_DIR").is_none());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(compiled_outside_the_scan(root), Vec::<String>::new());
+        // Manifests that a reading of the TOML line by line misses, each in a
+        // scratch package: keys with escapes, and a table header inside a
+        // multi-line string (`[lib]` there leaves `build` in `[package]`).
+        let package = "[workspace]\n\n[package]\nname = \"scratch\"\nversion = \"0.0.0\"\n\
+                       edition = \"2024\"\n";
+        let script = "fn main() { println!(\"cargo::rustc-cfg=test\"); }";
+        for (case, manifest, files, found) in [
+            ("plain", "", &[][..], &[][..]),
+            (
+                "escaped keys",
+                "\"bu\\u0069ld\" = \"gen.rs\"\n\n[\"l\\u0069b\"]\n\"p\\u0061th\" = \"elsewhere/root.rs\"\n",
+                &[("gen.rs", script), ("elsewhere/root.rs", "")][..],
+                &["build script gen.rs", "library elsewhere/root.rs"][..],
+            ),
+            (
+                "a table header inside a string",
+                "description = \"\"\"\n[lib]\n\"\"\"\nbuild = \"gen.rs\"\n",
+                &[("gen.rs", script)][..],
+                &["build script gen.rs"][..],
+            ),
+            (
+                "build.rs beside the manifest",
+                "",
+                &[("build.rs", script)][..],
+                &["build script build.rs"][..],
+            ),
+            (
+                "a library path",
+                "\n[lib]\npath = \"elsewhere/root.rs\"\n",
+                &[("elsewhere/root.rs", "")][..],
+                &["library elsewhere/root.rs"][..],
+            ),
+        ] {
+            let scratch = tempfile::tempdir().unwrap();
+            let manifest = format!("{package}{manifest}");
+            let base = [("Cargo.toml", manifest.as_str()), ("src/lib.rs", "")];
+            for &(path, text) in base.iter().chain(files) {
+                let path = scratch.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+            assert_eq!(compiled_outside_the_scan(scratch.path()), found, "{case}");
+        }
         // A call, item or rename outside the list fails in each form the scan
         // reads: a word outside comments, a qualified path or a rename.
         let (avif, other, lib) = ("src/avif.rs", "src/image_helper.rs", "src/lib.rs");
@@ -2378,6 +2499,23 @@ mod tests {
             (lib, "#![cfg_attr(all(), path = \"sneak\")]", "#[path"),
             (lib, "#[/* */ path = \"sneak.txt\"] mod sneak;", "#[path"),
             (lib, "include!(\"../../sneak.inc\");", "include"),
+            // A macro anywhere could build a `path` attribute that no
+            // attribute holds as written.
+            (
+                lib,
+                "macro_rules! m { ($a:meta) => { #[$a] mod sneak; }; }\nm!(path = \"sneak.txt\");",
+                "macro_rules",
+            ),
+            (
+                lib,
+                "macro_rules! m { ($a:ident = $v:literal) => { #[$a = $v] mod sneak; }; }\nm!(path = \"sneak.txt\");",
+                "macro_rules",
+            ),
+            (
+                other,
+                "macro_rules! m { ($($t:tt)*) => { #[$($t)*] mod sneak; }; }\nm!(path = \"sneak.txt\");",
+                "macro_rules",
+            ),
             (
                 other,
                 "const C: &str = core::include!(\"sneak\");",
@@ -2475,6 +2613,10 @@ mod tests {
             (other, "const B: &[u8] = include_bytes!(\"fixture.bin\");"),
             (other, "const S: &str = include_str!(\"fixture.txt\");"),
             (other, "#[doc = \"the path\"]\nfn f(path: &Path) {}"),
+            // Words in literals are no code.
+            (other, "bail!(\"cannot include it\");"),
+            (lib, "let s = r#\"macro_rules\"#;"),
+            (avif, "let s = \"include macro_rules\";"),
             (child, "let mut settings = Settings::new();"),
             // A test module, however declared, with a brace in a literal.
             (
