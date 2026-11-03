@@ -214,7 +214,8 @@ pub(super) struct Preflight {
     /// `cmap` entry when a palette is resolved (always at full resolution);
     /// with a `cdef`, at least twice the output planes, which
     /// `hayro-jpeg2000` 0.4.1 copies to reorder them; with a colour profile,
-    /// [`profile_planes`] of those.
+    /// [`profile_planes`] of those; and when it reads the colour space as
+    /// CMYK, at least [`cmyk_planes`].
     planes: u32,
     /// The `hayro-jpeg2000` decoder contexts alive at once, each with a
     /// tile-component: two when it converts through a colour profile.
@@ -252,8 +253,9 @@ impl Preflight {
 
     /// f32 samples of every plane at `level` plus the largest tile-component
     /// there for each decoder context (#1558's formula; the tile count is
-    /// bounded). A `cdef` copy and a profile conversion are of the planes at
-    /// that level, so the same plane count holds when a level is skipped.
+    /// bounded). A `cdef` copy, a profile conversion and a CMYK conversion
+    /// are of the planes at that level, so the same plane count holds when a
+    /// level is skipped.
     pub(super) fn decode_bytes(&self, level: u32) -> u64 {
         let (width, height) = self.at_level(level);
         let tile = |size: u32| u64::from(size).div_ceil(1 << level);
@@ -299,6 +301,90 @@ fn profile_planes(peak: u32, output: u32) -> u32 {
     output + output.div_ceil(4) + peak.max(2 * output + 1)
 }
 
+/// Whether `hayro-jpeg2000` 0.4.1 reads a JP2 file's colour space as CMYK
+/// (`get_color_space`, `resolve_alpha_and_color_space`), from its first `colr`
+/// payload, its SIZ `components` and its palette's `columns`. With a palette it
+/// takes the space as given: CMYK for the CMYK (12) and YCCK (13) spaces
+/// whatever the columns, and with no `colr`, or one of a method other than 1
+/// or 2, when the palette has four columns. Without one it repairs a space
+/// whose channels the components do not match, so it reads CMYK only from four
+/// components: under the CMYK, YCCK and greyscale (17) spaces and with no
+/// `colr` or an unknown method; under CMYK or YCCK three components are RGB and
+/// one is grey to it. Four components with an opacity channel last in a `cdef`
+/// are RGB and alpha instead, which this does not distinguish: that `cdef`'s
+/// copy of the output planes outweighs the conversion. sRGB, sYCC and e-sRGB
+/// with four components gain an alpha channel, a profile (method 2) is
+/// budgeted by [`profile_planes`], and a raw codestream is grey or RGB to it
+/// (`j2c::parse`), never CMYK.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn reads_as_cmyk(colour: Option<&[u8]>, components: usize, columns: Option<u8>) -> bool {
+    let space = match colour {
+        Some(&[1, _, _, a, b, c, d, ..]) => Some(u32::from_be_bytes([a, b, c, d])),
+        // A short enumerated payload fails hayro's parse; a profile is
+        // budgeted on its own.
+        Some(&[1 | 2, ..]) => return false,
+        // hayro's unknown space.
+        _ => None,
+    };
+    match (space, columns) {
+        (Some(12 | 13), Some(_)) => true,
+        (None, Some(columns)) => columns == 4,
+        (Some(12 | 13 | 17) | None, None) => components == 4,
+        _ => false,
+    }
+}
+
+/// Whether `hayro-jpeg2000` 0.4.1 reads an opacity channel from this `cdef`
+/// payload (I.5.3.6): it sorts the definitions by channel index and takes the
+/// last one's type (`cdef::parse`, `resolve_alpha_and_color_space`'s
+/// `has_alpha`), so this reads the last of the largest index, as its stable
+/// sort leaves it. A box hayro cannot parse it drops (not strict), which leaves
+/// no alpha; reading the definitions there are can then only find alpha where
+/// hayro has none, which only makes the budget stricter.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn opacity_last(cdef: &[u8]) -> bool {
+    let Some((count, definitions)) = cdef.split_first_chunk::<2>() else {
+        return false;
+    };
+    definitions
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .take(usize::from(u16::from_be_bytes(*count)))
+        .max_by_key(|&&[high, low, ..]| u16::from_be_bytes([high, low]))
+        .is_some_and(|&[_, _, high, low, _, _]| u16::from_be_bytes([high, low]) == 1)
+}
+
+/// The f32 planes alive at once when `hayro-jpeg2000` 0.4.1 converts CMYK to
+/// RGB without a profile (`integration.rs` 227-254), from the `output` planes
+/// its decode leaves. The decode's context keeps those `output` planes for
+/// the whole call; `data_u8` makes their interleaved 8-bit copy (`output`
+/// bytes a pixel, `ceil(output / 4)` planes); and moxcms writes its 3-byte
+/// sRGB result (`from_icc`'s `transformed`, one plane): `output +
+/// ceil(output / 4) + 1` planes. With an opacity channel, which only a
+/// palette leaves beside CMYK and only a `cdef` ending in one gives it
+/// ([`opacity_last`]; `split`), the 8-bit copy is split into CMYK
+/// and alpha buffers grown by doubling before the sRGB result: at most `4 ×
+/// output + 4` bytes a pixel, `2 × output + 1` planes in all, as
+/// [`profile_planes`] counts the same branch.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn cmyk_planes(output: u32, split: bool) -> u32 {
+    if split {
+        2 * output + 1
+    } else {
+        output + output.div_ceil(4) + 1
+    }
+}
+
 /// Every bound the helper applies before `hayro-jpeg2000` allocates its tiles:
 /// JP2 compatibility, one `jp2h` and then one `jp2c` with no other of either
 /// kind, `ihdr` agreeing with SIZ, the source bounds, at most
@@ -317,9 +403,10 @@ pub(super) fn preflight(
         Jpeg2000TooDeep, Jpeg2000TooManyComponents, Jpeg2000TooManyTiles, Jpeg2000Unreadable,
         JpxNotJp2Compatible,
     };
-    // `cdef` present, and the first `colr` converting through a profile.
-    let (codestream, header, palette, cdef, icc) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
-        (bytes, None, None, false, false)
+    // The `cdef` payload, and a JP2 file's first `colr` payload, if any
+    // (`None` for a raw codestream, which hayro reads as grey or RGB).
+    let (codestream, header, palette, cdef, colour) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
+        (bytes, None, None, None, None)
     } else if bytes.starts_with(JP2_SIGNATURE) {
         let mut boxes = &bytes[JP2_SIGNATURE.len()..];
         let (kind, file_type) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
@@ -398,8 +485,8 @@ pub(super) fn preflight(
             codestream.ok_or(Jpeg2000Unreadable)?,
             Some(size),
             palette,
-            definition.is_some(),
-            colour.is_some_and(converts_with_a_profile),
+            definition,
+            Some(colour),
         )
     } else {
         return Err(Jpeg2000Unreadable);
@@ -478,15 +565,23 @@ pub(super) fn preflight(
     // reordered vector before it drops the originals (`lib.rs` 217-234). The
     // box counts whether or not hayro accepts it: one it ignores only makes
     // the budget stricter.
-    let peak = if cdef {
+    let peak = if cdef.is_some() {
         (components as u32 + mapped).max(2 * output)
     } else {
         components as u32 + mapped
     };
-    let (planes, contexts) = if icc {
-        (profile_planes(peak, output), 2)
-    } else {
-        (peak, 1)
+    let columns = palette.map(|(palette, _)| palette[2]);
+    let (planes, contexts) = match colour {
+        Some(colour) if colour.is_some_and(converts_with_a_profile) => {
+            (profile_planes(peak, output), 2)
+        }
+        // Without a profile, CMYK is converted to RGB after the decode, which
+        // keeps an 8-bit copy and moxcms's result beside its output planes.
+        Some(colour) if reads_as_cmyk(colour, components, columns) => {
+            let split = columns.is_some() && cdef.is_some_and(opacity_last);
+            (peak.max(cmyk_planes(output, split)), 1)
+        }
+        _ => (peak, 1),
     };
     let preflight = Preflight {
         area,

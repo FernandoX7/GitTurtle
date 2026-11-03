@@ -557,6 +557,155 @@ mod tests {
         );
     }
 
+    /// Without a colour profile, hayro-jpeg2000 0.4.1 converts CMYK to RGB
+    /// after the decode (`integration.rs` 227-232) while the decode's context
+    /// keeps its output planes: four planes, their 8-bit copy and moxcms's
+    /// 3-byte result take 4 + 1 + 1 = 6 planes. It reads four components as
+    /// CMYK under the CMYK (12) and YCCK (13) spaces, with no `colr` or one of
+    /// another method, and under greyscale (17), which it repairs; under sRGB
+    /// the fourth is alpha. Without a palette it repairs three components
+    /// under CMYK to RGB.
+    #[test]
+    fn cmyk_without_a_profile_counts_its_copy_and_result() {
+        let alpha = fixture("jpeg2000-alpha.jp2");
+        let ihdr = whole_box(&alpha, b"ihdr");
+        let srgb = whole_box(&alpha, b"colr");
+        let enumerated =
+            |space: u32| jp2_box(b"colr", &[&[1, 0, 0][..], &space.to_be_bytes()].concat());
+        let budget = |bytes: &[u8]| jpeg2000::preflight(bytes).unwrap().decode_bytes(0);
+        let plane = 64 * 48 * 4;
+        let mut wrong = Vec::new();
+        for (case, colour, planes, cmyk) in [
+            ("sRGB", srgb.clone(), 4, false),
+            ("CMYK", enumerated(12), 6, true),
+            ("YCCK", enumerated(13), 6, true),
+            ("greyscale", enumerated(17), 6, true),
+            ("no colr", Vec::new(), 6, true),
+            ("method 3", jp2_box(b"colr", &[3, 0, 0]), 6, true),
+        ] {
+            let bytes = jp2(&[&ihdr, &colour], &alpha);
+            // hayro decodes the fourth component as K into opaque RGB, or as
+            // the fixture's half-transparent alpha.
+            let image = jpeg2000(&bytes, 1600)
+                .unwrap_or_else(|kind| panic!("{case}: {kind:?}"))
+                .image;
+            let opaque = image
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel[3] == 255);
+            // The planes counted, then the tile-component.
+            let found = budget(&bytes);
+            if (found, opaque) != (plane * planes + plane, cmyk) {
+                wrong.push((case, found / plane - 1, opaque));
+            }
+        }
+        // Three components under CMYK, without a palette, are RGB to hayro:
+        // the RGB fixture's quadrants in its three planes.
+        let rgb = fixture("jpeg2000-rgb.jp2");
+        let three = jp2(&[&whole_box(&rgb, b"ihdr"), &enumerated(12)], &rgb);
+        assert_quadrants(
+            &jpeg2000(&three, 1600).unwrap().image,
+            QUADRANTS,
+            2,
+            "3 × CMYK",
+        );
+        if budget(&three) != plane * 3 + plane {
+            wrong.push((
+                "three components under CMYK",
+                budget(&three) / plane - 1,
+                true,
+            ));
+        }
+        // With a palette the output planes are the `cmap` entries, and CMYK
+        // (12) is read whatever the columns: one index and three mapped
+        // planes, then 3 + 1 + 1 to convert. A `cdef` copies the three output
+        // planes (2 × 3), and when its last channel by index is opacity,
+        // which leaves alpha beside CMYK there, the split takes 2 × 3 + 1.
+        let palette = fixture("jpeg2000-palette.jp2");
+        let [ihdr, pclr, mapping] =
+            [b"ihdr", b"pclr", b"cmap"].map(|kind| whole_box(&palette, kind));
+        let cmyk = enumerated(12);
+        let colours = cdef(&[[0, 0, 1], [1, 0, 2], [2, 0, 3]]);
+        let opacity_first = cdef(&[[0, 1, 0], [1, 0, 1], [2, 0, 2]]);
+        let opacity_last = cdef(&[[2, 1, 0], [0, 0, 1], [1, 0, 2]]);
+        for (case, children, planes) in [
+            ("palette", vec![&ihdr, &cmyk, &pclr, &mapping], 5),
+            (
+                "palette and colour cdef",
+                vec![&ihdr, &cmyk, &pclr, &mapping, &colours],
+                6,
+            ),
+            (
+                "palette and cdef, opacity first",
+                vec![&ihdr, &cmyk, &pclr, &mapping, &opacity_first],
+                6,
+            ),
+            (
+                "palette and cdef, opacity last by index",
+                vec![&ihdr, &cmyk, &pclr, &mapping, &opacity_last],
+                7,
+            ),
+        ] {
+            let children: Vec<&[u8]> = children.into_iter().map(Vec::as_slice).collect();
+            let found = budget(&jp2(&children, &palette));
+            if found != plane * planes + plane {
+                wrong.push((case, found / plane - 1, false));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
+
+        // 4,096 pixels wide with the last component sampled 2 × 2, so no
+        // level is skipped. At 3,000 rows four planes fit the budget and six
+        // do not; at 2,700 six fit.
+        let shape = |height: u32, colour: &[u8]| {
+            let mut ihdr = whole_box(&alpha, b"ihdr");
+            set(&mut ihdr, 8, &height.to_be_bytes());
+            set(&mut ihdr, 12, &4_096u32.to_be_bytes());
+            let mut bytes = jp2(&[&ihdr, colour], &alpha);
+            let marker = position(&bytes, b"jp2c") + 4;
+            set(&mut bytes, marker + 8, &4_096u32.to_be_bytes());
+            set(&mut bytes, marker + 12, &height.to_be_bytes());
+            set(&mut bytes, marker + 42 + 3 * 3 + 1, &[2, 2]);
+            bytes
+        };
+        let tile = 64 * 48 * 4;
+        let plane = |height: u64| 4_096 * height * 4;
+        let accepted = jpeg2000::preflight(&shape(3_000, &srgb)).unwrap();
+        assert!(!accepted.may_reduce());
+        assert_eq!(accepted.decode_bytes(0), plane(3_000) * 4 + tile);
+        assert!(accepted.decode_bytes(0) <= MAX_DECODER_BYTES);
+        for (case, colour) in [("CMYK", enumerated(12)), ("no colr", Vec::new())] {
+            let over = shape(3_000, &colour);
+            assert_eq!(budget(&over), plane(3_000) * 6 + tile, "{case}");
+            assert_eq!(
+                jpeg2000(&over, 1600).unwrap_err(),
+                ImageErrorKind::DecodedTooLarge,
+                "{case}"
+            );
+            let under = budget(&shape(2_700, &colour));
+            assert_eq!(under, plane(2_700) * 6 + tile, "{case}");
+            assert!(under <= MAX_DECODER_BYTES, "{case}");
+        }
+        // Three components under CMYK at 4,096 × 4,000, the last sampled
+        // 2 × 2: their three planes fit, where the five of a CMYK conversion
+        // would not.
+        let mut ihdr = whole_box(&rgb, b"ihdr");
+        set(&mut ihdr, 8, &4_000u32.to_be_bytes());
+        set(&mut ihdr, 12, &4_096u32.to_be_bytes());
+        let mut three = jp2(&[&ihdr, &enumerated(12)], &rgb);
+        let marker = position(&three, b"jp2c") + 4;
+        set(&mut three, marker + 8, &4_096u32.to_be_bytes());
+        set(&mut three, marker + 12, &4_000u32.to_be_bytes());
+        set(&mut three, marker + 42 + 3 * 2 + 1, &[2, 2]);
+        let three = jpeg2000::preflight(&three).unwrap();
+        assert!(!three.may_reduce());
+        assert_eq!(three.decode_bytes(0), plane(4_000) * 3 + tile);
+        assert!(three.decode_bytes(0) <= MAX_DECODER_BYTES);
+        assert!(plane(4_000) * 5 + tile > MAX_DECODER_BYTES);
+    }
+
     /// hayro-jpeg2000 0.4.1 decodes the last `jp2c` of a file; the preflight
     /// checks the first and refuses any after it.
     #[test]
