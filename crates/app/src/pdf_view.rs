@@ -801,7 +801,7 @@ fn side_heading(
 /// both read their kind, "· PDF" or a format's caption, or neither, the
 /// pair dropping it together where either side's line does not hold its
 /// own, so a reader across the two compares like with like. Each side once
-/// dropped its kind alone, and at 18 pt in a 461 × 490 window two paged PDFs
+/// dropped its kind alone, and in a 461 × 490 window two paged PDFs
 /// were headed "Before" beside "After · PDF", "Before · PDF" the wider.
 fn pair_headings(
     labels: [&str; 2],
@@ -1566,6 +1566,8 @@ fn message_line(id: String, text: impl Into<SharedString>, color: Option<u32>) -
     let text: SharedString = text.into();
     div()
         .size_full()
+        .flex()
+        .flex_col()
         .child(crate::in_frame::in_frame(move |bounds, window, _| {
             let size = window.text_style().font_size.to_pixels(window.rem_size());
             let line = crate::image_compare::text_line(size, window);
@@ -4164,7 +4166,7 @@ pub(crate) mod tests {
         /// beside "After · PDF" or "Before" beside "After", never one beside
         /// the other, across the band where After's heading would fit its
         /// line whole and Before's, the wider, would not. Each side once
-        /// dropped its kind alone, and at 18 pt in a 461 × 490 window the
+        /// dropped its kind alone, and in a 461 × 490 window the
         /// two were headed "Before" beside "After · PDF".
         #[gpui::test]
         fn both_sides_read_their_kind_or_neither(cx: &mut gpui_kit::TestAppContext) {
@@ -4239,6 +4241,107 @@ pub(crate) mod tests {
                 "at both scales and sizes the walk crosses widths where Before's own heading would drop its kind and After's would not: {band:?}"
             );
             assert!(failures.is_empty(), "{}", failures.join("\n"));
+        }
+
+        /// An absent side's message wraps within its side rather than be
+        /// cut: beside an added PDF, in a 461 px window's 87 px sides at
+        /// scales 1.2 and 2, at 13 and 18 pt, "No file on this side" lies
+        /// inside its side, in its room beneath the header, on every line it
+        /// wraps to there, the room holding them all, and its painted runs
+        /// (`width_walk::text_mark`) are its whole words. Its frame once took
+        /// no height in its room, so the message showed one line, "No file
+        /// on…", with about 280 px free beneath it.
+        #[gpui::test]
+        fn an_absent_side_s_message_wraps_within_its_side(cx: &mut gpui_kit::TestAppContext) {
+            use crate::worker::Content;
+            use rich_preview::{Comparison, Side};
+            const MESSAGE: &str = "No file on this side";
+            let name = Path::new("report.pdf");
+            let document = Arc::new(
+                Document::new(Arc::from(pdf("an added PDF")), 3, None, || Ok(())).unwrap(),
+            );
+            show(&document, 0);
+            let mut added = Side::unavailable(name, true, None);
+            added.pdf = Some(document);
+            let (view, cx) = window(
+                cx,
+                Content::Rich(Comparison {
+                    old: Arc::new(Side::unavailable(name, false, None)),
+                    new: Arc::new(added),
+                }),
+            );
+            let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+            for scale in [1.2f32, 2.] {
+                cx.update(|window, _| window.set_scale_factor(scale));
+                for text in [13u8, 18] {
+                    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                    view.update(cx, |view, cx| {
+                        view.width = px(174.);
+                        view.height = px(440.);
+                        cx.notify();
+                    });
+                    crate::tags::tests::draw(cx);
+                    let at = format!("scale {scale}, {text} pt, 87 px sides");
+                    let message = cx.debug_bounds("pdf-side-message-0").expect("the message");
+                    let room = cx.debug_bounds("pdf-scroll-0").expect("its room");
+                    let (lines, line, runs, whole, space) = cx.update(|window, _| {
+                        let size = window.text_style().font_size.to_pixels(window.rem_size());
+                        let weight = window.text_style().font_weight;
+                        let scale = window.scale_factor();
+                        let runs: Vec<Pixels> = window
+                            .painted_quads()
+                            .into_iter()
+                            .filter(|quad| quad.background == mark)
+                            .filter(|quad| {
+                                message.contains(&point(
+                                    px((quad.bounds.left() + quad.bounds.size.width / 2.).0
+                                        / scale),
+                                    px((quad.bounds.top() + quad.bounds.size.height / 2.).0
+                                        / scale),
+                                ))
+                            })
+                            .map(|quad| px(quad.bounds.size.width.0 / scale))
+                            .collect();
+                        (
+                            crate::image_compare::wrapped_lines(
+                                MESSAGE,
+                                size,
+                                message.size.width,
+                                window,
+                            ),
+                            crate::image_compare::text_line(size, window),
+                            runs,
+                            crate::views::shaped_width(MESSAGE, size, weight, window),
+                            crate::views::shaped_width(" ", size, weight, window),
+                        )
+                    });
+                    assert!(
+                        lines > 1,
+                        "{at}: the message needs more than a line: {message:?}"
+                    );
+                    assert!(
+                        message.left() >= room.left()
+                            && message.right() <= room.right() + px(0.01)
+                            && message.top() >= room.top()
+                            && message.bottom() <= room.bottom() + px(0.01),
+                        "{at}: the message {message:?} lies in its side's room {room:?}"
+                    );
+                    assert!(
+                        message.size.height >= line * lines as f32 - px(0.01),
+                        "{at}: the message {message:?} shows its {lines} lines of {line:?}"
+                    );
+                    let painted = runs.iter().fold(Pixels::ZERO, |sum, run| sum + *run);
+                    assert!(
+                        runs.len() == lines
+                            && painted >= whole - space * (lines - 1) as f32 - px(0.5),
+                        "{at}: the message's runs {runs:?} are its whole {whole:?} on {lines} lines"
+                    );
+                }
+            }
+            cx.update(|window, cx| {
+                window.set_scale_factor(2.);
+                appearance::apply_text_sizes(13, 12, window, cx)
+            });
         }
 
         /// The room fallback takes the compact form only where its run fits
