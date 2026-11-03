@@ -1036,8 +1036,7 @@ mod tests {
     /// and scaling allocate, and `decode` keeps no copy of either.
     #[test]
     fn decoded_pictures_are_freed_before_the_rgba_steps() {
-        let source = include_str!("avif.rs");
-        let code = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+        let code = product_code(include_str!("avif.rs"));
         assert!(code.contains("fn convert(picture: Picture, "));
         assert!(code.contains("fn apply_alpha(rgba: &mut RgbaImage, picture: Picture)"));
         let body = code
@@ -1330,6 +1329,866 @@ mod tests {
         })
     }
 
+    /// Every public function and method of dav1d-rs 0.11.1, which the
+    /// manifest pins exactly (a new version fails the test below until this
+    /// list is reviewed again). One the crate does not call counts wherever
+    /// its name appears as a word, whatever the receiver or path.
+    const DAV1D_RS_METHODS: [&str; 48] = [
+        // Settings.
+        "set_n_threads",
+        "get_n_threads",
+        "set_max_frame_delay",
+        "get_max_frame_delay",
+        "set_apply_grain",
+        "get_apply_grain",
+        "set_operating_point",
+        "get_operating_point",
+        "set_all_layers",
+        "get_all_layers",
+        "set_frame_size_limit",
+        "get_frame_size_limit",
+        "set_strict_std_compliance",
+        "get_strict_std_compliance",
+        "set_output_invisible_frames",
+        "get_output_invisible_frames",
+        "set_inloop_filters",
+        "get_inloop_filters",
+        "set_decode_frame_type",
+        "get_decode_frame_type",
+        // Decoder.
+        "flush",
+        "send_data",
+        "send_pending_data",
+        "get_picture",
+        "get_frame_delay",
+        // Picture, and PictureParameters for a custom allocator.
+        "stride",
+        "plane_data_ptr",
+        "plane_data_geometry",
+        "plane",
+        "bit_depth",
+        "bits_per_component",
+        "width",
+        "height",
+        "pixel_layout",
+        "timestamp",
+        "duration",
+        "offset",
+        "color_primaries",
+        "transfer_characteristic",
+        "matrix_coefficients",
+        "color_range",
+        "chroma_location",
+        "allocator_data",
+        "content_light",
+        "mastering_display",
+        // Error and PictureAllocator.
+        "is_again",
+        "alloc_picture",
+        "release_picture",
+    ];
+    /// The dav1d-rs methods the preview crate calls (security review
+    /// requirement 6): the reviewed settings, the send/get loop and the
+    /// picture accessors whose fields the layout probe proves.
+    const DAV1D_RS_METHODS_CALLED: [&str; 21] = [
+        "set_n_threads",
+        "set_max_frame_delay",
+        "set_frame_size_limit",
+        "set_all_layers",
+        "set_operating_point",
+        "set_apply_grain",
+        "set_output_invisible_frames",
+        "send_data",
+        "send_pending_data",
+        "get_picture",
+        "width",
+        "height",
+        "pixel_layout",
+        "bits_per_component",
+        "bit_depth",
+        "stride",
+        "plane",
+        "matrix_coefficients",
+        "color_range",
+        "color_primaries",
+        "transfer_characteristic",
+    ];
+    /// The dav1d-rs items the preview crate names (an enum's variants with
+    /// it), and the associated functions it calls through them.
+    const DAV1D_RS_ITEMS: [&str; 10] = [
+        "Decoder",
+        "Settings",
+        "Picture",
+        "Plane",
+        "PixelLayout",
+        "PlanarImageComponent",
+        "BitsPerComponent",
+        "Error",
+        "pixel",
+        "YUVRange",
+    ];
+    const DAV1D_RS_FUNCTIONS_CALLED: [&str; 2] = ["Settings::new", "Decoder::with_settings"];
+    /// dav1d-rs methods named by ordinary words that other preview modules
+    /// use for their own I/O and data (`stdout.flush()`, a buffer's `offset`,
+    /// an animation's `duration`), so they count as words in `src/avif*`
+    /// sources only. No other module holds a dav1d-rs value to call them on:
+    /// only `avif.rs` names dav1d, and it makes nothing but `decode` public.
+    const ORDINARY_WORDS: [&str; 3] = ["flush", "duration", "offset"];
+    /// The dav1d-rs constructors that take a custom picture allocator.
+    const DAV1D_RS_ALLOCATOR_FUNCTIONS: [&str; 2] =
+        ["with_allocator", "with_settings_and_allocator"];
+
+    /// `text` without its unit tests, with each comment (line, doc or nested
+    /// block) replaced by a space. The unit tests are a `#[cfg(test)]` module
+    /// named `tests`, its `mod tests;` or its braced body, and only that
+    /// module is left out: what follows it is read. It is found on the text
+    /// without comments and literals, so a marker or a brace in either moves
+    /// nothing. String and character literals stay in what is returned, so a
+    /// comment marker inside one hides nothing.
+    fn product_code(text: &str) -> String {
+        product(text, true)
+    }
+
+    /// [`product_code`] with each string and character literal replaced by a
+    /// space too, so a bracket or word inside one counts for nothing.
+    fn bare_product_code(text: &str) -> String {
+        product(text, false)
+    }
+
+    /// [`product_code`], keeping its literals or not.
+    fn product(text: &str, literals: bool) -> String {
+        let runs = runs(text);
+        // The text with each comment and literal blanked, byte for byte.
+        let bare: String = runs
+            .iter()
+            .map(|(range, run)| match run {
+                Run::Code => text[range.clone()].to_owned(),
+                Run::Comment | Run::Literal => " ".repeat(range.len()),
+            })
+            .collect();
+        let modules = test_modules(&bare);
+        let mut code = String::with_capacity(text.len());
+        for (range, run) in runs {
+            if let Some(module) = modules.iter().find(|module| module.contains(&range.start)) {
+                if range.start == module.start {
+                    code.push(' ');
+                }
+            } else if run == Run::Comment || (run == Run::Literal && !literals) {
+                code.push(' ');
+            } else {
+                code.push_str(&text[range]);
+            }
+        }
+        code
+    }
+
+    /// What a run of source text is.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Run {
+        Code,
+        Comment,
+        Literal,
+    }
+
+    /// `text` in runs: each comment (line, doc or nested block), each string
+    /// or character literal, and each other character, by byte range.
+    fn runs(text: &str) -> Vec<(std::ops::Range<usize>, Run)> {
+        let chars: Vec<char> = text.chars().collect();
+        let mut runs = Vec::new();
+        let (mut at, mut byte) = (0, 0);
+        while at < chars.len() {
+            let rest = &chars[at..];
+            let starts_word = at == 0 || !word_char(chars[at - 1]);
+            // A raw string: its prefix (`r`, `br` or `cr`), hashes and quote.
+            let raw = match rest {
+                ['r', ..] if starts_word => Some(1),
+                ['b' | 'c', 'r', ..] if starts_word => Some(2),
+                _ => None,
+            }
+            .map(|prefix| {
+                let hashes = rest[prefix..].iter().take_while(|c| **c == '#').count();
+                (prefix, hashes)
+            })
+            .filter(|(prefix, hashes)| rest.get(prefix + hashes) == Some(&'"'));
+            let (length, run) = match (raw, rest) {
+                (Some((prefix, hashes)), _) => {
+                    let body = prefix + hashes + 1;
+                    let close: Vec<char> = std::iter::once('"')
+                        .chain(std::iter::repeat_n('#', hashes))
+                        .collect();
+                    let length = rest[body..]
+                        .windows(close.len())
+                        .position(|window| window == close.as_slice())
+                        .map_or(rest.len(), |found| body + found + close.len());
+                    (length, Run::Literal)
+                }
+                (None, ['/', '/', ..]) => {
+                    let line = rest.iter().position(|c| *c == '\n');
+                    (line.unwrap_or(rest.len()), Run::Comment)
+                }
+                (None, ['/', '*', ..]) => {
+                    let (mut depth, mut length) = (0, 0);
+                    while length < rest.len() {
+                        match rest[length..] {
+                            ['/', '*', ..] => (depth, length) = (depth + 1, length + 2),
+                            ['*', '/', ..] => {
+                                (depth, length) = (depth - 1, length + 2);
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => length += 1,
+                        }
+                    }
+                    (length, Run::Comment)
+                }
+                (None, ['"', ..]) => {
+                    let mut length = 1;
+                    while length < rest.len() && rest[length] != '"' {
+                        length += if rest[length] == '\\' { 2 } else { 1 };
+                    }
+                    ((length + 1).min(rest.len()), Run::Literal)
+                }
+                // A character literal; otherwise a lifetime or a label.
+                (None, ['\'', '\\', ..]) => {
+                    let close = rest.get(3..).unwrap_or(&[]).iter().position(|c| *c == '\'');
+                    (close.map_or(rest.len(), |close| close + 4), Run::Literal)
+                }
+                (None, ['\'', _, '\'', ..]) => (3, Run::Literal),
+                _ => (1, Run::Code),
+            };
+            let bytes: usize = rest[..length].iter().map(|c| c.len_utf8()).sum();
+            runs.push((byte..byte + bytes, run));
+            (at, byte) = (at + length, byte + bytes);
+        }
+        runs
+    }
+
+    /// The byte ranges of `bare`'s unit tests: each `#[cfg(test)]` module
+    /// named `tests`, with any visibility, from the attribute to the `;` of
+    /// `mod tests;` or the `}` that closes `mod tests { … }`. `bare` holds no
+    /// comment or literal, so every brace in it counts; a module whose braces
+    /// never close is not left out.
+    fn test_modules(bare: &str) -> Vec<std::ops::Range<usize>> {
+        let spans = spans(bare);
+        let token = |index: usize| spans.get(index).map_or("", |(_, token)| *token);
+        let attribute = ["#", "[", "cfg", "(", "test", ")", "]"];
+        let mut modules = Vec::new();
+        let mut index = 0;
+        while index < spans.len() {
+            let start = index;
+            index += 1;
+            if !(0..attribute.len()).all(|at| token(start + at) == attribute[at]) {
+                continue;
+            }
+            let mut next = start + attribute.len();
+            // A visibility, as in `pub(crate) mod tests`.
+            if token(next) == "pub" {
+                next += 1;
+                if token(next) == "(" {
+                    while !matches!(token(next), ")" | "") {
+                        next += 1;
+                    }
+                    next += 1;
+                }
+            }
+            if (token(next), token(next + 1)) != ("mod", "tests") {
+                continue;
+            }
+            next += 2;
+            let end = match token(next) {
+                ";" => Some(next),
+                "{" => {
+                    let mut depth = 0usize;
+                    spans[next..]
+                        .iter()
+                        .position(|(_, token)| {
+                            match *token {
+                                "{" => depth += 1,
+                                "}" => depth -= 1,
+                                _ => {}
+                            }
+                            depth == 0
+                        })
+                        .map(|close| next + close)
+                }
+                _ => None,
+            };
+            if let Some(end) = end {
+                let (from, (to, last)) = (spans[start].0, spans[end]);
+                modules.push(from..to + last.len());
+                index = end + 1;
+            }
+        }
+        modules
+    }
+
+    fn word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    fn is_word(token: &str) -> bool {
+        token.starts_with(word_char)
+    }
+
+    /// The words and punctuation of `code` without its whitespace, with
+    /// `::`, `->` and `=>` each one token.
+    fn tokens(code: &str) -> Vec<&str> {
+        spans(code).into_iter().map(|(_, token)| token).collect()
+    }
+
+    /// [`tokens`] with the byte offset of each.
+    fn spans(code: &str) -> Vec<(usize, &str)> {
+        let mut spans = Vec::new();
+        let mut at = 0;
+        while let Some(first) = code[at..].chars().next() {
+            let rest = &code[at..];
+            let length = if word_char(first) {
+                rest.find(|c: char| !word_char(c)).unwrap_or(rest.len())
+            } else if ["::", "->", "=>"].iter().any(|pair| rest.starts_with(pair)) {
+                2
+            } else {
+                first.len_utf8()
+            };
+            if !first.is_whitespace() {
+                spans.push((at, &rest[..length]));
+            }
+            at += length;
+        }
+        spans
+    }
+
+    /// The index after the `>` that closes the `<` at `open`, or `open` if
+    /// the statement ends first.
+    fn after_generics(tokens: &[&str], open: usize) -> usize {
+        let mut depth = 0;
+        for (index, token) in tokens.iter().enumerate().skip(open) {
+            match *token {
+                "<" => depth += 1,
+                ">" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index + 1;
+                    }
+                }
+                ";" | "{" | "}" => break,
+                _ => {}
+            }
+        }
+        open
+    }
+
+    /// Whether the path ending at `tokens[index]` opens with the `<` of a
+    /// qualified path (`<Picture>::`, `<dav1d::Picture>::`), not of generic
+    /// arguments (`Vec<Picture>`, `Vec::<Picture>`).
+    fn opens_qualified(tokens: &[&str], index: usize) -> bool {
+        let mut start = index;
+        while start >= 2 && tokens[start - 1] == "::" && is_word(tokens[start - 2]) {
+            start -= 2;
+        }
+        if start >= 1 && tokens[start - 1] == "::" {
+            start -= 1;
+        }
+        start >= 1
+            && tokens[start - 1] == "<"
+            && (start < 2
+                || !(is_word(tokens[start - 2]) || matches!(tokens[start - 2], "::" | ">")))
+    }
+
+    /// The tokens from the start of `tokens` up to the first of `ends`.
+    fn up_to<'a>(tokens: &'a [&'a str], ends: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
+        tokens
+            .iter()
+            .copied()
+            .take_while(move |token| !ends.contains(token))
+    }
+
+    /// What `code` from the preview source `module` (such as `src/avif.rs`)
+    /// reaches in dav1d-rs or dav1d-sys outside the lists above. The scan
+    /// reads the words and paths outside comments, so a name counts however
+    /// its call is spaced, split by a comment or qualified (`<Picture>::`,
+    /// `Decoder::<_>::`), and so does every rename (`type`, `as`, `extern
+    /// crate`, `::dav1d`). No preview source includes a file (the word
+    /// `include` anywhere) or takes a module from a `path` in any attribute,
+    /// so every file compiled into the crate is a `.rs` source this reads.
+    /// `dav1d` appears only in `src/avif.rs` and `dav1d_sys` only in `lib.rs`'s
+    /// version call. Every `src/avif*` source, such as a child module, is read
+    /// by `avif.rs`'s rules: it makes nothing but `decode` public, declares no
+    /// module, reads no file's text or bytes (`include_str`, `include_bytes`)
+    /// and defines no `macro_rules` macro. It expands no macro, so one
+    /// elsewhere that assembles a path from its arguments (`<$t>::new()`) is
+    /// left to review.
+    fn dav1d_rs_outside_the_list(module: &str, code: &str) -> Vec<String> {
+        let bare = bare_product_code(code);
+        let bare = tokens(&bare);
+        let code = product_code(code);
+        let tokens = tokens(&code);
+        let avif = module.starts_with("src/avif");
+        let token = |index: usize| tokens.get(index).copied().unwrap_or("");
+        // What names a dav1d-rs item: only `avif.rs` imports any.
+        let item = |name: &str| name == "dav1d" || (avif && DAV1D_RS_ITEMS.contains(&name));
+        let mut found = Vec::new();
+        // A `path` in any attribute, outer or inner and however nested
+        // (`#[path = …]`, `#![cfg_attr(…, path = …)]`), read without literals
+        // so a bracket in one does not end the attribute early.
+        for (index, _) in bare.iter().enumerate().filter(|(_, token)| **token == "#") {
+            let open = index + 1 + usize::from(bare.get(index + 1) == Some(&"!"));
+            if bare.get(open) != Some(&"[") {
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut attribute = bare[open..].iter().take_while(|token| {
+                match **token {
+                    "[" => depth += 1,
+                    "]" => depth -= 1,
+                    _ => {}
+                }
+                depth > 0
+            });
+            if attribute.any(|token| *token == "path") {
+                found.push("#[path".to_owned());
+            }
+        }
+        for (index, &name) in tokens.iter().enumerate() {
+            let before = |back: usize| index.checked_sub(back).map_or("", |at| tokens[at]);
+            let uncalled = DAV1D_RS_METHODS.contains(&name)
+                && !DAV1D_RS_METHODS_CALLED.contains(&name)
+                && (avif || !ORDINARY_WORDS.contains(&name));
+            if uncalled || DAV1D_RS_ALLOCATOR_FUNCTIONS.contains(&name) {
+                found.push(name.to_owned());
+            }
+            let version_call = [token(index + 1), token(index + 2), token(index + 3)]
+                == ["::", "dav1d_version", "("];
+            let statement = &tokens[index..];
+            match name {
+                "dav1d" if module != "src/avif.rs" => found.push(format!("dav1d in {module}")),
+                "dav1d" if before(1) == "::" => found.push("::dav1d".to_owned()),
+                "dav1d" if before(2) == "extern" => found.push("extern crate dav1d".to_owned()),
+                "dav1d_sys" if module != "src/lib.rs" || !version_call => {
+                    found.push("dav1d_sys outside the version call".to_owned());
+                }
+                "type" => found.extend(
+                    up_to(statement, &[";"])
+                        .filter(|name| item(name))
+                        .map(|name| format!("type … {name}")),
+                ),
+                "impl" => found.extend(
+                    up_to(statement, &["{", ";"])
+                        .filter(|name| item(name))
+                        .map(|name| format!("impl … {name}")),
+                ),
+                "use" if up_to(statement, &[";"]).any(|name| name == "dav1d") => found.extend(
+                    up_to(statement, &[";"])
+                        .filter(|name| {
+                            *name == "*"
+                                || (is_word(name)
+                                    && !matches!(*name, "use" | "dav1d")
+                                    && !DAV1D_RS_ITEMS.contains(name))
+                        })
+                        .map(|name| format!("use dav1d…{name}")),
+                ),
+                "pub"
+                    if avif
+                        && statement
+                            .iter()
+                            .take(6)
+                            .ne(&["pub", "(", "crate", ")", "fn", "decode"]) =>
+                {
+                    found.push("pub …".to_owned());
+                }
+                "mod" if avif => found.push("mod".to_owned()),
+                // A macro could assemble a dav1d-rs path from its arguments
+                // (`$t::new()`), which no word scan sees.
+                "macro_rules" if avif => found.push("macro_rules".to_owned()),
+                // `include!` however it is reached (`std::include!`, `use
+                // std::include as inc;`), anywhere; reading a file's bytes
+                // or text outside `src/avif*` is ordinary data.
+                "include" => found.push("include".to_owned()),
+                "include_str" | "include_bytes" if avif => found.push(name.to_owned()),
+                _ => {}
+            }
+            if !item(name) {
+                continue;
+            }
+            let mut next = index + 1;
+            // Generic arguments, as in `Decoder::<A>` or `Picture<A>`.
+            if token(next) == "::" && token(next + 1) == "<" {
+                next = after_generics(&tokens, next + 1);
+            } else if token(next) == "<" {
+                next = after_generics(&tokens, next);
+            }
+            // The end of a qualified path, as in `<dav1d::Picture>::`.
+            if token(next) == ">" && opens_qualified(&tokens, index) {
+                next += 1;
+            }
+            let member = token(next + 1);
+            if token(next) == "as" {
+                found.push(format!("{name} as"));
+            } else if token(next) == "::" && is_word(member) {
+                let path = format!("{name}::{member}");
+                let outside = if matches!(name, "dav1d" | "pixel") {
+                    !DAV1D_RS_ITEMS.contains(&member)
+                } else {
+                    member.starts_with(|c: char| c.is_lowercase())
+                        && !DAV1D_RS_FUNCTIONS_CALLED.contains(&path.as_str())
+                };
+                if outside {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// Security review requirement 6: the preview crate calls only the
+    /// dav1d-rs functions it needs, listed above; anything else fails here.
+    #[test]
+    fn calls_only_the_listed_dav1d_rs_functions() {
+        let sources = sources();
+        let module = |path: &str| {
+            let path = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
+            path.trim_start_matches('/').to_owned()
+        };
+        for (path, text) in &sources {
+            let found = dav1d_rs_outside_the_list(&module(path), text);
+            assert_eq!(found, Vec::<String>::new(), "{path}");
+        }
+        let code = |name: &str| {
+            let (_, text) = sources
+                .iter()
+                .find(|(path, _)| module(path) == name)
+                .unwrap();
+            product_code(text)
+        };
+        // Each listed call is still made, so the list names no more than the
+        // crate needs, and so is `lib.rs`'s dav1d-sys version call.
+        let avif_code = code("src/avif.rs");
+        for name in DAV1D_RS_METHODS_CALLED {
+            assert!(avif_code.contains(&format!(".{name}(")), "{name}");
+            assert!(DAV1D_RS_METHODS.contains(&name), "{name}");
+        }
+        for path in DAV1D_RS_FUNCTIONS_CALLED {
+            assert!(avif_code.contains(&format!("{path}(")), "{path}");
+        }
+        assert!(code("src/lib.rs").contains("dav1d_sys::dav1d_version()"));
+        let manifest: String = include_str!("../Cargo.toml").split_whitespace().collect();
+        assert!(manifest.contains("dav1d=\"=0.11.1\""));
+        // A call, item or rename outside the list fails in each form the scan
+        // reads: a word outside comments, a qualified path or a rename.
+        let (avif, other, lib) = ("src/avif.rs", "src/image_helper.rs", "src/lib.rs");
+        let child = "src/avif/sneak.rs";
+        for (module, line, outside) in [
+            (avif, "decoder.flush();", "flush"),
+            (avif, "let _ = picture.timestamp();", "timestamp"),
+            (
+                avif,
+                "let _ = picture\n    .content_light();",
+                "content_light",
+            ),
+            (avif, "settings.get_n_threads()", "get_n_threads"),
+            (avif, "let decoder = Decoder::new();", "Decoder::new"),
+            (
+                avif,
+                "let light = Picture::content_light;",
+                "Picture::content_light",
+            ),
+            (
+                avif,
+                "let settings = Settings::default();",
+                "Settings::default",
+            ),
+            (
+                avif,
+                "let _: dav1d::PictureParameters;",
+                "dav1d::PictureParameters",
+            ),
+            (
+                avif,
+                "let _ = dav1d::pixel::ColorPrimaries::BT709;",
+                "pixel::ColorPrimaries",
+            ),
+            (
+                avif,
+                "use dav1d::{Decoder, DefaultAllocator};",
+                "use dav1d…DefaultAllocator",
+            ),
+            (avif, "use dav1d::*;", "use dav1d…*"),
+            (avif, "use dav1d::Picture as P;", "Picture as"),
+            // Qualified paths.
+            (avif, "<Picture>::content_light(p)", "content_light"),
+            (
+                avif,
+                "<Picture>::content_light(p)",
+                "Picture::content_light",
+            ),
+            (
+                avif,
+                "<dav1d::Picture>::mastering_display(p)",
+                "Picture::mastering_display",
+            ),
+            (
+                avif,
+                "Picture::<_>::mastering_display(p)",
+                "Picture::mastering_display",
+            ),
+            (avif, "Decoder::<_>::flush(&mut d)", "Decoder::flush"),
+            (avif, "let decoder = <Decoder>::new();", "Decoder::new"),
+            (
+                avif,
+                "let d = Decoder::<dav1d::DefaultAllocator>::new();",
+                "Decoder::new",
+            ),
+            (
+                avif,
+                "let d = Decoder::<dav1d::DefaultAllocator>::new();",
+                "dav1d::DefaultAllocator",
+            ),
+            (avif, "Decoder::with_allocator(allocator)", "with_allocator"),
+            (
+                avif,
+                "Decoder::with_settings_and_allocator(&s, a)",
+                "with_settings_and_allocator",
+            ),
+            // Renames.
+            (
+                avif,
+                "type P = Picture; P::content_light(&p)",
+                "type … Picture",
+            ),
+            (
+                avif,
+                "type P = Picture; P::content_light(&p)",
+                "content_light",
+            ),
+            (avif, "use ::dav1d::Decoder as Codec;", "::dav1d"),
+            (avif, "use ::dav1d::Decoder as Codec;", "Decoder as"),
+            (
+                avif,
+                "extern crate dav1d as d; d::PictureParameters",
+                "extern crate dav1d",
+            ),
+            (avif, "use dav1d as av1;", "dav1d as"),
+            (avif, "use dav1d::{self as av1};", "use dav1d…self"),
+            (avif, "use {dav1d::Picture as P};", "Picture as"),
+            (avif, "use Decoder as Codec;", "Decoder as"),
+            (avif, "<Settings as Default>::default()", "Settings as"),
+            (
+                avif,
+                "impl Open for Decoder { fn open() -> Self { Self::new() } }",
+                "impl … Decoder",
+            ),
+            (avif, "pub(crate) use dav1d::Picture;", "pub …"),
+            // A comment between the names, and comment markers in literals.
+            (avif, "picture./* */content_light()", "content_light"),
+            (
+                avif,
+                "/* /* nested */ */ picture.content_light();",
+                "content_light",
+            ),
+            (
+                avif,
+                "let s = \"//\"; picture.content_light();",
+                "content_light",
+            ),
+            (
+                avif,
+                "let c = '\"'; picture.content_light(); // \"",
+                "content_light",
+            ),
+            (
+                avif,
+                "let s = r#\"/*\"#; picture.content_light();",
+                "content_light",
+            ),
+            // Other modules: no dav1d at all, and dav1d-sys for the version only.
+            (
+                other,
+                "let _ = dav1d::Settings::new();",
+                "dav1d in src/image_helper.rs",
+            ),
+            (
+                other,
+                "let _ = picture.mastering_display();",
+                "mastering_display",
+            ),
+            (
+                other,
+                "let version = dav1d_sys::dav1d_version();",
+                "dav1d_sys outside the version call",
+            ),
+            (
+                lib,
+                "use dav1d_sys as sys;",
+                "dav1d_sys outside the version call",
+            ),
+            (
+                lib,
+                "use dav1d_sys::dav1d_version as v;",
+                "dav1d_sys outside the version call",
+            ),
+            (
+                lib,
+                "extern crate dav1d_sys as sys;",
+                "dav1d_sys outside the version call",
+            ),
+            // Only the test module is left out: what follows it is read, as is
+            // a module of another name and a marker in a literal or comment.
+            // `avif.rs` declares no module and includes no file, and another
+            // `src/avif*` source, such as a child module, is read by its rules.
+            (avif, "mod sneak;", "mod"),
+            (
+                avif,
+                "macro_rules! make { ($t:ident) => { $t::new() }; }\nlet d: Decoder = make!(Decoder);",
+                "macro_rules",
+            ),
+            (child, "macro_rules! m { () => {}; }", "macro_rules"),
+            (avif, "#[path = \"sneak.rs\"]\nmod sneak;", "#[path"),
+            (avif, "include!(\"sneak.rs\");", "include"),
+            (avif, "std::include!(\"sneak.rs\");", "include"),
+            (
+                avif,
+                "use std::include as inc;\nfn f() { inc!(\"sneak.rs\"); }",
+                "include",
+            ),
+            (
+                avif,
+                "const S: &str = include_str!(\"sneak.rs\");",
+                "include_str",
+            ),
+            (
+                avif,
+                "use std::include_bytes as bytes;\nconst B: &[u8] = bytes!(\"sneak.bin\");",
+                "include_bytes",
+            ),
+            // No preview source includes a file or takes a module from a
+            // `path` attribute, so the scan reads every file compiled in.
+            (lib, "#[path = \"sneak.txt\"] mod sneak;", "#[path"),
+            (
+                lib,
+                "#[cfg_attr(all(), path = \"sneak.txt\")] mod sneak;",
+                "#[path",
+            ),
+            (
+                lib,
+                "#[cfg_attr(all(), doc = \"]\", path = \"sneak.txt\")]\nmod sneak;",
+                "#[path",
+            ),
+            (lib, "#![cfg_attr(all(), path = \"sneak\")]", "#[path"),
+            (lib, "#[/* */ path = \"sneak.txt\"] mod sneak;", "#[path"),
+            (lib, "include!(\"../../sneak.inc\");", "include"),
+            (
+                other,
+                "const C: &str = core::include!(\"sneak\");",
+                "include",
+            ),
+            (
+                child,
+                "use super::{Decoder, Settings};\nfn f(decoder: &mut Decoder) { decoder.flush(); }",
+                "flush",
+            ),
+            (child, "let decoder = Decoder::new();", "Decoder::new"),
+            (
+                child,
+                "let settings = Settings::default();",
+                "Settings::default",
+            ),
+            (child, "mod deeper;", "mod"),
+            (
+                "src/avif_sneak.rs",
+                "fn f(decoder: &mut dav1d::Decoder) { decoder.flush(); }",
+                "flush",
+            ),
+            (
+                "src/avif_sneak.rs",
+                "use dav1d::Decoder;",
+                "dav1d in src/avif_sneak.rs",
+            ),
+            (child, "use dav1d::Settings;", "dav1d in src/avif/sneak.rs"),
+            (
+                other,
+                "fn e() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn f() { picture.content_light(); }",
+                "content_light",
+            ),
+            (
+                other,
+                "fn e() {}\n#[cfg(test)]\nmod tests;\nfn f() { picture.content_light(); }",
+                "content_light",
+            ),
+            (
+                other,
+                "fn e() {}\n#[cfg(test)]\nmod tests_util;\nfn f() { picture.content_light(); }",
+                "content_light",
+            ),
+            (
+                other,
+                "const S: &str = \"\n#[cfg(test)]\nmod tests {\";\nfn f() { picture.content_light(); }",
+                "content_light",
+            ),
+            (
+                other,
+                "/*\n#[cfg(test)]\nmod tests { */\nfn f() { picture.content_light(); }",
+                "content_light",
+            ),
+        ] {
+            let found = dav1d_rs_outside_the_list(module, line);
+            assert!(found.contains(&outside.to_owned()), "{line}: {found:?}");
+        }
+        // Product code after a real source's test module is read.
+        let (path, hayro) = sources
+            .iter()
+            .find(|(path, _)| module(path) == "src/jpeg2000_hayro.rs")
+            .unwrap();
+        assert!(hayro.contains("\n#[cfg(test)]\nmod tests {\n"), "{path}");
+        let after = format!("{hayro}\nfn f(p: &dav1d::Picture) {{ p.content_light(); }}\n");
+        let found = dav1d_rs_outside_the_list("src/jpeg2000_hayro.rs", &after);
+        for outside in ["dav1d in src/jpeg2000_hayro.rs", "content_light"] {
+            assert!(found.contains(&outside.to_owned()), "{outside}: {found:?}");
+        }
+        // And the calls the crate makes pass, however they are spelled, as do
+        // comments and other modules' ordinary words.
+        for (module, line) in [
+            (avif, "let mut settings = Settings::new();"),
+            (avif, "Decoder::with_settings(&settings)"),
+            (avif, "picture\n    .bit_depth()"),
+            (avif, "dav1d::Error::UnknownError(code) if code == -ERANGE"),
+            (avif, "use dav1d::pixel::YUVRange;"),
+            (avif, "picture.color_range() == YUVRange::Full"),
+            (
+                avif,
+                "fn convert(pictures: Vec<Picture>) -> Option<Picture> {",
+            ),
+            (
+                avif,
+                "// picture.content_light() and Decoder::new() in a comment",
+            ),
+            (avif, "/// dav1d's `content_light`, in a doc comment"),
+            (avif, "let _ = 1; /* <Decoder>::new() */"),
+            (avif, "pub(crate) fn decode("),
+            (other, "stdout.flush()?;"),
+            (other, "let offset = 4; let duration = offset;"),
+            (lib, "let version = dav1d_sys::dav1d_version();"),
+            // Modules, included data and attributes outside `src/avif*`.
+            (lib, "mod avif;"),
+            (lib, "#[cfg_attr(test, allow(dead_code))]\nmod avif;"),
+            (other, "const B: &[u8] = include_bytes!(\"fixture.bin\");"),
+            (other, "const S: &str = include_str!(\"fixture.txt\");"),
+            (other, "#[doc = \"the path\"]\nfn f(path: &Path) {}"),
+            (child, "let mut settings = Settings::new();"),
+            // A test module, however declared, with a brace in a literal.
+            (
+                other,
+                "#[cfg(test)]\nmod tests {\n    const S: &str = \"}\";\n    fn t() { picture.content_light(); }\n}",
+            ),
+            (
+                other,
+                "#[cfg(test)]\npub(crate) mod tests {\n    fn t(p: &dav1d::Picture) {}\n}",
+            ),
+        ] {
+            let found = dav1d_rs_outside_the_list(module, line);
+            assert_eq!(found, Vec::<String>::new(), "{line}");
+        }
+    }
+
     #[test]
     fn decoders_use_only_the_reviewed_codec_entries() {
         // Split so this file does not match itself. Anywhere in the crate:
@@ -1341,30 +2200,11 @@ mod tests {
             ["with_", "allocator"].concat(),
             ["dav1d_parse_", "sequence_header"].concat(),
         ];
-        // dav1d-rs calls outside the reviewed list, in the module that uses it.
-        let outside_the_list = [
-            ["content_", "light"].concat(),
-            ["mastering_", "display"].concat(),
-            ["chroma_", "location"].concat(),
-            ["allocator_", "data"].concat(),
-            ["plane_data_", "ptr"].concat(),
-            ["get_frame_", "delay"].concat(),
-            ["seq_", "hdr"].concat(),
-            ["frame_", "hdr"].concat(),
-            ["Decoder::", "new"].concat(),
-            ["set_strict_", "std_compliance"].concat(),
-            ["set_inloop_", "filters"].concat(),
-            ["set_decode_", "frame_type"].concat(),
-        ];
         let sources = sources();
         for (path, text) in &sources {
             // Product code only: the layout probe below names every field.
-            let code = text.split("\n#[cfg(test)]\nmod tests").next().unwrap();
-            let dav1d = path.ends_with("/avif.rs");
-            for needle in anywhere
-                .iter()
-                .chain(outside_the_list.iter().filter(|_| dav1d))
-            {
+            let code = product_code(text);
+            for needle in &anywhere {
                 assert!(!code.contains(needle.as_str()), "{path} uses {needle}");
             }
         }
