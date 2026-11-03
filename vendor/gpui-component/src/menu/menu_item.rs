@@ -190,9 +190,9 @@ impl RenderOnce for MenuItemElement {
         // which is the cursor's only cue and stood 1.19:1 off the menu in
         // GitTurtle's Midnight; the marker holds 3:1 against the fill and the
         // menu. The pointer's hover keeps that quieter fill. The cursor rests
-        // on a disabled item only where it states why it waits
-        // (`PopupMenuItem::reason_stated`), and is drawn there too, the item's
-        // text staying disabled.
+        // on a disabled item only where it states why it is unavailable or
+        // waits (`PopupMenuItem::reason_stated`), and is drawn there too, the
+        // item's text staying disabled.
         let cursor = item && self.selected && self.keyboard;
         let marker = cursor.then(|| {
             let mut marker = div()
