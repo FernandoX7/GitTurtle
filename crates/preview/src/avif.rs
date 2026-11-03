@@ -531,40 +531,50 @@ fn orient(mut rgba: RgbaImage, rotation: u8, mirror: Option<u8>) -> RgbaImage {
 }
 
 /// The item properties GitTurtle reads itself (ISO/IEC 23008-12 9.3): the
-/// primary item, its property associations and its `auxl` references. Every
-/// length is checked against the input; `None` means unreadable.
+/// primary item, the items with an `auxl` reference to it, and the property
+/// associations of those items only. Every length is checked against the
+/// input; `None` means unreadable.
 struct Properties<'a> {
     primary: u32,
     container: Vec<([u8; 4], &'a [u8])>,
-    associations: Vec<(u32, Vec<usize>)>,
-    auxiliary: Vec<(u32, u32)>,
+    /// Item and 1-based `ipco` index, for the primary and `auxiliary` items.
+    associations: Vec<(u32, u16)>,
+    /// Items with an `auxl` reference to the primary.
+    auxiliary: Vec<u32>,
 }
 
+/// The most `ipma` entries read, summed over every `ipma` box. Each entry
+/// names one item, and an image GitTurtle decodes has a handful (the primary,
+/// its alpha, metadata; libheif's default limit is 1,000 items). A grid's
+/// tiles, which can number in the hundreds, never reach [`Properties::parse`]:
+/// the grid is refused first.
+const MAX_IPMA_ENTRIES: u32 = 4_096;
+/// The most items with an `auxl` reference to the primary: an alpha item, a
+/// depth map and the like.
+const MAX_AUXILIARY_ITEMS: usize = 16;
+/// The most property associations kept, for the primary and its `auxl` items
+/// together. An item has a few (`av1C`, `ispe`, `pixi`, `colr`, `irot`,
+/// `imir`, `auxC`); the format allows 255 per entry.
+const MAX_KEPT_ASSOCIATIONS: usize = 1_024;
+
 impl<'a> Properties<'a> {
+    /// Reads `pitm`, then the items with an `auxl` reference to the primary
+    /// (refused above [`MAX_AUXILIARY_ITEMS`]), then `ipma`. Each `ipma` box's
+    /// entry count joins the total and is refused above [`MAX_IPMA_ENTRIES`]
+    /// before any of its entries is read; an entry for any other item is
+    /// skipped without being stored; and an entry whose associations would
+    /// take the kept total above [`MAX_KEPT_ASSOCIATIONS`] is refused before
+    /// they are stored.
+    ///
+    /// These bounds protect this parser's own lists. `mp4parse` has already
+    /// stored every `ipma` entry by then, in fallible `TryVec`s (mp4parse
+    /// 0.17.0 `src/lib.rs:3663-3698`), and the confined helper's resource
+    /// limits bound that memory.
     fn parse(bytes: &'a [u8]) -> Option<Self> {
         let (_, _, meta) = full_box(find(&boxes(bytes)?, b"meta")?)?;
         let meta = boxes(meta)?;
         let (version, _, pitm) = full_box(find(&meta, b"pitm")?)?;
         let primary = Reader(pitm).id(version)?;
-        let iprp = boxes(find(&meta, b"iprp")?)?;
-        let container = boxes(find(&iprp, b"ipco")?)?;
-        let mut associations = Vec::new();
-        for (_, ipma) in iprp.iter().filter(|(kind, _)| kind == b"ipma") {
-            let (version, flags, payload) = full_box(ipma)?;
-            let mut reader = Reader(payload);
-            for _ in 0..reader.u32()? {
-                let item = reader.id(version)?;
-                let mut indices = Vec::new();
-                for _ in 0..reader.u8()? {
-                    indices.push(if flags & 1 == 1 {
-                        usize::from(reader.u16()? & 0x7fff)
-                    } else {
-                        usize::from(reader.u8()? & 0x7f)
-                    });
-                }
-                associations.push((item, indices));
-            }
-        }
         let mut auxiliary = Vec::new();
         if let Some(iref) = find(&meta, b"iref") {
             let (version, _, references) = full_box(iref)?;
@@ -573,10 +583,42 @@ impl<'a> Properties<'a> {
                 let from = reader.id(version)?;
                 for _ in 0..reader.u16()? {
                     let to = reader.id(version)?;
-                    if &kind == b"auxl" {
-                        auxiliary.push((from, to));
+                    let kept = &kind == b"auxl" && to == primary && from != primary;
+                    if kept && !auxiliary.contains(&from) {
+                        if auxiliary.len() == MAX_AUXILIARY_ITEMS {
+                            return None;
+                        }
+                        auxiliary.push(from);
                     }
                 }
+            }
+        }
+        let iprp = boxes(find(&meta, b"iprp")?)?;
+        let container = boxes(find(&iprp, b"ipco")?)?;
+        let mut entries = 0u32;
+        let mut associations = Vec::new();
+        for (_, ipma) in iprp.iter().filter(|(kind, _)| kind == b"ipma") {
+            let (version, flags, payload) = full_box(ipma)?;
+            let mut reader = Reader(payload);
+            let count = reader.u32()?;
+            entries = entries
+                .checked_add(count)
+                .filter(|entries| *entries <= MAX_IPMA_ENTRIES)?;
+            let width = if flags & 1 == 1 { 2 } else { 1 };
+            for _ in 0..count {
+                let item = reader.id(version)?;
+                let count = usize::from(reader.u8()?);
+                let indices = reader.take(count * width)?;
+                if item != primary && !auxiliary.contains(&item) {
+                    continue;
+                }
+                if associations.len() + count > MAX_KEPT_ASSOCIATIONS {
+                    return None;
+                }
+                associations.extend(indices.chunks(width).map(|index| match *index {
+                    [high, low] => (item, u16::from_be_bytes([high, low]) & 0x7fff),
+                    _ => (item, u16::from(index[0] & 0x7f)),
+                }));
             }
         }
         Some(Self {
@@ -591,8 +633,10 @@ impl<'a> Properties<'a> {
         self.associations
             .iter()
             .filter(move |(id, _)| *id == item)
-            .flat_map(|(_, indices)| indices.iter())
-            .filter_map(|index| self.container.get(index.checked_sub(1)?).copied())
+            .filter_map(|(_, index)| {
+                let index = usize::from(*index).checked_sub(1)?;
+                self.container.get(index).copied()
+            })
     }
 
     fn property(&self, item: u32, kind: &[u8; 4]) -> Option<&'a [u8]> {
@@ -635,8 +679,7 @@ impl<'a> Properties<'a> {
     fn alpha_items(&self) -> Vec<u32> {
         self.auxiliary
             .iter()
-            .filter(|(_, to)| *to == self.primary)
-            .map(|(from, _)| *from)
+            .copied()
             .filter(|item| {
                 self.property(*item, b"auxC")
                     .and_then(full_box)
@@ -1082,6 +1125,92 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    fn bmff(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + payload.len()).unwrap();
+        [&size.to_be_bytes()[..], kind, payload].concat()
+    }
+
+    fn full(kind: &[u8; 4], flags: u32, payload: &[u8]) -> Vec<u8> {
+        bmff(kind, &[&flags.to_be_bytes()[..], payload].concat())
+    }
+
+    /// A version 0 `meta` whose primary item 1 may take property 1, a 64 × 48
+    /// `ispe`, and an item may take property 2, an alpha `auxC`. Each slice of
+    /// `ipma` is one `ipma` box of `(item, property indices)` entries, and
+    /// each of `auxiliary` has an `auxl` reference to item 1.
+    fn item_properties(ipma: &[&[(u16, Vec<u8>)]], auxiliary: &[u16]) -> Vec<u8> {
+        let ispe = full(b"ispe", 0, &[0, 0, 0, 64, 0, 0, 0, 48]);
+        let auxc = full(b"auxC", 0, ALPHA_URNS[0]);
+        let mut iprp = bmff(b"ipco", &[ispe, auxc].concat());
+        for entries in ipma {
+            let mut payload = u32::try_from(entries.len()).unwrap().to_be_bytes().to_vec();
+            for (item, indices) in *entries {
+                payload.extend_from_slice(&item.to_be_bytes());
+                payload.push(u8::try_from(indices.len()).unwrap());
+                payload.extend_from_slice(indices);
+            }
+            iprp.extend(full(b"ipma", 0, &payload));
+        }
+        let references: Vec<u8> = auxiliary
+            .iter()
+            .flat_map(|item| bmff(b"auxl", &[&item.to_be_bytes()[..], &[0, 1, 0, 1]].concat()))
+            .collect();
+        let meta = [
+            full(b"pitm", 0, &[0, 1]),
+            full(b"iref", 0, &references),
+            bmff(b"iprp", &iprp),
+        ];
+        full(b"meta", 0, &meta.concat())
+    }
+
+    #[test]
+    fn ipma_keeps_only_the_primary_and_its_auxl_items_within_its_bounds() {
+        let primary = (1, vec![1]);
+        let alpha = (2, vec![1, 2]);
+        // What a parse kept: the associations and the `auxl` items.
+        let parse = |ipma: &[&[(u16, Vec<u8>)]], auxiliary: &[u16]| {
+            Properties::parse(&item_properties(ipma, auxiliary))
+                .map(|properties| (properties.associations, properties.auxiliary))
+        };
+        // As many entries as the bound: only the primary's and the alpha
+        // item's associations are kept.
+        let mut entries = vec![primary.clone(), alpha.clone()];
+        entries.extend(
+            (3..)
+                .take(MAX_IPMA_ENTRIES as usize - 2)
+                .map(|item| (item, vec![1, 2])),
+        );
+        let bytes = item_properties(&[&entries], &[2]);
+        let properties = Properties::parse(&bytes).unwrap();
+        assert_eq!(properties.associations, [(1, 1), (2, 1), (2, 2)]);
+        assert_eq!(properties.spatial_extents(1), Some((64, 48)));
+        assert_eq!(properties.alpha_items(), [2]);
+        // One entry more is refused by the count alone, in one box or summed
+        // over two.
+        entries.push((5_000, vec![1]));
+        assert_eq!(parse(&[&entries], &[2]), None);
+        assert_eq!(parse(&[&entries[..2], &entries[2..]], &[2]), None);
+        assert!(parse(&[&entries[..2], &entries[3..]], &[2]).is_some());
+
+        // The kept associations: exactly the bound for the primary, over
+        // entries of at most 255, then one more.
+        let kept = |extra: usize| {
+            let mut entries = vec![(1, vec![1; 255]); MAX_KEPT_ASSOCIATIONS / 255];
+            entries.push((1, vec![1; MAX_KEPT_ASSOCIATIONS % 255 + extra]));
+            parse(&[&entries], &[]).map(|(associations, _)| associations.len())
+        };
+        assert_eq!(kept(0), Some(MAX_KEPT_ASSOCIATIONS));
+        assert_eq!(kept(1), None);
+
+        // `auxl` items of the primary up to their bound.
+        let auxiliary: Vec<u16> = (2..).take(MAX_AUXILIARY_ITEMS + 1).collect();
+        let only_primary = std::slice::from_ref(&primary);
+        let (_, found) = parse(&[only_primary], &auxiliary[..MAX_AUXILIARY_ITEMS]).unwrap();
+        let expected: Vec<u32> = (2..).take(MAX_AUXILIARY_ITEMS).collect();
+        assert_eq!(found, expected);
+        assert_eq!(parse(&[only_primary], &auxiliary), None);
     }
 
     /// The AVIF counterpart of the real `hayro-jpeg2000` panic, kept for A3:
