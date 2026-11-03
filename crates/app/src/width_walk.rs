@@ -1838,6 +1838,30 @@ fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Ve
     findings
 }
 
+/// The clip the text drawn last across `bounds` was painted under, in the
+/// window's logical pixels: the part of the window the clipping ancestors of
+/// what `bounds` holds leave, where it draws text. The last, since a list
+/// above it draws rows past its own clip, across the bounds' top.
+fn drawn_clip(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    let text = gpui_kit::Background::from(text_mark());
+    let (scale, mut quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+    quads.sort_by_key(|quad| quad.order);
+    let logical = |scaled: Bounds<ScaledPixels>| {
+        Bounds::new(
+            point(px(scaled.origin.x.0 / scale), px(scaled.origin.y.0 / scale)),
+            size(
+                px(scaled.size.width.0 / scale),
+                px(scaled.size.height.0 / scale),
+            ),
+        )
+    };
+    quads
+        .iter()
+        .filter(|quad| quad.background == text)
+        .rfind(|quad| logical(quad.bounds).intersects(&bounds))
+        .map(|quad| logical(quad.content_mask.bounds))
+}
+
 /// Opens every dialog with a width of its own in a 461 × 490 half tile at
 /// `text` pt: each lies inside the window with its margin on either side,
 /// rather than centred at its width with its left side past the window's,
@@ -1894,6 +1918,19 @@ async fn narrow_dialogs(text: u8, cx: &mut TestAppContext) {
                         findings.push(format!(
                             "the body's last line at {last:?} runs below the fold, under {control:?}"
                         ));
+                    }
+                    // Whole inside the clip its text is drawn under, the
+                    // dialog's content column, which ends above the footer
+                    // by the column's padding: laid out to 368 px against a
+                    // 358 px clip at 18 pt, the hint's last line was cut
+                    // while it still ended above Close.
+                    match drawn_clip(cx, last) {
+                        Some(clip)
+                            if last.top() >= clip.top() - px(0.5)
+                                && last.bottom() <= clip.bottom() + px(0.5) => {}
+                        clip => findings.push(format!(
+                            "the body's last line at {last:?} crosses its clip at {clip:?}"
+                        )),
                     }
                 }
                 drawn => findings.push(format!("the list, last line and control at {drawn:?}")),
