@@ -213,8 +213,12 @@ pub(super) struct Preflight {
     /// The f32 planes alive at once: one per SIZ component, plus one per
     /// `cmap` entry when a palette is resolved (always at full resolution);
     /// with a `cdef`, at least twice the output planes, which
-    /// `hayro-jpeg2000` 0.4.1 copies to reorder them.
+    /// `hayro-jpeg2000` 0.4.1 copies to reorder them; with a colour profile,
+    /// [`profile_planes`] of those.
     planes: u32,
+    /// The `hayro-jpeg2000` decoder contexts alive at once, each with a
+    /// tile-component: two when it converts through a colour profile.
+    contexts: u32,
     /// Every component samples 1 × 1.
     unit_sampling: bool,
     palette: bool,
@@ -247,15 +251,52 @@ impl Preflight {
     }
 
     /// f32 samples of every plane at `level` plus the largest tile-component
-    /// there (#1558's formula; the tile count is bounded). A `cdef` copy is of
-    /// the planes at that level, so the same plane count holds when a level is
-    /// skipped.
+    /// there for each decoder context (#1558's formula; the tile count is
+    /// bounded). A `cdef` copy and a profile conversion are of the planes at
+    /// that level, so the same plane count holds when a level is skipped.
     pub(super) fn decode_bytes(&self, level: u32) -> u64 {
         let (width, height) = self.at_level(level);
         let tile = |size: u32| u64::from(size).div_ceil(1 << level);
         u64::from(width) * u64::from(height) * u64::from(self.planes) * 4
-            + tile(self.tile.0) * tile(self.tile.1) * 4
+            + u64::from(self.contexts) * tile(self.tile.0) * tile(self.tile.1) * 4
     }
+}
+
+/// Whether `hayro-jpeg2000` 0.4.1 converts through a colour profile with this
+/// `colr` payload (I.5.3.3): method 2, an ICC profile, or method 1 with the
+/// CIELab (14) or ROMM-RGB (21) space, which it converts with built-in
+/// profiles (`get_color_space`). It reads only the first `colr` box.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn converts_with_a_profile(colour: &[u8]) -> bool {
+    match *colour {
+        [2, ..] => true,
+        [1, _, _, a, b, c, d, ..] => matches!(u32::from_be_bytes([a, b, c, d]), 14 | 21),
+        _ => false,
+    }
+}
+
+/// The f32 planes alive at once when `hayro-jpeg2000` 0.4.1 converts through
+/// a colour profile, from the `peak` planes of one decode and the `output`
+/// planes it leaves (`integration.rs`, `convert_inner::process`). The first
+/// decode's context lives for the whole call and keeps its `output` planes
+/// beside their interleaved 8-bit copy (`data_u8`: `output` bytes a pixel,
+/// `ceil(output / 4)` planes). moxcms's result then takes at most 4 bytes a
+/// pixel, one plane, or, when moxcms refuses the profile (malformed, or 10 MB
+/// or more, which the helper's input allows), `process` runs again as grey,
+/// RGB or CMYK and decodes the whole image a second time beside them: `peak`
+/// planes again, or after that decode, for CMYK, its own `output` planes and
+/// 8-bit buffers of at most `4 × output + 4` bytes a pixel (its own copy, the
+/// CMYK and alpha split grown by doubling, and the 3-byte sRGB result), that
+/// is `2 × output + 1` planes.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn profile_planes(peak: u32, output: u32) -> u32 {
+    output + output.div_ceil(4) + peak.max(2 * output + 1)
 }
 
 /// Every bound the helper applies before `hayro-jpeg2000` allocates its tiles:
@@ -276,8 +317,9 @@ pub(super) fn preflight(
         Jpeg2000TooDeep, Jpeg2000TooManyComponents, Jpeg2000TooManyTiles, Jpeg2000Unreadable,
         JpxNotJp2Compatible,
     };
-    let (codestream, header, palette, definition) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
-        (bytes, None, None, false)
+    // `cdef` present, and the first `colr` converting through a profile.
+    let (codestream, header, palette, cdef, icc) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
+        (bytes, None, None, false, false)
     } else if bytes.starts_with(JP2_SIGNATURE) {
         let mut boxes = &bytes[JP2_SIGNATURE.len()..];
         let (kind, file_type) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
@@ -326,6 +368,7 @@ pub(super) fn preflight(
             }
         }
         let (mut header, mut palette, mut mapping, mut definition) = (None, None, None, None);
+        let mut colour = None;
         let mut children = header_box.ok_or(Jpeg2000Unreadable)?;
         while !children.is_empty() {
             let (kind, payload) = next_box(&mut children).map_err(|_| Jpeg2000Unreadable)?;
@@ -334,6 +377,11 @@ pub(super) fn preflight(
                 b"pclr" => &mut palette,
                 b"cmap" => &mut mapping,
                 b"cdef" => &mut definition,
+                // I.5.3.3 allows several; hayro reads the first.
+                b"colr" => {
+                    colour.get_or_insert(payload);
+                    continue;
+                }
                 _ => continue,
             };
             if slot.replace(payload).is_some() {
@@ -351,6 +399,7 @@ pub(super) fn preflight(
             Some(size),
             palette,
             definition.is_some(),
+            colour.is_some_and(converts_with_a_profile),
         )
     } else {
         return Err(Jpeg2000Unreadable);
@@ -429,10 +478,15 @@ pub(super) fn preflight(
     // reordered vector before it drops the originals (`lib.rs` 217-234). The
     // box counts whether or not hayro accepts it: one it ignores only makes
     // the budget stricter.
-    let planes = if definition {
+    let peak = if cdef {
         (components as u32 + mapped).max(2 * output)
     } else {
         components as u32 + mapped
+    };
+    let (planes, contexts) = if icc {
+        (profile_planes(peak, output), 2)
+    } else {
+        (peak, 1)
     };
     let preflight = Preflight {
         area,
@@ -443,6 +497,7 @@ pub(super) fn preflight(
         },
         tile: (tile_width.min(area.0), tile_height.min(area.1)),
         planes,
+        contexts,
         unit_sampling: table.iter().all(|component| component[1..] == [1, 1]),
         palette: palette.is_some(),
     };

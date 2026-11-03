@@ -488,6 +488,75 @@ mod tests {
         );
     }
 
+    /// hayro-jpeg2000 0.4.1 converts a colour profile while the first
+    /// decode's planes and their 8-bit copy are alive, and decodes a second
+    /// time when moxcms refuses the profile: three output planes take
+    /// 3 + 1 + max(3, 2 × 3 + 1) = 11 planes and two tile-components.
+    #[test]
+    fn a_colour_profile_counts_a_second_decode() {
+        let icc = fixture("jpeg2000-display-p3-icc.jp2");
+        let rgb = fixture("jpeg2000-rgb.jp2");
+        let plane = 64 * 48 * 4;
+        let budget = |bytes: &[u8]| jpeg2000::preflight(bytes).unwrap().decode_bytes(0);
+        assert_eq!(budget(&rgb), plane * 3 + plane);
+        assert_eq!(budget(&icc), plane * 11 + 2 * plane);
+        // hayro reads only the first `colr`: CIELab (14) and ROMM-RGB (21)
+        // convert through built-in profiles, sRGB (16) does not.
+        let ihdr = whole_box(&rgb, b"ihdr");
+        let [profile, srgb] = [&icc, &rgb].map(|bytes| whole_box(bytes, b"colr"));
+        let enumerated =
+            |space: u32| jp2_box(b"colr", &[&[1, 0, 0][..], &space.to_be_bytes()].concat());
+        for (case, colours, planes, contexts) in [
+            ("CIELab", vec![enumerated(14)], 11, 2),
+            ("ROMM-RGB", vec![enumerated(21)], 11, 2),
+            (
+                "a profile after sRGB",
+                vec![srgb.clone(), profile.clone()],
+                3,
+                1,
+            ),
+            (
+                "sRGB after a profile",
+                vec![profile.clone(), srgb.clone()],
+                11,
+                2,
+            ),
+        ] {
+            let mut children = vec![ihdr.as_slice()];
+            children.extend(colours.iter().map(Vec::as_slice));
+            assert_eq!(
+                budget(&jp2(&children, &rgb)),
+                plane * planes + contexts * plane,
+                "{case}"
+            );
+        }
+
+        // 4,096 × 2,048 with the last component sampled 2 × 2, so no level
+        // is skipped: three planes fit the budget, eleven do not.
+        let shape = |colour: &[u8]| {
+            let mut ihdr = whole_box(&icc, b"ihdr");
+            set(&mut ihdr, 8, &2_048u32.to_be_bytes());
+            set(&mut ihdr, 12, &4_096u32.to_be_bytes());
+            let mut bytes = jp2(&[&ihdr, colour], &icc);
+            let marker = position(&bytes, b"jp2c") + 4;
+            set(&mut bytes, marker + 8, &4_096u32.to_be_bytes());
+            set(&mut bytes, marker + 12, &2_048u32.to_be_bytes());
+            set(&mut bytes, marker + 42 + 3 * 2 + 1, &[2, 2]);
+            bytes
+        };
+        let (plane, tile) = (4_096 * 2_048 * 4, 64 * 48 * 4);
+        let without = jpeg2000::preflight(&shape(&srgb)).unwrap();
+        assert!(!without.may_reduce());
+        assert_eq!(without.decode_bytes(0), plane * 3 + tile);
+        assert!(without.decode_bytes(0) <= MAX_DECODER_BYTES);
+        let over = shape(&profile);
+        assert_eq!(budget(&over), plane * 11 + 2 * tile);
+        assert_eq!(
+            jpeg2000(&over, 1600).unwrap_err(),
+            ImageErrorKind::DecodedTooLarge
+        );
+    }
+
     /// hayro-jpeg2000 0.4.1 decodes the last `jp2c` of a file; the preflight
     /// checks the first and refuses any after it.
     #[test]
