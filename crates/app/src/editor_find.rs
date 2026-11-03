@@ -1099,9 +1099,36 @@ impl Plan {
 /// narrowing window would first draw the wider frame's forms cut. Without
 /// controls, as a bar's twin ([`FindBar::ghost`]), it takes their height and
 /// draws nothing.
+///
+/// Its height and its lines come from one width ([`Planned`]): the width
+/// layout measured it at, on the whole device pixel at or below it. Layout
+/// measures it at its unrounded width and then draws it on device pixels,
+/// rounding each edge, so its drawn width lies up to a device pixel either
+/// side of the measured one; planned from the drawn width, the lines missed
+/// the height. On Split's first side at 13 pt in a 572.5 × 490 window at
+/// scale 2 the measure planned three lines from 104.25 px and the controls
+/// took four from the 104 px drawn, their last line below the bar, over the
+/// code. The drawn width is never less than the planned one, so the planned
+/// lines fit it.
+///
+/// It is no [`crate::in_frame::InFrame`], which builds what it holds in the
+/// frame it is drawn too: an `InFrame` takes no height of its own, and the
+/// bar takes the height of its lines.
 struct Fitted {
     fit: Fit,
     controls: Option<Controls>,
+}
+
+/// The width a [`Fitted`]'s measure planned its lines from, which its
+/// prepaint plans them from too.
+type Planned = Rc<std::cell::Cell<Option<Pixels>>>;
+
+/// The width a find bar's lines are planned from where layout measures it
+/// `width` wide on a display of `scale`: the whole device pixel at or below
+/// it, which the width drawn holds whichever device pixel each of its edges
+/// rounds to.
+fn planned_width(width: Pixels, scale: f32) -> Pixels {
+    px((f32::from(width) * scale + 1e-3).floor() / scale)
 }
 
 impl IntoElement for Fitted {
@@ -1112,7 +1139,7 @@ impl IntoElement for Fitted {
 }
 
 impl gpui_kit::Element for Fitted {
-    type RequestLayoutState = Option<Widths>;
+    type RequestLayoutState = Option<(Widths, Planned)>;
     type PrepaintState = Option<AnyElement>;
 
     fn id(&self) -> Option<gpui_kit::ElementId> {
@@ -1129,13 +1156,12 @@ impl gpui_kit::Element for Fitted {
         _: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
         _: &mut App,
-    ) -> (gpui_kit::LayoutId, Option<Widths>) {
+    ) -> (gpui_kit::LayoutId, Option<(Widths, Planned)>) {
         // Measured here, in the text style the bar gives its controls; the
         // layout's own measure runs outside it.
-        let measured = Some((
-            Widths::measure(&self.fit.count, self.fit.gap, window),
-            self.fit.row,
-        ));
+        let widths = Widths::measure(&self.fit.count, self.fit.gap, window);
+        let (row, scale) = (self.fit.row, window.scale_factor());
+        let planned = Planned::default();
         let style = gpui_kit::Style {
             size: gpui_kit::Size {
                 width: relative(1.).into(),
@@ -1143,17 +1169,21 @@ impl gpui_kit::Element for Fitted {
             },
             ..Default::default()
         };
+        let measured = planned.clone();
         let id = window.request_measured_layout(style, move |known, available, _, _| {
             let width = known.width.unwrap_or(match available.width {
                 gpui_kit::AvailableSpace::Definite(width) => width,
                 _ => px(0.),
             });
-            let height = measured.map_or(px(0.), |(widths, row)| {
-                widths.plan(width).height(row, widths.gap)
-            });
-            gpui_kit::size(width, height)
+            let lines = planned_width(width, scale);
+            // The width layout settles on is a known one; the others ask
+            // what the bar would take at widths it is not given.
+            if known.width.is_some() {
+                measured.set(Some(lines));
+            }
+            gpui_kit::size(width, widths.plan(lines).height(row, widths.gap))
         });
-        (id, measured.map(|(widths, _)| widths))
+        (id, Some((widths, planned)))
     }
 
     fn prepaint(
@@ -1161,12 +1191,25 @@ impl gpui_kit::Element for Fitted {
         _: Option<&gpui_kit::GlobalElementId>,
         _: Option<&gpui_kit::InspectorElementId>,
         bounds: gpui_kit::Bounds<Pixels>,
-        widths: &mut Option<Widths>,
+        measured: &mut Option<(Widths, Planned)>,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        let (controls, widths) = (self.controls.take()?, (*widths)?);
-        let mut element = controls.rows(widths.plan(bounds.size.width), widths, &self.fit);
+        let controls = self.controls.take()?;
+        let (widths, planned) = measured.as_ref()?;
+        // The width the measure planned from, which the drawn width holds,
+        // exceeding it by less than a device pixel and a float's error; a
+        // layout that measured no width it was given plans from the drawn.
+        let drawn = bounds.size.width;
+        let scale = window.scale_factor();
+        let slack = px(1e-3);
+        let width = planned
+            .get()
+            .filter(|planned| {
+                *planned <= drawn + slack && drawn - *planned < px(1. / scale) + slack
+            })
+            .unwrap_or_else(|| planned_width(drawn, scale));
+        let mut element = controls.rows(widths.plan(width), *widths, &self.fit);
         element.layout_as_root(
             gpui_kit::size(
                 gpui_kit::AvailableSpace::Definite(bounds.size.width),
@@ -1184,7 +1227,7 @@ impl gpui_kit::Element for Fitted {
         _: Option<&gpui_kit::GlobalElementId>,
         _: Option<&gpui_kit::InspectorElementId>,
         _: gpui_kit::Bounds<Pixels>,
-        _: &mut Option<Widths>,
+        _: &mut Option<(Widths, Planned)>,
         element: &mut Option<AnyElement>,
         window: &mut Window,
         cx: &mut App,
@@ -1286,6 +1329,7 @@ impl Controls {
                     .aria_label(format!("Find in {}", self.label)),
             );
         let count = div()
+            .debug_selector(|| "file-find-count".into())
             .flex_shrink_0()
             .text_color(rgb(self.muted))
             .child(self.count);
@@ -1685,6 +1729,18 @@ mod bar_tests {
     /// Shows Compare's text in `mode` in a `width` × 490 window and opens Find
     /// over its first editor, as Primary+F there does.
     fn open_find(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, mode: TextMode, width: f32) {
+        open_find_on(app, cx, mode, 0, width);
+    }
+
+    /// [`open_find`] over the editor of Split's `side`, Before's or After's,
+    /// or the unified patch's.
+    fn open_find_on(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        mode: TextMode,
+        side: usize,
+        width: f32,
+    ) {
         cx.simulate_resize(size(px(width), px(490.)));
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -1703,7 +1759,7 @@ mod bar_tests {
                     .as_ref()
                     .expect("the split view")
                     .read(cx)
-                    .editors()[0]
+                    .editors()[side]
                     .clone(),
                 _ => app.patch_editor.clone().expect("the patch editor"),
             }
@@ -1864,6 +1920,112 @@ mod bar_tests {
         ] {
             assert!(met.contains(&forms), "the walk meets {forms:?}: {met:?}");
         }
+    }
+
+    /// The find bar's bounds, its parts' and how many lines they are drawn
+    /// on: a line's parts stand on its middle, lines a control apart.
+    fn drawn_lines(
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) -> (Bounds<Pixels>, Vec<Bounds<Pixels>>, usize) {
+        let bar = drawn(cx, "file-find-bar", at);
+        let parts: Vec<_> = PARTS
+            .iter()
+            .chain(&["file-find-count"])
+            .map(|part| drawn(cx, part, at))
+            .collect();
+        let mut middles: Vec<f32> = parts.iter().map(|part| part.center().y.into()).collect();
+        middles.sort_by(f32::total_cmp);
+        let half = f32::from(appearance::ui_size(14.));
+        middles.dedup_by(|below, above| *below - *above < half);
+        (bar, parts, middles.len())
+    }
+
+    /// The find bar's height is the lines its controls are drawn on, in
+    /// Split's narrow sides at 13 and 18 pt, Before's and After's, in the
+    /// windows a device pixel apart around each width where the bar's lines
+    /// change, which the walk finds by bisection: the bar's last line ends as
+    /// far above its 1 px rule as the first starts below its top. Layout
+    /// measures the bar at its unrounded width and draws it on device pixels,
+    /// rounding each edge, and the bar took its height from the first and its
+    /// lines from the second: on Before's side at 13 pt in a 572.5 × 490
+    /// window at the test window's scale, 2, it was three lines tall and drew
+    /// four, the last below its rule, over the code. Rounding toward Before's
+    /// width and away from After's, the two sides meet that at different
+    /// widths, so the walk reads both.
+    #[gpui::test]
+    async fn the_find_bar_is_as_tall_as_the_lines_it_draws(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let scale = cx.update(|window, _| window.scale_factor());
+        // Windows are counted in device pixels.
+        let width = |n: i32| n as f32 / scale;
+        let (narrow, wide) = ((461. * scale) as i32, (1480. * scale) as i32);
+        let mut changes = 0;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (side, name) in [(0, "Before"), (1, "After")] {
+                open_find_on(&app, cx, TextMode::Split, side, width(wide));
+                // The lines drawn in a window `n` device pixels wide, whose
+                // bar must be as tall as they are.
+                let lines = |n: i32, cx: &mut VisualTestContext| {
+                    let at = format!("{text} pt, {name}'s bar in {} × 490", width(n));
+                    cx.simulate_resize(size(px(width(n)), px(490.)));
+                    crate::width_walk::frame(cx);
+                    let (bar, parts, lines) = drawn_lines(cx, &at);
+                    let top = parts
+                        .iter()
+                        .map(|part| part.top())
+                        .fold(bar.bottom(), Pixels::min);
+                    let bottom = parts
+                        .iter()
+                        .map(|part| part.bottom())
+                        .fold(bar.top(), Pixels::max);
+                    // Its padding above the first line and above its rule
+                    // below the last, which lines of a control's height, a
+                    // shorter control centred on one, cannot tell apart from
+                    // a missing line or an empty one.
+                    let (above, below) = (top - bar.top(), bar.bottom() - px(1.) - bottom);
+                    assert!(
+                        below >= -EDGE && (above - below).abs() < appearance::ui_size(14.),
+                        "{at}: the bar {bar:?} draws {lines} lines, its parts from {above:?} \
+                         below its top to {below:?} above its rule"
+                    );
+                    lines
+                };
+                // Walked 16 px at a time, then bisected where the lines change.
+                let step = (16. * scale) as i32;
+                let mut wider = (narrow, lines(narrow, cx));
+                let mut n = narrow + step;
+                while n <= wide {
+                    let here = lines(n, cx);
+                    if here != wider.1 {
+                        let (mut lo, mut hi) = (wider.0, n);
+                        while hi - lo > 1 {
+                            let middle = lo + (hi - lo) / 2;
+                            if lines(middle, cx) == here {
+                                hi = middle;
+                            } else {
+                                lo = middle;
+                            }
+                        }
+                        for n in hi - 3..=hi + 3 {
+                            lines(n, cx);
+                        }
+                        changes += 1;
+                    }
+                    wider = (n, here);
+                    n += step;
+                }
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(
+            changes >= 8,
+            "the walk meets the bar's lines changing on both sides at both sizes: {changes}"
+        );
     }
 
     /// In Split with Find open on Before alone, the two sides' first rows
