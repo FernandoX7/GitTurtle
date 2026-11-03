@@ -493,9 +493,18 @@ fn show(
         bar.owner = owner;
         bar.label = label;
         bar.sync_highlights(cx);
+        // The field selects its whole query, as a macOS find field does when
+        // Command-F returns to it, and shows it from its start, where its
+        // caret stands: the selection runs back from the query's end. The
+        // kit follows a caret into view only where the selection leaves
+        // some text out, so a query wider than the field, selected from its
+        // start, kept the view it last had, and a field narrower than when
+        // it closed, or a query taken from the editor's selection, drew its
+        // caret past the field's end.
         bar.query.update(cx, |query, cx| {
             query.focus(window, cx);
-            query.set_selected_range(0..query.value().len(), cx);
+            query.set_selected_range(query.value().len()..0, cx);
+            query.set_scroll_offset(gpui_kit::point(px(0.), px(0.)), cx);
         });
         cx.notify();
         App::notify(cx, owner);
@@ -1928,6 +1937,110 @@ mod bar_tests {
         cx.update(|_, cx| cx.write_to_clipboard(item));
         cx.dispatch_action(gpui_kit::component::input::Paste);
         crate::width_walk::frame(cx);
+    }
+
+    /// The carets the last frame painted, in the window's pixels: quads in
+    /// the kit's caret colour, as wide as its caret.
+    fn painted_carets(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        let caret =
+            cx.read(|cx| gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).caret));
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * scale;
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    quad.background == caret
+                        && (quad.bounds.size.width.as_f32() - width).abs() < 0.01
+                })
+                .map(|quad| {
+                    let bounds = quad.bounds;
+                    Bounds::new(
+                        point(
+                            px(bounds.origin.x.as_f32() / scale),
+                            px(bounds.origin.y.as_f32() / scale),
+                        ),
+                        size(
+                            px(bounds.size.width.as_f32() / scale),
+                            px(bounds.size.height.as_f32() / scale),
+                        ),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Find reopened over a query wider than its field selects the whole
+    /// query and shows it from its start, its caret there inside the field,
+    /// in the first frame it draws, at 13 and 18 pt, as a macOS find field
+    /// shows its query when Command-F returns to it: here the query was typed
+    /// in a 1,480 px window, its field following the caret to the query's
+    /// end, and Find closed and reopened in a 640 px one. Selected from its
+    /// start, the query kept the view it closed with, which the kit does not
+    /// follow a whole selection out of, and the caret, at the query's end,
+    /// stood past the narrower field's end.
+    #[gpui::test]
+    async fn find_reopened_over_a_wide_query_shows_it_selected_from_its_start(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        // The caret is drawn only in the active window.
+        cx.update(|window, _| window.activate_window());
+        let query = "zq ".repeat(100);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt, Find reopened in 640 × 490");
+            open_find(&app, cx, TextMode::Unified, 1480.);
+            paste(cx, &query);
+            cx.simulate_keystrokes("escape");
+            crate::width_walk::frame(cx);
+            cx.simulate_resize(size(px(640.), px(490.)));
+            crate::width_walk::frame(cx);
+            cx.dispatch_action(gpui_kit::component::input::Search);
+            crate::width_walk::frame(cx);
+            let field = drawn(cx, "file-find-field", &at);
+            let wide = cx.update(|window, _| {
+                crate::views::laid_out_text_width(
+                    crate::views::line_widths(
+                        &[(query.as_str(), window.rem_size() * 0.875)],
+                        window,
+                    ),
+                    window,
+                )
+            });
+            assert!(
+                wide > field.size.width,
+                "{at}: the query, {wide:?} wide, overflows the field {field:?}"
+            );
+            let carets = painted_carets(cx);
+            assert!(
+                carets.len() == 1
+                    && carets[0].left() >= field.left()
+                    && carets[0].right() <= field.right(),
+                "{at}: one caret is drawn, inside the field {field:?}: {carets:?}"
+            );
+            let editor = cx.update(|_, cx| app.read(cx).patch_editor.clone().expect("the editor"));
+            let selected = cx.update(|_, cx| {
+                let bar = super::panel(&editor, cx).expect("the find bar");
+                let query = bar.read(cx).query.read(cx);
+                (query.selected_range(), query.cursor())
+            });
+            assert_eq!(
+                selected,
+                (0..query.len(), 0),
+                "{at}: the whole query is selected, the caret at its start"
+            );
+            assert!(
+                carets[0].right() <= field.left() + field.size.width / 2.,
+                "{at}: the caret {:?} stands at the field {field:?}'s start",
+                carets[0]
+            );
+            cx.simulate_keystrokes("escape");
+            crate::width_walk::frame(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The find bar's bounds, its parts' and how many lines they are drawn
