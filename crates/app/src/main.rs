@@ -1136,6 +1136,13 @@ impl GitTurtle {
                 }
                 this.loading = None;
                 this.task = None;
+                // A read that ends with no reply to use, failed or dropped,
+                // ends a cold tab's restore waiting for it, as a read that
+                // replaces it does (`end_replaced_restore`): the tab, left,
+                // stays warm with what it shows.
+                if !matches!(&reply, Ok(Ok(_))) {
+                    this.repository_tabs.restoring = None;
+                }
                 // Dropped unanswered by the worker, the read is over all the
                 // same: left loading, it held quiet reads off, a write's
                 // reload with them, and every menu that waits for that

@@ -1052,6 +1052,28 @@ impl GitTurtle {
         }
         self.invalidate_read();
     }
+    /// Ends a cold tab's restore as a read the person asks for in the tab
+    /// takes the place of the restore's own: every foreground read starts
+    /// here (`pause_history_search_for_read`, and a search's next page),
+    /// before it drops the read in flight, which while the tab is restored
+    /// is the restore's. The restore then applies none of its remaining
+    /// stages, and the tab is left warm like any other. Its steps ask for
+    /// their reads once the previous one has landed, so none ends it, and
+    /// its read of a saved merge parent's changes, which replaces its own
+    /// first, sets the bookmark aside meanwhile; a read of its own that
+    /// fails or is dropped ends it as it ends (`request`, the search's
+    /// reply). Decision (2026-11-03): a tab is left cold only while its restore
+    /// still waits for its own read. Left waiting for a read it would never
+    /// get, the tab was left cold and dropped what the person did in it,
+    /// such as a Quick Open source, and a reply in place of the restore's,
+    /// such as another commit's changed files, took the saved selection.
+    pub(super) fn end_replaced_restore(&mut self) {
+        if self.repository_tabs.restoring.is_some()
+            && (self.task.is_some() || self.history_search_pending())
+        {
+            self.repository_tabs.restoring = None;
+        }
+    }
     fn restore_warm_tab(&mut self, warm: WarmTab, window: &mut Window, cx: &mut Context<Self>) {
         self.repository_tabs.switching = true;
         self.path = Some(warm.repository.path().to_owned());
@@ -1712,7 +1734,12 @@ impl GitTurtle {
                 .parent
                 .min(self.commits[index].parents.len().saturating_sub(1));
             if parent != 0 {
+                // The restore's own read of the saved parent's changes
+                // replaces its read of the first parent's, so the bookmark
+                // stands aside meanwhile (`end_replaced_restore`).
+                let restoring = self.repository_tabs.restoring.take();
                 self.change_parent(parent, window, cx);
+                self.repository_tabs.restoring = restoring;
             }
         } else if saved.selected_oid.is_some() {
             self.status =
@@ -6673,6 +6700,242 @@ mod tests {
                 ),
                 "its working content shows"
             );
+        });
+    }
+
+    /// A cold tab's restore ends as a read the person asks for in the tab
+    /// takes the place of its own, here Quick Open while its saved
+    /// selection's changed files are read, or as its own read fails: left,
+    /// the tab stays warm with what it shows, its Quick Open source and its
+    /// selection, and comes back with them. Left cold all the same, as while
+    /// its restore still waits for its own read, it dropped its source and
+    /// came back restored from its bookmark, the restore having waited for a
+    /// reply that never came.
+    #[gpui::test]
+    async fn a_tab_whose_restore_is_replaced_or_fails_is_left_warm(cx: &mut TestAppContext) {
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let oid = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let saved = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+        assert_eq!(saved.selected_oid.as_deref(), Some(oid.as_str()));
+        let hold = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            })
+        };
+        let selected_oid = |app: &GitTurtle| {
+            app.selected_commit
+                .and_then(|index| app.commits.get(index))
+                .map(|commit| commit.oid.clone())
+        };
+        let shows_source = |app: &GitTurtle| {
+            app.is_quick_source()
+                && matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { new, .. }) if new == "second notes\n"
+                )
+        };
+        for failed in [false, true] {
+            let when = if failed { "failed" } else { "Quick Open" };
+            // The second tab is cold, as a launch leaves it, and restored,
+            // its saved selection's changed files read, held.
+            app.update(cx, |app, _| {
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = saved.clone();
+            });
+            let held = hold(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            drop(held);
+            let held = hold(cx);
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.loading, Some("Reading changed files…"), "{when}");
+                assert!(app.repository_tabs.restoring.is_some(), "{when}");
+            });
+            if failed {
+                // Its commit's tree is gone, so the read fails.
+                let output = std::process::Command::new("git")
+                    .args(["rev-parse", "HEAD^{tree}"])
+                    .current_dir(repo.path())
+                    .output()
+                    .unwrap();
+                let tree = String::from_utf8(output.stdout).unwrap();
+                let tree = tree.trim();
+                std::fs::remove_file(
+                    repo.path()
+                        .join(".git/objects")
+                        .join(&tree[..2])
+                        .join(&tree[2..]),
+                )
+                .unwrap();
+                drop(held);
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| assert!(app.error.is_some(), "{when}"));
+            } else {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        let repo = app.repository.clone().expect("a repository");
+                        let paths = repo
+                            .search_tracked_paths(
+                                &PathScope::Worktree,
+                                "second",
+                                &HistoryCancellation::default(),
+                            )
+                            .expect("tracked paths");
+                        let entry = paths.entries.first().expect("the file").clone();
+                        app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                    })
+                });
+                drop(held);
+                settle_tab_test(&app, cx).await;
+                app.read_with(cx, |app, _| assert!(shows_source(app), "{when}"));
+            }
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.repository_tabs.restoring.is_none(),
+                    "{when}: its restore ends"
+                );
+            });
+            // Left, it stays warm, and comes back as it was left.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.switch_repository_tab(0, window, cx);
+                    assert!(
+                        app.repository_tabs.tabs[1].warm.is_some(),
+                        "{when}: left warm"
+                    );
+                })
+            });
+            settle_tab_test(&app, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}");
+                if failed {
+                    assert!(app.mode == WorkspaceMode::History, "{when}");
+                    assert_eq!(
+                        selected_oid(app),
+                        Some(oid.clone()),
+                        "{when}: its selection"
+                    );
+                } else {
+                    assert!(shows_source(app), "{when}: its source");
+                }
+            });
+            if !failed {
+                // Its selection waits under the source.
+                cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+                settle_tab_test(&app, cx).await;
+                app.read_with(cx, |app, _| {
+                    assert!(app.mode == WorkspaceMode::History, "{when}");
+                    assert_eq!(
+                        selected_oid(app),
+                        Some(oid.clone()),
+                        "{when}: its selection"
+                    );
+                });
+            }
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+        }
+    }
+
+    /// A cold tab restored onto a merge's second parent reads the first
+    /// parent's changes and then, in their place, the saved parent's: that
+    /// read is the restore's own, so the restore goes on and lands its saved
+    /// parent and file. Taken for a read the person asked for, it ended the
+    /// restore.
+    #[gpui::test]
+    async fn a_restore_onto_a_merge_parent_keeps_its_bookmark(cx: &mut TestAppContext) {
+        let script = "commit refs/heads/main\nmark :1\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 4\nbase\nM 100644 inline base.txt\ndata 5\nbase\n\ncommit refs/heads/side\nmark :2\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata 4\nside\nfrom :1\nM 100644 inline side.txt\ndata 5\nside\n\ncommit refs/heads/main\nmark :3\ncommitter Fixture <fixture@example.invalid> 1700000002 +0000\ndata 5\nmerge\nfrom :1\nmerge :2\nM 100644 inline main.txt\ndata 5\nmain\n\ndone\n";
+        let (_first, app, cx) = crate::views::tests::history_window_from(cx, script).await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        // The merge is selected against its second parent, its second file
+        // selected.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.change_parent(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        app.update(cx, |app, _| app.selected_file = Some(1));
+        let shown = |app: &GitTurtle| {
+            (
+                app.parent,
+                app.files
+                    .iter()
+                    .map(|file| file.path().to_owned())
+                    .collect::<Vec<_>>(),
+                app.selected_file,
+            )
+        };
+        let left = app.read_with(cx, |app, _| {
+            assert_eq!(app.commits[0].parents.len(), 2, "a merge");
+            shown(app)
+        });
+        assert_eq!(
+            left,
+            (
+                1,
+                vec![PathBuf::from("main.txt"), PathBuf::from("side.txt")],
+                Some(1)
+            )
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        // Cold, it is restored, its reads held one at a time.
+        app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+        let hold = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            })
+        };
+        let held = hold(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        drop(held);
+        let held = hold(cx);
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, Some("Reading comparison…"));
+            assert!(
+                app.repository_tabs.restoring.is_some(),
+                "its own read goes on"
+            );
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "restored");
+            assert_eq!(shown(app), left, "its saved parent's changes and file");
         });
     }
 }

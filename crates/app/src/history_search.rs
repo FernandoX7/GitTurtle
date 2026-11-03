@@ -170,7 +170,10 @@ impl GitTurtle {
 
     /// Every foreground read may supersede a search. Keep its immutable results
     /// and cursor so selecting a match never silently restarts the search.
+    /// A cold tab's restore whose read this one replaces ends here too
+    /// (`end_replaced_restore`).
     pub(super) fn pause_history_search_for_read(&mut self) {
+        self.end_replaced_restore();
         if !self.history_search_pending() {
             return;
         }
@@ -343,6 +346,9 @@ impl GitTurtle {
                 .collect(),
             remaining_bytes: MAX_RESULT_BYTES.saturating_sub(progress.retained_bytes),
         };
+        // The next page drops the read in flight, which may be a cold tab's
+        // restore's.
+        self.end_replaced_restore();
         self.cancel_automatic_read();
         self.generation = self.generation.wrapping_add(1);
         self.task = None;
@@ -370,6 +376,12 @@ impl GitTurtle {
                 }
                 this.history_search.task = None;
                 this.loading = None;
+                // A search that ends with no page to use, failed or
+                // dropped, ends a cold tab's restore waiting for it, as a
+                // read that replaces it does (`end_replaced_restore`).
+                if !matches!(&result, Ok(Ok(Output::SearchHistory(_)))) {
+                    this.repository_tabs.restoring = None;
+                }
                 match result {
                     Ok(Ok(Output::SearchHistory(result))) => {
                         if let Some(progress) = &mut this.history_search.progress {
