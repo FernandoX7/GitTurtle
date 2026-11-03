@@ -91,7 +91,24 @@ existing Command-T / Ctrl+T alias remains available for opening a tab.
 Focused text inputs keep GPUI's editing bindings. Linux Redo is Ctrl+Y in the
 current toolkit, and Ctrl+H remains text Replace; application Hide bindings are
 macOS-only. List-only Copy, Select All Working Changes and Search stay scoped to
-lists. With the History or changed-file list focused, Copy Selected List Item
+lists. While Compare is open, Find in Comparison takes the same key as Search
+Focused List (Command-F / Ctrl+F) from anywhere in the window, the Changed files
+list, Blame's lines, the inspector and the toolbar included, and opens Find on
+the text Compare shows, its field focused: the patch, Before or After, and in
+Split the side whose find bar is open, else After (Before for a deleted file).
+Its context, `(GitTurtleCompare > GitTurtleList) || GitTurtleCompare`, matches
+the window while Compare is open and any list inside it at the list's own depth,
+where it is bound ahead of Search. Where Compare shows no text (an image, PDF
+pages, a rendered document or diagram, a conflict, a notice, Blame or an error),
+the key does nothing and keeps focus where it was: a Find key never leaves
+Compare, whose way out is Back, since History's search would lose the
+comparison. From the Changed files list and Blame's lines it once left Compare
+for History's search (QA-90 and its review;
+`views::tests::the_find_shortcut_finds_in_the_comparison_from_anywhere_in_compare`,
+`views::tests::a_find_key_never_leaves_an_image_comparison`). The menu's and
+the palette's Search Commits still leave Compare for History's search, as they
+name it. In History, with no comparison
+open, Search keeps its list scope. With the History or changed-file list focused, Copy Selected List Item
 copies the selected row's full commit hash or repository path; with Working
 Changes focused, every selected file's repository path, one per line in list
 order and each file once; with File History's revision list focused, the

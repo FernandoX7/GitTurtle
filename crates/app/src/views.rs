@@ -3058,7 +3058,7 @@ impl GitTurtle {
     /// an image, though an editor kept from before may still hold focus. The
     /// preview's ring and the inspector's row marker both ask it, so the row
     /// gives up its accent only where the ring is drawn.
-    fn shown_text(&self) -> Option<ShownText<'_>> {
+    pub(super) fn shown_text(&self) -> Option<ShownText<'_>> {
         if self.mode == WorkspaceMode::History
             || self.blame.is_visible()
             || self.error.is_some()
@@ -6053,7 +6053,7 @@ impl GitTurtle {
 
 /// The text the comparison's pane shows (`GitTurtle::shown_text`).
 #[derive(Clone, Copy)]
-enum ShownText<'a> {
+pub(super) enum ShownText<'a> {
     /// The patch, the Before or the After text, which the pane rings.
     Editor(&'a Entity<EditorState>),
     /// Split, whose sides ring their own text.
@@ -8754,7 +8754,13 @@ impl Render for GitTurtle {
             .id("gitturtle")
             .relative()
             .track_focus(&self.app_focus)
-            .key_context("GitTurtle")
+            // Compare names itself, so the Find shortcut finds in the
+            // comparison from anywhere in the window (`shortcuts::COMPARE`).
+            .key_context(if self.comparing() {
+                "GitTurtle GitTurtleCompare"
+            } else {
+                "GitTurtle"
+            })
             .child(self.focus_ring.pointer_listener())
             .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
                 this.scroll_settings_page(settings::PageStep::Up, cx)
@@ -8985,6 +8991,7 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(Self::search))
+            .on_action(cx.listener(Self::find_in_comparison))
             .on_action(cx.listener(Self::clear_search))
             // Editor Escape is a distinct action from the list binding. Find
             // and native editor popovers consume it first; otherwise it is Back.
@@ -19502,6 +19509,250 @@ pub(crate) mod tests {
                     "{selector} {row:?}"
                 );
             }
+        }
+    }
+
+    /// In Compare the platform's Find shortcut finds in the comparison shown
+    /// from wherever focus is in the window: from the Changed files list, in
+    /// the patch, Split (its After side), Before and After, and from the
+    /// window itself, it opens Find on that text with its field focused,
+    /// which the next keys type into, and the page stays Compare. From the
+    /// Changed files list it left Compare for History's search, and Find
+    /// opened only once the text was clicked (QA-90, decided by the
+    /// coordinator). With an error shown or Blame open, which draw no text,
+    /// it does nothing, from the list or Blame's lines: focus stays and no
+    /// hidden editor opens Find. In History the key keeps its meaning: from
+    /// the commit list it focuses History's search.
+    #[gpui::test]
+    async fn the_find_shortcut_finds_in_the_comparison_from_anywhere_in_compare(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let (list, root) =
+            app.read_with(cx, |app, _| (app.file_focus.clone(), app.app_focus.clone()));
+        for (mode, name, from) in [
+            (TextMode::Unified, "Diff", &list),
+            (TextMode::Split, "Split", &list),
+            (TextMode::Before, "Before", &list),
+            (TextMode::After, "After", &list),
+            (TextMode::Unified, "Diff from the window", &root),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = mode;
+                    app.ensure_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+            let editor = app.read_with(cx, |app, cx| match mode {
+                TextMode::Unified => app.patch_editor.clone().unwrap(),
+                TextMode::Before => app.before_editor.clone().unwrap(),
+                TextMode::After => app.after_editor.clone().unwrap(),
+                _ => app.split_view.as_ref().unwrap().read(cx).editors()[1].clone(),
+            });
+            cx.update(|window, cx| window.focus(from, cx));
+            draw(cx);
+            cx.simulate_keystrokes(find);
+            settle(&app, cx).await;
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Repository
+                    && app.mode == WorkspaceMode::Compare),
+                "{name}: the page stays Compare"
+            );
+            assert!(
+                cx.update(|_, cx| crate::editor_find::panel_height(&editor, cx) > px(0.)),
+                "{name}: Find opens on the comparison shown"
+            );
+            let query = format!("line {name}");
+            cx.simulate_input(&query);
+            settle(&app, cx).await;
+            assert_eq!(
+                editor.read_with(cx, |editor, _| editor.search_session().query.clone()),
+                query,
+                "{name}: the find field holds focus and takes the keys"
+            );
+            assert!(
+                app.read_with(cx, |app, cx| app.search.read(cx).value().is_empty()),
+                "{name}: History's search takes nothing"
+            );
+            cx.simulate_keystrokes("escape");
+            settle(&app, cx).await;
+        }
+        // Where Compare draws no text, an error shown or Blame open, the key
+        // does nothing: focus stays where it was, in the Changed files list
+        // or Blame's lines, and the editor kept hidden from before takes
+        // neither focus nor an open Find. It focused that editor, so the
+        // keys went where nothing showed them, and from Blame's lines the
+        // key left Compare for History's search (QA-90's review).
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Unified;
+                app.ensure_editor(window, cx);
+                cx.notify();
+            })
+        });
+        settle(&app, cx).await;
+        for case in ["an error shown", "Blame open"] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if case == "Blame open" {
+                        app.open_blame(0, window, cx);
+                    } else {
+                        app.error = Some("Preview unavailable".into());
+                    }
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+            let mut places = vec![("the Changed files list", list.clone())];
+            if case == "Blame open" {
+                assert!(
+                    app.read_with(cx, |app, _| app.blame.is_visible()),
+                    "Blame opens"
+                );
+                let lines = cx.update(|window, cx| window.focused(cx));
+                places.push(("Blame's lines", lines.expect("Blame's lines take focus")));
+            }
+            for (place, focus) in places {
+                let at = format!("{case}, from {place}");
+                cx.update(|window, cx| window.focus(&focus, cx));
+                draw(cx);
+                cx.simulate_keystrokes(find);
+                settle(&app, cx).await;
+                draw(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.page == AppPage::Repository
+                        && app.mode == WorkspaceMode::Compare),
+                    "{at}: the page stays Compare"
+                );
+                assert!(
+                    cx.update(|window, _| focus.is_focused(window)),
+                    "{at}: focus stays where it was"
+                );
+                let hidden: Vec<Entity<EditorState>> = app.read_with(cx, |app, cx| {
+                    [&app.patch_editor, &app.before_editor, &app.after_editor]
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .chain(
+                            app.split_view
+                                .iter()
+                                .flat_map(|view| view.read(cx).editors().clone()),
+                        )
+                        .collect()
+                });
+                for editor in hidden {
+                    assert_eq!(
+                        cx.update(|_, cx| crate::editor_find::panel_height(&editor, cx)),
+                        px(0.),
+                        "{at}: no hidden text opens Find"
+                    );
+                }
+            }
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if case == "Blame open" {
+                        assert!(app.close_blame(window, cx), "Blame closes");
+                    } else {
+                        app.error = None;
+                    }
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+        }
+        // History, no comparison open: from the commit list the key focuses
+        // History's search, as it did.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+        settle(&app, cx).await;
+        let (commits, search) = app.read_with(cx, |app, cx| {
+            (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+        });
+        cx.update(|window, cx| window.focus(&commits, cx));
+        draw(cx);
+        cx.simulate_keystrokes(find);
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+            "History stays History"
+        );
+        assert!(
+            cx.update(|window, _| search.is_focused(window)),
+            "the key focuses History's search"
+        );
+    }
+
+    /// A Find key never leaves Compare: in an image comparison, which shows
+    /// no text to find in, the platform's Find shortcut does nothing from the
+    /// Changed files list or the window, and the page stays Compare with
+    /// focus where it was. From the list it left Compare for History's
+    /// search, which lost the comparison; Back is the way out (decided by
+    /// the coordinator after QA-90's review).
+    #[gpui::test]
+    async fn a_find_key_never_leaves_an_image_comparison(cx: &mut TestAppContext) {
+        let png = |color: [u8; 4]| {
+            let mut bytes = Vec::new();
+            image::RgbaImage::from_pixel(3, 2, image::Rgba(color))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            bytes
+        };
+        let (before, after) = (png([200, 40, 40, 255]), png([40, 40, 200, 255]));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| matches!(
+                app.content.as_deref(),
+                Some(Content::Images { .. })
+            )),
+            "an image comparison is shown"
+        );
+        let (list, root, search) = app.read_with(cx, |app, cx| {
+            (
+                app.file_focus.clone(),
+                app.app_focus.clone(),
+                app.search.read(cx).focus_handle(cx),
+            )
+        });
+        for (place, focus) in [("the Changed files list", &list), ("the window", &root)] {
+            cx.update(|window, cx| window.focus(focus, cx));
+            draw(cx);
+            cx.simulate_keystrokes(find);
+            settle(&app, cx).await;
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.page == AppPage::Repository
+                    && app.mode == WorkspaceMode::Compare),
+                "from {place}: the page stays Compare"
+            );
+            assert!(
+                cx.update(|window, _| focus.is_focused(window) && !search.is_focused(window)),
+                "from {place}: focus stays where it was"
+            );
         }
     }
 

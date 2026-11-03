@@ -135,6 +135,7 @@ gpui_kit::actions!(
         OpenRepository,
         Refresh,
         Search,
+        FindInComparison,
         NextRow,
         PreviousRow,
         FirstRow,
@@ -2151,6 +2152,65 @@ impl GitTurtle {
         }
         self.show_history(window, cx);
         window.focus(&self.search.read(cx).focus_handle(cx), cx);
+    }
+    /// Whether Compare is open, which the window's key context names
+    /// (`shortcuts::COMPARE`), so the platform's Find shortcut finds in the
+    /// comparison from anywhere in the window.
+    fn comparing(&self) -> bool {
+        self.page == AppPage::Repository && self.mode == WorkspaceMode::Compare
+    }
+    /// Opens Find on the text Compare shows, with its field focused, from
+    /// wherever focus is in the window, as the shortcut does from the text
+    /// itself: from the Changed files list it left Compare for History's
+    /// search, and from a toolbar control or the inspector it did nothing
+    /// (QA-90, decided by the coordinator). Where Compare shows no text, an
+    /// image, PDF pages, a rendered document or diagram, a notice, Blame or
+    /// an error, it does nothing and keeps the key: a Find key never leaves
+    /// Compare for History's search, which would lose the comparison, and
+    /// Back is the way out (decided by the coordinator).
+    fn find_in_comparison(
+        &mut self,
+        _: &FindInComparison,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.comparing() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            cx.propagate();
+            return;
+        }
+        let Some(text) = self.comparison_find_focus(cx) else {
+            return;
+        };
+        // The text's own Find opens on it, as the key does from the text
+        // (`editor_find::Editor`), and takes focus into its field.
+        window.focus(&text, cx);
+        window.dispatch_action(Box::new(gpui_kit::component::input::Search), cx);
+    }
+    /// The focus of the text Find opens on in Compare, the text drawn this
+    /// frame (`shown_text`): the patch, Before or After, and in Split the
+    /// side whose find bar is open, else After, or Before where After has no
+    /// text, as a deleted file's. None where no text is drawn, as with Blame
+    /// open or an error shown, where an editor kept from before is hidden:
+    /// focused, it took the keyboard where nothing showed it.
+    fn comparison_find_focus(&self, cx: &App) -> Option<FocusHandle> {
+        let editor = match self.shown_text()? {
+            views::ShownText::Editor(editor) => editor.clone(),
+            views::ShownText::Split(view) => {
+                let [before, after] = view.read(cx).editors().clone();
+                let open =
+                    |editor: &Entity<EditorState>| editor_find::panel_height(editor, cx) > px(0.);
+                let no_after = matches!(
+                    self.content.as_deref(),
+                    Some(Content::Text { new, .. }) if new.is_empty()
+                );
+                if open(&before) || (no_after && !open(&after)) {
+                    before
+                } else {
+                    after
+                }
+            }
+        };
+        Some(gpui_kit::Focusable::focus_handle(editor.read(cx), cx))
     }
     fn clear_search(&mut self, _: &ClearSearch, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {

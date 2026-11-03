@@ -39,6 +39,7 @@ pub(super) enum ShortcutId {
     #[cfg(target_os = "macos")]
     HideOthers,
     Refresh,
+    FindInComparison,
     Search,
     Sidebar,
     Back,
@@ -81,6 +82,13 @@ macro_rules! shortcut {
 
 const APP: Option<&str> = Some("GitTurtle");
 const LIST: Option<&str> = Some("GitTurtleList");
+/// Compare open, which the window's context names: a binding here is tried
+/// wherever focus is in the window, and in any list inside it (the Changed
+/// files list, File History's revisions, Blame's lines) at the list's own
+/// depth, ahead of the list's binding of the same key where it comes first
+/// in [`SHORTCUTS`] (bound last). Named on the window alone, a list's
+/// binding ran first: Blame's lines left Compare for History's search.
+const COMPARE: Option<&str> = Some("(GitTurtleCompare > GitTurtleList) || GitTurtleCompare");
 /// Selectable read-only text, such as the commit message. Copy there is the
 /// toolkit root's binding of the same key.
 const TEXT: Option<&str> = Some("GitTurtleText");
@@ -191,6 +199,18 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         "primary-[",
         BackHistory,
         APP
+    ),
+    // Ahead of Search Focused List, which takes the same key in a list: in
+    // Compare it is tried first in every list too and keeps the key, so it
+    // never leaves Compare for History's search; where the comparison shows
+    // no text it does nothing (`GitTurtle::find_in_comparison`).
+    shortcut!(
+        FindInComparison,
+        "Find in Comparison",
+        "Repository",
+        "primary-f",
+        FindInComparison,
+        COMPARE
     ),
     shortcut!(
         Search,
