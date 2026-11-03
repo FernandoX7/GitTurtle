@@ -694,6 +694,10 @@ struct WarmTab {
     working_selection: working_selection::Selection,
     operation_notice: Option<String>,
     operation_error: Option<String>,
+    /// The places a comparison restored with the tab waited to restore as
+    /// the tab was left (`State::document_restore`), which its return
+    /// restores ([`GitTurtle::resume_tab_documents`]).
+    document_restore: Option<Bookmark>,
 }
 
 impl GitTurtle {
@@ -863,6 +867,17 @@ impl GitTurtle {
             .into(),
             compare: self.mode == WorkspaceMode::Compare,
         };
+        // A comparison restored with the tab whose documents wait for its
+        // reply, or for the window's return to it, keeps the places it was
+        // saved with, which its documents do not show yet. Taken from what
+        // shows, a tab left mid-restore saved the window's zoom and no PDF
+        // page or model camera, and came back without them.
+        if let Some(saved) = self.pending_tab_documents() {
+            bookmark.zoom = saved.zoom;
+            bookmark.pdf = saved.pdf;
+            bookmark.model = saved.model.clone();
+            bookmark.markdown = saved.markdown;
+        }
         // Quick Open's source scope/inspection stack is retained only in warm
         // tabs. Cold restoration can safely keep its underlying history
         // selection, but must not label the source as that commit's file change.
@@ -897,6 +912,12 @@ impl GitTurtle {
             self.repository_tabs.tabs.len() - 1
         };
         let bookmark = self.tab_bookmark(cx);
+        // The places a restored comparison waits to restore belong to this
+        // tab: they go with it, for its return. Left in the window, the next
+        // tab shown took them up as it returned from Settings or Projects
+        // (`resume_repository_page`).
+        let document_restore = self.pending_tab_documents().cloned();
+        self.repository_tabs.document_restore = None;
         self.invalidate_read();
         self.worker.release_history();
         self.work_generation = self.work_generation.wrapping_add(1);
@@ -990,6 +1011,7 @@ impl GitTurtle {
             working_selection: std::mem::take(&mut self.working_selection),
             operation_notice: self.operation_notice.take(),
             operation_error: self.operation_error.take(),
+            document_restore,
         };
         self.repository_tabs.tabs[index].saved = bookmark;
         self.repository_tabs.tabs[index].warm = Some(warm);
@@ -1059,6 +1081,9 @@ impl GitTurtle {
         }
         self.page = AppPage::Repository;
         self.restore_inspection_context(warm.context, window, cx);
+        if let Some(saved) = warm.document_restore {
+            self.resume_tab_documents(saved, window, cx);
+        }
         // The tab's focus goes back to the control it was left with as the
         // frame that draws the tab is built (`return_tab_focus`), so that
         // frame draws it focused. Until then application shortcuts stay
@@ -1696,8 +1721,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (Some(repo), Some(file)) = (
-            self.repository.clone(),
+        let (Some(_), Some(file)) = (
+            self.repository.as_ref(),
             saved.comparison.as_ref().map(SavedFile::file),
         ) else {
             return;
@@ -1724,15 +1749,32 @@ impl GitTurtle {
         );
         self.history_horizontal
             .set_offset(point(px(saved.horizontal_x), px(0.)));
-        self.repository_tabs.document_restore = Some(saved.clone());
+        self.request_restored_comparison(saved, window, cx);
+    }
+
+    /// Reads the captured comparison `saved` keeps, under its own label,
+    /// which Back cancels too, its documents' places waiting for the reply
+    /// ([`Self::restore_tab_documents`]).
+    fn request_restored_comparison(
+        &mut self,
+        saved: Bookmark,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(repo), Some(file)) = (
+            self.repository.clone(),
+            saved.comparison.as_ref().map(SavedFile::file),
+        ) else {
+            return;
+        };
+        let origins =
+            markdown_view::Origins::revisions(saved.origins[0].clone(), saved.origins[1].clone());
+        self.repository_tabs.document_restore = Some(saved);
         self.request(
             Job::Preview {
                 repo,
                 file,
-                origins: markdown_view::Origins::revisions(
-                    saved.origins[0].clone(),
-                    saved.origins[1].clone(),
-                ),
+                origins,
             },
             RESTORED_PREVIEW_LABEL,
             window,
@@ -1749,6 +1791,38 @@ impl GitTurtle {
                     .and_then(|index| self.files.get(index))
                     .is_some_and(|shown| SavedFile::new(shown).file() == saved.file())
             })
+    }
+
+    /// The places of the comparison restored with the shown tab that wait
+    /// to be restored, where that comparison is the one shown.
+    fn pending_tab_documents(&self) -> Option<&Bookmark> {
+        self.repository_tabs
+            .document_restore
+            .as_ref()
+            .filter(|saved| self.shows_saved_comparison(saved))
+    }
+
+    /// Takes up the restore a warm tab was left in as it shows again: a
+    /// comparison whose reply had landed restores its documents with its
+    /// editor, and one whose read the switch cancelled is read again, its
+    /// places waiting for the reply. Without it, the tab came back without
+    /// the places it was saved with.
+    fn resume_tab_documents(
+        &mut self,
+        saved: Bookmark,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.shows_saved_comparison(&saved) {
+            return;
+        }
+        if self.content.is_some() {
+            self.repository_tabs.document_restore = Some(saved);
+            self.prepare_editor(false, window, cx);
+            self.restore_tab_documents(cx);
+        } else {
+            self.request_restored_comparison(saved, window, cx);
+        }
     }
 
     /// Restores the documents of the comparison restored with the tab to
@@ -5895,5 +5969,175 @@ mod tests {
                 .file(),
             file
         );
+    }
+
+    /// The places a comparison restored with a tab is saved with, here its
+    /// zoom and a PDF page, belong to that tab. Left while the comparison's
+    /// read runs, the tab keeps them in its bookmark, as a session saved
+    /// then does, and in its warm state, and as it returns it reads the
+    /// comparison again, whose reply restores them. The window keeps none:
+    /// the tab shown in its place, in Compare at a zoom of its own, keeps
+    /// that zoom as the window returns from Settings or Projects, and so
+    /// does the tab shown when the restoring one is closed. The window kept
+    /// them, so the next tab took up the left one's zoom on a return from
+    /// Settings, and the left tab's bookmark saved the window's zoom and no
+    /// PDF page, which it came back without.
+    #[gpui::test]
+    async fn a_tab_left_mid_restore_keeps_its_comparisons_places(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("notes.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "notes.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let places = |saved: &Bookmark| {
+            serde_json::to_value((saved.zoom, &saved.pdf, &saved.model, &saved.markdown)).unwrap()
+        };
+        let show_page = |page: AppPage,
+                         app: &mut GitTurtle,
+                         window: &mut Window,
+                         cx: &mut Context<GitTurtle>| {
+            match page {
+                AppPage::Settings => app.show_settings(window, cx),
+                _ => app.show_projects(window, cx),
+            }
+            assert!(app.page == page);
+        };
+        // The first tab shows its file in Compare, at a zoom of its own.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let zoom = 1.5;
+        app.update(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            app.zoom = zoom;
+        });
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let saved = app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(1));
+            let commit = &app.commits[app.selected_commit.expect("a selected commit")];
+            let file = app.files.first().expect("the second tab's file");
+            Bookmark {
+                selected_oid: Some(commit.oid.clone()),
+                selection: Some(SavedCommit::new(commit)),
+                comparison: Some(SavedFile::new(file)),
+                origins: [commit.parents.first().cloned(), Some(commit.oid.clone())],
+                selected_file: Some(SavedPath::new(file.path())),
+                pdf: [
+                    None,
+                    Some(
+                        serde_json::from_value(
+                            serde_json::json!({"page": 3, "zoom": 1.25, "linked": false}),
+                        )
+                        .unwrap(),
+                    ),
+                ],
+                zoom: 2.5,
+                compare: true,
+                ..Default::default()
+            }
+        });
+        // The second tab restores its comparison, whose read the reader
+        // holds, idle first so nothing it ran before counts as running.
+        let restore = |app: &mut GitTurtle, window: &mut Window, cx: &mut Context<GitTurtle>| {
+            app.clear_preview();
+            app.repository_tabs.restoring = Some(saved.clone());
+            app.restore_tab_selection(window, cx);
+            assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL));
+        };
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                restore(app, window, cx);
+                assert_eq!(
+                    places(&app.tab_bookmark(cx)),
+                    places(&saved),
+                    "a session saved mid-restore keeps the comparison's places"
+                );
+                app.switch_repository_tab(0, window, cx);
+                assert!(
+                    app.repository_tabs.document_restore.is_none(),
+                    "the left tab's places leave the window with it"
+                );
+                assert_eq!(app.zoom, zoom, "the first tab shows at its own zoom");
+                let left = &app.repository_tabs.tabs[1];
+                assert_eq!(
+                    places(&left.saved),
+                    places(&saved),
+                    "its bookmark keeps them"
+                );
+                assert!(
+                    left.warm
+                        .as_ref()
+                        .is_some_and(|warm| warm.document_restore.is_some()),
+                    "its warm state keeps them"
+                );
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        for page in [AppPage::Settings, AppPage::Projects] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    show_page(page, app, window, cx);
+                    app.return_from_page(window, cx);
+                })
+            });
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository && app.repository_tabs.active == Some(0));
+                assert_eq!(
+                    app.zoom, zoom,
+                    "the first tab keeps its zoom on the return from {page:?}"
+                );
+            });
+        }
+        // Shown again, the left tab reads its comparison again and restores
+        // the places it was saved with.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(1, window, cx);
+                assert_eq!(
+                    app.loading,
+                    Some(RESTORED_PREVIEW_LABEL),
+                    "the comparison is read again"
+                );
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            assert_eq!(app.zoom, 2.5, "the tab comes back at its saved zoom");
+            assert!(app.repository_tabs.document_restore.is_none());
+        });
+        // Closed while its read runs, the tab takes its places with it.
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                restore(app, window, cx);
+                app.close_repository_tab(1, window, cx);
+                assert_eq!(app.repository_tabs.active, Some(0));
+                assert!(app.repository_tabs.document_restore.is_none());
+                assert_eq!(app.zoom, zoom);
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                show_page(AppPage::Settings, app, window, cx);
+                app.return_from_page(window, cx);
+                assert_eq!(app.zoom, zoom, "the first tab keeps its zoom");
+            })
+        });
     }
 }
