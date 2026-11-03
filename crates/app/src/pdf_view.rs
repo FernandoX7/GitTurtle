@@ -843,7 +843,10 @@ pub(super) fn render_comparison<T: 'static>(
             };
             held.track(("pdf-read-text",index), read, cx)
         };
-        header=header.child(at_widest(page_control, slot, None, line_room));
+        // Its node recorded in tests as it is drawn, so they read the state
+        // an AT-SPI client is given; outside tests the Button as it is.
+        use crate::native_accessibility::DrawnButton as _;
+        header=header.child(at_widest(page_control, slot, None, line_room).node_recorded());
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
             let document = document.clone(); let partner = partner.clone();
             let id = if previous {"pdf-back"} else {"pdf-forward"};
@@ -2131,6 +2134,50 @@ pub(crate) mod tests {
                 forms,
                 ["icon", "labelled"].into(),
                 "drawn labelled and as its icon"
+            );
+        }
+
+        /// While its page is prepared, Read page text reaches an AT-SPI
+        /// client disabled, neither enabled nor sensitive, as Previous page
+        /// on the first page does, its name saying why; once the page has
+        /// arrived it is enabled and sensitive. Its look, place and width
+        /// are the ones `read_page_text_is_recorded_as_drawn_while_its_page_prepares`
+        /// and `a_side_s_controls_keep_their_places_while_a_page_prepares`
+        /// pin.
+        #[gpui::test]
+        fn read_page_text_is_reported_disabled_while_its_page_prepares(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+            use accesskit_atspi_common::State;
+            let (content, document) = before_only(&pdf("Read page text reported disabled"), 3, 1);
+            // Being prepared, as the page lane holds its request; set here,
+            // so the lane is never asked for it.
+            document.state.lock().unwrap().pending = true;
+            let (_view, cx) = window(cx, content);
+            let usable = State::Enabled | State::Sensitive;
+            let state = |cx: &mut gpui_kit::VisualTestContext, name: &str| {
+                reached(next_frame(cx))
+                    .into_iter()
+                    .find(|node| node.name == name)
+                    .unwrap_or_else(|| panic!("an AT-SPI client reaches {name:?}"))
+                    .state
+            };
+            let waiting = format!("Before: read extracted text from page 2 · {PREPARING}");
+            let state_now = state(cx, &waiting);
+            assert!(
+                !state_now.contains(State::Enabled) && !state_now.contains(State::Sensitive),
+                "while its page is prepared: {state_now:?}"
+            );
+            {
+                let mut state = document.state.lock().unwrap();
+                state.cache.insert(1, PreparedPage::from(page()));
+                state.pending = false;
+            }
+            let state_now = state(cx, "Before: read extracted text from page 2");
+            assert!(
+                state_now.contains(usable),
+                "once its page has arrived: {state_now:?}"
             );
         }
 
