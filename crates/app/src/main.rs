@@ -1967,8 +1967,7 @@ impl GitTurtle {
             self.sidebar = false;
             self.mode = WorkspaceMode::Compare;
         }
-        self.pane = Pane::Files;
-        window.focus(&self.file_focus, cx);
+        self.focus_compare_files(window, cx);
         if self.selected_file == Some(index) && self.content.is_some() {
             self.ensure_editor(window, cx);
             self.trace_frame("file_preview_frame_ms", window, cx);
@@ -1976,6 +1975,14 @@ impl GitTurtle {
         } else {
             self.load_file(index, window, cx);
         }
+    }
+    /// Puts focus where entering Compare puts it: on the changed-file list,
+    /// whose selected file the comparison shows and from which Escape goes
+    /// back to History. Choosing a file focuses it, and so does a cold tab's
+    /// restore that lands in Compare (`GitTurtle::land_restore_focus`).
+    fn focus_compare_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane = Pane::Files;
+        window.focus(&self.file_focus, cx);
     }
     fn load_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index >= self.files.len() {
@@ -2151,7 +2158,13 @@ impl GitTurtle {
             return;
         }
         self.show_history(window, cx);
-        window.focus(&self.search.read(cx).focus_handle(cx), cx);
+        // With no repository read, as while a tab's snapshot is read,
+        // History shows Projects, whose own control takes focus: History's
+        // search field is drawn on no page then, and focus on it reached no
+        // key until a click.
+        if self.repository.is_some() {
+            window.focus(&self.search.read(cx).focus_handle(cx), cx);
+        }
     }
     /// Whether Compare is open, which the window's key context names
     /// (`shortcuts::COMPARE`), so the platform's Find shortcut finds in the

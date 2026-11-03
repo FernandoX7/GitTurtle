@@ -540,11 +540,13 @@ impl GitTurtle {
         });
         let path = self.path.clone();
         let owner = cx.entity().downgrade();
-        // Restore after the retained editor/list is attached to this frame.
+        // Focus goes back as the next frame starts, before it draws the page;
+        // whether that frame draws the control is known only as it ends
+        // (`give_page_focus_back`).
         window.on_next_frame(move |window, cx| {
             let _ = owner.update(cx, |this, cx| {
                 if this.page == AppPage::Repository && this.path == path {
-                    focus.focus(window, cx);
+                    this.give_page_focus_back(focus, window, cx);
                     window.refresh();
                 }
             });

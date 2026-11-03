@@ -359,9 +359,16 @@ type SessionSaveCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, std::result::Result<(), String>>>;
 
 /// Where a warm tab shown again puts focus: the control it was left with,
-/// for as long as its repository is the one shown.
+/// for as long as its repository is the one shown. A cold tab's restore
+/// landing in Compare uses it to keep the control the person focused while
+/// the tab was restored, where the frame that draws Compare still draws it
+/// ([`GitTurtle::land_restore_focus`]).
 struct FocusReturn {
     path: Option<PathBuf>,
+    /// Where focus waits for the return: the window's root after a warm
+    /// switch, the person's control as a restore lands. Focus moved off it
+    /// since supersedes the return.
+    held: FocusHandle,
     focus: Option<FocusHandle>,
 }
 
@@ -380,6 +387,9 @@ pub struct State {
     /// The focus a warm tab shown again gives back as the frame that draws
     /// it is built ([`GitTurtle::return_tab_focus`]).
     focus_return: Option<FocusReturn>,
+    /// The watch on the control a cold restore landing in Compare left
+    /// focus on, until focus leaves it ([`GitTurtle::land_focus_leaving`]).
+    landed_focus: Option<Subscription>,
     panel_observers: Vec<Subscription>,
     pub save_pending: Option<Task<()>>,
     saver: commit_drafts::CoalescingSaver<(), Session>,
@@ -1145,6 +1155,7 @@ impl GitTurtle {
         // tree the last tab drew, where a key would reach no shortcut.
         self.repository_tabs.focus_return = Some(FocusReturn {
             path: self.path.clone(),
+            held: self.app_focus.clone(),
             focus: window.focused(cx),
         });
         self.app_focus.focus(window, cx);
@@ -1199,14 +1210,17 @@ impl GitTurtle {
     /// as the frame ends to the shown mode's list, or the window's root, and
     /// that is drawn in a frame of its own. The switch once gave focus back
     /// only two frames after it drew the tab, from frame callbacks, and drew
-    /// a frame to show it there too.
+    /// a frame to show it there too. A cold restore landing in Compare keeps
+    /// the person's control the same way, focus held on it rather than on
+    /// the root.
     pub(super) fn return_tab_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(FocusReturn { path, focus }) = self.repository_tabs.focus_return.take() else {
+        let Some(FocusReturn { path, held, focus }) = self.repository_tabs.focus_return.take()
+        else {
             return;
         };
         if self.page != AppPage::Repository
             || self.path != path
-            || !self.app_focus.is_focused(window)
+            || !held.is_focused(window)
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
         {
@@ -1237,6 +1251,29 @@ impl GitTurtle {
             } else {
                 this.app_focus.focus(window, cx);
             }
+        });
+    }
+
+    /// Gives the repository page its focus back as the window returns to it
+    /// from Settings or Projects (`resume_repository_page`): `focus`, the
+    /// control it was left with, held as a warm tab's is, so a control the
+    /// frame that draws the page draws nowhere in the tab gives way as that
+    /// frame ends to the shown mode's list (`return_tab_focus`). A cold
+    /// restore landing in Compare under the other page left focus on a
+    /// control Compare takes away, such as the navigation's filter focused
+    /// while the snapshot was read, and Back gave focus back to it, where no
+    /// key reached the window's shortcuts until a click.
+    pub(super) fn give_page_focus_back(
+        &mut self,
+        focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        focus.focus(window, cx);
+        self.repository_tabs.focus_return = Some(FocusReturn {
+            path: self.path.clone(),
+            held: focus.clone(),
+            focus: Some(focus),
         });
     }
 }
@@ -1804,6 +1841,7 @@ impl GitTurtle {
         self.mode = WorkspaceMode::Compare;
         self.pane = Pane::Files;
         self.sidebar = false;
+        self.land_restore_focus(window, cx);
         self.refresh_file_filter(window, cx);
         restore_list_viewport(
             &self.history_scroll,
@@ -1813,6 +1851,108 @@ impl GitTurtle {
         self.history_horizontal
             .set_offset(point(px(saved.horizontal_x), px(0.)));
         self.request_restored_comparison(saved, window, cx);
+    }
+
+    /// Focus as a cold tab's restore lands in Compare. Showing the tab put
+    /// focus on History's commit list (`open`, through `back_to_history`),
+    /// which Compare does not draw, so it goes where choosing the file puts
+    /// it, the changed-file list (`focus_compare_files`), and so does the
+    /// focus Settings or Projects, opened over the restore, returns to,
+    /// where it was History's list or the root; any other control it
+    /// returns to is checked as the frame that draws the page ends
+    /// (`give_page_focus_back`). Focus the person moved while the tab was
+    /// restored is theirs: a dialog or sheet keeps it, and a control in the
+    /// tab, or one no frame has drawn yet, keeps it while the frame that
+    /// draws Compare draws it, while one Compare takes away, as the
+    /// navigation's filter, or one that frame draws nowhere, gives way to
+    /// that list as that frame ends (`return_tab_focus`), since a control
+    /// no frame draws answers no key. Where focus stays, it is watched
+    /// until it leaves (`land_focus_leaving`), as a menu's close hands it
+    /// back to what the menu was opened from. Left on History's list, focus
+    /// rested on nothing the frame drew, where keys reached none of the
+    /// window's shortcuts, Escape and the tab shortcuts among them, until a
+    /// click on a file row.
+    fn land_restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Repository {
+            if self
+                .page_return_focus
+                .as_ref()
+                .is_some_and(|focus| *focus == self.focus || *focus == self.app_focus)
+            {
+                self.page_return_focus = Some(self.file_focus.clone());
+            }
+            return;
+        }
+        // A dialog or sheet keeps focus, one opened since the last frame
+        // too, and gives it back as it closes through the window's own
+        // repair (`update_modal_focus`), to a control the page draws.
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let Some(focus) = window
+            .focused(cx)
+            .filter(|focus| *focus != self.focus && *focus != self.app_focus)
+        else {
+            self.focus_compare_files(window, cx);
+            return;
+        };
+        // Whether the frame that draws Compare draws the control is known
+        // as that frame ends: one the last frame drew in the tab, or one no
+        // frame has drawn yet, as a menu opened since, keeps focus there if
+        // that frame draws it in the tab and otherwise gives way to the
+        // changed-file list (`return_tab_focus`).
+        if self.app_focus.contains(&focus, window) || window.context_stack().is_empty() {
+            self.repository_tabs.focus_return = Some(FocusReturn {
+                path: self.path.clone(),
+                held: focus.clone(),
+                focus: Some(focus.clone()),
+            });
+        }
+        self.land_focus_leaving(&focus, window, cx);
+    }
+
+    /// Whether focus rests where no key reaches Compare after a restore
+    /// landed there: on nothing; on History's commit list, where showing the tab
+    /// put it and which Compare does not draw; on the window's root, which
+    /// draws no focus; or on a control the last frame drew nowhere, which
+    /// has no key context.
+    fn restore_focus_stranded(&self, window: &Window, cx: &App) -> bool {
+        window.focused(cx).is_none_or(|focus| {
+            focus == self.focus || focus == self.app_focus || window.context_stack().is_empty()
+        })
+    }
+
+    /// Lands focus once more as it leaves `kept`, the control the person's
+    /// focus rested on as the restore landed in Compare, if the frame it
+    /// leaves in draws it nowhere a key reaches: a menu opened while the
+    /// snapshot was read and closed after the landing gives focus back to
+    /// what it was opened from, as History's commit list or the
+    /// navigation's filter, which Compare does not draw, so focus goes to
+    /// the changed-file list as the landing puts it. Without it the menu's
+    /// Escape left focus on nothing drawn, and Escape, the palette and the
+    /// tab shortcuts did nothing until a click on a file row. Focus leaving
+    /// it for anything drawn, or once the tab or its page is left, ends the
+    /// watch.
+    fn land_focus_leaving(
+        &mut self,
+        kept: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = self.path.clone();
+        self.repository_tabs.landed_focus =
+            Some(cx.on_focus_out(kept, window, move |this, _, window, cx| {
+                this.repository_tabs.landed_focus = None;
+                if this.page == AppPage::Repository
+                    && this.path == path
+                    && this.mode == WorkspaceMode::Compare
+                    && !window.has_active_dialog(cx)
+                    && !window.has_active_sheet(cx)
+                    && this.restore_focus_stranded(window, cx)
+                {
+                    this.focus_compare_files(window, cx);
+                }
+            }));
     }
 
     /// Reads the captured comparison `saved` keeps, under its own label,
@@ -6937,5 +7077,477 @@ mod tests {
             assert!(app.repository_tabs.restoring.is_none(), "restored");
             assert_eq!(shown(app), left, "its saved parent's changes and file");
         });
+    }
+
+    /// A second tab whose last commit changes `notes.txt` and `report.pdf`
+    /// from the commit before, opened beside the first and shown.
+    async fn open_compared_tab(
+        app: &Entity<GitTurtle>,
+        root: &Path,
+        cx: &mut VisualTestContext,
+    ) -> GitRepository {
+        let repo = crate::views::tests::fixture_repository(root.join("second"));
+        for version in ["first", "second"] {
+            std::fs::write(repo.path().join("notes.txt"), format!("{version} notes\n")).unwrap();
+            std::fs::write(
+                repo.path().join("report.pdf"),
+                format!("%PDF-1.4\n% {version}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"),
+            )
+            .unwrap();
+            crate::tags::tests::git(repo.path(), &["add", "notes.txt", "report.pdf"]);
+            crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", version]);
+        }
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(app, cx).await;
+        repo
+    }
+
+    /// Saves the shown second tab on `name` in its commit `commit`, in
+    /// Compare or selected in History, shows the first tab and leaves the
+    /// second cold with that bookmark, as a launch leaves it.
+    async fn leave_tab_cold_on(
+        app: &Entity<GitTurtle>,
+        commit: usize,
+        name: &str,
+        compare: bool,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.back_to_history(window, cx);
+                app.select_commit(commit, window, cx);
+            })
+        });
+        settle_tab_test(app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app
+                    .files
+                    .iter()
+                    .position(|file| file.path() == Path::new(name))
+                    .expect("the commit changes it");
+                if compare {
+                    app.select_file(index, window, cx);
+                } else {
+                    app.selected_file = Some(index);
+                }
+            })
+        });
+        settle_tab_test(app, cx).await;
+        let saved = app.read_with(cx, |app, cx| app.tab_bookmark(cx));
+        assert_eq!(
+            saved.comparison.is_some(),
+            compare,
+            "{name}: its comparison"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(app, cx).await;
+        draw_tab_frames(cx);
+        app.update(cx, |app, _| {
+            let tab = &mut app.repository_tabs.tabs[1];
+            tab.warm = None;
+            tab.saved = saved;
+        });
+    }
+
+    /// The control holding focus, where the last frame drew it inside the
+    /// window's root, which itself draws no focus.
+    fn drawn_focus(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<FocusHandle> {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            window
+                .focused(cx)
+                .filter(|focus| *focus != app.app_focus && app.app_focus.contains(focus, window))
+        })
+    }
+
+    /// Holds the repository reader once it is idle, so its next read waits.
+    fn hold_reads(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> crate::worker::ReaderHeld {
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        })
+    }
+
+    /// A cold tab whose restore lands in Compare, on a PDF or on a text
+    /// diff, focuses its changed-file list as choosing the file does, and
+    /// one that lands in History focuses History's commit list as History's
+    /// entry does. Every frame of the restore draws the control holding
+    /// focus, and a key then acts: Escape goes back to History, Up selects
+    /// the commit above. Showing the tab put focus on History's list, which
+    /// the restored comparison does not draw, so keys reached none of the
+    /// window's shortcuts until a click on a file row.
+    #[gpui::test]
+    async fn a_cold_restore_focuses_what_its_page_draws(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        for (commit, name, compare) in [
+            (0, "report.pdf", true),
+            (0, "notes.txt", true),
+            (1, "notes.txt", false),
+        ] {
+            let when = format!("{name} in {}", if compare { "Compare" } else { "History" });
+            leave_tab_cold_on(&app, commit, name, compare, cx).await;
+            // Shown, it reads its snapshot with History's list focused.
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.loading, Some("Reading local history…"), "{when}");
+            });
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(list.clone()),
+                "{when}: its snapshot"
+            );
+            // Its next stage: the comparison, or the saved commit's changes.
+            drop(held);
+            let held = hold_reads(&app, cx);
+            cx.executor().run_until_parked();
+            draw_tab_frames(cx);
+            let stage = if compare {
+                RESTORED_PREVIEW_LABEL
+            } else {
+                "Reading changed files…"
+            };
+            let shown = if compare { &files } else { &list };
+            app.read_with(cx, |app, _| assert_eq!(app.loading, Some(stage), "{when}"));
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(shown.clone()),
+                "{when}: {stage}"
+            );
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: restored");
+                assert_eq!(app.mode == WorkspaceMode::Compare, compare, "{when}");
+                let file = app.selected_file.and_then(|index| app.files.get(index));
+                assert_eq!(file.map(FileChange::path), Some(Path::new(name)), "{when}");
+                assert!(!compare || app.content.is_some(), "{when}: its comparison");
+            });
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(shown.clone()),
+                "{when}: restored"
+            );
+            if compare {
+                cx.simulate_keystrokes("escape");
+                draw_tab_frames(cx);
+                app.read_with(cx, |app, _| {
+                    assert!(
+                        app.mode == WorkspaceMode::History,
+                        "{when}: Escape goes back"
+                    );
+                });
+                assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: back");
+            } else {
+                cx.simulate_keystrokes("up");
+                settle_tab_test(&app, cx).await;
+                app.read_with(cx, |app, _| {
+                    assert_eq!(app.selected_commit, Some(0), "{when}: Up selects");
+                });
+            }
+        }
+    }
+
+    /// Focus the person moves while a cold tab is restored is theirs as the
+    /// restore lands in Compare: a control Compare draws too, the window's
+    /// first control, in the tab strip every repository page draws, reached
+    /// by the keyboard while the snapshot is read, keeps it; one Compare
+    /// takes away, the navigation's filter, gives way to the changed-file
+    /// list as the frame that draws Compare ends. Settings opened over the
+    /// restore keeps its focus, and so does Projects, which History's
+    /// search shortcut shows while no repository is read, rather than
+    /// focus History's search field, which no page then draws; Back from
+    /// either returns to the changed-file list, not to History's list where
+    /// showing the tab had put focus, nor to the navigation's filter, which
+    /// Settings opened from it returned to.
+    #[gpui::test]
+    async fn a_cold_restore_keeps_focus_the_person_moved(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files, search, navigation) = app.read_with(cx, |app, cx| {
+            (
+                app.focus.clone(),
+                app.file_focus.clone(),
+                app.search.read(cx).focus_handle(cx),
+                app.nav_search.read(cx).focus_handle(cx),
+            )
+        });
+        let primary = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        for moved in [
+            "tab strip",
+            "navigation",
+            "search",
+            "settings",
+            "navigation, then settings",
+        ] {
+            leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            // The person moves focus while the snapshot is read.
+            match moved {
+                // Next Control from nothing focused: the window's first.
+                "tab strip" => cx.update(|window, cx| {
+                    window.blur(cx);
+                    window.focus_next(cx);
+                }),
+                "navigation" => cx.update(|window, cx| window.focus(&navigation, cx)),
+                "search" => cx.simulate_keystrokes(&format!("{primary}-f")),
+                "settings" => {
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)))
+                }
+                // Settings opened from the navigation's filter returns to
+                // that filter, which Compare takes away.
+                _ => {
+                    cx.update(|window, cx| window.focus(&navigation, cx));
+                    draw_tab_frames(cx);
+                    assert_eq!(drawn_focus(&app, cx), Some(navigation.clone()));
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+                    app.read_with(cx, |app, _| {
+                        assert_eq!(app.page_return_focus, Some(navigation.clone()), "{moved}");
+                    });
+                }
+            }
+            draw_tab_frames(cx);
+            let before = cx.update(|window, cx| window.focused(cx));
+            match moved {
+                "tab strip" => {
+                    let kept = before.clone().expect("the window's first control");
+                    assert!(kept != list && kept != files, "{moved}: neither list");
+                    assert_eq!(drawn_focus(&app, cx), Some(kept), "{moved}: drawn");
+                }
+                // Drawn where History shows it, so only the frame that
+                // draws Compare takes it away.
+                "navigation" => assert_eq!(drawn_focus(&app, cx), Some(navigation.clone())),
+                // With no repository read yet, History, which the shortcut
+                // shows, is Projects, whose control takes focus.
+                "search" => {
+                    let page = app.read_with(cx, |app, _| app.page);
+                    assert!(page == AppPage::Projects, "{moved}: Projects shown");
+                    let drawn = drawn_focus(&app, cx);
+                    assert!(drawn.is_some() && drawn != Some(search.clone()), "{moved}");
+                    assert_eq!(drawn, before, "{moved}: drawn");
+                }
+                _ => assert!(before.is_some() && before != Some(files.clone()), "{moved}"),
+            }
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{moved}: restored");
+                assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            });
+            let after = cx.update(|window, cx| window.focused(cx));
+            match moved {
+                "tab strip" => {
+                    assert_eq!(after, before, "the person's control keeps focus");
+                    assert_eq!(drawn_focus(&app, cx), before, "drawn in Compare");
+                }
+                "navigation" => {
+                    assert_eq!(
+                        drawn_focus(&app, cx),
+                        Some(files.clone()),
+                        "{moved}: not stranded"
+                    );
+                }
+                _ => {
+                    assert_eq!(after, before, "{moved}: the page keeps its focus");
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| app.return_from_page(window, cx))
+                    });
+                    draw_tab_frames(cx);
+                    assert_eq!(
+                        drawn_focus(&app, cx),
+                        Some(files.clone()),
+                        "{moved}: back from the page"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A menu opened while a cold tab's snapshot is read, by a click on the
+    /// tab strip's Workspaces button, which leaves focus where it was, keeps
+    /// focus as the restore lands in Compare. Closed by Escape after that,
+    /// it gives focus back to what it was opened from, History's commit
+    /// list, which Compare does not draw, and focus goes on to the
+    /// changed-file list as the landing puts it, so the next Escape goes
+    /// back to History. Given back to History's list alone, focus rested on
+    /// nothing drawn and keys reached none of the window's shortcuts.
+    #[gpui::test]
+    async fn a_menu_closed_after_a_cold_restore_lands_leaves_focus_drawn(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        let item = "menu-item: Manage saved workspaces… · MenuItem";
+        // Focus leaving a control reaches its listeners only in the active
+        // window, as the person's is.
+        cx.update(|window, _| window.activate_window());
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "its snapshot");
+        let trigger = cx
+            .debug_bounds("repository-workspaces")
+            .expect("the Workspaces button");
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        draw_tab_frames(cx);
+        assert!(cx.debug_bounds(item).is_some(), "the menu opened");
+        let menu = drawn_focus(&app, cx).expect("the menu holds focus");
+        assert!(menu != list && menu != files, "the menu holds focus");
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "restored");
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+        });
+        assert!(cx.debug_bounds(item).is_some(), "the menu stays open");
+        assert_eq!(drawn_focus(&app, cx), Some(menu), "the menu keeps focus");
+        cx.simulate_keystrokes("escape");
+        draw_tab_frames(cx);
+        assert!(cx.debug_bounds(item).is_none(), "Escape closed the menu");
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(files),
+            "on the changed-file list"
+        );
+        cx.simulate_keystrokes("escape");
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History, "Escape goes back");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list), "History's list");
+    }
+
+    /// A dialog, Local workspaces, or the Workspaces menu, opened in the
+    /// update a cold tab's restore lands in Compare, before any frame has
+    /// drawn it, keeps focus through the frames that draw Compare: the
+    /// landing finds focus on what opened, which no frame has drawn yet,
+    /// rather than on History's list, where showing the tab put it. Closed,
+    /// each gives focus back to History's list, which Compare does not
+    /// draw, and focus goes on to the changed-file list. The landing once
+    /// took focus no frame had drawn for stranded and moved it to that list
+    /// at once: the dialog lost its focus to the page under it, and the
+    /// menu, which takes focus again as the next frame builds it, gave it
+    /// back on Escape to History's list with nothing watching it, where no
+    /// key reached the window's shortcuts.
+    #[gpui::test]
+    async fn what_opens_in_the_update_a_cold_restore_lands_keeps_focus(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        let item = "menu-item: Manage saved workspaces… · MenuItem";
+        // Focus leaving a control reaches its listeners only in the active
+        // window, as the person's is.
+        cx.update(|window, _| window.activate_window());
+        for opened in ["dialog", "menu"] {
+            leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.repository_tabs.restoring.is_none(),
+                    "{opened}: restored"
+                );
+                assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            });
+            let position = cx
+                .debug_bounds("repository-workspaces")
+                .expect("the Workspaces button")
+                .center();
+            // The landing's update, with focus where it finds it: on
+            // History's list, where showing the tab put it, and then on
+            // what opened since the last frame.
+            let held = cx.update(|window, cx| {
+                window.focus(&list, cx);
+                if opened == "dialog" {
+                    app.update(cx, |app, cx| app.open_repository_library(window, cx));
+                } else {
+                    let (button, modifiers) = (MouseButton::Left, Modifiers::default());
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        cx,
+                    );
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                }
+                let held = window.focused(cx).expect("what opened takes focus");
+                assert!(
+                    held != list && window.context_stack().is_empty(),
+                    "{opened}: focus on what no frame has drawn yet"
+                );
+                app.update(cx, |app, cx| app.land_restore_focus(window, cx));
+                held
+            });
+            draw_tab_frames(cx);
+            let kept = cx.update(|window, cx| {
+                held.contains_focused(window, cx) && !window.context_stack().is_empty()
+            });
+            assert!(
+                kept,
+                "{opened}: keeps focus through the frames that draw Compare"
+            );
+            if opened == "dialog" {
+                assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+                cx.update(|window, cx| window.close_dialog(cx));
+            } else {
+                assert!(cx.debug_bounds(item).is_some(), "the menu opened");
+                assert!(
+                    drawn_focus(&app, cx).is_some_and(|focus| focus != list && focus != files),
+                    "the menu holds focus"
+                );
+                cx.simulate_keystrokes("escape");
+            }
+            draw_tab_frames(cx);
+            assert!(cx.debug_bounds(item).is_none(), "{opened}: closed");
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(files.clone()),
+                "{opened}: closed, on the changed-file list"
+            );
+        }
     }
 }
