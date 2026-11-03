@@ -23,12 +23,14 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   git openssh-client ca-certificates python3 desktop-file-utils xdg-utils \
   libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0 \
-  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core \
+  libwayland-egl1 libfontconfig1 fontconfig fonts-dejavu-core libdav1d7 \
   libvulkan1 mesa-vulkan-drivers libegl1 libgl1 libgl1-mesa-dri \
   xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-gtk
 ```
 
-Ubuntu GNOME normally supplies much of this. Keep the appropriate vendor GPU
+Ubuntu GNOME normally supplies much of this. `libdav1d7` (from universe) is the
+AV1 decoder GitTurtle links for AVIF images; GitTurtle does not start without
+it (see [Platform limits](#platform-limits)). Keep the appropriate vendor GPU
 driver installed, especially on NVIDIA systems; `libvulkan1` is only the loader.
 Mesa supplies its drivers and a software implementation, not the proprietary
 NVIDIA driver. Other desktops need their matching portal backend instead of
@@ -111,6 +113,11 @@ sudo apt-get install -y --no-install-recommends \
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
   libssl-dev libzstd-dev libvulkan-dev libdav1d-dev python3-pil
 ```
+
+The build links the distribution's libdav1d through `pkg-config`
+(`pkg-config --modversion dav1d` shows which). Leave every `SYSTEM_DEPS_*`
+variable unset: one can make the build download dav1d and link its own copy
+statically, so `scripts/package-linux.sh` refuses to run while one is set.
 
 Install Rust through [rustup](https://rustup.rs/) if needed. The checked-in
 `rust-toolchain.toml` selects **Rust 1.99.0** with rustfmt and Clippy only for
@@ -262,8 +269,10 @@ python3 dist/gitturtle-linux-$(uname -m)/install.py
 installs Rust 1.99.0 on the first build. On another Arch system also install
 `base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
 libx11 libxcb openssl zstd vulkan-icd-loader dav1d`, the Vulkan driver for your
-GPU, `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
-interface text, which uses the embedded IBM Plex Sans, or for
+GPU, `xdg-desktop-portal` and a FileChooser backend. `dav1d` stays installed at
+run time: GitTurtle links its `libdav1d.so.7` for AVIF images and does not
+start without it (on Omarchy, `ffmpeg` already depends on it). No font package
+is needed for interface text, which uses the embedded IBM Plex Sans, or for
 code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
 (JetBrainsMono Nerd Font by default), and an open window changes with
@@ -373,6 +382,7 @@ portal packages, log out and back in if the session has stale service state.
 | --- | --- |
 | Build reports missing `-lxkbcommon-x11` | Install `libxkbcommon-x11-dev`, then rebuild without custom `LIBRARY_PATH`. `pkg-config --libs xkbcommon-x11` must succeed. |
 | Installer says a shared library is missing | Install the runtime list; inspect `ldd` on the trusted bundled executable. A clean `ldd` alone does not check dynamically loaded graphics drivers. |
+| GitTurtle does not start: `libdav1d.so.7: cannot open shared object file` | Install `libdav1d7` (Ubuntu) or `dav1d` (Arch). GitTurtle links the system AV1 decoder for AVIF images and cannot start without it. |
 | Installer says GitTurtle is still running | Let its Git operation finish, quit the app normally, then rerun the installer. The message lists matching process IDs; the installer never terminates them. |
 | Upgrade causes a regression | Quit the app, run the retained installer's `--rollback` command above, then include build diagnostics for both versions in your report. |
 | No window when launched over SSH, from a console, or in CI | A normal launch needs a graphical session. GitTurtle exits with a specific no-display message; do not invent display variables or set `ZED_HEADLESS` to claim a desktop test. |
@@ -403,25 +413,52 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 - GitHub account connection cannot persist credentials on Linux yet; it refuses
   storage instead of writing plaintext credentials. Git's own configured
   authentication for explicit fetch/pull/push is separate.
-- PDF pages and their text render on x86-64 and AArch64 in GitTurtle's own
-  helper process: the app starts its own executable once per page, the helper
-  confines itself (resource limits, `no_new_privs` and a seccomp filter that
-  allows no file, network or process calls) and renders with
-  [hayro](https://github.com/LaurenzV/hayro), and the app kills it after 10
-  seconds, within 25 ms of Back, another file or page, Retry page or a tab
-  switch, and when the app exits. **It needs a kernel with
-  seccomp filters** (`CONFIG_SECCOMP_FILTER`, on in every mainstream
-  distribution kernel, Asahi's included); without them every page says
-  “The PDF renderer could not start.” A running helper is named
-  `gitturtle-pdf`. Other architectures keep PDF metadata and an unavailable
-  result. The confinement's tests ran on AArch64 (Asahi) and on x86-64 in the
-  hosted [quality run 41480657885](https://github.com/FernandoX7/GitTurtle/actions/runs/41480657885)
-  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`).
-- ImageIO-based AVIF, HEIC and JPEG 2000 decoding require macOS.
-  PNG/JPEG/GIF/WebP, supported SVG, rendered Markdown and finite
-  mesh/GLB/STEP previews have portable decoders; the
-  [format matrix](file-previews.md) defines bounds and unsupported variants.
-  Recognizing metadata is not the same as rendering a format.
+- PDF pages and their text, AVIF images and JPEG 2000 images (JP2 files and
+  raw J2K codestreams) render on x86-64 and AArch64 in GitTurtle's own helper
+  process: the app starts its own executable once per page or image, the
+  helper confines itself (resource limits, one thread, `no_new_privs` and a
+  seccomp filter that allows no file, network or process calls) and decodes
+  with [hayro](https://github.com/LaurenzV/hayro) for PDF, its
+  `hayro-jpeg2000` for JPEG 2000, and `mp4parse` with the system libdav1d for
+  AVIF, and the app kills it after 10 seconds, on Back, another file or page,
+  Retry page or a tab switch, which it checks for every 25 ms, and when the
+  app exits. Pages and images share at most two helpers at a time, and an
+  image comes back at most 1,600 pixels on its longer edge.
+  **It needs a kernel with seccomp filters** (`CONFIG_SECCOMP_FILTER`, on in
+  every mainstream distribution kernel, Asahi's included): without them the
+  helper refuses to start, every page says “The PDF renderer could not
+  start.” and every AVIF or JPEG 2000 image says “The image decoder could not
+  start.” A running helper is named `gitturtle-pdf` for pages and images
+  alike. Other architectures keep PDF metadata and an unavailable result, and
+  decode neither AVIF nor JPEG 2000. The confinement's tests ran on AArch64
+  (Asahi) and, for PDF pages, on x86-64 in the hosted
+  [quality run 41480657885](https://github.com/FernandoX7/GitTurtle/actions/runs/41480657885)
+  ("Rust tests and Clippy · ubuntu-24.04", all 21 helper tests at `66add2e6`);
+  the image tests have not yet run on x86-64.
+- **libdav1d is a hard runtime dependency.** The executable links the
+  distribution's `libdav1d.so.7` (Arch `dav1d`, Ubuntu `libdav1d7`), so
+  GitTurtle does not start without it, even when no AVIF is ever opened.
+  AVIF decoding needs **libdav1d 1.4.1 or later**: the helper checks the
+  version before it reads an AVIF and, with an older one or one that reports
+  no readable version, shows “AVIF decoding needs libdav1d 1.4.1 or later” in
+  place of the image. JPEG 2000 does not use libdav1d. Ubuntu 24.04's
+  `libdav1d7` is 1.4.1. The floor cannot tell whether your distribution has
+  backported a fix; libdav1d is patched at its pace.
+- AVIF shows its first image only: an animated AVIF shows its first frame,
+  captioned “first frame of an animation”, and does not play. AVIF image grids,
+  as some cameras and phones write, are not decoded yet: they say “AVIF image
+  grids are not decoded on Linux yet” and offer **Open in default app**. A
+  crop (`clap`) is not applied, HDR is not tone-mapped, and an ICC profile
+  over 4 MiB, malformed or not RGB is not applied; the caption says so
+  (“crop not applied”, “HDR not tone-mapped”, “color profile not applied”).
+  A JPX file decodes only when it is JP2-compatible.
+- HEIF and HEIC images are not decoded on Linux: they say “HEIF / HEIC images
+  are not decoded on Linux” and offer **Open in default app**. macOS decodes
+  them through ImageIO. PNG/JPEG/GIF/WebP, supported SVG, rendered Markdown
+  and finite mesh/GLB/STEP previews have portable decoders, and AVIF and
+  JPEG 2000 decode in the helper above; the [format matrix](file-previews.md)
+  defines bounds and unsupported variants. Recognizing metadata is not the
+  same as rendering a format.
 - System preview is **Open in default app** on Linux: an explicit click hands a
   private read-only copy of the captured bytes to the desktop's default
   application through the OpenURI portal, or `xdg-open` where no portal
@@ -490,7 +527,7 @@ GPU/driver, session type and scale setting with the result.
   set to Manual): text size and glyph edges follow without a restart.
 - [ ] Open and cancel the repository picker from Projects and Ctrl+O, including
   a path containing spaces. Confirm errors are useful if the portal is absent.
-- [ ] Select a commit (stays in History), activate text/PNG/Markdown files, Back,
+- [ ] Select a commit (stays in History), activate text/PNG/AVIF/JPEG 2000/Markdown files, Back,
   then rapid activation/Back; inspect image zoom/overlay and a supported model.
 - [ ] In Working Changes, stage and unstage fixture files/hunks. Verify with
   `git diff` and `git diff --cached`; ensure unrelated fixture edits survive.
