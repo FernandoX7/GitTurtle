@@ -414,6 +414,9 @@ pub fn capture_assets(
         );
         check()?;
         let mut pixel_budget = 16 * 1024 * 1024usize;
+        // Once one of this document's AVIF or JPEG 2000 images times out or
+        // stops its helper, the rest are not sent to one (requirement 17).
+        let mut images = crate::image_helper::DocumentImages::default();
         match results {
             Ok(results) => {
                 for (index, result) in indices.into_iter().zip(results) {
@@ -430,10 +433,13 @@ pub fn capture_assets(
                                 pixel_budget > 0,
                                 "Markdown images exceed the 16 MiB decoded-pixel budget"
                             );
-                            let decoded = gitturtle_preview::decode_image(
+                            // The document's own check kills a helper as
+                            // soon as the document is closed or replaced.
+                            let decoded = images.decode(
                                 &asset.bytes,
                                 &asset.path.to_string_lossy(),
                                 1000,
+                                &check,
                             )?;
                             check()?;
                             let bytes = decoded.rgba.len();
@@ -1746,6 +1752,155 @@ mod tests {
         assert_eq!(std::fs::read(path.join(".git/index")).unwrap(), index);
         control.cancel();
         assert!(capture_assets(&mut next, &repo, &file, &origins, &control).is_err());
+    }
+    /// Requirement 17: once one of a document's AVIF or JPEG 2000 images
+    /// runs past its helper's deadline, the document's later ones start no
+    /// helper and each says why in the image's place, while a PNG after them
+    /// still renders. Three confined images start exactly one helper.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn a_documents_confined_images_stop_at_the_first_that_times_out() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        let source = "# Figures\n\n![one](one.avif)\n\n![two](two.jp2)\n\n![three](three.avif)\n\n![four](four.png)\n";
+        std::fs::write(path.join("docs/readme.md"), source).unwrap();
+        let avif = include_bytes!("../../preview/tests/fixtures/half-red-blue.avif").as_slice();
+        let jp2 = include_bytes!("../../preview/tests/fixtures/half-red-blue.jp2").as_slice();
+        // Each image its own bytes, and so its own helper, each of which
+        // writes its pid and sleeps past a 200 ms deadline.
+        let pids = tempfile::tempdir().unwrap();
+        for (name, base) in [("one.avif", avif), ("two.jp2", jp2), ("three.avif", avif)] {
+            let bytes = [base, name.as_bytes()].concat();
+            std::fs::write(path.join("docs").join(name), &bytes).unwrap();
+            let script = format!(
+                "PATH=/usr/bin:/bin; printf %s $$ > '{}'; exec sleep 30",
+                pids.path().join(name).display()
+            );
+            crate::image_helper::named::name(
+                &bytes,
+                crate::pdf_helper::HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+                std::time::Duration::from_millis(200),
+            );
+        }
+        image_file(&path.join("docs/four.png"), [0, 255, 0, 255]);
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figures"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        capture_assets(
+            &mut comparison,
+            &repo,
+            &file,
+            &Origins::revisions(None, Some(head)),
+            &control,
+        )
+        .unwrap();
+        let images: Vec<_> = comparison.new.image_identities().collect();
+        let stopped = crate::image_helper::AFTER_EARLIER_IMAGES;
+        assert_eq!(
+            images
+                .iter()
+                .map(|(pixels, error)| (pixels.is_some(), *error))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    false,
+                    Some("The image took longer than 10 seconds to decode and was stopped.")
+                ),
+                (false, Some(stopped)),
+                (false, Some(stopped)),
+                (true, None),
+            ]
+        );
+        let started: Vec<_> = ["one.avif", "two.jp2", "three.avif"]
+            .into_iter()
+            .filter(|name| pids.path().join(name).exists())
+            .collect();
+        assert_eq!(started, ["one.avif"], "exactly one helper started");
+    }
+    /// A document's images pass the document's own check: closing or
+    /// replacing it (its cancellation, set here from another thread) while
+    /// an AVIF decodes kills and reaps that image's helper at once rather
+    /// than at its deadline, and the capture fails with the check's error.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn closing_a_document_kills_the_helper_of_the_image_it_decodes() {
+        use crate::worker::helper_image_tests::{BLOCKS, PROMPTLY, pid_in, reaped_within};
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        let source = "# Figure\n\n![slow](slow.avif)\n";
+        std::fs::write(path.join("docs/readme.md"), source).unwrap();
+        let avif = include_bytes!("../../preview/tests/fixtures/half-red-blue.avif").as_slice();
+        let bytes = [avif, b"closing a document"].concat();
+        std::fs::write(path.join("docs/slow.avif"), &bytes).unwrap();
+        // A helper that writes its pid and never answers, with a deadline
+        // ten times the time the test allows its reap.
+        let pids = tempfile::tempdir().unwrap();
+        let started = pids.path().join("slow");
+        let script = format!(
+            "PATH=/usr/bin:/bin; printf %s $$ > '{}'; {BLOCKS}",
+            started.display()
+        );
+        crate::image_helper::named::name(
+            &bytes,
+            crate::pdf_helper::HelperCommand::new("/bin/sh", ["-c", script.as_str()]),
+            PROMPTLY * 10,
+        );
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figure"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(source, source, &file, || Ok(())).unwrap().unwrap();
+        let origins = Origins::revisions(None, Some(head));
+        std::thread::scope(|scope| {
+            let capture =
+                scope.spawn(|| capture_assets(&mut comparison, &repo, &file, &origins, &control));
+            let helper = pid_in(&started);
+            control.cancel();
+            assert!(
+                reaped_within(helper, std::time::Instant::now()),
+                "closing the document kills and reaps its image's helper"
+            );
+            let error = capture.join().unwrap().unwrap_err();
+            assert_eq!(error.to_string(), "Markdown local-image capture cancelled");
+        });
     }
     #[test]
     fn gfm_structure_preserves_text_and_never_executes_html() {

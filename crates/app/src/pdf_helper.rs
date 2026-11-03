@@ -721,22 +721,40 @@ impl<'a> Runner<'a> {
         cap: usize,
         check: &dyn Fn() -> anyhow::Result<()>,
     ) -> Outcome {
+        self.run_timed(request, cap, check).0
+    }
+
+    /// [`Self::run`], and how long its helper held the slot: from the
+    /// helper's start until it ended and was reaped, or zero when none
+    /// started, so the wait for a slot never counts. A Markdown document
+    /// totals its images' times (`crate::image_helper::DocumentImages`).
+    pub(crate) fn run_timed(
+        &self,
+        request: [&[u8]; 2],
+        cap: usize,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> (Outcome, Duration) {
         let _slot = match self.slots.acquire(check) {
             Ok(slot) => slot,
-            Err(error) => return Outcome::Cancelled(error),
+            Err(error) => return (Outcome::Cancelled(error), Duration::ZERO),
         };
         if let Err(error) = check() {
-            return Outcome::Cancelled(error);
+            return (Outcome::Cancelled(error), Duration::ZERO);
         }
         let Ok(child) = self.command.spawn() else {
-            return Outcome::CouldNotStart;
+            return (Outcome::CouldNotStart, Duration::ZERO);
         };
         let started = Instant::now();
         let Some(mut running) = Running::new(child) else {
-            return Outcome::CouldNotStart;
+            return (Outcome::CouldNotStart, started.elapsed());
         };
         let (ending, reply) = running.exchange(request, cap, started + self.deadline, check);
-        Outcome::of(ending, reply)
+        (Outcome::of(ending, reply), started.elapsed())
+    }
+
+    /// The wall-clock time one helper gets, from its start.
+    pub(crate) fn deadline(&self) -> Duration {
+        self.deadline
     }
 }
 

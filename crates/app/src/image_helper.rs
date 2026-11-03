@@ -12,6 +12,11 @@
 //! is requirement 14 of the
 //! [architecture review](../../../docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md#7-security-review-of-the-design-2026-11-02).
 //!
+//! The worker's image sides call [`decode`]; a Markdown document's local
+//! images go through [`DocumentImages`], which stops sending a document's
+//! confined images to a helper once one of them timed out or stopped, or
+//! once their helpers have run for one deadline in total (requirement 17).
+//!
 //! The module depends only on std, `anyhow`, `gitturtle-preview` and
 //! `crate::pdf_helper`: `tests/image_helper.rs` compiles both as its own
 //! modules.
@@ -21,6 +26,11 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 use std::fmt;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use std::time::Duration;
 
 use gitturtle_preview::ImagePreview;
 #[cfg(all(
@@ -56,7 +66,9 @@ pub(crate) fn decode(
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
-        decode_with(&Client::new(), bytes, name, edge, check)
+        with_client(bytes, |client| {
+            decode_with(client, bytes, name, edge, check)
+        })
     }
     #[cfg(not(all(
         target_os = "linux",
@@ -80,12 +92,178 @@ pub(crate) fn decode_with(
     edge: u32,
     check: &dyn Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<ImagePreview> {
-    match gitturtle_preview::confined_image_format(bytes) {
-        Some(format) => client
-            .decode(bytes, format, edge, check)
-            .map(|reply| reply.image)
-            .map_err(worded),
-        None => gitturtle_preview::decode_image(bytes, name, edge),
+    let Some(format) = gitturtle_preview::confined_image_format(bytes) else {
+        return gitturtle_preview::decode_image(bytes, name, edge);
+    };
+    client
+        .decode(bytes, format, edge, check)
+        .map(|reply| reply.image)
+        .map_err(worded)
+}
+
+/// What a document's later confined images say once [`DocumentImages`]
+/// sends no more of them to a helper, for either of its two reasons.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) const AFTER_EARLIER_IMAGES: &str = "Earlier images in this document stopped the image decoder or used its 10 seconds, so this one was not decoded.";
+
+/// One document's images, decoded in turn as [`decode`] decodes each. The
+/// document's later confined images are not sent to a helper, and each
+/// fails with `AFTER_EARLIER_IMAGES`, once a confined image ends in
+/// `Failure::TimedOut` or `Failure::Stopped` (a document whose image runs
+/// past the deadline or kills its helper is broken or hostile), or once the
+/// document's helpers have run for one deadline in total, whatever their
+/// results: each request that starts finds less than one deadline spent and
+/// runs for at most one more and the tick that kills it, so a document holds
+/// one of the two helper slots for about two deadlines at most, with no
+/// budget to tune (requirement 17). Only a helper's own run counts, from its
+/// start until it is reaped, never the wait for a slot. Other images decode
+/// as before. Only a flag and a sum: nothing is scanned.
+#[derive(Default)]
+pub(crate) struct DocumentImages {
+    /// A confined image of this document timed out or stopped its helper.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    stopped: bool,
+    /// How long this document's helpers have run in total.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    ran: Duration,
+}
+
+impl DocumentImages {
+    /// The document's next image, as [`decode`] decodes it.
+    pub(crate) fn decode(
+        &mut self,
+        bytes: &[u8],
+        name: &str,
+        edge: u32,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<ImagePreview> {
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        {
+            with_client(bytes, |client| {
+                self.decode_with(client, bytes, name, edge, check)
+            })
+        }
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        {
+            decode(bytes, name, edge, check)
+        }
+    }
+
+    /// [`Self::decode`] through `client` for the confined formats.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    pub(crate) fn decode_with(
+        &mut self,
+        client: &Client<'_>,
+        bytes: &[u8],
+        name: &str,
+        edge: u32,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<ImagePreview> {
+        let Some(format) = gitturtle_preview::confined_image_format(bytes) else {
+            return gitturtle_preview::decode_image(bytes, name, edge);
+        };
+        anyhow::ensure!(
+            !self.stopped && self.ran < client.runner.deadline(),
+            AFTER_EARLIER_IMAGES
+        );
+        let (result, ran) = client.decode_timed(bytes, format, edge, check);
+        self.ran += ran;
+        result.map(|reply| reply.image).map_err(|failure| {
+            self.stopped |= matches!(failure, Failure::TimedOut | Failure::Stopped { .. });
+            worded(failure)
+        })
+    }
+}
+
+/// `use_client` with the client that decodes `bytes`: this executable as the
+/// confined helper, with the app's two helper slots. In tests, the client a
+/// test named for these bytes (`named::name`), or else one that cannot
+/// start, so that no test runs its own test binary as a helper.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn with_client<T>(bytes: &[u8], use_client: impl FnOnce(&Client<'_>) -> T) -> T {
+    #[cfg(test)]
+    {
+        use_client(&named::client(bytes))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = bytes;
+        use_client(&Client::new())
+    }
+}
+
+/// The helpers tests name for images' bytes, as `pdf_view`'s tests name the
+/// PDF helper for a document's.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod named {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    use std::time::Duration;
+
+    use super::Client;
+    use crate::pdf_helper::{DEADLINE, HelperCommand, Runner, Slots};
+
+    /// The clients named so far, the latest last.
+    static NAMED: Mutex<Vec<(Vec<u8>, Arc<Client<'static>>)>> = Mutex::new(Vec::new());
+
+    /// From now on, `bytes` decode through `command`, stopped at `deadline`,
+    /// with two helper slots of their own.
+    pub(crate) fn name(bytes: &[u8], command: HelperCommand, deadline: Duration) {
+        let slots: &'static Slots = Box::leak(Box::new(Slots::new(2)));
+        let client = Client::with(Runner::with(command, deadline, slots));
+        NAMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((bytes.to_vec(), Arc::new(client)));
+    }
+
+    /// The client named last for `bytes`, or else one whose program does not
+    /// exist, which fails at once with "The image decoder could not start."
+    pub(super) fn client(bytes: &[u8]) -> Arc<Client<'static>> {
+        if let Some((_, client)) = NAMED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .rev()
+            .find(|(named, _)| named == bytes)
+        {
+            return client.clone();
+        }
+        static SLOTS: Slots = Slots::new(2);
+        static UNSTARTABLE: OnceLock<Arc<Client<'static>>> = OnceLock::new();
+        UNSTARTABLE
+            .get_or_init(|| {
+                Arc::new(Client::with(Runner::with(
+                    HelperCommand::new("/nonexistent/gitturtle-image-helper", [""; 0]),
+                    DEADLINE,
+                    &SLOTS,
+                )))
+            })
+            .clone()
     }
 }
 
@@ -120,6 +298,13 @@ pub(crate) struct Client<'a> {
 impl Client<'static> {
     /// This executable as the helper, with the 10 s deadline and the two
     /// helper slots the app's PDF pages also use.
+    #[cfg_attr(
+        test,
+        allow(
+            dead_code,
+            reason = "the app's tests decode through named helpers; tests/image_helper.rs checks this one"
+        )
+    )]
     pub(crate) fn new() -> Self {
         Self {
             runner: Runner::new(),
@@ -140,6 +325,7 @@ impl<'a> Client<'a> {
 
     /// The runner a client uses.
     #[cfg(test)]
+    #[allow(dead_code, reason = "only tests/image_helper.rs reads it")]
     pub(crate) fn runner(&self) -> &Runner<'a> {
         &self.runner
     }
@@ -158,10 +344,26 @@ impl<'a> Client<'a> {
         edge: u32,
         check: &dyn Fn() -> anyhow::Result<()>,
     ) -> Result<ImageReply, Failure> {
+        self.decode_timed(bytes, format, edge, check).0
+    }
+
+    /// [`Self::decode`], and how long its helper ran ([`Runner::run_timed`]):
+    /// zero when it refused the request or no helper started.
+    fn decode_timed(
+        &self,
+        bytes: &[u8],
+        format: ConfinedFormat,
+        edge: u32,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> (Result<ImageReply, Failure>, Duration) {
         let edge = edge.min(MAX_HELPER_IMAGE_EDGE);
-        let header = encode_image_request(format, edge, bytes).map_err(Failure::Refused)?;
+        let header = match encode_image_request(format, edge, bytes) {
+            Ok(header) => header,
+            Err(error) => return (Err(Failure::Refused(error)), Duration::ZERO),
+        };
         let cap = max_image_reply_bytes(edge);
-        classify(self.runner.run([&header, bytes], cap, check), format, edge)
+        let (outcome, ran) = self.runner.run_timed([&header, bytes], cap, check);
+        (classify(outcome, format, edge), ran)
     }
 }
 
@@ -223,11 +425,15 @@ impl fmt::Display for Failure {
                 Kind::Jpeg2000Unreadable => {
                     "Cannot read JPEG 2000; corrupt or unsupported codestream"
                 }
-                Kind::Jpeg2000TooManyTiles => "JPEG 2000 declares more than 65,535 tiles",
-                Kind::Jpeg2000TooManyComponents => {
-                    "JPEG 2000 with more than four components is not shown"
+                Kind::Jpeg2000TooManyTiles => {
+                    "This JPEG 2000 image declares more than 65,535 tiles"
                 }
-                Kind::Jpeg2000TooDeep => "JPEG 2000 samples deeper than 16 bits are not shown",
+                Kind::Jpeg2000TooManyComponents => {
+                    "JPEG 2000 images with more than four components are not decoded on Linux"
+                }
+                Kind::Jpeg2000TooDeep => {
+                    "JPEG 2000 samples deeper than 16 bits are not decoded on Linux"
+                }
                 Kind::JpxNotJp2Compatible => {
                     "This JPX file is not JP2-compatible and is not decoded on Linux"
                 }
@@ -257,6 +463,7 @@ impl std::error::Error for Failure {}
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
+#[allow(dead_code, reason = "only tests/image_helper.rs calls it")]
 pub(crate) fn classify_exit(
     status: std::process::ExitStatus,
     reply: &[u8],

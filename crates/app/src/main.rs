@@ -33,10 +33,6 @@ mod ignore;
 mod image_compare;
 // Preview images: AVIF and JPEG 2000 in the confined helper on Linux, every
 // other image (and every image on other targets) through `decode_image`.
-#[expect(
-    dead_code,
-    reason = "worker.rs and markdown_view.rs call `image_helper::decode` from the next slice"
-)]
 mod image_helper;
 mod image_lifetime;
 mod in_frame;

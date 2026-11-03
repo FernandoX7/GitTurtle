@@ -680,6 +680,71 @@ mod real {
         );
         assert!(observed.elapsed < DEADLINE + Duration::from_secs(1));
     }
+
+    /// The call sites' entry, `image_helper::decode` (a reader's image side
+    /// and, through `DocumentImages`, a Markdown document's local image),
+    /// decodes an AVIF and a JP2 in the real helper, captioned as macOS
+    /// captions them without "macOS codec", with half red over half blue;
+    /// `decode_image` still refuses both in this process.
+    #[test]
+    fn the_call_sites_decode_avif_and_jp2_in_the_real_helper_and_never_in_process() {
+        let command = || {
+            HelperCommand::new(
+                BINARY,
+                [
+                    HELPER_FLAG.to_string(),
+                    PROTOCOL_VERSION.to_string(),
+                    std::process::id().to_string(),
+                ],
+            )
+        };
+        for (name, caption, refusal) in [
+            (
+                "half-red-blue.avif",
+                "AVIF · first image",
+                "AVIF rendering is not available on this platform",
+            ),
+            (
+                "half-red-blue.jp2",
+                "JPEG 2000 / JP2 · first image",
+                "JPEG 2000 / JP2 rendering is not available on this platform",
+            ),
+        ] {
+            let bytes = fixture(name);
+            super::image_helper::named::name(&bytes, command(), DEADLINE);
+            let checks = std::sync::atomic::AtomicUsize::new(0);
+            let check = || -> anyhow::Result<()> {
+                checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            };
+            let image = super::image_helper::decode(&bytes, name, 1_600, &check).unwrap();
+            assert_eq!(image.format, caption);
+            assert_eq!((image.width, image.height), (64, 64), "{name}");
+            let at = |x: u32, y: u32| -> [u8; 4] {
+                let at = ((y * image.width + x) * 4) as usize;
+                image.rgba[at..at + 4].try_into().unwrap()
+            };
+            assert!(near(at(32, 8), [255, 0, 0, 255], 12), "{name}");
+            assert!(near(at(32, 56), [0, 0, 255, 255], 12), "{name}");
+            assert!(
+                checks.load(std::sync::atomic::Ordering::SeqCst) > 0,
+                "{name} went through the runner, which checks"
+            );
+            let decoded = super::image_helper::DocumentImages::default()
+                .decode(&bytes, name, 32, &|| Ok(()))
+                .unwrap();
+            assert_eq!(
+                (decoded.width, decoded.height, decoded.format.as_str()),
+                (32, 32, caption)
+            );
+            assert_eq!(
+                gitturtle_preview::decode_image(&bytes, name, 1_600)
+                    .unwrap_err()
+                    .to_string(),
+                refusal
+            );
+        }
+    }
 }
 
 /// The client against `/bin/sh -c` fakes: each outcome, the reply cap, the
@@ -1482,5 +1547,177 @@ mod client {
                 "{failure:?}"
             );
         });
+    }
+
+    /// Requirement 17: once one of a document's confined images times out
+    /// or stops its helper, the document's later confined images start no
+    /// helper and say why, while a PNG still decodes in this process. A
+    /// document error (the helper refused a corrupt file), an unreadable
+    /// reply, a helper that could not start and a cancelled request each
+    /// leave the next confined image to its helper.
+    #[test]
+    fn a_documents_confined_images_stop_at_the_first_that_times_out_or_stops() {
+        let fakes = Fakes::new();
+        let corrupt = fakes.file("corrupt", &image_error(9));
+        let slots = Slots::new(2);
+        // Long enough that the quick helpers before the first that ends
+        // never spend it between them, which would stop the document too.
+        let deadline = Duration::from_millis(500);
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([0, 255, 0, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let cancel = AtomicBool::new(false);
+        let check = || match cancel.load(Ordering::SeqCst) {
+            true => Err(anyhow!("The document was closed")),
+            false => Ok(()),
+        };
+        for (ending, stops) in [
+            ("exec sleep 30", TIMED_OUT),
+            ("exit 3", STOPPED),
+            ("kill -KILL $$", STOPPED),
+        ] {
+            let mut document = image_helper::DocumentImages::default();
+            let mut run = |name: &str, script: &str, bytes: &[u8]| {
+                let pid = fakes.path(&format!("{ending}-{name}"));
+                let client = Client::with(Runner::with(fake(&pid, script), deadline, &slots));
+                let result = document
+                    .decode_with(&client, bytes, name, 1_600, &check)
+                    .map(|image| image.format)
+                    .map_err(|error| error.to_string());
+                (result, pid)
+            };
+            // Neither a document error, nor an unreadable reply, nor a
+            // helper that could not start, nor a cancelled request trips
+            // the rule: each next image still starts its helper.
+            let (result, _) = run("corrupt.avif", &format!("exec cat {corrupt}"), &avif());
+            assert_eq!(
+                result,
+                Err("Cannot read AVIF; corrupt or unsupported file".into())
+            );
+            let (result, _) = run("unreadable.jp2", "exit 0", &jp2());
+            assert_eq!(result, Err(UNREADABLE.into()));
+            let (result, _) = run(
+                "unstartable.avif",
+                &format!("exit {}", exit::CONFINEMENT),
+                &avif(),
+            );
+            assert_eq!(result, Err(COULD_NOT_START.into()));
+            cancel.store(true, Ordering::SeqCst);
+            let (result, _) = run("cancelled.avif", "exec sleep 30", &avif());
+            assert_eq!(result, Err("The document was closed".into()));
+            cancel.store(false, Ordering::SeqCst);
+            // The first that ends in a timeout or a stop trips it.
+            let (result, pid) = run("first.avif", ending, &avif());
+            assert_eq!(result, Err(stops.into()), "{ending}");
+            assert!(reaped(pid_in(&pid)), "{ending}");
+            for (name, bytes) in [
+                ("second.avif", avif()),
+                ("third.jp2", jp2()),
+                ("fourth.j2k", fixture("half-red-blue.j2k")),
+            ] {
+                let (result, pid) = run(name, "exit 0", &bytes);
+                assert_eq!(
+                    result,
+                    Err(image_helper::AFTER_EARLIER_IMAGES.into()),
+                    "{ending} {name}"
+                );
+                assert!(!pid.exists(), "{ending}: {name} started a helper");
+            }
+            let (result, pid) = run("figure.png", "exit 0", png.get_ref());
+            assert_eq!(result, Ok("PNG".into()), "{ending}");
+            assert!(!pid.exists());
+        }
+    }
+
+    /// Requirement 17's second bound (N1 of the security re-review): helpers
+    /// that each answer within the deadline, whatever they answer, stop the
+    /// document once they have run for one deadline in total, and its later
+    /// confined images start no helper and say why, while a PNG still
+    /// decodes. Only a helper's own run counts: a request that waited a
+    /// whole deadline for the only slot leaves the document's time as it was.
+    #[test]
+    fn a_documents_confined_images_stop_once_their_helpers_ran_one_deadline() {
+        let fakes = Fakes::new();
+        let picture = fakes.file("picture", &secret_frame(0));
+        let corrupt = fakes.file("corrupt", &image_error(9));
+        let slots = Slots::new(1);
+        // Each slow fake answers in 60 % of the deadline: one leaves the
+        // document under it, two take it past. At 2 s, the first slow fake
+        // and the waited request's own run leave 0.8 s for two helper starts
+        // and `sleep`'s overshoot before the second would be refused, which
+        // a loaded host's scheduling does not spend.
+        let deadline = Duration::from_secs(2);
+        let slow = |reply: &str| format!("sleep 1.2; exec cat {reply}");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([0, 255, 0, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let mut document = image_helper::DocumentImages::default();
+        let mut run = |name: &str, script: &str, bytes: &[u8]| {
+            let pid = fakes.path(name);
+            let client = Client::with(Runner::with(fake(&pid, script), deadline, &slots));
+            let result = document
+                .decode_with(&client, bytes, name, 1_600, &|| Ok(()))
+                .map(|image| image.format)
+                .map_err(|error| error.to_string());
+            (result, pid)
+        };
+        // The first waits a whole deadline for the only slot, which another
+        // request holds, then answers at once.
+        let release = AtomicBool::new(false);
+        let holder = fakes.path("holder");
+        thread::scope(|scope| {
+            let held = scope.spawn(|| {
+                Client::with(Runner::with(fake(&holder, "exec sleep 30"), LONG, &slots))
+                    .decode(&avif(), ConfinedFormat::Avif, 1_600, &|| match release
+                        .load(Ordering::SeqCst)
+                    {
+                        true => Err(anyhow!("released")),
+                        false => Ok(()),
+                    })
+                    .map(|_| ())
+                    .map_err(|failure| failure.to_string())
+            });
+            let holding = pid_in(&holder);
+            let waited =
+                scope.spawn(|| run("waited.avif", &format!("exec cat {picture}"), &avif()));
+            let started = Instant::now();
+            while slots.waiting() != 1 {
+                if started.elapsed() > Duration::from_secs(10) {
+                    release.store(true, Ordering::SeqCst);
+                    panic!("the request never waited for the slot");
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(deadline);
+            release.store(true, Ordering::SeqCst);
+            assert_eq!(held.join().unwrap(), Err("released".to_string()));
+            assert!(reaped(holding));
+            let (result, pid) = waited.join().unwrap();
+            assert_eq!(result, Ok("AVIF · first image".into()));
+            assert!(reaped(pid_in(&pid)));
+        });
+        // Two slow answers, the second a document error, take the
+        // document's helpers past one deadline in total.
+        let (result, _) = run("first.avif", &slow(&picture), &avif());
+        assert_eq!(result, Ok("AVIF · first image".into()));
+        let (result, _) = run("second.avif", &slow(&corrupt), &avif());
+        assert_eq!(
+            result,
+            Err("Cannot read AVIF; corrupt or unsupported file".into())
+        );
+        for (name, bytes) in [("third.jp2", jp2()), ("fourth.avif", avif())] {
+            let (result, pid) = run(name, &format!("exec cat {picture}"), &bytes);
+            assert_eq!(
+                result,
+                Err(image_helper::AFTER_EARLIER_IMAGES.into()),
+                "{name}"
+            );
+            assert!(!pid.exists(), "{name} started a helper");
+        }
+        let (result, pid) = run("figure.png", "exit 0", png.get_ref());
+        assert_eq!(result, Ok("PNG".into()));
+        assert!(!pid.exists());
     }
 }
