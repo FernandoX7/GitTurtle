@@ -3595,24 +3595,12 @@ mod tests {
         draw(cx);
         // The saved stashes, then the selected stash's inspection, are read
         // on the browser's own threads.
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
         cx.simulate_keystrokes("home");
-        landed(cx, "restore-saved-stash");
+        landed(&app, cx, "restore-saved-stash");
         let palettes: Vec<_> = appearance::test_palettes()
             .into_iter()
             .filter(|(name, _)| ["Midnight", "Braden"].contains(&name.as_str()))
@@ -3766,18 +3754,6 @@ mod tests {
         );
         let (app, cx) = window(cx, &repo);
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
             cx.debug_bounds(selector)
                 .unwrap_or_else(|| panic!("no {selector}"))
@@ -3788,10 +3764,10 @@ mod tests {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-            landed(cx, "saved-stash-row-0");
+            landed(&app, cx, "saved-stash-row-0");
             let row = bounds(cx, "saved-stash-row-0");
             cx.simulate_click(row.center(), Modifiers::none());
-            landed(cx, "stash-actions");
+            landed(&app, cx, "stash-actions");
             // Until a file is chosen, the comparison is its prompt's height.
             let comparison = bounds(cx, "stash-comparison");
             let floor = appearance::ui_size(STASH_CONTENT_FLOOR);
@@ -3817,8 +3793,7 @@ mod tests {
                 );
                 let file = bounds(cx, "stash-file-0");
                 cx.simulate_click(file.center(), Modifiers::none());
-                landed(cx, "stash-comparison");
-                draw(cx);
+                landed(&app, cx, "stash-comparison");
                 let comparison = bounds(cx, "stash-comparison");
                 assert!(
                     comparison.size.height >= floor - slack,
@@ -3867,15 +3842,7 @@ mod tests {
         std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
         fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-        for _ in 0..400 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(50));
-            draw(cx);
-            if cx.debug_bounds("saved-stash-row-0").is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        landed(&app, cx, "saved-stash-row-0");
         for interface in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(490.)));
@@ -3970,26 +3937,14 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let file = cx.debug_bounds("stash-file-0").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "system-preview-1");
+        landed(&app, cx, "system-preview-1");
         // The detail scrolls; at its end the comparison is in view.
         let middle = cx.debug_bounds("stash-detail").unwrap().center();
         scroll_down(cx, middle, ScrollDelta::Pixels(point(px(0.), px(-10_000.))));
@@ -4322,26 +4277,14 @@ mod tests {
         let (app, cx) = window(cx, &repo);
         cx.simulate_resize(size(px(1481.), px(980.)));
         draw(cx);
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let file = cx.debug_bounds("stash-file-0").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "system-preview-1");
+        landed(&app, cx, "system-preview-1");
         let met = crate::system_preview::tests::open_controls_take_their_form_in_the_frame(
             cx,
             "the Stashes dialog",
@@ -4532,29 +4475,57 @@ mod tests {
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         cx.update(|window, cx| {
             browser.update(cx, |browser, cx| browser.select_file(chosen, window, cx))
         });
-        landed(cx, drawn);
+        landed(&app, cx, drawn);
         (browser, cx)
     }
 
-    /// Draws until `selector` is drawn, as the worker's reads land.
-    fn landed(cx: &mut VisualTestContext, selector: &'static str) {
-        for _ in 0..400 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(50));
-            crate::tags::tests::draw(cx);
-            if cx.debug_bounds(selector).is_some() {
-                return;
+    /// Lets every read the open Stashes has started land and draws it, then
+    /// fails at the caller's line unless `selector` is drawn: the saved
+    /// stashes and a chosen stash's inspection on its metadata executor,
+    /// and a chosen file's comparison on its preview worker, threads that
+    /// `run_until_parked` cannot wait for. Each wait holds the test clock
+    /// until its thread has answered every read asked of it, and the
+    /// replies land as the test draws. These tests polled instead, drawing,
+    /// advancing the clock and sleeping 5 ms until `selector` appeared, for
+    /// up to 22 s of wall-clock time, and a selector already drawn, as a
+    /// comparison's frame is before its file's read lands, ended the wait
+    /// with the read still running.
+    #[track_caller]
+    fn landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, selector: &'static str) {
+        let browser = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        let reading = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |browser, _| {
+                browser.metadata_task.is_some() || browser.preview_task.is_some()
+            })
+        };
+        crate::tags::tests::draw(cx);
+        // A read that lands starts no other, so this ends within a round
+        // for each kind of read.
+        for _ in 0..3 {
+            if !reading(cx) {
+                break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            browser.read_with(cx, |browser, _| {
+                browser.metadata.drain();
+                browser.preview_worker.wait_idle();
+            });
+            crate::tags::tests::draw(cx);
         }
-        panic!("{selector} never drawn");
+        assert!(!reading(cx), "Stashes' reads landed");
+        assert!(
+            cx.debug_bounds(selector).is_some(),
+            "{selector} is drawn once Stashes' reads have landed"
+        );
     }
 
     /// A stashed 3D model's header controls, the camera's, the views' and
@@ -4864,10 +4835,10 @@ mod tests {
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
         let room = cx.read(appearance::button_ring_room);
         let slack = px(0.01);
@@ -4975,10 +4946,10 @@ mod tests {
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
         let room = cx.read(appearance::button_ring_room);
         let slack = px(0.01);
@@ -5080,13 +5051,13 @@ mod tests {
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let file = cx.debug_bounds("stash-file-0").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "stash-comparison");
+        landed(&app, cx, "stash-comparison");
         let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
         let slack = px(0.01);
         for text in [13, 18] {
@@ -5190,10 +5161,10 @@ mod tests {
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let scroll = browser.read_with(cx, |browser, _| {
             browser.file_scroll.0.borrow().base_handle.clone()
         });
@@ -5285,25 +5256,13 @@ mod tests {
         cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
         cx.simulate_resize(size(px(1000.), px(560.)));
         draw(cx);
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-1");
+        landed(&app, cx, "stash-file-1");
         // The detail scrolls; at its end the comparison is in view.
         let to_the_comparison = |cx: &mut VisualTestContext| {
             let middle = cx.debug_bounds("stash-detail").unwrap().center();
@@ -5358,7 +5317,7 @@ mod tests {
         // The stash's files in path order: the document, then the model.
         let file = cx.debug_bounds("stash-file-1").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "model-side-1/header");
+        landed(&app, cx, "model-side-1/header");
         for (text, floor) in [(13, 34.), (18, 48.)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
@@ -5382,7 +5341,7 @@ mod tests {
         draw(cx);
         let file = cx.debug_bounds("stash-file-0").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "system-preview-1");
+        landed(&app, cx, "system-preview-1");
         browser.update(cx, |browser, cx| {
             let Some(Content::Rich(preview)) = browser.content.as_deref() else {
                 panic!("a changed PDF is a document comparison");
@@ -5459,28 +5418,16 @@ mod tests {
         let (app, cx) = window(cx, &repo);
         cx.simulate_resize(size(px(1480.), px(980.)));
         draw(cx);
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         let browser = cx
             .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
             .expect("Stashes opens");
-        landed(cx, "saved-stash-row-0");
+        landed(&app, cx, "saved-stash-row-0");
         let row = cx.debug_bounds("saved-stash-row-0").unwrap();
         cx.simulate_click(row.center(), Modifiers::none());
-        landed(cx, "stash-file-0");
+        landed(&app, cx, "stash-file-0");
         let file = cx.debug_bounds("stash-file-0").unwrap();
         cx.simulate_click(file.center(), Modifiers::none());
-        landed(cx, "model-side-1/header");
+        landed(&app, cx, "model-side-1/header");
         let view = browser.entity_id();
         let held = |cx: &mut VisualTestContext| {
             ["model-side-0", "model-side-1"]
@@ -5564,18 +5511,6 @@ mod tests {
         let (app, cx) = window(cx, &repo);
         crate::focus_ring::sweep::prepare(&app, cx);
         let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
-        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
         let slack = px(0.5);
         for (width, height) in [(461., 490.), (1480., 980.)] {
             for interface in [13, 18] {
@@ -5584,7 +5519,7 @@ mod tests {
                 cx.simulate_resize(size(px(width), px(height)));
                 draw(cx);
                 cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-                landed(cx, "saved-stash-row-0");
+                landed(&app, cx, "saved-stash-row-0");
                 let browser = app
                     .read_with(cx, |app, _| app.recovery.browser.clone())
                     .and_then(|browser| browser.upgrade())
@@ -7933,18 +7868,6 @@ mod tests {
                 && inner.top() >= outer.top() - slack
                 && inner.bottom() <= outer.bottom() + slack
         };
-        let landed = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                crate::views::tests::draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} never drawn");
-        };
 
         // Refused while the merge pauses, unread, which the refusal has the
         // window read, with the document chosen.
@@ -7957,7 +7880,7 @@ mod tests {
         cx.update(|window, cx| {
             stashes.update(cx, |stashes, cx| stashes.select_file(0, window, cx))
         });
-        landed(cx, "system-preview-1");
+        landed(&app, cx, "system-preview-1");
         press_review_restore(&stashes, cx);
         recovery_lands(&app, cx);
         quiet_reads_land(&app, cx);
