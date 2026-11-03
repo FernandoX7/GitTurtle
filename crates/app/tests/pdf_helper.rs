@@ -977,11 +977,19 @@ mod helper {
     #[test]
     fn malformed_helper_arguments_exit_before_input() {
         let (version, parent) = (version(), own_pid());
+        // Each wrong version is built from the one the helper speaks: the
+        // next one, and the valid one padded.
+        let (next, zero, plus, space) = (
+            (PROTOCOL_VERSION + 1).to_string(),
+            format!("0{version}"),
+            format!("+{version}"),
+            format!(" {version}"),
+        );
         let cases = [
-            ("2", parent.as_str()),
-            ("01", &parent),
-            ("+1", &parent),
-            (" 1", &parent),
+            (next.as_str(), parent.as_str()),
+            (&zero, &parent),
+            (&plus, &parent),
+            (&space, &parent),
             ("", &parent),
             (&version, "0"),
             (&version, "-1"),

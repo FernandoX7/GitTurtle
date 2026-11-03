@@ -1,18 +1,22 @@
-//! JPEG 2000 source dimensions, independent of optional ImageIO properties.
+//! JPEG 2000 source dimensions, independent of optional ImageIO properties,
+//! and the confined Linux helper's preflight before `hayro-jpeg2000` decodes.
 //!
-//! Inspect only JP2 box framing and the mandatory codestream SIZ marker (ITU-T
-//! T.800 Annexes A/I). Do not decode pixels or infer color space from components.
+//! Inspect only JP2 box framing, the header boxes and the mandatory codestream
+//! SIZ marker (ITU-T T.800 Annexes A, B and I). Do not decode pixels or infer
+//! color space from components.
 use super::*;
 
 const JP2_SIGNATURE: &[u8] = b"\x00\x00\x00\x0cjP  \r\n\x87\n";
 const CODESTREAM_SIGNATURE: &[u8] = b"\xff\x4f\xff\x51";
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Dimensions {
     grid: (u32, u32),
     default: (u32, u32),
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Dimensions {
     pub(super) fn image_dimensions(
         self,
@@ -35,6 +39,7 @@ impl Dimensions {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn dimensions(bytes: &[u8]) -> Result<Option<Dimensions>> {
     if bytes.starts_with(CODESTREAM_SIGNATURE) {
         return codestream_dimensions(bytes).map(Some);
@@ -109,6 +114,7 @@ fn next_box<'a>(remaining: &mut &'a [u8]) -> Result<([u8; 4], &'a [u8])> {
     Ok((kind, &bytes[header_length..length]))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
     ensure!(
         bytes.starts_with(CODESTREAM_SIGNATURE) && bytes.len() >= 42,
@@ -170,6 +176,7 @@ fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         (left, right) = (right, left % right);
@@ -179,6 +186,257 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
 
 fn be_u32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes(bytes.try_into().unwrap())
+}
+
+/// The most tiles a codestream may declare: SOT's tile index is 16 bits, and
+/// `hayro-jpeg2000` allocates its tile vector from the declared count (#1558).
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+const MAX_TILES: u64 = 65_535;
+
+/// What the confined helper's JPEG 2000 preflight established before decoding.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Preflight {
+    /// `Xsiz - XOsiz` and `Ysiz - YOsiz`.
+    area: (u32, u32),
+    /// Every component's sampling when they all agree, else 1 × 1: the
+    /// divisor `hayro-jpeg2000` applies to the area.
+    shrink: (u32, u32),
+    /// The first tile's size within the area, the largest a tile can be.
+    tile: (u32, u32),
+    /// Output components: SIZ's, or the palette's columns when larger.
+    components: u32,
+    /// Every component samples 1 × 1.
+    unit_sampling: bool,
+    palette: bool,
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+impl Preflight {
+    /// The image size at full resolution, as `hayro-jpeg2000` reports it.
+    pub(super) fn original(&self) -> (u32, u32) {
+        self.at_level(0)
+    }
+
+    /// The size after skipping `level` resolution levels.
+    pub(super) fn at_level(&self, level: u32) -> (u32, u32) {
+        let shrink =
+            |area: u32, factor: u32| u64::from(area).div_ceil(u64::from(factor) << level) as u32;
+        (
+            shrink(self.area.0, self.shrink.0),
+            shrink(self.area.1, self.shrink.1),
+        )
+    }
+
+    /// Whether `hayro-jpeg2000` 0.4.1 may skip resolution levels: only with
+    /// 1 × 1 sampling (#1409) and no palette (which it never reduces).
+    pub(super) fn may_reduce(&self) -> bool {
+        self.unit_sampling && !self.palette
+    }
+
+    /// f32 samples of every component at `level` plus the largest
+    /// tile-component there (#1558's formula; the tile count is bounded).
+    pub(super) fn decode_bytes(&self, level: u32) -> u64 {
+        let (width, height) = self.at_level(level);
+        let tile = |size: u32| u64::from(size).div_ceil(1 << level);
+        u64::from(width) * u64::from(height) * u64::from(self.components) * 4
+            + tile(self.tile.0) * tile(self.tile.1) * 4
+    }
+}
+
+/// Every bound the helper applies before `hayro-jpeg2000` allocates its tiles:
+/// JP2 compatibility, `ihdr` agreeing with SIZ, the source bounds, at most
+/// 65,535 tiles by formula B-5, 1 to 4 components of at most 16 bits, and a
+/// palette of 1 to 1,024 entries and 1 to 4 columns of at most 16 bits with a
+/// non-empty component mapping (#1649).
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(super) fn preflight(
+    bytes: &[u8],
+) -> std::result::Result<Preflight, image_helper::ImageErrorKind> {
+    use image_helper::ImageErrorKind::{
+        Jpeg2000TooDeep, Jpeg2000TooManyComponents, Jpeg2000TooManyTiles, Jpeg2000Unreadable,
+        JpxNotJp2Compatible,
+    };
+    let (codestream, header, palette) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
+        (bytes, None, None)
+    } else if bytes.starts_with(JP2_SIGNATURE) {
+        let mut boxes = &bytes[JP2_SIGNATURE.len()..];
+        let (kind, file_type) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
+        if &kind != b"ftyp" || file_type.len() < 8 || !file_type.len().is_multiple_of(4) {
+            return Err(Jpeg2000Unreadable);
+        }
+        let compatible = &file_type[..4] == b"jp2 "
+            || file_type[8..]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|brand| brand == b"jp2 ");
+        if !compatible {
+            return Err(JpxNotJp2Compatible);
+        }
+        let (mut header, mut palette, mut mapping, mut codestream) = (None, None, None, None);
+        while !boxes.is_empty() && codestream.is_none() {
+            let (kind, payload) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
+            match &kind {
+                b"jp2h" => {
+                    let mut children = payload;
+                    while !children.is_empty() {
+                        let (kind, payload) =
+                            next_box(&mut children).map_err(|_| Jpeg2000Unreadable)?;
+                        let slot = match &kind {
+                            b"ihdr" => &mut header,
+                            b"pclr" => &mut palette,
+                            b"cmap" => &mut mapping,
+                            _ => continue,
+                        };
+                        if slot.replace(payload).is_some() {
+                            return Err(Jpeg2000Unreadable);
+                        }
+                    }
+                }
+                b"jp2c" => codestream = Some(payload),
+                _ => {}
+            }
+        }
+        let header: &[u8] = header.ok_or(Jpeg2000Unreadable)?;
+        if header.len() != 14 {
+            return Err(Jpeg2000Unreadable);
+        }
+        let palette = match palette {
+            Some(palette) => Some(palette_columns(palette, mapping)?),
+            None => None,
+        };
+        let size = (be_u32(&header[4..8]), be_u32(&header[..4]));
+        (codestream.ok_or(Jpeg2000Unreadable)?, Some(size), palette)
+    } else {
+        return Err(Jpeg2000Unreadable);
+    };
+
+    // SIZ (A.5.1): Lsiz, Rsiz, eight u32 fields, Csiz, then the components.
+    if !codestream.starts_with(CODESTREAM_SIGNATURE) || codestream.len() < 42 {
+        return Err(Jpeg2000Unreadable);
+    }
+    let components = usize::from(u16::from_be_bytes([codestream[40], codestream[41]]));
+    match components {
+        0 => return Err(Jpeg2000Unreadable),
+        1..=4 => {}
+        _ => return Err(Jpeg2000TooManyComponents),
+    }
+    let segment_length = usize::from(u16::from_be_bytes([codestream[4], codestream[5]]));
+    let segment_end = 4 + segment_length;
+    if segment_length != 38 + 3 * components || segment_end > codestream.len() {
+        return Err(Jpeg2000Unreadable);
+    }
+    let field = |index: usize| be_u32(&codestream[8 + index * 4..12 + index * 4]);
+    let (x_size, y_size, x_origin, y_origin) = (field(0), field(1), field(2), field(3));
+    let (tile_width, tile_height, tile_x, tile_y) = (field(4), field(5), field(6), field(7));
+    // hayro-jpeg2000 subtracts the origin unchecked (C2).
+    if x_origin >= x_size || y_origin >= y_size {
+        return Err(Jpeg2000Unreadable);
+    }
+    let area = (x_size - x_origin, y_size - y_origin);
+    image_helper::check_size(area.0, area.1)?;
+    if let Some((width, height)) = header {
+        image_helper::check_size(width, height)?;
+        if (width, height) != area {
+            return Err(Jpeg2000Unreadable);
+        }
+    }
+    // B-3 and B-4.
+    if tile_width == 0
+        || tile_height == 0
+        || tile_x > x_origin
+        || tile_y > y_origin
+        || u64::from(tile_x) + u64::from(tile_width) <= u64::from(x_origin)
+        || u64::from(tile_y) + u64::from(tile_height) <= u64::from(y_origin)
+    {
+        return Err(Jpeg2000Unreadable);
+    }
+    // B-5 over the reference grid, as hayro-jpeg2000 counts them.
+    let tiles = u64::from(x_size - tile_x).div_ceil(u64::from(tile_width))
+        * u64::from(y_size - tile_y).div_ceil(u64::from(tile_height));
+    if tiles > MAX_TILES {
+        return Err(Jpeg2000TooManyTiles);
+    }
+    let table = codestream[42..segment_end].as_chunks::<3>().0;
+    let mut sampling = None;
+    let mut uniform = true;
+    for &[depth, x_sampling, y_sampling] in table {
+        if (depth & 0x7f) + 1 > 16 {
+            return Err(Jpeg2000TooDeep);
+        }
+        if x_sampling == 0 || y_sampling == 0 {
+            return Err(Jpeg2000Unreadable);
+        }
+        uniform &= *sampling.get_or_insert((x_sampling, y_sampling)) == (x_sampling, y_sampling);
+    }
+    let (x_sampling, y_sampling) = sampling.ok_or(Jpeg2000Unreadable)?;
+    let preflight = Preflight {
+        area,
+        shrink: if uniform {
+            (u32::from(x_sampling), u32::from(y_sampling))
+        } else {
+            (1, 1)
+        },
+        tile: (tile_width.min(area.0), tile_height.min(area.1)),
+        components: (components as u32).max(palette.unwrap_or(0)),
+        unit_sampling: table.iter().all(|component| component[1..] == [1, 1]),
+        palette: palette.is_some(),
+    };
+    let (width, height) = preflight.original();
+    image_helper::check_size(width, height)?;
+    Ok(preflight)
+}
+
+/// A `pclr` box (I.5.3.4) with 1 to 1,024 entries and 1 to 4 columns of at
+/// most 16 bits, and a non-empty `cmap` (I.5.3.5) beside it: its column count.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn palette_columns(
+    palette: &[u8],
+    mapping: Option<&[u8]>,
+) -> std::result::Result<u32, image_helper::ImageErrorKind> {
+    use image_helper::ImageErrorKind::{Jpeg2000TooDeep, Jpeg2000Unreadable};
+    if palette.len() < 3 {
+        return Err(Jpeg2000Unreadable);
+    }
+    let entries = usize::from(u16::from_be_bytes([palette[0], palette[1]]));
+    let columns = usize::from(palette[2]);
+    if !(1..=1024).contains(&entries) || !(1..=4).contains(&columns) || palette.len() < 3 + columns
+    {
+        return Err(Jpeg2000Unreadable);
+    }
+    let mut entry_bytes = 0;
+    for &depth in &palette[3..3 + columns] {
+        let bits = usize::from(depth & 0x7f) + 1;
+        if bits > 16 {
+            return Err(Jpeg2000TooDeep);
+        }
+        entry_bytes += bits.div_ceil(8);
+    }
+    if palette.len() < 3 + columns + entries * entry_bytes {
+        return Err(Jpeg2000Unreadable);
+    }
+    match mapping {
+        Some(mapping) if !mapping.is_empty() && mapping.len().is_multiple_of(4) => {
+            Ok(columns as u32)
+        }
+        _ => Err(Jpeg2000Unreadable),
+    }
 }
 
 #[cfg(test)]

@@ -15,8 +15,32 @@ use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use resvg::{tiny_skia, usvg};
 
 pub mod animation;
-#[cfg(any(target_os = "macos", test))]
+// Linux decodes AVIF with mp4parse and dav1d, and JPEG 2000 with
+// hayro-jpeg2000, only inside the same confined helper as PDF pages.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod avif;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod image_helper;
+#[cfg(any(
+    target_os = "macos",
+    test,
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 mod jpeg2000;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod jpeg2000_hayro;
 pub mod mermaid;
 pub mod metadata;
 pub mod model3d;
@@ -258,6 +282,12 @@ pub fn decode_image(bytes: &[u8], file_name: &str, max_edge: u32) -> Result<Imag
             {
                 native::decode_image(bytes, format, max_edge)
             }
+            // Linux decodes AVIF and JPEG 2000 only in the confined helper
+            // (`confined_image_format`), never here, and HEIF not at all.
+            #[cfg(target_os = "linux")]
+            if format == "HEIF / HEIC" {
+                bail!("HEIF / HEIC images are not decoded on Linux.")
+            }
             #[cfg(not(target_os = "macos"))]
             {
                 bail!("{format} rendering is not available on this platform")
@@ -274,6 +304,48 @@ pub fn decode_image(bytes: &[u8], file_name: &str, max_edge: u32) -> Result<Imag
         _ => bail!(
             "Unrecognized or unsupported image data; extension alone cannot identify a decoder"
         ),
+    }
+}
+
+/// The format GitTurtle's confined Linux helper decodes for `bytes` (AVIF,
+/// JP2 or a raw J2K codestream), by signature alone: the single decision that
+/// routes an image to the helper instead of `decode_image`. HEIF and HEIC are
+/// never routed. `bytes` may be a prefix of at least the first 4,096 bytes.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn confined_image_format(bytes: &[u8]) -> Option<pdf_helper::ConfinedFormat> {
+    use pdf_helper::ConfinedFormat;
+    if metadata::iso_image_format(bytes) == Some("AVIF") {
+        return Some(ConfinedFormat::Avif);
+    }
+    match metadata::jpeg2000_format(bytes)? {
+        "JPEG 2000 / JP2" => Some(ConfinedFormat::Jp2),
+        _ => Some(ConfinedFormat::J2k),
+    }
+}
+
+/// The system libdav1d's version string, as `dav1d_version()` reports it. The
+/// only `unsafe` in the helper's image decoders: dav1d-rs does not wrap it.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn libdav1d_version() -> Option<String> {
+    // SAFETY: `dav1d_version` takes no arguments and returns a pointer to a
+    // NUL-terminated string in libdav1d's read-only data, which lives as long
+    // as the library; it is checked for null and copied before use.
+    unsafe {
+        let version = dav1d_sys::dav1d_version();
+        (!version.is_null())
+            .then(|| {
+                std::ffi::CStr::from_ptr(version)
+                    .to_str()
+                    .ok()
+                    .map(str::to_owned)
+            })
+            .flatten()
     }
 }
 

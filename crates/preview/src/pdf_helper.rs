@@ -1,13 +1,17 @@
-//! The message format between GitTurtle and its Linux PDF helper process, and
-//! the helper's side of it.
+//! The message format between GitTurtle and its confined Linux helper
+//! process, and the helper's side of it.
 //!
-//! [`serve`] is the only way into hayro: the app process never renders a PDF
-//! page itself. It starts a helper per request, writes [`encode_request`]'s
-//! header followed by the PDF bytes, and reads one bounded reply with
-//! [`read_reply`]. The helper confines itself before calling [`serve`]; nothing
-//! here opens a file or a socket. All integers are little-endian.
+//! [`serve`] is the only way into hayro, `hayro-jpeg2000`, `mp4parse` and
+//! dav1d: the app process never renders a PDF page or decodes an AVIF or JPEG
+//! 2000 image itself. It starts a helper per request, writes
+//! [`encode_request`]'s or [`encode_image_request`]'s header followed by the
+//! bytes, and reads one bounded reply with [`read_reply`] or
+//! [`read_image_reply`]. [`serve`] reads the 4-byte magic and dispatches before
+//! allocating anything; the image frame is described with its reader. The
+//! helper confines itself before calling [`serve`]; nothing here opens a file
+//! or a socket. All integers are little-endian.
 //!
-//! Request: magic, version (u32), zero-based page (u32), length (u32), then the
+//! PDF request: magic, version (u32), zero-based page (u32), length (u32), then the
 //! PDF bytes. Reply: magic, version (u32), a status byte, then either an error
 //! kind (u8) with its detail (u32), or a page: page, page count, original and
 //! output size (u32 each), text state, text error kind and truncated flag (u8
@@ -21,11 +25,17 @@ use anyhow::Result;
 
 use crate::{
     ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, PDF_PREVIEW_EDGE,
-    PdfPageText, check_dimensions, check_pdf_input, pdf_hayro, scaled_dimensions,
+    PdfPageText, check_dimensions, check_pdf_input, image_helper, pdf_hayro, scaled_dimensions,
+};
+pub use image_helper::{
+    ConfinedFormat, IMAGE_REQUEST_HEADER_BYTES, ImageErrorKind, ImageFlags, ImageReply,
+    ImageTimings, MAX_HELPER_IMAGE_EDGE, encode_image_request, max_image_reply_bytes,
+    read_image_reply,
 };
 
-/// Changes whenever either frame changes; both sides refuse any other value.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Changes whenever any frame changes; both sides refuse any other value.
+/// Version 2 added the image frame; the PDF frames are unchanged.
+pub const PROTOCOL_VERSION: u32 = 2;
 /// The fixed request header [`encode_request`] returns.
 pub const REQUEST_HEADER_BYTES: usize = 16;
 /// The largest reply [`read_reply`] accepts: a 1,000 × 1,000 page and 256 KiB
@@ -189,8 +199,10 @@ pub fn read_reply(mut input: impl Read) -> io::Result<Result<PageReply, ErrorKin
 }
 
 /// The helper's whole job: read one request from `input`, render its page and
-/// text with hayro, and write one reply to `output`. Only I/O errors on
-/// `output` are returned; every other failure is an error reply.
+/// text with hayro or decode its image, and write one reply to `output`. The
+/// magic chooses the frame before anything is allocated; an unknown magic gets
+/// the PDF frame's request failure. Only I/O errors on `output` are returned;
+/// every other failure is an error reply.
 pub fn serve(input: impl Read, output: impl Write) -> io::Result<()> {
     serve_with(input, output, pdf_hayro::prepare)
 }
@@ -200,7 +212,15 @@ fn serve_with(
     mut output: impl Write,
     prepare: impl FnOnce(Vec<u8>, usize) -> Result<PageReply, ErrorKind>,
 ) -> io::Result<()> {
-    let reply = read_request(&mut input).and_then(|(page, pdf)| {
+    let mut magic = [0; 4];
+    let reply = match input.read_exact(&mut magic) {
+        Ok(()) if magic == REQUEST_MAGIC => read_request(&mut input),
+        Ok(()) if magic == image_helper::REQUEST_MAGIC => {
+            return image_helper::serve(input, output);
+        }
+        _ => Err(ErrorKind::Request),
+    }
+    .and_then(|(page, pdf)| {
         // `prepare` guards each phase; this is the backstop for the rest.
         catch_unwind(AssertUnwindSafe(|| prepare(pdf, page)))
             .unwrap_or(Err(ErrorKind::RendererFailed))
@@ -209,17 +229,18 @@ fn serve_with(
     output.flush()
 }
 
-/// Checks the size, page bound and `%PDF-` signature before allocating the body.
+/// Checks the size, page bound and `%PDF-` signature before allocating the
+/// body, after [`serve`] read the magic.
 fn read_request(input: &mut impl Read) -> Result<(usize, Vec<u8>), ErrorKind> {
-    let mut header = [0; REQUEST_HEADER_BYTES];
+    let mut header = [0; REQUEST_HEADER_BYTES - 4];
     input
         .read_exact(&mut header)
         .map_err(|_| ErrorKind::Request)?;
-    if header[..4] != REQUEST_MAGIC || u32_at(&header, 4) != PROTOCOL_VERSION {
+    if u32_at(&header, 0) != PROTOCOL_VERSION {
         return Err(ErrorKind::Request);
     }
-    let page = u32_at(&header, 8) as usize;
-    let length = u32_at(&header, 12) as usize;
+    let page = u32_at(&header, 4) as usize;
+    let length = u32_at(&header, 8) as usize;
     if length > MAX_INPUT_BYTES {
         return Err(ErrorKind::InputTooLarge);
     }
@@ -554,8 +575,10 @@ mod tests {
         };
         let magic = header(&|header| header[0] = b'X');
         assert_eq!(refusal(header_only(&magic)), ErrorKind::Request);
-        let version = header(&|header| header[4] = 2);
+        let version = header(&|header| header[4] = 1);
         assert_eq!(refusal(header_only(&version)), ErrorKind::Request);
+        let next_version = header(&|header| header[4] = 3);
+        assert_eq!(refusal(header_only(&next_version)), ErrorKind::Request);
         let too_large = header(&|header| {
             header[12..].copy_from_slice(&(MAX_INPUT_BYTES as u32 + 1).to_le_bytes())
         });
@@ -601,7 +624,7 @@ mod tests {
         let headers = REPLY_PREFIX_BYTES + PAGE_HEADER_BYTES;
         for (case, frame) in [
             ("magic", set_byte(0, b'X')),
-            ("version", set(4, 2)),
+            ("version", set(4, 1)),
             ("status", set_byte(8, 9)),
             ("page past the count", set(page, 3)),
             ("no pages", set(page + 4, 0)),
@@ -718,6 +741,39 @@ mod tests {
             let error = read_reply(&valid[..cut]).map(|_| ()).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "cut at {cut}");
         }
+    }
+
+    #[test]
+    fn pdf_frames_keep_their_layout_and_an_unknown_magic_is_refused() {
+        // Version 2 added the image frame; the PDF frames are byte-for-byte
+        // version 1's apart from the version field.
+        assert_eq!(PROTOCOL_VERSION, 2);
+        let source = pdf(1);
+        let header = encode_request(7, &source).unwrap();
+        assert_eq!(&header[..4], b"GTPq");
+        assert_eq!(u32_at(&header, 4), 2);
+        assert_eq!(u32_at(&header, 8), 7);
+        assert_eq!(u32_at(&header, 12) as usize, source.len());
+        let reply = page_reply(2, 2, present("text"));
+        assert_eq!(&reply[..4], b"GTPr");
+        assert_eq!(reply.len(), REPLY_PREFIX_BYTES + PAGE_HEADER_BYTES + 16 + 4);
+        let mut refused = Vec::new();
+        write_reply(&mut refused, &Err(ErrorKind::Request)).unwrap();
+        assert_eq!(refused.len(), REPLY_PREFIX_BYTES + FAILURE_BYTES);
+        for magic in [*b"GTPr", *b"GTIr", *b"GTIQ", [0; 4]] {
+            let mut request = request(0, &source);
+            request[..4].copy_from_slice(&magic);
+            assert_eq!(failure(&served(&request)), ErrorKind::Request, "{magic:?}");
+        }
+        // An image request is answered in the image frame, never the PDF one.
+        let mut image =
+            encode_image_request(ConfinedFormat::Jp2, 10, crate::image_helper::tests::RGB_JP2)
+                .unwrap()
+                .to_vec();
+        image.extend_from_slice(crate::image_helper::tests::RGB_JP2);
+        let reply = served(&image);
+        assert_eq!(&reply[..4], b"GTIr");
+        assert!(read_reply(&reply[..]).is_err());
     }
 
     #[test]
