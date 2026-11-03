@@ -1201,7 +1201,7 @@ fn detail_row(
 /// never for a menu the pointer owns, which keeps no cursor to rest; and
 /// nothing for an item that states no reason, whose name alone would only
 /// repeat the item.
-fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App) {
+pub(crate) fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App) {
     window
         .subscribe(menu, cx, |_, rest: &CursorRests, window, cx| {
             if rest.label != rest.name {

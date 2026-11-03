@@ -157,7 +157,7 @@ impl PrimaryMenu {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
         }
-        use gpui_kit::component::menu::{CursorRests, PopupMenu, PopupMenuItem};
+        use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
         let Some(owner) = self.owner.upgrade() else {
             return;
         };
@@ -266,14 +266,8 @@ impl PrimaryMenu {
         );
         // A rest that begins, the keyboard's cursor on Browse stashes… as a
         // write starts, says once why it waits, as every menu that follows
-        // writes says it (`native_accessibility::announces_resting`).
-        window
-            .subscribe(&menu, cx, |_, rest: &CursorRests, window, cx| {
-                if rest.label != rest.name {
-                    crate::copy_feedback::announce(window, cx, rest.label.clone());
-                }
-            })
-            .detach();
+        // writes says it.
+        native_accessibility::announces_resting(&menu, window, cx);
         self._dismiss = Some(
             cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
                 this.menu = None;
