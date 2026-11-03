@@ -38,6 +38,7 @@ fn main() {
         "../../vendor/accesskit_atspi_common",
         "../../vendor/gpui-base",
         "../../vendor/gpui-component",
+        "../../vendor/gpui-pre-linux",
         "../../vendor/gpui-pre-macos",
         "../../vendor/gpui-pre-macros",
         "../../vendor/mermaid-rs-renderer",
