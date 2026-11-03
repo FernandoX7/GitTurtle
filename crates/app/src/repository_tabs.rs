@@ -1734,16 +1734,34 @@ impl GitTurtle {
                     saved.origins[1].clone(),
                 ),
             },
-            "Restoring captured comparison…",
+            RESTORED_PREVIEW_LABEL,
             window,
             cx,
         );
     }
 
+    /// Whether the window shows the comparison `saved` keeps: Compare, on
+    /// the file it was saved with.
+    fn shows_saved_comparison(&self, saved: &Bookmark) -> bool {
+        self.mode == WorkspaceMode::Compare
+            && saved.comparison.as_ref().is_some_and(|saved| {
+                self.selected_file
+                    .and_then(|index| self.files.get(index))
+                    .is_some_and(|shown| SavedFile::new(shown).file() == saved.file())
+            })
+    }
+
+    /// Restores the documents of the comparison restored with the tab to
+    /// the places it was saved with, as its reply lands on the repository
+    /// page or the window returns to it. Only that comparison takes them:
+    /// with another shown, they belong to nothing shown and are dropped.
     pub(super) fn restore_tab_documents(&mut self, cx: &mut Context<Self>) {
         let Some(saved) = self.repository_tabs.document_restore.take() else {
             return;
         };
+        if !self.shows_saved_comparison(&saved) {
+            return;
+        }
         self.zoom = saved.zoom;
         if let Some(Content::Rich(content)) = self.content.as_deref() {
             for (index, side) in [&content.old, &content.new].into_iter().enumerate() {

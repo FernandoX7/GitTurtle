@@ -165,6 +165,9 @@ struct EmbeddedAssets;
 const APP_ICON_PATH: &str = "branding/app-icon.png";
 /// The status of a History file's preview read, which Back abandons.
 const PREVIEW_LABEL: &str = "Loading preview…";
+/// The status of a captured comparison's preview read as its tab is
+/// restored (`restore_captured_tab_comparison`), which Back abandons too.
+const RESTORED_PREVIEW_LABEL: &str = "Restoring captured comparison…";
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
@@ -1450,13 +1453,13 @@ impl GitTurtle {
             }
             Output::Preview(content, elapsed) => {
                 // A reply for a comparison that is no longer shown is
-                // dropped, with the document bookmark that waited for it.
-                // Its generation can still match: Back cancels only the
-                // comparison's own read (`PREVIEW_LABEL`), never one
-                // restored with its tab. Landed, it wrote "… · content
-                // read" over History's status line and kept a comparison
-                // nothing showed. Another page shown over Compare keeps it,
-                // for the return.
+                // dropped, with the document bookmark that waited for it,
+                // should its generation still match: Back cancels the
+                // comparison's read, restored with its tab or not, but a
+                // restored one's reply once landed after Back, wrote "… ·
+                // content read" over History's status line and kept a
+                // comparison nothing showed. Another page shown over Compare
+                // keeps it, for the return.
                 if !matches!(self.mode, WorkspaceMode::Compare | WorkspaceMode::Working) {
                     self.repository_tabs.document_restore = None;
                     return;
@@ -1846,12 +1849,15 @@ impl GitTurtle {
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());
         markdown_view::pause(self.content.as_deref());
-        // A preview still being read is abandoned: `receive` drops its late
-        // reply once History shows, and cancelling the read now also stops
-        // what it prepares, such as the PDF helper rendering a first page,
-        // at its next check.
-        if self.loading == Some(PREVIEW_LABEL) {
+        // A preview still being read is abandoned, the comparison's own and
+        // one restored with its tab alike: cancelling the read now also
+        // stops what it prepares, such as the PDF helper rendering a first
+        // page, at its next check. A restored comparison's read once ran on
+        // after Back, its helper to the 10 s deadline, only for `receive` to
+        // drop the reply. The bookmark that waited for it goes with it.
+        if matches!(self.loading, Some(PREVIEW_LABEL | RESTORED_PREVIEW_LABEL)) {
             self.invalidate_read();
+            self.repository_tabs.document_restore = None;
         }
         if self.close_blame(window, cx) {
             return;
@@ -2653,33 +2659,64 @@ mod late_preview_tests {
         .expect("a saved comparison")
     }
 
-    /// A comparison restored with its tab reads its preview under its own
-    /// label, which Back does not cancel, and its reply after Back is
-    /// dropped: History keeps the status line Back left, no comparison is
-    /// kept and the document bookmark that waited for the reply goes with
-    /// it. The reply once wrote "1 changed file · content read N ms" over
+    /// Back cancels the preview read of a comparison restored with its
+    /// tab, as it does the comparison's own: the read leaves the reader's
+    /// queue unrun, nothing is left loading, History keeps the status line
+    /// Back left, no comparison is kept and the document bookmark that
+    /// waited for the reply goes with it. The read once ran on after Back,
+    /// a PDF side's helper to its 10 s deadline, and its reply, dropped
+    /// since, once wrote "1 changed file · content read N ms" over
     /// History's status line and kept the comparison nothing showed. Not
     /// left, the same restore shows its comparison.
     #[gpui::test]
-    async fn a_restored_comparisons_preview_after_back_is_dropped(cx: &mut TestAppContext) {
+    async fn back_cancels_a_restored_comparisons_read(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
         let (bookmark, status) = app.read_with(cx, |app, _| {
             let commit = &app.commits[app.selected_commit.expect("a selected commit")];
             (compared(commit, &app.files[0]), app.status.clone())
         });
+        // The reader takes nothing until released, so the restored read is
+        // still queued when Back comes. Quiet reads are held for the whole
+        // test: Back, which leaves nothing loading, rightly takes up a change
+        // the fixture's watcher left pending, and a quiet read's submission
+        // replaces whatever waits in the reader's queue and cancels what
+        // runs, so it would drop the restored read whether Back cancelled it
+        // or not, and land on History's status line. The reader is idle
+        // first: it marks its last read done only after sending the reply
+        // the fixture's window awaited, so held at once it could still count
+        // that read as running.
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(true);
                 app.repository_tabs.restoring = Some(bookmark.clone());
                 app.restore_tab_selection(window, cx);
                 assert!(app.mode == WorkspaceMode::Compare);
-                assert_eq!(app.loading, Some("Restoring captured comparison…"));
+                assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL));
+                let submitted = app.worker.submissions();
                 app.back_to_history(window, cx);
+                assert_eq!(app.loading, None, "Back cancels the restored read");
+                assert!(app.task.is_none(), "nothing waits for its reply");
+                assert_eq!(
+                    app.worker.submissions(),
+                    submitted,
+                    "Back submits no preview read, the restored one or another"
+                );
             })
         });
+        // No preview read is queued or running: the restored read was
+        // dropped unrun. Left queued, it fails this wait at once.
+        app.read_with(cx, |app, _| {
+            app.worker.wait_idle_within(std::time::Duration::ZERO);
+        });
+        drop(held);
         crate::views::tests::settle(&app, cx).await;
         app.read_with(cx, |app, _| {
             assert!(app.mode == WorkspaceMode::History);
-            assert_eq!(app.loading, None, "the restored read ran to its reply");
+            assert_eq!(app.loading, None);
             assert_eq!(app.status, status, "History's status line is Back's");
             assert!(app.content.is_none(), "no comparison is kept");
             assert!(app.images.iter().all(Option::is_none));
@@ -2698,6 +2735,158 @@ mod late_preview_tests {
             assert!(app.status.contains("content read"), "{}", app.status);
             assert!(app.repository_tabs.document_restore.is_none());
         });
+    }
+
+    /// A comparison restored with its tab whose reply lands while Settings
+    /// or Projects is shown restores its documents, its zoom among them, as
+    /// the window returns to it and builds its editor, as one that lands on
+    /// the repository page does then. One still being read as the window
+    /// returns keeps its bookmark for its reply, and so does one whose read
+    /// ended without a reply, which shows nothing to restore. The reply kept its
+    /// comparison but never its documents' places: the bookmark stayed
+    /// unused until some later preview took it.
+    #[gpui::test]
+    async fn a_restored_comparison_landing_under_another_page_restores_on_return(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let mut bookmark = app.read_with(cx, |app, _| {
+            let commit = &app.commits[app.selected_commit.expect("a selected commit")];
+            compared(commit, &app.files[0])
+        });
+        bookmark.zoom = 2.5;
+        for page in [AppPage::Settings, AppPage::Projects] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.clear_preview();
+                    app.zoom = 1.;
+                    app.repository_tabs.restoring = Some(bookmark.clone());
+                    app.restore_tab_selection(window, cx);
+                    match page {
+                        AppPage::Settings => app.show_settings(window, cx),
+                        _ => app.show_projects(window, cx),
+                    }
+                    assert!(app.page == page);
+                })
+            });
+            crate::views::tests::settle(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.content.is_some(), "the reply landed under {page:?}");
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::Compare);
+                assert_eq!(
+                    app.zoom, 2.5,
+                    "the documents are restored on the return from {page:?}"
+                );
+                assert!(app.repository_tabs.document_restore.is_none());
+            });
+        }
+        // Returned to before the reply, the bookmark waits for it.
+        let held = app.read_with(cx, |app, _| app.worker.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_preview();
+                app.zoom = 1.;
+                app.repository_tabs.restoring = Some(bookmark.clone());
+                app.restore_tab_selection(window, cx);
+                app.show_settings(window, cx);
+                app.return_from_page(window, cx);
+                assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL));
+                assert!(
+                    app.repository_tabs.document_restore.is_some(),
+                    "the bookmark waits for its reply"
+                );
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.content.is_some());
+            assert_eq!(app.zoom, 2.5, "the reply restores the documents");
+            assert!(app.repository_tabs.document_restore.is_none());
+        });
+        // A restored read that ended without a reply, dropped as a newer
+        // submission drops it, shows nothing to restore the places onto:
+        // a return from Settings neither applies them to nothing nor drops
+        // them.
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_preview();
+                app.zoom = 1.;
+                app.repository_tabs.restoring = Some(bookmark.clone());
+                app.restore_tab_selection(window, cx);
+                assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL));
+                app.worker.cancel();
+            })
+        });
+        drop(held);
+        cx.executor().run_until_parked();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.loading, None, "the read ended");
+                assert!(app.content.is_none(), "with no reply");
+                app.show_settings(window, cx);
+                app.return_from_page(window, cx);
+                assert!(app.mode == WorkspaceMode::Compare);
+                assert_eq!(app.zoom, 1., "nothing takes the places");
+                assert!(
+                    app.repository_tabs
+                        .document_restore
+                        .as_ref()
+                        .is_some_and(|saved| saved.zoom == 2.5),
+                    "the places are kept"
+                );
+            })
+        });
+    }
+
+    /// Saved places restore only the comparison they were saved with:
+    /// places waiting in the window while another comparison shows are
+    /// dropped as the window returns to it from Settings or Projects, and
+    /// its zoom stays as it was. Restored on any return with nothing
+    /// loading, another tab's places reached the comparison shown.
+    #[gpui::test]
+    async fn saved_places_restore_only_their_own_comparison(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let mut other = app.read_with(cx, |app, _| {
+            let commit = &app.commits[app.selected_commit.expect("a selected commit")];
+            let mut file = app.files[0].clone();
+            file.new_path = Some(PathBuf::from("elsewhere.txt"));
+            compared(commit, &file)
+        });
+        other.zoom = 2.5;
+        for page in [AppPage::Settings, AppPage::Projects] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+                    app.zoom = 1.5;
+                    app.repository_tabs.document_restore = Some(other.clone());
+                    match page {
+                        AppPage::Settings => app.show_settings(window, cx),
+                        _ => app.show_projects(window, cx),
+                    }
+                    app.return_from_page(window, cx);
+                    assert!(app.page == AppPage::Repository);
+                    assert_eq!(
+                        app.zoom, 1.5,
+                        "another comparison's places stay unused on the return from {page:?}"
+                    );
+                    assert!(
+                        app.repository_tabs.document_restore.is_none(),
+                        "they belong to nothing shown"
+                    );
+                })
+            });
+        }
     }
 }
 

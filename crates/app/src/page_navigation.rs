@@ -519,6 +519,17 @@ impl GitTurtle {
         // below to where it was; the draft took it for one frame first.
         if self.mode != WorkspaceMode::History {
             self.prepare_editor(false, window, cx);
+            // A comparison restored with its tab whose reply landed
+            // meanwhile restores its documents with its editor, as one
+            // landing on this page does; one still being read keeps its
+            // bookmark for its reply. Landed under Settings or Projects, its
+            // documents were never restored, and the bookmark waited for
+            // some later preview. Only that comparison's reply restores
+            // them (`restore_tab_documents`): restored whenever nothing was
+            // loading, another tab's places reached the comparison shown.
+            if self.loading != Some(RESTORED_PREVIEW_LABEL) && self.content.is_some() {
+                self.restore_tab_documents(cx);
+            }
         }
         let focus = self.page_return_focus.take().unwrap_or_else(|| {
             if self.mode == WorkspaceMode::History {
