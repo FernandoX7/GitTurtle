@@ -61,7 +61,7 @@ or 10 (lossy).
 | `avif-alpha-smaller-than-image.avif` | hostile: a 32 × 32 alpha item (with its own 32 × 32 `ispe`) under the 64 × 48 image | `AvifSizeMismatch`; with its `ispe` patched to 64 × 48 in the test, the decoded picture is refused the same way |
 | `jpeg2000-rgb.jp2`, `jpeg2000-rgb.j2k` | `opj_compress` of a PPM | the quadrants exactly |
 | `jpeg2000-grey16.jp2` | `opj_compress` of a 16-bit PGM ramp (0 to 65535 across the width) | 8-bit grey 0, 130, 255 at x 0, 32, 63 |
-| `jpeg2000-alpha.jp2` | `opj_compress` of an RGBA PAM (`cdef` alpha) | the quadrants with alpha |
+| `jpeg2000-alpha.jp2` | `opj_compress` of an RGBA PAM (no `cdef`: a fourth component beside an sRGB `colr` is read as alpha) | the quadrants with alpha; the tests add a `cdef` |
 | `jpeg2000-display-p3-icc.jp2` | the Display P3 quadrants as a J2K, wrapped with a `colr` method 2 holding the script's minimal ICC v2 profile (Display P3 primaries adapted to D50, 2.2 gamma) | converted to sRGB: (218, 67, 47), (0, 185, 77), (62, 90, 209), (129, 129, 129) |
 | `jpeg2000-palette.jp2` | `opj_compress` of an 8-bit index PGM (0 to 3 by quadrant), wrapped with `pclr` (4 entries, 3 columns of 8 bits) and `cmap` | the quadrants exactly, at full resolution |
 | `jpeg2000-subsampled.jp2` | sYCC (`colr` 18): full-resolution Y and 2 × 2 subsampled Cb and Cr from a raw input (`-F 64,48,3,8,u@1x1:2x2:2x2`) | decoded at full resolution, then 32 × 24 at edge 32 |

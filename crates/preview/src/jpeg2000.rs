@@ -211,7 +211,9 @@ pub(super) struct Preflight {
     /// The first tile's size within the area, the largest a tile can be.
     tile: (u32, u32),
     /// The f32 planes alive at once: one per SIZ component, plus one per
-    /// `cmap` entry when a palette is resolved (always at full resolution).
+    /// `cmap` entry when a palette is resolved (always at full resolution);
+    /// with a `cdef`, at least twice the output planes, which
+    /// `hayro-jpeg2000` 0.4.1 copies to reorder them.
     planes: u32,
     /// Every component samples 1 × 1.
     unit_sampling: bool,
@@ -245,7 +247,9 @@ impl Preflight {
     }
 
     /// f32 samples of every plane at `level` plus the largest tile-component
-    /// there (#1558's formula; the tile count is bounded).
+    /// there (#1558's formula; the tile count is bounded). A `cdef` copy is of
+    /// the planes at that level, so the same plane count holds when a level is
+    /// skipped.
     pub(super) fn decode_bytes(&self, level: u32) -> u64 {
         let (width, height) = self.at_level(level);
         let tile = |size: u32| u64::from(size).div_ceil(1 << level);
@@ -260,7 +264,7 @@ impl Preflight {
 /// 65,535 tiles by formula B-5, 1 to 4 components of at most 16 bits, and a
 /// palette of 1 to 1,024 entries and 1 to 4 columns of at most 16 bits with a
 /// component mapping of 1 to 4 entries that each name a component and column
-/// that exist (#1649).
+/// that exist (#1649), and at most one channel definition.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -272,8 +276,8 @@ pub(super) fn preflight(
         Jpeg2000TooDeep, Jpeg2000TooManyComponents, Jpeg2000TooManyTiles, Jpeg2000Unreadable,
         JpxNotJp2Compatible,
     };
-    let (codestream, header, palette) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
-        (bytes, None, None)
+    let (codestream, header, palette, definition) = if bytes.starts_with(CODESTREAM_SIGNATURE) {
+        (bytes, None, None, false)
     } else if bytes.starts_with(JP2_SIGNATURE) {
         let mut boxes = &bytes[JP2_SIGNATURE.len()..];
         let (kind, file_type) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
@@ -312,7 +316,7 @@ pub(super) fn preflight(
                 _ => {}
             }
         }
-        let (mut header, mut palette, mut mapping) = (None, None, None);
+        let (mut header, mut palette, mut mapping, mut definition) = (None, None, None, None);
         let mut children = header_box.ok_or(Jpeg2000Unreadable)?;
         while !children.is_empty() {
             let (kind, payload) = next_box(&mut children).map_err(|_| Jpeg2000Unreadable)?;
@@ -320,6 +324,7 @@ pub(super) fn preflight(
                 b"ihdr" => &mut header,
                 b"pclr" => &mut palette,
                 b"cmap" => &mut mapping,
+                b"cdef" => &mut definition,
                 _ => continue,
             };
             if slot.replace(payload).is_some() {
@@ -332,7 +337,12 @@ pub(super) fn preflight(
         }
         let size = (be_u32(&header[4..8]), be_u32(&header[..4]));
         let palette = palette.map(|palette| (palette, mapping));
-        (codestream.ok_or(Jpeg2000Unreadable)?, Some(size), palette)
+        (
+            codestream.ok_or(Jpeg2000Unreadable)?,
+            Some(size),
+            palette,
+            definition.is_some(),
+        )
     } else {
         return Err(Jpeg2000Unreadable);
     };
@@ -398,9 +408,22 @@ pub(super) fn preflight(
     let (x_sampling, y_sampling) = sampling.ok_or(Jpeg2000Unreadable)?;
     // hayro-jpeg2000 resolves a palette into one plane per `cmap` entry while
     // it still holds the codestream's planes.
-    let mapped = match palette {
-        Some((palette, mapping)) => palette_mapping(palette, mapping, components)?,
-        None => 0,
+    let (mapped, output) = match palette {
+        Some((palette, mapping)) => {
+            let entries = palette_mapping(palette, mapping, components)?;
+            (entries, entries)
+        }
+        None => (0, components as u32),
+    };
+    // With a `cdef` box, hayro-jpeg2000 0.4.1 then clones every output plane
+    // (one per `cmap` entry with a palette, else one per component) into a
+    // reordered vector before it drops the originals (`lib.rs` 217-234). The
+    // box counts whether or not hayro accepts it: one it ignores only makes
+    // the budget stricter.
+    let planes = if definition {
+        (components as u32 + mapped).max(2 * output)
+    } else {
+        components as u32 + mapped
     };
     let preflight = Preflight {
         area,
@@ -410,7 +433,7 @@ pub(super) fn preflight(
             (1, 1)
         },
         tile: (tile_width.min(area.0), tile_height.min(area.1)),
-        planes: components as u32 + mapped,
+        planes,
         unit_sampling: table.iter().all(|component| component[1..] == [1, 1]),
         palette: palette.is_some(),
     };

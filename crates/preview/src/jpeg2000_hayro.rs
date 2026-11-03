@@ -260,6 +260,19 @@ mod tests {
         jp2_box(b"cmap", &entries.concat())
     }
 
+    /// A `cdef` box (I.5.3.6) of channel, type and association triples
+    /// (type 1 is opacity; association 0 is the whole image).
+    fn cdef(channels: &[[u16; 3]]) -> Vec<u8> {
+        let mut definitions = (channels.len() as u16).to_be_bytes().to_vec();
+        for value in channels.as_flattened() {
+            definitions.extend_from_slice(&value.to_be_bytes());
+        }
+        jp2_box(b"cdef", &definitions)
+    }
+
+    /// Red, green, blue and opacity, in component order.
+    const RGBA_CHANNELS: [[u16; 3]; 4] = [[0, 0, 1], [1, 0, 2], [2, 0, 3], [3, 1, 0]];
+
     /// The palette fixture (one 8-bit index component; four entries in three
     /// 8-bit columns; sRGB) with `mapping` for its `cmap` box.
     fn palette_with(mapping: &[u8]) -> Vec<u8> {
@@ -330,7 +343,7 @@ mod tests {
     fn palette_budget_counts_each_component_and_mapping_entry() {
         // The alpha fixture's four 8-bit components: the first indexes the
         // palette fixture's three columns and the fourth is used directly,
-        // as opacity (`cdef`: channel, type, association; 0 is the image).
+        // as opacity.
         let alpha = fixture("jpeg2000-alpha.jp2");
         let palette = fixture("jpeg2000-palette.jp2");
         let mapping = cmap(&[
@@ -339,23 +352,19 @@ mod tests {
             entry(0, 1, 2),
             entry(3, 0, 0),
         ]);
-        let channels = [[0, 0, 1], [1, 0, 2], [2, 0, 3], [3, 1, 0]];
-        let mut definitions = 4u16.to_be_bytes().to_vec();
-        for value in channels.as_flattened() {
-            definitions.extend_from_slice(&u16::to_be_bytes(*value));
-        }
         let bytes = jp2(
             &[
                 &whole_box(&alpha, b"ihdr"),
                 &whole_box(&alpha, b"colr"),
                 &whole_box(&palette, b"pclr"),
                 &mapping,
-                &jp2_box(b"cdef", &definitions),
+                &cdef(&RGBA_CHANNELS),
             ],
             &alpha,
         );
-        // 64 × 48 f32 samples in four component and four mapped planes, and
-        // the one 64 × 48 tile-component.
+        // 64 × 48 f32 samples in four component and four mapped planes (as
+        // many as the `cdef` copy of the four output planes holds), and the
+        // one 64 × 48 tile-component.
         assert_eq!(
             jpeg2000::preflight(&bytes).unwrap().decode_bytes(0),
             64 * 48 * 4 * (4 + 4) + 64 * 48 * 4
@@ -369,6 +378,113 @@ mod tests {
             [opaque, half, opaque, half],
             2,
             "palette and alpha",
+        );
+    }
+
+    /// With a `cdef` box, hayro-jpeg2000 0.4.1 clones every output plane to
+    /// reorder them (`lib.rs` 217-234), so the budget counts twice the output
+    /// planes when that is more than the palette step holds.
+    #[test]
+    fn a_channel_definition_counts_its_copy_of_the_output_planes() {
+        let alpha = fixture("jpeg2000-alpha.jp2");
+        let [ihdr, colr] = [b"ihdr", b"colr"].map(|kind| whole_box(&alpha, kind));
+        let defined = jp2(&[&ihdr, &colr, &cdef(&RGBA_CHANNELS)], &alpha);
+        // 64 × 48 f32 samples in the four component planes, then in their
+        // four copies, and the one 64 × 48 tile-component.
+        let plane = 64 * 48 * 4;
+        assert_eq!(
+            jpeg2000::preflight(&alpha).unwrap().decode_bytes(0),
+            plane * 4 + plane
+        );
+        assert_eq!(
+            jpeg2000::preflight(&defined).unwrap().decode_bytes(0),
+            plane * 8 + plane
+        );
+        // The same opacity either way.
+        let [red, green, blue, white] = QUADRANTS;
+        let half = |[r, g, b, _]: [u8; 4]| [r, g, b, 128];
+        for (case, bytes) in [("inferred", &alpha), ("defined", &defined)] {
+            let reply = jpeg2000(bytes, 1600).unwrap_or_else(|kind| panic!("{case}: {kind:?}"));
+            assert_quadrants(&reply.image, [red, half(green), blue, half(white)], 2, case);
+        }
+        // With a palette the output planes are the `cmap` entries: one index
+        // component and three mapped planes, then three copies.
+        let palette = fixture("jpeg2000-palette.jp2");
+        let [ihdr, colr, pclr, mapping] =
+            [b"ihdr", b"colr", b"pclr", b"cmap"].map(|kind| whole_box(&palette, kind));
+        let channels = cdef(&[[0, 0, 1], [1, 0, 2], [2, 0, 3]]);
+        for (case, children, planes) in [
+            ("palette", vec![&ihdr, &colr, &pclr, &mapping], 1 + 3),
+            (
+                "palette and cdef",
+                vec![&ihdr, &colr, &pclr, &mapping, &channels],
+                3 * 2,
+            ),
+        ] {
+            let children: Vec<&[u8]> = children.into_iter().map(Vec::as_slice).collect();
+            let bytes = jp2(&children, &palette);
+            assert_eq!(
+                jpeg2000::preflight(&bytes).unwrap().decode_bytes(0),
+                plane * planes + plane,
+                "{case}"
+            );
+            assert_quadrants(&jpeg2000(&bytes, 1600).unwrap().image, QUADRANTS, 2, case);
+        }
+        // hayro-jpeg2000 keeps the last of two; the preflight refuses a second.
+        let twice = jp2(
+            &[&ihdr, &colr, &pclr, &mapping, &channels, &channels],
+            &palette,
+        );
+        assert_eq!(
+            jpeg2000(&twice, 1600).unwrap_err(),
+            ImageErrorKind::Jpeg2000Unreadable
+        );
+    }
+
+    /// An RGBA JP2 that cannot skip resolution levels (one component sampled
+    /// 2 × 2) fits the budget in its four component planes but not with the
+    /// `cdef` copy of them. One that can skip levels is budgeted at the level
+    /// it decodes, copies included.
+    #[test]
+    fn a_channel_definition_over_the_budget_is_refused_before_decoding() {
+        let alpha = fixture("jpeg2000-alpha.jp2");
+        // 4,096 × 4,000 in the fixture's 64 × 48 tiles (5,376 of them), with
+        // the last component sampled `sampling` × `sampling`.
+        let shape = |sampling: u8, channels: Option<&[[u16; 3]]>| {
+            let mut ihdr = whole_box(&alpha, b"ihdr");
+            set(&mut ihdr, 8, &4_000u32.to_be_bytes());
+            set(&mut ihdr, 12, &4_096u32.to_be_bytes());
+            let colr = whole_box(&alpha, b"colr");
+            let definition = channels.map(cdef).unwrap_or_default();
+            let mut bytes = jp2(&[&ihdr, &colr, &definition], &alpha);
+            let marker = position(&bytes, b"jp2c") + 4;
+            set(&mut bytes, marker + 8, &4_096u32.to_be_bytes());
+            set(&mut bytes, marker + 12, &4_000u32.to_be_bytes());
+            set(&mut bytes, marker + 42 + 3 * 3 + 1, &[sampling, sampling]);
+            bytes
+        };
+        let (plane, tile) = (4_096 * 4_000 * 4, 64 * 48 * 4);
+        let without = jpeg2000::preflight(&shape(2, None)).unwrap();
+        assert!(!without.may_reduce());
+        assert_eq!(without.decode_bytes(0), plane * 4 + tile);
+        assert!(without.decode_bytes(0) <= MAX_DECODER_BYTES);
+        let over = shape(2, Some(&RGBA_CHANNELS));
+        assert_eq!(
+            jpeg2000::preflight(&over).unwrap().decode_bytes(0),
+            plane * 8 + tile
+        );
+        assert_eq!(
+            jpeg2000(&over, 1600).unwrap_err(),
+            ImageErrorKind::DecodedTooLarge
+        );
+        // With 1 × 1 sampling one level is skipped at a 1,600-pixel edge, and
+        // the copies are of its 2,048 × 2,000 planes.
+        let reducible = jpeg2000::preflight(&shape(1, Some(&RGBA_CHANNELS))).unwrap();
+        assert!(reducible.may_reduce());
+        assert!(reducible.decode_bytes(0) > MAX_DECODER_BYTES);
+        assert_eq!(
+            reducible.decode_bytes(1),
+            2_048 * 2_000 * 4 * 8 + 32 * 24 * 4
         );
     }
 
