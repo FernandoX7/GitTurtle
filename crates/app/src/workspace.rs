@@ -5640,16 +5640,16 @@ pub(super) fn working_row_menu(
         )
     };
     // An action the row cannot take reads as its command with the condition
-    // it waits for apart from it, not as one phrase; while the rows are
-    // prepared, that is their landing, whatever else it waits for.
+    // it waits for apart from it, not as one phrase, and the menu keys rest
+    // on it, so that condition is heard; while the rows are prepared, that
+    // is their landing, whatever else it waits for.
     let ignore = if entry.untracked || preparing {
         item("Ignore…", staged)
     } else {
-        native_accessibility::detailed_item("Ignore…", "Untracked files only").disabled(true)
+        native_accessibility::detailed_item("Ignore…", "Untracked files only")
     };
     let discard = if discard_entry.conflicted && !preparing {
         native_accessibility::detailed_item("Discard changes…", "After conflict resolution")
-            .disabled(true)
     } else if discard_entry.untracked {
         item("Delete untracked file…", false)
     } else {

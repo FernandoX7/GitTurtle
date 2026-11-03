@@ -1045,22 +1045,21 @@ fn open_menu_in(
     menu
 }
 
-/// A menu item that reads as its command, `label`, with the condition it
-/// depends on, `detail`, apart from it: in quieter secondary text at the
-/// row's trailing edge, where a shortcut stands. An item unavailable for
-/// that condition, disabled, states its reason this way, the command dim and
-/// the reason legible, as the command palette states an unavailable
-/// command's. Assistive technology hears both, the command first. A test
-/// build names the command's text and the detail's text and colour in debug
+/// A menu item unavailable for the condition it depends on, `detail`, which
+/// reads as its command, `label`, with that condition apart from it: in
+/// quieter secondary text at the row's trailing edge, where a shortcut
+/// stands, the command dim and the reason legible, as the command palette
+/// states an unavailable command's. Assistive technology hears both, the
+/// command first, and the menu keys rest on it, as on an item that waits
+/// ([`detail_row`]): a Working row's "Ignore…" beside "Untracked files only",
+/// and the branch picker's branch beside "Another worktree". A test build
+/// names the command's text and the detail's text and colour in debug
 /// selectors (`menu-command: <label>`, `menu-detail: <detail> · <colour>`),
 /// as the scene does not expose glyphs.
-pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupMenuItem {
-    detail_row(
-        label.into(),
-        detail.into(),
-        format!("{label}, {}", detail.to_lowercase()).into(),
-        Detail::Shown,
-    )
+pub(crate) fn detailed_item(label: impl Into<SharedString>, detail: &'static str) -> PopupMenuItem {
+    let label = label.into();
+    let name = format!("{label}, {}", detail.to_lowercase()).into();
+    detail_row(label, detail.into(), name, Detail::Shown)
 }
 
 /// How a menu row draws the text after its command ([`detail_row`]).
@@ -1096,10 +1095,21 @@ pub(crate) fn wait_floor(reason: &str, window: &Window) -> Pixels {
 /// lies below every row of the menu, clipped by its own row's room.
 const WAIT_STRUT: f32 = 10_000.;
 
-/// [`detailed_item`]'s row: `label`, then `detail` at its trailing edge,
-/// announced as `name`, and found as `label` when its menu is built again,
-/// so the keyboard's cursor rests while the item it was on waits rather
-/// than taking the item for one that has gone ([`announces_resting`]).
+/// [`detailed_item`]'s and [`waiting_item`]'s row: `label`, unavailable,
+/// then `detail`, why, at its trailing edge, announced as `name`, and found
+/// as `label` when its menu is built again, so the keyboard's cursor on
+/// the item stays on it as the item starts to wait or becomes unavailable,
+/// rather than taking it for one that has gone ([`announces_resting`]).
+///
+/// Every row that says why it is unavailable or waits is built here, and
+/// stays in the keyboard's order (the kit's `PopupMenuItem::reason_stated`):
+/// Up, Down, Home and End rest the keyboard's cursor on it, drawn there and
+/// reported as the selected item with its reason in its name, Enter does
+/// nothing, and the next key moves on. Decided by the coordinator, by the
+/// rule to say why something is unavailable: a Working row's "Ignore… /
+/// Untracked files only" and "Discard changes… / After conflict resolution"
+/// were passed over, so a screen reader never reached their reasons. A
+/// disabled item that states no reason is still passed over.
 fn detail_row(
     label: SharedString,
     detail: SharedString,
@@ -1170,6 +1180,8 @@ fn detail_row(
     })
     .named(command)
     .accessibility_label(name)
+    .disabled(true)
+    .reason_stated(true)
 }
 
 /// Says once, politely, why the item the keyboard's cursor was on waits,
@@ -1178,11 +1190,11 @@ fn detail_row(
 /// available when fetching remote finishes", the item's accessible name,
 /// from the window's polite announcement node (`copy_feedback::announce`).
 /// Decided by the owner: the cursor never moves to another item; it stays
-/// on an item that states why it waits ([`waiting_item`]) and rests on no
-/// item where its item is refused without a reason. The app says it
-/// because nothing establishes that a screen reader speaks the selected
-/// item's name changing as it starts to wait (a native Orca read is
-/// pending), and without it a screen reader might hear nothing of why
+/// on an item that states why it is unavailable or waits ([`detail_row`])
+/// and rests on no item where its item is refused without a reason. The
+/// app says it because nothing establishes that a screen reader speaks the
+/// selected item's name changing as it starts to wait (a native Orca read
+/// is pending), and without it a screen reader might hear nothing of why
 /// Enter now does nothing. Once per rest, however often the menu is built
 /// again while it lasts, and not for a cursor the keys put on a waiting
 /// item, which they report selected with its name stating the reason;
@@ -1254,9 +1266,9 @@ impl MenuWait {
 /// a reason of its own states no wait, since the write's end would not make
 /// it available.
 ///
-/// A waiting item stays in the keyboard's order (the kit's
-/// `PopupMenuItem::reason_stated`): Up, Down, Home and End rest the
-/// keyboard's cursor on it, drawn there and announced as the selected item
+/// A waiting item stays in the keyboard's order, as every row that says why
+/// it is unavailable does ([`detail_row`]): Up, Down, Home and End rest the
+/// keyboard's cursor on it, drawn there and reported as the selected item
 /// with its reason, Enter does nothing, and the next key moves on; a menu
 /// built again as the write starts keeps the cursor on it. Decided by the
 /// owner: passed over as every disabled item was, Browse stashes… in the
@@ -1274,8 +1286,6 @@ pub(crate) fn waiting_item(
             #[cfg(test)]
             waiting_names::record(&label, &name);
             detail_row(label, wait.0.into(), name, Detail::InRoom)
-                .disabled(true)
-                .reason_stated(true)
         }
         None => PopupMenuItem::new(label).disabled(refused),
     }

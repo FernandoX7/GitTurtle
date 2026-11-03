@@ -324,34 +324,39 @@ impl GitTurtle {
                     let occupied = this
                         .worktrees
                         .iter()
-                        .find(|tree| tree.branch.as_deref() == Some(name.as_str()));
+                        .any(|tree| tree.branch.as_deref() == Some(name.as_str()));
                     let owner = owner.clone();
                     let path = path.clone();
-                    let label = occupied
-                        .map_or_else(|| name.clone(), |_| format!("{name} · another worktree"));
+                    // A branch another worktree has checked out cannot be
+                    // switched to here, and its row says so beside its name,
+                    // "Another worktree", which no write's end changes; the
+                    // menu keys rest on it, so its reason is heard
+                    // (`native_accessibility::detailed_item`). Drawn as
+                    // "<name> · another worktree", one disabled label, it
+                    // was passed over, and a screen reader never reached it.
+                    let item = if occupied {
+                        native_accessibility::detailed_item(name.clone(), "Another worktree")
+                    } else {
+                        native_accessibility::waiting_item(name.clone(), false, wait)
+                    };
                     // Choices beside the ticked current branch, announced as
                     // unticked check items.
-                    menu = menu.item(
-                        native_accessibility::waiting_item(label, occupied.is_some(), wait)
-                            .checked(false)
-                            .on_click(move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    if this.path == path && this.page == AppPage::Repository {
-                                        let origin =
-                                            workspace::confirmations::picker(&this.path, &name);
-                                        this.write_from(
-                                            WriteCommand::Checkout {
-                                                branch: name.clone(),
-                                            },
-                                            "Switching branch…",
-                                            Some(origin.into()),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                });
-                            }),
-                    );
+                    menu = menu.item(item.checked(false).on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if this.path == path && this.page == AppPage::Repository {
+                                let origin = workspace::confirmations::picker(&this.path, &name);
+                                this.write_from(
+                                    WriteCommand::Checkout {
+                                        branch: name.clone(),
+                                    },
+                                    "Switching branch…",
+                                    Some(origin.into()),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    }));
                 }
                 if candidates.len() > CHOICE_LIMIT {
                     menu = menu.label("Showing 40 branches · Find to narrow the list");

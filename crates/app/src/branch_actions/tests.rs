@@ -419,3 +419,97 @@ async fn changes_after_a_branch_preparation_ends_drops_no_plan(cx: &mut TestAppC
         "Changes drops no plan"
     );
 }
+
+/// The branch picker's menu keeps a branch another worktree has checked
+/// out in the keys' order, as every row that says why it is unavailable
+/// (`native_accessibility::detailed_item`): drawn as the branch's name with
+/// "Another worktree" beside it in secondary text and named "review,
+/// another worktree", Down from Find or create a branch… rests the cursor
+/// on it, drawn there; Enter there switches nothing and leaves the menu open
+/// with the cursor on it; the next Down moves on to Current branch
+/// settings…, and Up comes back. Decided by the coordinator, by the rule to
+/// say why something is unavailable: drawn as "review · another worktree",
+/// one disabled label, it was passed over, Down going from Find or create a
+/// branch… straight to Current branch settings…, so a screen reader never
+/// reached why the branch could not be switched to.
+#[gpui::test]
+async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_git_output, history_script};
+    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
+    const HELD: &str = "menu-item: review, another worktree · MenuItemCheckBox False disabled";
+    const SETTINGS: &str = "menu-item: Current branch settings… · MenuItem";
+    let (fixture, app, cx) =
+        crate::views::tests::history_window_from(cx, history_script(3, 1)).await;
+    cx.update(|_, cx| {
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    fixture_git(&repository, &["branch", "review"]);
+    let linked = fixture.path().join("linked");
+    fixture_git(
+        &repository,
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "review"],
+    );
+    // Read again as History's Refresh does, the new worktree included.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.open(repository.clone(), None, window, cx))
+    });
+    crate::views::tests::settle(&app, cx).await;
+    let head = || {
+        let output = fixture_git_output(&repository, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(head(), "main");
+
+    let picker = rendered(cx, "current-branch");
+    cx.simulate_click(picker.center(), gpui::Modifiers::default());
+    draw(cx);
+    let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+    let reason = format!(
+        "menu-detail: Another worktree · {:?}",
+        gpui::Rgba::from(muted)
+    );
+    assert!(
+        cx.debug_bounds(reason.leak()).is_some(),
+        "the reason is drawn beside the branch in secondary text"
+    );
+    let cursor = |cx: &mut VisualTestContext| {
+        let fill = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        [FIND, HELD, SETTINGS]
+            .into_iter()
+            .filter(|item| {
+                let bounds = cx
+                    .debug_bounds(item)
+                    .unwrap_or_else(|| panic!("{item} drawn"));
+                crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cursor(cx), Vec::<&str>::new(), "a click opens no cursor");
+
+    for (key, on) in [("down", FIND), ("down", HELD)] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(cursor(cx), [on], "after {key}");
+    }
+    cx.simulate_keystrokes("enter");
+    crate::views::tests::settle(&app, cx).await;
+    assert!(
+        app.read_with(cx, |app, _| app.operation_busy.is_none()
+            && app.operation_task.is_none()),
+        "Enter on the held branch starts no write"
+    );
+    assert_eq!(head(), "main", "Enter switches nothing");
+    assert_eq!(cursor(cx), [HELD], "the menu stays open on the branch");
+
+    for (key, on) in [("down", SETTINGS), ("up", HELD), ("up", FIND)] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(cursor(cx), [on], "after {key}");
+    }
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+}

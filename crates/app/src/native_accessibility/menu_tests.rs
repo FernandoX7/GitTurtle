@@ -190,6 +190,89 @@ fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext)
     assert_eq!(*chosen.borrow(), ["First"]);
 }
 
+/// A menu with an item that says why it is unavailable, built as the app
+/// builds one ([`super::detailed_item`]), a disabled item that says nothing
+/// and an item that can act, with the button's focus that opens it.
+struct ReasonProbe(Chosen, FocusHandle);
+
+impl Render for ReasonProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.0.clone();
+        div().size_full().p_4().child(
+            Button::new("reason-probe")
+                .track_focus(&self.1)
+                .label("Open")
+                .app_menu(move |menu, _, _| {
+                    let item = |item: PopupMenuItem, name: &'static str| {
+                        let chosen = chosen.clone();
+                        item.on_click(move |_, _, _| chosen.borrow_mut().push(name))
+                    };
+                    menu.item(item(
+                        super::detailed_item("Ignore…", "Untracked files only"),
+                        "Ignore…",
+                    ))
+                    .item(item(
+                        PopupMenuItem::new("Unavailable").disabled(true),
+                        "Unavailable",
+                    ))
+                    .item(item(PopupMenuItem::new("First"), "First"))
+                }),
+        )
+    }
+}
+
+/// The keys stop on an item that says why it is unavailable and pass over a
+/// disabled item that says nothing. Opened from the keyboard, the menu
+/// starts on First, its first item that can act; Down wraps to Ignore…,
+/// named "Ignore…, untracked files only", Enter there chooses nothing and
+/// leaves the menu open, and Down, Up, Home and End move between Ignore…
+/// and First and never reach Unavailable.
+#[gpui::test]
+fn menu_keys_stop_on_a_stated_reason_and_pass_over_a_silent_one(cx: &mut TestAppContext) {
+    const IGNORE: &str = "Ignore…, untracked files only";
+    const ITEMS: [&str; 3] = [IGNORE, "Unavailable", "First"];
+    cx.update(gpui_kit::init);
+    let chosen = Chosen::default();
+    let focus = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let (chosen, focus) = (chosen.clone(), focus.clone());
+        move |window, cx| {
+            let probe = cx.new(|cx| {
+                let handle = cx.focus_handle();
+                *focus.borrow_mut() = Some(handle.clone());
+                ReasonProbe(chosen, handle)
+            });
+            Root::new(probe, window, cx)
+        }
+    });
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    draw(cx);
+    let trigger = focus.borrow().clone().expect("the button's focus");
+    cx.update(|window, cx| window.focus(&trigger, cx));
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(cursor_among(cx, &ITEMS), ["First"], "on opening");
+    for (key, on) in [
+        ("down", IGNORE),
+        ("enter", IGNORE),
+        ("down", "First"),
+        ("up", IGNORE),
+        ("up", "First"),
+        ("home", IGNORE),
+        ("end", "First"),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(cursor_among(cx, &ITEMS), [on], "after {key}");
+    }
+    assert!(
+        cx.debug_bounds(format!("menu-item: {IGNORE} · MenuItem disabled").leak())
+            .is_some(),
+        "Ignore… is announced unavailable with its reason"
+    );
+    assert!(chosen.borrow().is_empty(), "Enter on Ignore… chose nothing");
+}
+
 /// Enter acts only on an entry that can act. The pointer's hover selects any
 /// row, so a pointer resting on the disabled item, the label or the closing
 /// caption leaves the selection there; Enter then does nothing and the menu

@@ -5457,8 +5457,9 @@ mod tests {
     /// states what it waits for, and once the write's rows land it is on it,
     /// able to act. Moved up to Ignore…,
     /// which gamma added and edited outside the app can no longer take, it
-    /// rests on none, and it is back on Ignore… once gamma is untracked
-    /// again. Each build once sent a right-click's cursor away and a
+    /// stays on Ignore…, which says why it is unavailable ("Untracked files
+    /// only"), and Ignore… can act there once gamma is untracked again.
+    /// Each build once sent a right-click's cursor away and a
     /// keyboard's back to Ignore…, so Enter just after the write chose
     /// another item than the one the keys had reached; later the refused
     /// Ignore… sent it to Discard changes…, where Enter offered to discard
@@ -5529,8 +5530,8 @@ mod tests {
         );
         assert_eq!(
             cursor_among(cx, &GAMMA_ITEMS),
-            Vec::<&str>::new(),
-            "{opening:?}: Ignore… refused, the cursor rests on none"
+            ["Ignore…, untracked files only"],
+            "{opening:?}: Ignore… refused, the cursor stays on it as it says why"
         );
         fixture_git(&repository, &["reset", "-q", "--", "gamma.txt"]);
         quietly_refreshed(&app, cx);
@@ -5651,7 +5652,9 @@ mod tests {
     /// [`narrow_notes`], its cursor moved to Discard changes…, as a merge
     /// outside the app leaves the file conflicted and the item can no
     /// longer act. A right-click's menu is built again with the cursor
-    /// resting on none, and Enter runs nothing: the file stays conflicted.
+    /// staying on Discard changes…, which says why it is unavailable ("After
+    /// conflict resolution"), and Enter runs nothing: the file stays
+    /// conflicted.
     /// Moved to the nearest item that could act, the cursor fell to Stage,
     /// and Enter ran `git add` on the conflicted file at once, marking it
     /// resolved. A keyboard's opening selected the row, so the conflicted
@@ -5666,10 +5669,11 @@ mod tests {
         let (_fixture, app, cx, repository) = narrow_notes(cx).await;
         open_row_menu_showing(&app, cx, "notes.txt", opening, NOTES_STAGE);
         // A right-click's menu opens with no cursor, a keyboard's with it on
-        // Stage; Down passes over the refused Ignore….
+        // Stage; Down rests on Ignore…, which says why it is unavailable, on
+        // the way.
         cx.simulate_keystrokes(match opening {
-            Opening::RightClick => "down down",
-            Opening::Keyboard => "down",
+            Opening::RightClick => "down down down",
+            Opening::Keyboard => "down down",
         });
         next_frame(cx);
         assert_eq!(
@@ -5710,8 +5714,8 @@ mod tests {
         );
         assert_eq!(
             cursor_among(cx, &NOTES_ITEMS),
-            Vec::<&str>::new(),
-            "{opening:?}: the cursor rests on none"
+            ["Discard changes…, after conflict resolution"],
+            "{opening:?}: the cursor stays on Discard changes… as it says why it waits"
         );
         cx.simulate_keystrokes("enter");
         cx.executor().run_until_parked();
@@ -5739,6 +5743,65 @@ mod tests {
     #[gpui::test]
     async fn a_keyboard_menu_stays_open_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
         a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::Keyboard).await;
+    }
+
+    /// A Working row's menu opened from the keyboard on a tracked file, as
+    /// in [`narrow_notes`], keeps Ignore…, which says why it is unavailable
+    /// ("Untracked files only"), in the keys' order: Down from Stage rests
+    /// the cursor on it, drawn there on the row named "Ignore…, untracked
+    /// files only"; Enter there prepares no ignore and leaves the menu open
+    /// with the cursor on it; the next Down moves on to Discard changes…, Up
+    /// comes back, Home and End reach Stage and Discard changes…, and Down
+    /// past the end wraps to Stage. Decided by the coordinator, by the rule
+    /// to say why something is unavailable: passed over as every disabled
+    /// item was, Down went from Stage straight to Discard changes…, so a
+    /// screen reader never reached why Ignore… was unavailable.
+    #[gpui::test]
+    async fn a_keyboard_row_menu_rests_on_an_item_that_says_why_it_is_unavailable(
+        cx: &mut TestAppContext,
+    ) {
+        const IGNORE: &str = "Ignore…, untracked files only";
+        let (_fixture, app, cx, _repository) = narrow_notes(cx).await;
+        open_row_menu_showing(&app, cx, "notes.txt", Opening::Keyboard, NOTES_STAGE);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            ["Stage"],
+            "the keyboard's menu opens on Stage"
+        );
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            [IGNORE],
+            "Down rests on Ignore…, named with its reason"
+        );
+        assert_eq!(offered(cx, IGNORE), Some(false), "Ignore… is unavailable");
+
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(!writing(&app, cx), "Enter on Ignore… prepares no ignore");
+        assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            [IGNORE],
+            "the cursor stays on Ignore…"
+        );
+
+        for (key, on) in [
+            ("down", "Discard changes…"),
+            ("up", IGNORE),
+            ("home", "Stage"),
+            ("end", "Discard changes…"),
+            ("down", "Stage"),
+        ] {
+            cx.simulate_keystrokes(key);
+            next_frame(cx);
+            assert_eq!(cursor_among(cx, &NOTES_ITEMS), [on], "after {key}");
+        }
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Whether `app` shows a conflict view, and if so whether its
@@ -7195,7 +7258,9 @@ mod tests {
             Opening::Keyboard,
             "menu-item: Discard changes… · MenuItem",
         );
-        cx.simulate_keystrokes("down");
+        // Down rests on Ignore…, which says why it is unavailable, on
+        // the way.
+        cx.simulate_keystrokes("down down");
         next_frame(cx);
         assert_eq!(
             cursor_among(cx, &NOTES_ITEMS),
@@ -7328,7 +7393,9 @@ mod tests {
         let (opened, discard) =
             open_row_menu_showing(&app, cx, "notes.txt", Opening::Keyboard, DISCARD);
         assert_eq!(opened, row, "the menu opened beside notes.txt's row");
-        cx.simulate_keystrokes("down");
+        // Down rests on Ignore…, which says why it is unavailable, on
+        // the way.
+        cx.simulate_keystrokes("down down");
         next_frame(cx);
         assert_eq!(
             cursor_among(cx, &NOTES_ITEMS),

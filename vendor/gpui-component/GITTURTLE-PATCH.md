@@ -1068,7 +1068,13 @@ accessible name stating the reason; Enter and a click do nothing there
 click), and the next key moves on. Passed over as every disabled item was, the
 Linux Main Menu's Browse stashes…, waiting for a fetch, was never reached, and
 Orca, from F10 and Down, never spoke why it waited (QA-89); the owner decided
-that an item stating a reason stays in the keyboard's order. A mark rather than
+that an item stating a reason stays in the keyboard's order, and the
+coordinator that this holds for a row that states why it is unavailable or
+waits alike. The app marks every such row where it builds one
+(`crates/app/src/native_accessibility.rs`, `detail_row`, behind both
+`waiting_item`, a write's wait, and `detailed_item`, an item's own
+condition, as a Working row's "Ignore…" with "Untracked files only" or the
+branch picker's branch with "Another worktree"). A mark rather than
 an inference from the label keeps a disabled item whose accessible name only
 says more than its label, as "More context, 3 lines shown" does, passed over.
 A submenu opened from the keyboard selects its first item that can act; a
@@ -1113,8 +1119,20 @@ stashes…, reads the cursor drawn there and the row named "Browse stashes…,
 available when fetching finishes", presses Enter with no Stashes opened and the
 menu open, and moves on and back with Down, Up, Home and End; with the walk on
 `is_clickable` Down passes it by and the test fails.
+`cargo test --locked -p gitturtle a_keyboard_row_menu_rests_on_an_item_that_says_why_it_is_unavailable`
+opens a tracked file's Working row menu with Shift-F10, walks Down from Stage
+onto "Ignore…, untracked files only", presses Enter with no ignore prepared and
+the menu open, and moves on and back with Down, Up, Home and End;
+`menu_keys_stop_on_a_stated_reason_and_pass_over_a_silent_one` builds the app's
+`detailed_item` row beside a disabled item that states nothing and reads the
+keys stopping on the first and never on the second;
+`the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds` opens the
+branch picker with a branch another worktree has checked out, walks Down from
+Find or create a branch… onto "review, another worktree", presses Enter with
+no switch started and the menu open, and moves on and back with Down and Up.
+Without the mark in `detail_row`, each fails at Down.
 Remove this part of the patch when upstream menus move only between items that
-can act, or state why they wait, and bind Home and End, and those tests pass
+can act, or state why they are unavailable or wait, and bind Home and End, and those tests pass
 without it.
 
 The dropdown-trigger patch modifies `src/menu/dropdown_menu.rs` and
@@ -1558,18 +1576,18 @@ that name, wherever the builder now puts it; an item without a name is found
 only at its own place, where the entry there has none either. Taken nearest
 its old place, a repeated name let items added above move the cursor to the
 other item of that name. It never moves the cursor to another
-item. Where that item waits for a reason it states
+item. Where that item is unavailable or waits for a reason it states
 (`PopupMenuItem::reason_stated`), as while a write refuses it and its name
 says what it waits for, the cursor stays on it, as the menu keys rest it there
 (`place_kept_cursor` places it on any `is_keyboard_stop`). Where that item is
 gone, or can no longer act and states no reason, the cursor rests on
 nothing and the menu remembers the item (`kept_cursor`), at the place it now
 stands where it is still offered, across any further rebuild, until a
-rebuild offers it able to act or stating why it waits and the cursor returns
+rebuild offers it able to act or stating why it is unavailable or waits and the cursor returns
 to it, or a menu key or the pointer moves the selection, which forgets it. From rest, Up moves to the
 last item the keys stop on before the remembered place and Down to the first
 at or after it (`cursor_place`): the stops are the items that can act and
-those that state why they wait (`is_keyboard_stop`). A remembered item takes the place of any selection the builder
+those that state why they are unavailable or wait (`is_keyboard_stop`). A remembered item takes the place of any selection the builder
 makes (`select_first_item`); with none, the builder's selection stands. A
 capped menu scrolls to the cursor only where the rebuild moves it to another
 row, as its item moved or it returns from rest; the selection of a builder
@@ -1594,10 +1612,10 @@ resolved; Cherry-pick once HEAD left a commit and took Amend and Undo away.
 
 A rebuild that rests the keyboard's cursor because the item it was on,
 which could act, is still offered but refused, on nothing or on the item
-itself where it states why it waits, now reports that item to the
+itself where it states why it is unavailable or waits, now reports that item to the
 application, once, as the rest begins: `PopupMenu` emits `CursorRests`
 (exported from `menu`), carrying the item's name and its accessible name,
-which an item that states why it waits says apart from the command. The app
+which an item that states why it is unavailable or waits says apart from the command. The app
 announces it because nothing establishes that a screen reader speaks the
 selected item's name changing as it starts to wait (a native Orca read is
 pending), so the reason is said either way. A
