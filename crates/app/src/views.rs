@@ -17212,6 +17212,18 @@ pub(crate) mod tests {
                 draw(cx);
                 let at = format!("scale {scale}, {text} pt in {width} × {height}");
                 let falls_back = (text, width, height) == (18, 461., 490.);
+                // The narrower side's region, to whose width less the
+                // gutter where it scrolls both headers are held.
+                let narrower = [0, 1]
+                    .map(|side| {
+                        cx.debug_bounds(format!("pdf-side-{side}/header").leak())
+                            .expect("a side's region")
+                            .size
+                            .width
+                    })
+                    .into_iter()
+                    .fold(Pixels::MAX, Pixels::min);
+                let snapped_gutter = cx.update(|window, _| window.pixel_snap(gutter));
                 for side in 0..2usize {
                     let read = |cx: &mut VisualTestContext| {
                         let layout = crate::pdf_view::DRAWN_LAYOUTS
@@ -17240,25 +17252,25 @@ pub(crate) mod tests {
                     );
                     assert_eq!(layout.scrolls, falls_back, "{at}, side {side}: {layout:?}");
                     // Both sides' headers are held to the pair's line, as
-                    // layout gives the narrower side less a device pixel
-                    // (`pdf_view::pair_line`): a device pixel short of the
-                    // narrower side's region, and two of the wider's.
-                    let held = px(2. / scale) + px(0.01);
+                    // layout gives the narrower side (`pdf_view::pair_line`):
+                    // as wide as the narrower side's region, less the gutter
+                    // where they scroll, so the wider side's is short of its
+                    // region by the device pixel its region is wider. A
+                    // header as wide as its own region is not held.
                     let short = region.size.width - header.size.width;
+                    let wider = region.size.width - narrower;
                     if falls_back {
                         assert!(
                             layout.form == crate::pdf_view::HeaderForm::Narrowest
                                 && header.size.height > region.size.height
-                                && short - gutter > px(-0.51)
-                                && short - gutter < held + px(0.5),
-                            "{at}, side {side}: the narrowest header {header:?} scrolls in {region:?}, less the gutter"
+                                && (short - wider - snapped_gutter).abs() < px(0.01),
+                            "{at}, side {side}: the narrowest header {header:?} scrolls in {region:?}, held to the narrower side's {narrower:?} less the gutter"
                         );
                     } else {
                         assert!(
                             header.size.height <= region.size.height + px(0.01)
-                                && short >= px(-0.01)
-                                && short <= held,
-                            "{at}, side {side}: the header {header:?} fits its region {region:?}, keeping no gutter"
+                                && (short - wider).abs() < px(0.01),
+                            "{at}, side {side}: the header {header:?} fits its region {region:?}, keeping no gutter, held to the narrower side's {narrower:?}"
                         );
                     }
                     // A second frame lays it out alike.
