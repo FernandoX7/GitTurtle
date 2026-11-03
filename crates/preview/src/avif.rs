@@ -1253,6 +1253,31 @@ mod tests {
         );
     }
 
+    /// The design's two structural refusals, on files `mp4parse` reads as
+    /// such: a grid primary item, whose tiles it cannot expose, and an image
+    /// sequence with no still primary item.
+    #[test]
+    fn refuses_a_grid_and_a_sequence_without_a_still() {
+        let grid = fixture("avif-grid.avif");
+        let context = mp4parse::read_avif(&mut &grid[..], ParseStrictness::Normal).unwrap();
+        assert!(context.unsupported_features.contains(Feature::Grid));
+        assert!(context.sequence.is_none());
+        let sequence = fixture("avif-sequence-without-still.avif");
+        let context = mp4parse::read_avif(&mut &sequence[..], ParseStrictness::Normal).unwrap();
+        assert!(context.unsupported_features.is_empty());
+        assert!(context.sequence.is_some());
+        assert!(context.primary_item_coded_data().is_none());
+        for (name, kind) in [
+            ("avif-grid.avif", ImageErrorKind::AvifGrid),
+            (
+                "avif-sequence-without-still.avif",
+                ImageErrorKind::AvifNoStill,
+            ),
+        ] {
+            assert_eq!(avif(name, 1600).unwrap_err(), kind, "{name}");
+        }
+    }
+
     #[test]
     fn libdav1d_version_floor_parses_strictly() {
         for version in ["1.4.1", "1.5.4", "1.4.1-0-gabcdef", "1.10.0", "2.0.0"] {

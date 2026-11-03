@@ -57,6 +57,8 @@ or 10 (lossy).
 | `avif-display-p3.avif` | quadrants (200, 80, 60), (60, 180, 90), (70, 90, 200), (128, 128, 128) in Display P3, `nclx` 12/13/6 | converted to sRGB: (216, 69, 50), (0, 183, 78), (64, 91, 207), (128, 128, 128) |
 | `avif-display-p3-icc.avif` | the same pixels with a `colr` of type `prof` holding the JP2 fixture's minimal ICC v2 Display P3 profile (2.2 gamma), beside `nclx` 1/13/6 | converted by the profile with moxcms: (218, 67, 47), (0, 185, 77), (62, 90, 209), (129, 129, 129), with no flag; the test patches the profile's signature, tag count or colour space, and each draws the stored values with "colour profile not applied" |
 | `avif-animation.avif` | Pillow `save_all` of two frames (the quadrants, then reversed), libavif with its primary still item and an `avis` track | the first frame, flagged as an animation |
+| `avif-sequence-without-still.avif` | the animation with `ftyp` `avis` (its `avif` and `mif1` brands, which require a primary item, removed) and a `meta` of only its `hdlr`, padded with `free` so the track's offsets hold; `moov` times zeroed | `mp4parse` reads the track and no primary item: `AvifNoStill` |
+| `avif-grid.avif` | a `grid` primary item (2 × 2, 64 × 48 output) over four hidden 32 × 24 aomenc tiles, one quadrant colour each, by `dimg` | `mp4parse` reports the grid and exposes no tiles: `AvifGrid` |
 | `avif-frame-larger-than-ispe.avif` | hostile: 64 × 64 `ispe` over a grey frame whose sequence header the script rewrites to 16384 × 16384 (security review question 5) | refused by dav1d's `frame_size_limit` with `AvifSizeMismatch`, before the frame is allocated |
 | `avif-alpha-smaller-than-image.avif` | hostile: a 32 × 32 alpha item (with its own 32 × 32 `ispe`) under the 64 × 48 image | `AvifSizeMismatch`; with its `ispe` patched to 64 × 48 in the test, the decoded picture is refused the same way |
 | `avif-reserved-colour.avif` | hostile: the 8-bit 4:2:0 quadrants with no `colr`, their sequence header's colour description rewritten to the reserved primaries 0, transfer 0 and matrix 3 | passes every check before decoding and libdav1d decodes it; dav1d-rs 0.11.1 reaches `unreachable!()` reading the signalled colour, and `serve` returns that panic as `DecoderFailed` (the AVIF counterpart of the real `hayro-jpeg2000` panic) |
@@ -72,16 +74,17 @@ The hostile JPEG 2000 inputs (#1549's 97-byte codestream, #1558's 1 × 1 tiles,
 #1649's palette, five components, 17-bit samples, JPX without JP2 compatibility)
 and the remaining hostile AVIF inputs (`ispe` of 40000 × 1, a missing `ispe`, a
 truncated OBU) are patched from these fixtures in the tests that use them, each
-citing its source. A grid and an animation without a primary item still need
-fixtures that `mp4parse` parses as such: retyping the item or dropping `pitm` in
-these files makes it refuse them as unreadable instead.
+citing its source. The grid and the sequence without a still are generated
+whole, since `mp4parse` refuses as unreadable a retyped item or a dropped `pitm`
+while the `avif` or `mif1` brand promises a primary item.
 
 SHA-256: `avif-alpha-smaller-than-image.avif` bba1b359…98c66, `avif-animation.avif`
 8ca39dd4…6aea8, `avif-display-p3-icc.avif` ea319924…07b26f,
 `avif-display-p3.avif` 5fd20363…723ab, `avif-film-grain.avif`
 6951abbb…3de18, `avif-frame-larger-than-ispe.avif` b41003d2…9aa332,
-`avif-irot-imir.avif` 7b432e26…45f692, `avif-reserved-colour.avif`
-49e6b062…de8553, `avif-yuv400-8bit.avif` 4134b530…c186f,
+`avif-grid.avif` d1670ba0…905ad8, `avif-irot-imir.avif` 7b432e26…45f692,
+`avif-reserved-colour.avif` 49e6b062…de8553, `avif-sequence-without-still.avif`
+6a8c4e50…e086, `avif-yuv400-8bit.avif` 4134b530…c186f,
 `avif-yuv400-10bit.avif` ef2bd33f…8af9, `avif-yuv400-12bit.avif` bf91ce04…e8b,
 `avif-yuv420-8bit-alpha.avif` c3e7d8d7…2c6a6, `avif-yuv420-12bit-alpha.avif`
 c1e74f1b…918e, `avif-yuv444-10bit-premultiplied.avif` ab8058d8…39468,

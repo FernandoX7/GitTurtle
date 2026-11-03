@@ -19,6 +19,8 @@ extend-exclude = [
 extend-ignore-identifiers-re = [
     # JPEG 2000 marker segments (SIZ, COD, QCD).
     "^SIZ$",
+    # ISOBMFF box codes (the track box).
+    "^trak$",
     # glTF level-of-detail and mesh index names.
     "^lod[A-Za-z_]*$",
     "^iy$",

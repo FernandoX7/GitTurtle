@@ -386,10 +386,13 @@ def av1c(data: bytes) -> bytes:
 
 
 def avif(items: list[dict], *, primary: int = 1, premultiplied: bool = False,
-         brands: tuple[bytes, ...] = (b"avif", b"mif1", b"miaf")) -> bytes:
+         brands: tuple[bytes, ...] = (b"avif", b"mif1", b"miaf"),
+         extra_references: tuple[tuple[bytes, int, tuple[int, ...]], ...] = ()) -> bytes:
     """A still AVIF (AVIF 1.1, MIAF): each item is a dict with `data`, `size`,
-    `properties` (a list of (box, essential)), and `alpha_of` for an alpha
-    auxiliary item. Offsets in iloc are absolute."""
+    `properties` (a list of (box, essential)), `alpha_of` for an alpha
+    auxiliary item, an optional `type` (`av01` by default) and `hidden`.
+    `extra_references` adds (type, from, to items) to `iref`. Offsets in iloc
+    are absolute."""
     properties: list[bytes] = []
     associations = []
     for number, item in enumerate(items, 1):
@@ -407,9 +410,13 @@ def avif(items: list[dict], *, primary: int = 1, premultiplied: bool = False,
             references += box(b"auxl", struct.pack(">HHH", number, 1, item["alpha_of"]))
             if premultiplied:
                 references += box(b"prem", struct.pack(">HHH", item["alpha_of"], 1, number))
+    for kind, source, targets in extra_references:
+        references += box(kind, struct.pack(">HH", source, len(targets))
+                          + b"".join(struct.pack(">H", target) for target in targets))
     iref = full_box(b"iref", 0, 0, references) if references else b""
     infe = b"".join(
-        full_box(b"infe", 2, 0, struct.pack(">HH", number, 0) + item.get("type", b"av01") + b"\0")
+        full_box(b"infe", 2, 1 if item.get("hidden") else 0,
+                 struct.pack(">HH", number, 0) + item.get("type", b"av01") + b"\0")
         for number, item in enumerate(items, 1)
     )
     iinf = full_box(b"iinf", 0, 0, struct.pack(">H", len(items)) + infe)
@@ -570,7 +577,31 @@ def avif_fixtures(work: Path) -> dict[str, bytes]:
     # decoded picture, where dav1d-rs 0.11.1 has no arm for any of them.
     reserved = aomenc(work, "reserved-colour", colour_source(8, "420"), 8)
     out["avif-reserved-colour.avif"] = avif([colour_item(describe_colour(reserved, 0, 0, 3), 8, 3)])
+
+    # A grid primary item (ISO/IEC 23008-12 6.6.2.3): 2 x 2 hidden tiles of
+    # 32 x 24, one quadrant colour each, in `dimg` order.
+    tile_size = (WIDTH // 2, HEIGHT // 2)
+    tiles = [
+        {**colour_item(aomenc(work, f"tile-{index}", solid_source(*tile_size, colour), 8), 8, 3,
+                       [bt601], size=tile_size), "hidden": True}
+        for index, colour in enumerate(QUADRANTS)
+    ]
+    grid = {
+        "type": b"grid",
+        # Version 0, 16-bit output size, two rows and two columns.
+        "data": bytes([0, 0, 1, 1]) + struct.pack(">HH", WIDTH, HEIGHT),
+        "properties": [(ispe(WIDTH, HEIGHT), False), (pixi(8, 3), False), bt601],
+    }
+    out["avif-grid.avif"] = avif([grid, *tiles], extra_references=((b"dimg", 1, (2, 3, 4, 5)),))
     return out
+
+
+def solid_source(width: int, height: int, rgb) -> bytes:
+    """One 8-bit 4:2:0 frame of a single colour."""
+    y, u, v = ycbcr(rgb, 8)
+    chroma = (width // 2) * (height // 2)
+    header = f"YUV4MPEG2 W{width} H{height} F1:1 Ip A1:1 C420jpeg\nFRAME\n".encode()
+    return header + bytes([y]) * (width * height) + bytes([u]) * chroma + bytes([v]) * chroma
 
 
 def animation(work: Path) -> bytes:
@@ -585,6 +616,49 @@ def animation(work: Path) -> bytes:
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=100, quality=90,
                    speed=8, max_threads=1)
     return path.read_bytes()
+
+
+def without_still(animation: bytes) -> bytes:
+    """The animation as an image sequence with no still image: `ftyp` without
+    the `avif` and `mif1` brands, which require a primary item, and a `meta`
+    of only its `hdlr` (mp4parse requires one), padded with `free` so the
+    track's chunk offsets still point into `mdat`. The `moov` times are zeroed
+    so the bytes are reproducible."""
+    boxes = []
+    at = 0
+    while at < len(animation):
+        size, kind = struct.unpack(">I4s", animation[at:at + 8])
+        boxes.append((kind, animation[at:at + size]))
+        at += size
+    assert [kind for kind, _ in boxes] == [b"ftyp", b"meta", b"moov", b"mdat"]
+    (_, old_ftyp), (_, old_meta), (_, moov), (_, mdat) = boxes
+    brands = [old_ftyp[i:i + 4] for i in range(16, len(old_ftyp), 4)]
+    ftyp = box(b"ftyp", b"avis\0\0\0\0" + b"".join(b for b in brands if b not in (b"avif", b"mif1")))
+    hdlr = full_box(b"hdlr", 0, 0, b"\0" * 4 + b"pict" + b"\0" * 12 + b"\0")
+    meta = full_box(b"meta", 0, 0, hdlr)
+    padding = len(old_ftyp) + len(old_meta) - len(ftyp) - len(meta)
+    return ftyp + meta + box(b"free", bytes(padding - 8)) + zero_times(moov) + mdat
+
+
+def zero_times(data: bytes) -> bytes:
+    """The creation and modification times of `mvhd`, `tkhd` and `mdhd`
+    zeroed in these boxes and in the movie, track and `mdia` boxes that hold
+    them."""
+    out = bytearray(data)
+
+    def walk(start: int, end: int):
+        at = start
+        while at < end:
+            size, kind = struct.unpack(">I4s", out[at:at + 8])
+            if kind in (b"moov", b"trak", b"mdia"):
+                walk(at + 8, at + size)
+            elif kind in (b"mvhd", b"tkhd", b"mdhd"):
+                width = 8 if out[at + 8] == 1 else 4
+                out[at + 12:at + 12 + 2 * width] = bytes(2 * width)
+            at += size
+
+    walk(0, len(out))
+    return bytes(out)
 
 
 # ---------------------------------------------------------------- JPEG 2000
@@ -793,6 +867,7 @@ def main() -> int:
         work = Path(directory)
         fixtures = avif_fixtures(work)
         fixtures["avif-animation.avif"] = animation(work)
+        fixtures["avif-sequence-without-still.avif"] = without_still(fixtures["avif-animation.avif"])
         fixtures.update(jpeg2000_fixtures(work))
         differs = 0
         for name, data in sorted(fixtures.items()):
