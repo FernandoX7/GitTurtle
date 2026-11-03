@@ -1084,6 +1084,46 @@ mod tests {
         }
     }
 
+    /// The AVIF counterpart of the real `hayro-jpeg2000` panic, kept for A3:
+    /// the 8-bit quadrants without `colr`, their sequence header rewritten to
+    /// the reserved primaries 0, transfer 0 and matrix 3. Every check before
+    /// decoding passes and libdav1d decodes the picture; dav1d-rs 0.11.1's
+    /// `color_primaries`, `transfer_characteristic` and `matrix_coefficients`
+    /// each reach `unreachable!()` on them (also for primaries 3 and 13 to 21,
+    /// transfer 3), so reading the signalled colour panics, and `serve` turns
+    /// the panic into `DecoderFailed`.
+    #[test]
+    fn a_dav1d_rs_panic_past_every_check_ends_as_decoder_failed() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let bytes = fixture("avif-reserved-colour.avif");
+        let context = mp4parse::read_avif(&mut &bytes[..], ParseStrictness::Normal).unwrap();
+        assert!(context.unsupported_features.is_empty());
+        assert!(context.alpha_item_coded_data().is_none());
+        let properties = Properties::parse(&bytes).unwrap();
+        assert_eq!(
+            properties.spatial_extents(properties.primary),
+            Some((64, 48))
+        );
+        assert_eq!(properties.colour(properties.primary), None);
+        let picture = decode_item(context.primary_item_coded_data().unwrap(), (64, 48)).unwrap();
+        let panics =
+            |read: &dyn Fn(&Picture)| catch_unwind(AssertUnwindSafe(|| read(&picture))).is_err();
+        assert!(panics(&|picture| {
+            let _ = picture.color_primaries();
+        }));
+        assert!(panics(&|picture| {
+            let _ = picture.transfer_characteristic();
+        }));
+        assert!(panics(&|picture| {
+            let _ = picture.matrix_coefficients();
+        }));
+        drop(picture);
+        assert_eq!(
+            avif("avif-reserved-colour.avif", 1600).unwrap_err(),
+            ImageErrorKind::DecoderFailed
+        );
+    }
+
     #[test]
     fn libdav1d_version_floor_parses_strictly() {
         for version in ["1.4.1", "1.5.4", "1.4.1-0-gabcdef", "1.10.0", "2.0.0"] {

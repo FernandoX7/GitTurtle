@@ -223,6 +223,81 @@ def enlarge_sequence_header(data: bytes, width: int, height: int) -> bytes:
     return bytes(out)
 
 
+def colour_config_start(payload: bytes) -> tuple[int, int]:
+    """The sequence header's profile and the bit where its color_config
+    starts (AV1 5.5.1), for the headers aomenc writes for a still."""
+    reader = Bits(payload)
+    profile = reader.read(3)
+    reader.read(1)  # still_picture
+    reduced = reader.read(1)
+    if reduced:
+        reader.read(5)
+    else:
+        assert not reader.read(1), "aomenc writes no timing info for stills"
+        delay = reader.read(1)
+        for _ in range(reader.read(5) + 1):
+            reader.read(12)
+            if reader.read(5) > 7:
+                reader.read(1)
+            if delay and reader.read(1):
+                reader.read(4)
+    width_bits, height_bits = reader.read(4) + 1, reader.read(4) + 1
+    reader.read(width_bits + height_bits)
+    if not reduced and reader.read(1):  # frame_id_numbers_present_flag
+        reader.read(7)
+    reader.read(3)  # 128x128 superblock, filter intra, intra edge
+    if not reduced:
+        reader.read(4)  # interintra, masked compound, warped motion, dual filter
+        order_hint = reader.read(1)
+        if order_hint:
+            reader.read(2)
+        force_screen = 2 if reader.read(1) else reader.read(1)
+        if force_screen > 0 and not reader.read(1):  # seq_choose_integer_mv
+            reader.read(1)
+        if order_hint:
+            reader.read(3)
+    reader.read(3)  # superres, cdef, restoration
+    return profile, reader.at
+
+
+def describe_colour(data: bytes, primaries: int, transfer: int, matrix: int) -> bytes:
+    """Rewrites the sequence header's colour description (AV1 5.5.2) to these
+    code points. Values other than BT.709, sRGB and identity together keep the
+    syntax after it unchanged, so the rest of the header is copied as it is."""
+    assert (primaries, transfer, matrix) != (1, 13, 0)
+    out = bytearray()
+    for kind, whole, payload in obus(data):
+        if kind != 1:
+            out += whole
+            continue
+        profile, start = colour_config_start(payload)
+        reader, writer = Bits(payload), BitWriter()
+        writer.write(reader.read(start), start)
+        high = reader.read(1)
+        writer.write(high, 1)
+        if profile == 2 and high:
+            writer.write(reader.read(1), 1)  # twelve_bit
+        if profile != 1:
+            writer.write(reader.read(1), 1)  # mono_chrome
+        if reader.read(1):  # color_description_present_flag
+            old = (reader.read(8), reader.read(8), reader.read(8))
+            assert old != (1, 13, 0), "the copied syntax would change"
+        writer.write(1, 1)
+        for code in (primaries, transfer, matrix):
+            writer.write(code, 8)
+        # The rest of the header, without its trailing bits (5.3.4).
+        remaining = len(payload) * 8
+        while remaining > reader.at and not (payload[(remaining - 1) >> 3] >> (7 - ((remaining - 1) & 7))) & 1:
+            remaining -= 1
+        remaining -= 1  # the trailing one bit
+        while reader.at < remaining:
+            writer.write(reader.read(1), 1)
+        writer.write(1, 1)
+        body = writer.bytes()
+        out += bytes([whole[0]]) + encode_leb128(len(body)) + body
+    return bytes(out)
+
+
 def box(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", 8 + len(payload)) + kind + payload
 
@@ -490,6 +565,11 @@ def avif_fixtures(work: Path) -> dict[str, bytes]:
     out["avif-alpha-smaller-than-image.avif"] = avif(
         [colour_item(colour, 8, 3, [bt601]), alpha_item(small, 8, size=(32, 32))]
     )
+    # Hostile: reserved colour primaries 0, transfer 0 and matrix 3 in the
+    # sequence header and no `colr`, so the colour signal is read from the
+    # decoded picture, where dav1d-rs 0.11.1 has no arm for any of them.
+    reserved = aomenc(work, "reserved-colour", colour_source(8, "420"), 8)
+    out["avif-reserved-colour.avif"] = avif([colour_item(describe_colour(reserved, 0, 0, 3), 8, 3)])
     return out
 
 
