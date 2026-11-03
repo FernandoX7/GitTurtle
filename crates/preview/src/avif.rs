@@ -536,7 +536,7 @@ fn orient(mut rgba: RgbaImage, rotation: u8, mirror: Option<u8>) -> RgbaImage {
 /// input; `None` means unreadable.
 struct Properties<'a> {
     primary: u32,
-    container: Vec<([u8; 4], &'a [u8])>,
+    container: Vec<Child<'a>>,
     /// Item and 1-based `ipco` index, for the primary and `auxiliary` items.
     associations: Vec<(u32, u16)>,
     /// Items with an `auxl` reference to the primary.
@@ -571,14 +571,14 @@ impl<'a> Properties<'a> {
     /// 0.17.0 `src/lib.rs:3663-3698`), and the confined helper's resource
     /// limits bound that memory.
     fn parse(bytes: &'a [u8]) -> Option<Self> {
-        let (_, _, meta) = full_box(find(&boxes(bytes)?, b"meta")?)?;
-        let meta = boxes(meta)?;
-        let (version, _, pitm) = full_box(find(&meta, b"pitm")?)?;
+        let (_, _, meta) = full_box(find(bytes, b"meta")??)?;
+        let (version, _, pitm) = full_box(find(meta, b"pitm")??)?;
         let primary = Reader(pitm).id(version)?;
         let mut auxiliary = Vec::new();
-        if let Some(iref) = find(&meta, b"iref") {
+        if let Some(iref) = find(meta, b"iref")? {
             let (version, _, references) = full_box(iref)?;
-            for (kind, payload) in boxes(references)? {
+            for reference in Boxes(references) {
+                let Child { kind, payload } = reference?;
                 let mut reader = Reader(payload);
                 let from = reader.id(version)?;
                 for _ in 0..reader.u16()? {
@@ -593,11 +593,18 @@ impl<'a> Properties<'a> {
                 }
             }
         }
-        let iprp = boxes(find(&meta, b"iprp")?)?;
-        let container = boxes(find(&iprp, b"ipco")?)?;
+        let iprp = find(meta, b"iprp")??;
+        let container = property_container(find(iprp, b"ipco")??)?;
         let mut entries = 0u32;
         let mut associations = Vec::new();
-        for (_, ipma) in iprp.iter().filter(|(kind, _)| kind == b"ipma") {
+        for child in Boxes(iprp) {
+            let Child {
+                kind,
+                payload: ipma,
+            } = child?;
+            if &kind != b"ipma" {
+                continue;
+            }
             let (version, flags, payload) = full_box(ipma)?;
             let mut reader = Reader(payload);
             let count = reader.u32()?;
@@ -635,7 +642,8 @@ impl<'a> Properties<'a> {
             .filter(move |(id, _)| *id == item)
             .filter_map(|(_, index)| {
                 let index = usize::from(*index).checked_sub(1)?;
-                self.container.get(index).copied()
+                let child = self.container.get(index)?;
+                Some((child.kind, child.payload))
             })
     }
 
@@ -692,36 +700,144 @@ impl<'a> Properties<'a> {
     }
 }
 
-/// ISOBMFF boxes in `data`, each within it.
-fn boxes(mut data: &[u8]) -> Option<Vec<([u8; 4], &[u8])>> {
-    let mut found = Vec::new();
-    while !data.is_empty() {
-        let mut reader = Reader(data);
-        let size = reader.u32()?;
-        let kind: [u8; 4] = reader.take(4)?.try_into().ok()?;
-        let (size, header) = match size {
-            0 => (data.len() as u64, 8),
-            1 => (
-                u64::from(reader.u32()?) << 32 | u64::from(reader.u32()?),
-                16,
-            ),
-            size => (u64::from(size), 8),
-        };
-        let size = usize::try_from(size).ok()?;
-        if size < header || size > data.len() {
-            return None;
-        }
-        found.push((kind, &data[header..size]));
-        data = &data[size..];
-    }
-    Some(found)
+/// The ISOBMFF boxes in a payload, in order and read one at a time, so a walk
+/// keeps no list of them however many there are (32 MiB of empty boxes is
+/// over four million). Each is `Some` [`Child`], a box whose payload lies
+/// within the data, or `None` for a box that does not fit, which ends the
+/// walk.
+struct Boxes<'a>(&'a [u8]);
+
+/// A box [`Boxes`] read: its kind and its payload.
+struct Child<'a> {
+    kind: [u8; 4],
+    payload: &'a [u8],
 }
 
-fn find<'a>(boxes: &[([u8; 4], &'a [u8])], kind: &[u8; 4]) -> Option<&'a [u8]> {
-    boxes
-        .iter()
-        .find(|(found, _)| found == kind)
-        .map(|(_, payload)| *payload)
+impl<'a> Child<'a> {
+    fn new(kind: [u8; 4], payload: &'a [u8]) -> Self {
+        #[cfg(test)]
+        BOXES_READ.with(|count| {
+            let mut now = count.get();
+            now.read += 1;
+            now.held += 1;
+            now.most_held = now.most_held.max(now.held);
+            count.set(now);
+        });
+        Self { kind, payload }
+    }
+}
+
+#[cfg(test)]
+impl Drop for Child<'_> {
+    fn drop(&mut self) {
+        BOXES_READ.with(|count| {
+            let mut now = count.get();
+            now.held = now.held.saturating_sub(1);
+            count.set(now);
+        });
+    }
+}
+
+/// What [`Boxes`] has read on this thread since the count was reset.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+struct BoxCount {
+    /// Every box read.
+    read: usize,
+    /// The boxes read that are still held.
+    held: usize,
+    /// The most held at once.
+    most_held: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// For the test that shows a parse reads no box after one it looks up
+    /// and holds `ipco`'s children and one box beside them.
+    static BOXES_READ: std::cell::Cell<BoxCount> = const {
+        std::cell::Cell::new(BoxCount {
+            read: 0,
+            held: 0,
+            most_held: 0,
+        })
+    };
+}
+
+impl Boxes<'_> {
+    /// Whether every box left fits, checked without reading any as a
+    /// [`Child`].
+    fn fit(self) -> bool {
+        let mut rest = self.0;
+        while !rest.is_empty() {
+            match split_box(rest) {
+                Some((_, _, after)) => rest = after,
+                None => return false,
+            }
+        }
+        true
+    }
+}
+
+impl<'a> Iterator for Boxes<'a> {
+    type Item = Option<Child<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let found = split_box(self.0);
+        // A box that does not fit leaves nothing to walk.
+        self.0 = found.map_or(&[], |(_, _, rest)| rest);
+        Some(found.map(|(kind, payload, _)| Child::new(kind, payload)))
+    }
+}
+
+/// The first box in `data`: its kind, its payload and the bytes after it.
+fn split_box(data: &[u8]) -> Option<([u8; 4], &[u8], &[u8])> {
+    let mut reader = Reader(data);
+    let size = reader.u32()?;
+    let kind: [u8; 4] = reader.take(4)?.try_into().ok()?;
+    let (size, header) = match size {
+        0 => (data.len() as u64, 8),
+        1 => (
+            u64::from(reader.u32()?) << 32 | u64::from(reader.u32()?),
+            16,
+        ),
+        size => (u64::from(size), 8),
+    };
+    let size = usize::try_from(size).ok()?;
+    if size < header || size > data.len() {
+        return None;
+    }
+    Some((kind, &data[header..size], &data[size..]))
+}
+
+/// The first box of `kind` in `data`, once every box there is known to fit:
+/// `None` when one does not, and `Some(None)` when none is of `kind`. It
+/// reads the boxes up to that one and only checks that those after it fit.
+/// The top-level, `meta` and `iprp` lookups go through this, and the `iref`
+/// and `ipma` walks, which need every box, walk [`Boxes`] directly, so none
+/// of them lists its boxes.
+fn find<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<Option<&'a [u8]>> {
+    let mut boxes = Boxes(data);
+    while let Some(child) = boxes.next() {
+        let Child {
+            kind: each,
+            payload,
+        } = child?;
+        if &each == kind {
+            return boxes.fit().then_some(Some(payload));
+        }
+    }
+    Some(None)
+}
+
+/// `ipco`'s children, the one list of boxes the parser keeps, since `ipma`
+/// names them by position. mp4parse 0.17.0 has already refused an `ipco` of
+/// 65,535 or more children (`IpcoIndexOverflow`, its `src/lib.rs:3766-3772`)
+/// when `decode` reaches [`Properties::parse`], which bounds this list.
+fn property_container(ipco: &[u8]) -> Option<Vec<Child<'_>>> {
+    Boxes(ipco).collect()
 }
 
 /// A full box's version, flags and payload.
@@ -1140,9 +1256,23 @@ mod tests {
     /// `ipma` is one `ipma` box of `(item, property indices)` entries, and
     /// each of `auxiliary` has an `auxl` reference to item 1.
     fn item_properties(ipma: &[&[(u16, Vec<u8>)]], auxiliary: &[u16]) -> Vec<u8> {
+        padded_item_properties(ipma, auxiliary, 0)
+    }
+
+    /// [`item_properties`] with `padding` boxes the parser passes over in
+    /// each of `meta`, `iprp` and `iref`: empty `free` boxes after the boxes
+    /// `meta`'s lookups want and between `ipco` and `ipma`, and `cdsc`
+    /// references from item 9 to item 1 after `iref`'s `auxl` ones.
+    fn padded_item_properties(
+        ipma: &[&[(u16, Vec<u8>)]],
+        auxiliary: &[u16],
+        padding: usize,
+    ) -> Vec<u8> {
+        let free = bmff(b"free", &[]);
         let ispe = full(b"ispe", 0, &[0, 0, 0, 64, 0, 0, 0, 48]);
         let auxc = full(b"auxC", 0, ALPHA_URNS[0]);
         let mut iprp = bmff(b"ipco", &[ispe, auxc].concat());
+        iprp.extend(free.repeat(padding));
         for entries in ipma {
             let mut payload = u32::try_from(entries.len()).unwrap().to_be_bytes().to_vec();
             for (item, indices) in *entries {
@@ -1152,16 +1282,82 @@ mod tests {
             }
             iprp.extend(full(b"ipma", 0, &payload));
         }
-        let references: Vec<u8> = auxiliary
+        let mut references: Vec<u8> = auxiliary
             .iter()
             .flat_map(|item| bmff(b"auxl", &[&item.to_be_bytes()[..], &[0, 1, 0, 1]].concat()))
             .collect();
+        references.extend(bmff(b"cdsc", &[0, 9, 0, 1, 0, 1]).repeat(padding));
         let meta = [
             full(b"pitm", 0, &[0, 1]),
             full(b"iref", 0, &references),
             bmff(b"iprp", &iprp),
+            free.repeat(padding),
         ];
         full(b"meta", 0, &meta.concat())
+    }
+
+    /// The top-level, `meta` and `iprp` lookups read boxes up to the one they
+    /// want and only check that the rest fit, and the `iref` and `ipma` walks
+    /// read theirs one at a time, so a parse reads no box after one it looks
+    /// up and holds `ipco`'s children, which it keeps, and the one box a walk
+    /// is reading, however many boxes surround them. `BOXES_READ` counts the
+    /// boxes read and the most held at once, so listing the boxes as they
+    /// are read or as `(kind, payload)` pairs fails here.
+    #[test]
+    fn box_lookups_list_only_the_property_container() {
+        // What one parse read, and `ipco`'s children.
+        let parse = |bytes: &[u8]| {
+            BOXES_READ.set(BoxCount::default());
+            let properties = Properties::parse(bytes).unwrap();
+            (BOXES_READ.get(), properties.container.len())
+        };
+        // 4,194,243 empty `free` boxes after a fixture, within the 32 MiB
+        // input bound: a list of them took 96 MiB.
+        let free = bmff(b"free", &[]);
+        let original = fixture("avif-irot-imir.avif");
+        let mut bytes = original.clone();
+        bytes.extend(free.repeat(4_194_243));
+        assert!(bytes.len() <= crate::MAX_INPUT_BYTES);
+        let (plain, children) = parse(&original);
+        assert!(children > 0);
+        let (padded, _) = parse(&bytes);
+        // The boxes after `meta` are checked, never read.
+        assert_eq!(padded.read, plain.read);
+        assert_eq!(padded.most_held, children + 1);
+        // One past `meta` that does not fit still refuses the file.
+        let mut truncated = original.clone();
+        truncated.extend(free.repeat(1_000));
+        truncated.extend(&bmff(b"free", &[0; 8])[..12]);
+        assert!(Properties::parse(&truncated).is_none());
+        // The file still decodes as the fixture does.
+        let image = |bytes: &[u8]| {
+            let image = decoded(ConfinedFormat::Avif, 64, bytes).unwrap().image;
+            let size = (image.width, image.height);
+            (
+                size,
+                (image.original_width, image.original_height),
+                image.rgba,
+            )
+        };
+        assert_eq!(image(&bytes), image(&original));
+
+        // As many boxes after the `meta` and inside it, `iprp` and `iref`:
+        // only the `iref` and `ipma` walks, which need every box of theirs,
+        // read their padding, once each.
+        let entries = [(1, vec![1]), (2, vec![1, 2])];
+        let padding = 100_000;
+        let mut bytes = padded_item_properties(&[&entries], &[2], padding);
+        bytes.extend(free.repeat(padding));
+        let (padded, children) = parse(&bytes);
+        assert_eq!((padded.most_held, children), (3, 2));
+        let (plain, _) = parse(&item_properties(&[&entries], &[2]));
+        assert_eq!(padded.read, plain.read + 2 * padding);
+        let padded = Properties::parse(&bytes).unwrap();
+        let bytes = item_properties(&[&entries], &[2]);
+        let plain = Properties::parse(&bytes).unwrap();
+        assert_eq!(padded.associations, plain.associations);
+        assert_eq!(padded.auxiliary, plain.auxiliary);
+        assert_eq!(padded.auxiliary, [2]);
     }
 
     #[test]
