@@ -626,10 +626,21 @@ impl crate::focus_ring::sweep::Opened for Option<Entity<CompareForm>> {
         // thread when it next runs.
         compare.read_with(cx, |compare, _| compare.worker.wait_idle());
         cx.executor().run_until_parked();
-        assert!(
-            compare.read_with(cx, |compare, _| !compare.targets.is_empty()),
-            "the comparison's branch and tag choices land"
-        );
+        if compare.read_with(cx, |compare, _| compare.targets.is_empty()) {
+            // A read that answers lists HEAD at least, so this one failed,
+            // whose error the form drops, or its reply never landed: the
+            // same read again on the form's worker names which.
+            let again = compare.read_with(cx, |compare, _| {
+                compare.worker.submit(Job::RevisionTargets {
+                    repo: compare.repo.clone(),
+                })
+            });
+            let again = futures::executor::block_on(again).map(|read| read.map(|_| ()));
+            panic!(
+                "the comparison's branch and tag choices never landed; read again, they answer \
+                 {again:?}"
+            );
+        }
     }
 }
 
@@ -924,6 +935,18 @@ pub(crate) struct QuickForm {
     closed: Arc<AtomicBool>,
     accepted: Arc<AtomicBool>,
     return_focus: Option<FocusHandle>,
+}
+/// The focus sweep (`focus_ring::sweep`) and the dialog tests read Quick
+/// Open once its first paths have landed ([`QuickForm::lands`]): they are
+/// read on the form's own worker, which neither `run_until_parked` nor the
+/// drain of the app's executor waits for.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<QuickForm>> {
+    fn finish(self, cx: &mut gpui::VisualTestContext) {
+        if let Some(form) = self {
+            QuickForm::lands(&form, cx);
+        }
+    }
 }
 impl QuickForm {
     /// Returns once the paths the form's query asks for have landed: past

@@ -342,20 +342,49 @@ pub(crate) fn close_dialogs(
     draw(cx, 2);
 }
 
-/// What opening a dialog leaves running that a walk waits for: nothing, as
-/// for most dialogs, whose reads go through the app's own tasks and its
-/// operation executor, which [`open_dialog`] drains, or the reads a dialog
-/// runs on a thread of its own, such as the Reflog's and Stashes', which
-/// neither `run_until_parked` nor that drain waits for. A dialog that reads
-/// on its own thread opens through an opener that returns it, so the walk
-/// reads it as it stands once loaded.
+/// What an opener passed to [`open_dialog`] returns, which the walk waits on
+/// before it reads the dialog. `()`, for a dialog whose reads go through the
+/// app's own tasks and its operation executor, which [`open_dialog`] drains
+/// and settles; nothing is left to wait for. A dialog that reads on an
+/// executor or worker of its own, which neither `run_until_parked` nor that
+/// drain waits for, opens through an opener that returns it, as
+/// `Option<Entity<_>>`, `None` where it did not open: its `finish` drains
+/// that executor, lets the replies land and asserts that they did, so the
+/// walk reads the dialog as it stands once loaded rather than while a reply
+/// can still change it. The Reflog, Stashes, Worktrees, the rewritten
+/// series' review, Compare local revisions and Quick Open do. A table of
+/// dialogs whose openers return different ones holds them as
+/// [`AnyOpened`] ([`Opened::erased`]), which only the dialog tests built
+/// with debug assertions or on Linux do, so both are built there alone: a
+/// macOS release test build warned that neither was used.
 pub(crate) trait Opened {
     /// Returns once what opening the dialog started has landed.
     fn finish(self, cx: &mut VisualTestContext);
+
+    /// This opener's result as an [`AnyOpened`], whose `finish` is its own.
+    #[cfg(any(debug_assertions, target_os = "linux"))]
+    fn erased(self) -> AnyOpened
+    where
+        Self: Sized + 'static,
+    {
+        AnyOpened(Box::new(move |cx| self.finish(cx)))
+    }
 }
 
 impl Opened for () {
     fn finish(self, _: &mut VisualTestContext) {}
+}
+
+/// Any opener's result ([`Opened::erased`]), so that one table of dialogs
+/// can hold openers that return different ones.
+#[cfg(any(debug_assertions, target_os = "linux"))]
+pub(crate) struct AnyOpened(Box<dyn FnOnce(&mut VisualTestContext)>);
+
+#[cfg(any(debug_assertions, target_os = "linux"))]
+impl Opened for AnyOpened {
+    fn finish(self, cx: &mut VisualTestContext) {
+        (self.0)(cx)
+    }
 }
 
 /// Opens a dialog with `open`, lets its reads finish, walks it, and closes
@@ -633,10 +662,9 @@ async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppCon
                 }
                 "Worktrees" => {
                     open_dialog(&app, cx, surface, |app, window, cx| {
-                        app.open_worktree_manager(window, cx)
+                        app.open_worktree_manager_entity(window, cx)
                     })
                     .await;
-                    worktrees::settle_manager(&app, cx).await;
                     worktrees::first_field(&app, cx)
                 }
                 _ => {

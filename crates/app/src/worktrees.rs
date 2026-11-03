@@ -50,6 +50,18 @@ impl GitTurtle {
         self.show_worktree_manager(None, window, cx);
     }
 
+    /// Opens Worktrees as [`Self::open_worktree_manager`] does and returns
+    /// the manager, `None` where it did not open, for a test that reads the
+    /// dialog once its reads have landed (`focus_ring::sweep::Opened`).
+    #[cfg(test)]
+    pub(crate) fn open_worktree_manager_entity(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<WorktreeManager>> {
+        self.show_worktree_manager(None, window, cx)
+    }
+
     pub(super) fn open_worktree_actions(
         &mut self,
         tree: Worktree,
@@ -65,13 +77,11 @@ impl GitTurtle {
         target: Option<(Worktree, Option<RemovalMode>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<Entity<WorktreeManager>> {
         if self.operation_busy.is_some() {
-            return;
+            return None;
         }
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
+        let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let manager = self
             .worktree_management
@@ -92,6 +102,7 @@ impl GitTurtle {
                 this.refresh(window, cx);
             }
         });
+        let opened = manager.clone();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = manager.clone();
             let cancel = manager.clone();
@@ -137,6 +148,7 @@ impl GitTurtle {
             field.focus(window, cx);
         }
         window.refresh();
+        Some(opened)
     }
 
     pub(super) fn finish_worktree_write(
@@ -205,7 +217,7 @@ impl GitTurtle {
     }
 }
 
-struct WorktreeManager {
+pub(crate) struct WorktreeManager {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     reader: operations::SerialExecutor,
@@ -817,6 +829,34 @@ impl Render for WorktreeManager {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The focus sweep (`focus_ring::sweep`) and the dialog tests read Worktrees
+/// once its reads have landed: the worktrees with their branches, and then
+/// the details of the row that reply selects. Both run on the manager's own
+/// executor, which neither `run_until_parked` nor the drain of the app's
+/// executors waits for: opened with nothing to wait on, the dialog tests
+/// read it while either could still change it.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<WorktreeManager>> {
+    fn finish(self, cx: &mut gpui::VisualTestContext) {
+        let Some(manager) = self else {
+            return;
+        };
+        // Each read has answered once the executor drains, and its reply
+        // lands as the test parks; the list's reply starts the next read.
+        for _ in 0..4 {
+            if !manager.read_with(cx, |manager, _| manager.pending) {
+                break;
+            }
+            manager.read_with(cx, |manager, _| manager.reader.drain());
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            !manager.read_with(cx, |manager, _| manager.pending),
+            "the Worktrees reads land"
+        );
+    }
+}
 
 /// Lets the open manager's reads land, the registrations and then the row a
 /// targeted refresh inspects, so the narrow-window walk (`width_walk`)

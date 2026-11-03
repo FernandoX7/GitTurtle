@@ -25204,8 +25204,9 @@ pub(crate) mod tests {
     /// point, and late in one; and its drawn edge stays 8 px or more above
     /// the status bar, as the app's other menus keep theirs. (These menus
     /// are whole pixels tall, so the kit's
-    /// `a_popup_above_a_point_moves_up_to_a_whole_pixel` covers that move
-    /// for one whose height ends in half a pixel.) Kept only
+    /// `a_popup_above_a_point_ends_where_its_gap_does` covers one whose
+    /// height ends in half a pixel, which ends on the device pixel its gap
+    /// ends on.) Kept only
     /// inside the window, it ended over the bar; then moved up only far
     /// enough to clear the bar, it covered the line clicked; with its
     /// fill's bottom at the pointer, its ring lay on the row clicked.

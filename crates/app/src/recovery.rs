@@ -3518,7 +3518,7 @@ mod tests {
     #[gpui::test]
     async fn a_narrow_stash_detail_shows_every_stop_whole(cx: &mut gpui_kit::TestAppContext) {
         use crate::focus_ring::sweep;
-        use crate::tags::tests::{draw, git, tagged_repository, window};
+        use crate::tags::tests::{git, tagged_repository, window};
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
@@ -3538,31 +3538,28 @@ mod tests {
         let mut failures = Vec::new();
         for interface in sweep::SIZES {
             sweep::interface_size(cx, interface);
+            // The saved stashes, then the selected stash's inspection, are
+            // read on the browser's own thread, which its opener waits for
+            // (`StashBrowser::lands`).
             sweep::open_dialog(&app, cx, "Stashes", |app, window, cx| {
-                app.open_stashes(window, cx)
+                app.open_stash_browser(window, cx)
             })
             .await;
-            // The saved stashes, then the selected stash's inspection, are
-            // read on the browser's own threads.
-            let landed = |cx: &mut VisualTestContext, selector: &'static str| {
-                for _ in 0..400 {
-                    cx.executor()
-                        .advance_clock(std::time::Duration::from_millis(50));
-                    draw(cx);
-                    if cx.debug_bounds(selector).is_some() {
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-                panic!("{selector} never drawn");
-            };
-            landed(cx, "saved-stash-row-0");
+            let (browser, _) = app
+                .read_with(cx, super::open_stash_list)
+                .expect("Stashes is open");
+            let row = cx
+                .debug_bounds("saved-stash-row-0")
+                .expect("the saved stash is drawn");
             // A click focuses the list; Home selects the stash from the
             // keyboard, as a person walking it with keys would.
-            let row = cx.debug_bounds("saved-stash-row-0").unwrap();
             cx.simulate_click(row.center(), Modifiers::none());
             cx.simulate_keystrokes("home");
-            landed(cx, "stash-area-0");
+            StashBrowser::lands(&browser, cx);
+            assert!(
+                cx.debug_bounds("stash-area-0").is_some(),
+                "the selected stash's inspection is drawn"
+            );
             sweep::walk(&app, cx, "Stashes", interface, &mut failures);
             sweep::close_dialogs(cx, "Stashes", interface, &mut failures);
         }

@@ -1,3 +1,5 @@
+// Only the tree-assembly test reads these, built with debug assertions.
+#[cfg(debug_assertions)]
 use crate::native_accessibility::{reachable, written};
 use crate::*;
 use core::prelude::v1::test;
@@ -374,50 +376,66 @@ fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) {
-    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+    use crate::focus_ring::sweep::{AnyOpened, Opened as _};
+    // A dialog that reads on a thread or worker of its own opens through an
+    // opener that returns it, whose `Opened` waits for those reads.
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> AnyOpened;
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
     crate::focus_ring::sweep::prepare(&app, cx);
     let dialogs: [(&str, Open); 15] = [
         ("Local reflog and recovery", |app, window, cx| {
-            app.open_reflog_browser(window, cx);
+            app.open_reflog_browser(window, cx).erased()
         }),
         ("Edit local commits", |app, window, cx| {
-            app.open_interactive_rebase(None, window, cx)
+            app.open_interactive_rebase(None, window, cx);
+            ().erased()
         }),
         ("Review rewritten series", |app, window, cx| {
-            app.open_rewrite_review(window, cx)
+            app.open_series_review(window, cx).erased()
         }),
         ("Command palette", |app, window, cx| {
-            app.open_command_palette(window, cx)
+            app.open_command_palette(window, cx);
+            ().erased()
         }),
         ("Quick Open File", |app, window, cx| {
-            app.open_quick_file(window, cx)
+            app.open_quick_form(window, cx).erased()
         }),
         ("Keyboard Shortcuts", |app, window, cx| {
-            app.shortcut_help(window, cx)
+            app.shortcut_help(window, cx);
+            ().erased()
         }),
-        ("Tags", |app, window, cx| app.open_tags(window, cx)),
-        ("Stashes", |app, window, cx| app.open_stashes(window, cx)),
+        ("Tags", |app, window, cx| {
+            app.open_tags(window, cx);
+            ().erased()
+        }),
+        ("Stashes", |app, window, cx| {
+            app.open_stash_browser(window, cx).erased()
+        }),
         ("Worktrees", |app, window, cx| {
-            app.open_worktree_manager(window, cx)
+            app.open_worktree_manager_entity(window, cx).erased()
         }),
         ("GitHub pull requests", |app, window, cx| {
-            app.open_github(window, cx)
+            app.open_github(window, cx);
+            ().erased()
         }),
         ("New theme", |app, window, cx| {
-            app.open_theme_editor(None, window, cx)
+            app.open_theme_editor(None, window, cx);
+            ().erased()
         }),
         ("GitTurtle activity", |app, window, cx| {
-            app.open_activity(window, cx)
+            app.open_activity(window, cx);
+            ().erased()
         }),
         ("Git profiles", |app, window, cx| {
-            app.open_profiles(window, cx)
+            app.open_profiles(window, cx);
+            ().erased()
         }),
         ("Compare local revisions", |app, window, cx| {
-            app.open_revision_comparison(window, cx)
+            app.open_compare_form(window, cx).erased()
         }),
         ("Saved recovery drafts", |app, window, cx| {
-            app.open_recovery_drafts(window, cx)
+            app.open_recovery_drafts(window, cx);
+            ().erased()
         }),
     ];
     for (title, open) in dialogs {
@@ -547,15 +565,20 @@ async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) 
 #[cfg(target_os = "linux")]
 #[gpui::test]
 async fn a_dialog_closed_with_escape_leaves_the_page_on_the_bus(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep::{AnyOpened, Opened as _};
     use crate::native_accessibility::atspi_state_tests::closed_with_escape;
-    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+    // The Reflog and Stashes read on threads of their own, which their
+    // openers' `Opened` waits for.
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> AnyOpened;
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
     crate::focus_ring::sweep::prepare(&app, cx);
     let dialogs: [(&str, Open); 3] = [
         ("Local reflog and recovery", |app, window, cx| {
-            app.open_reflog_browser(window, cx);
+            app.open_reflog_browser(window, cx).erased()
         }),
-        ("Stashes", |app, window, cx| app.open_stashes(window, cx)),
+        ("Stashes", |app, window, cx| {
+            app.open_stash_browser(window, cx).erased()
+        }),
         // A reviewed write's last step, which the discard review and every
         // Git write share; Escape runs nothing.
         ("Stage every file", |app, window, cx| {
@@ -566,7 +589,8 @@ async fn a_dialog_closed_with_escape_leaves_the_page_on_the_bus(cx: &mut TestApp
                 gitturtle_core::WriteCommand::StageAll,
                 window,
                 cx,
-            )
+            );
+            ().erased()
         }),
     ];
     for (surface, open) in dialogs {
