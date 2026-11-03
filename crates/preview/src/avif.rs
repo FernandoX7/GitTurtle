@@ -2541,6 +2541,22 @@ int main(void) {
         let output = Command::new(&binary).output().unwrap();
         let output = String::from_utf8(output.stdout).unwrap();
         println!("{output}");
+        // The host beside the layouts in the hosted log: the CPU features
+        // that choose libdav1d's assembly (`flags` on x86-64, `Features` on
+        // AArch64), the libdav1d the helper loads and the headers built here.
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let features = cpuinfo
+            .lines()
+            .find(|line| line.starts_with("flags") || line.starts_with("Features"));
+        println!("cpu {}", features.unwrap_or("features unknown"));
+        let loaded = crate::libdav1d_version().unwrap_or_default();
+        println!("libdav1d {loaded}");
+        let headers = Command::new("pkg-config")
+            .args(["--modversion", "dav1d"])
+            .output()
+            .expect("pkg-config runs");
+        let headers = String::from_utf8_lossy(&headers.stdout);
+        println!("libdav1d headers {}", headers.trim());
         let c: BTreeMap<String, usize> = output
             .lines()
             .map(|line| {
