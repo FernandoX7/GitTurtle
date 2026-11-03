@@ -870,6 +870,8 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     }
     let return_focus = window.focused(cx);
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
+    #[cfg(test)]
+    OPENED_HELP.with_borrow_mut(|opened| *opened = Some(help.downgrade()));
     let focus = help.read(cx).query.read(cx).focus_handle(cx);
     hints.register(&focus, DialogKeys::Shortcuts);
     window.open_alert_dialog(cx, move |dialog, window, cx| {
@@ -1267,9 +1269,62 @@ struct ShortcutHelpView {
     /// height cap changes its height, it keeps a selected entry it showed
     /// whole in view.
     list_height: std::rc::Rc<std::cell::Cell<Laid>>,
+    /// The count the list's status announces, its accessible name: the
+    /// count the search last rested on ([`COUNT_REST`]). The line draws the
+    /// count at once; an assistive technology announces a live node as its
+    /// name changes, so a name that followed each key press was announced
+    /// on each one, and the echo of the next key cut it off.
+    announced: SharedString,
+    /// The selected entry its status announces, its accessible name: the
+    /// entry the search last rested on, with the count, or the one Up, Down,
+    /// Home, End, a page key or a click moved to, at once. Each key into the
+    /// search selects its list's first entry, so a name that followed it was
+    /// announced on each key, as the count was.
+    announced_entry: SharedString,
+    /// The rest the search's next count waits for ([`Self::settle_count`]):
+    /// replaced by each change to the search, so only the last one runs,
+    /// and dropped as the dialog closes.
+    settling: Option<Task<()>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
     _subscription: Subscription,
+}
+
+/// How long the search in Keyboard Shortcuts rests before its count is
+/// announced: longer than the pause between keys in steady typing, so the
+/// count is announced once per pause, after the screen reader has echoed the
+/// last key (decision, 2026-11-02: typing "palette" at 60 ms a key, Orca
+/// spoke "34 shortcuts" and never the settled "1 shortcut", each status cut
+/// off by the echo of the next key).
+pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[cfg(test)]
+thread_local! {
+    /// The count Keyboard Shortcuts last drew above its list, for a test to
+    /// compare with what its status announces.
+    static DRAWN_COUNT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    /// The Keyboard Shortcuts view last opened, for a test to read its state.
+    static OPENED_HELP: std::cell::RefCell<Option<WeakEntity<ShortcutHelpView>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The selected entry's status reading of `rows`' row `selected`, its label
+/// and its key ("Command Palette: Ctrl+Shift+P"), or nothing where that row
+/// is not an entry.
+fn entry_reading(rows: &[HelpRow], selected: usize) -> SharedString {
+    match rows.get(selected) {
+        Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key).into(),
+        _ => SharedString::default(),
+    }
+}
+
+/// The status's reading of `rows`' entries, "1 shortcut" or "61 shortcuts".
+fn counted_entries(rows: &[HelpRow]) -> SharedString {
+    let count = rows
+        .iter()
+        .filter(|row| matches!(row, HelpRow::Entry(_)))
+        .count();
+    crate::counted(count, "shortcut", "shortcuts").into()
 }
 
 impl ShortcutHelpView {
@@ -1292,6 +1347,7 @@ impl ShortcutHelpView {
                 this.scroll.set_offset(point(px(0.), px(0.)));
                 this.scroll
                     .scroll_to_item(this.selected, ScrollStrategy::Bottom);
+                this.settle_count(cx);
                 cx.notify();
             }
         });
@@ -1299,6 +1355,9 @@ impl ShortcutHelpView {
         Self {
             query,
             layout: RowLayout::new(&rows),
+            announced: counted_entries(&rows),
+            announced_entry: entry_reading(&rows, 1),
+            settling: None,
             rows,
             selected: 1,
             scroll: gpui_kit::base::VirtualListScrollHandle::new(),
@@ -1307,6 +1366,35 @@ impl ShortcutHelpView {
             closed: false,
             _subscription: subscription,
         }
+    }
+
+    /// Announces the list's count, and the entry the search selected, once
+    /// the search has rested for [`COUNT_REST`] since this change, each
+    /// unless it is the one last announced: each change drops the rest the
+    /// one before it began, so a burst of keys announces only the count and
+    /// entry it ends on, once, and what the search comes back to is not
+    /// announced again.
+    fn settle_count(&mut self, cx: &mut Context<Self>) {
+        let rest = cx.background_executor().timer(COUNT_REST);
+        self.settling = Some(cx.spawn(async move |this, cx| {
+            rest.await;
+            let _ = this.update(cx, |this, cx| {
+                this.settling = None;
+                let counted = counted_entries(&this.rows);
+                let entry = entry_reading(&this.rows, this.selected);
+                if counted != this.announced || entry != this.announced_entry {
+                    this.announced = counted;
+                    this.announced_entry = entry;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// Announces the selected entry at once, as a person's move to it
+    /// does.
+    fn announce_entry(&mut self) {
+        self.announced_entry = entry_reading(&self.rows, self.selected);
     }
 
     /// Lists `rows`, with their heights at the interface size.
@@ -1393,6 +1481,7 @@ impl ShortcutHelpView {
             return;
         }
         self.selected = entries[to];
+        self.announce_entry();
         self.reveal_selected(Reveal::Centre);
         cx.notify();
     }
@@ -1403,6 +1492,8 @@ impl ShortcutHelpView {
             return;
         }
         self.closed = true;
+        // A count still resting is never announced.
+        self.settling = None;
         window.close_dialog(cx);
         if let Some(focus) = &self.return_focus {
             focus.focus(window, cx);
@@ -1509,6 +1600,7 @@ impl Render for ShortcutHelpView {
                                 // the heading cut.
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.selected = index;
+                                    this.announce_entry();
                                     this.reveal_selected(Reveal::Nearest);
                                     cx.notify();
                                 })),
@@ -1549,16 +1641,20 @@ impl Render for ShortcutHelpView {
             // status as it was and announces nothing; drawn and named as one
             // line, the polite status was announced again ("61 shortcuts")
             // as a resize crossed the width where the legend fits. Only a
-            // changed count is announced.
+            // changed count is announced, and only once the search has
+            // rested (`settle_count`): the line draws each key's count at
+            // once, while the status is named by the count last announced.
             .child({
                 let counted = crate::counted(count, "shortcut", "shortcuts");
+                #[cfg(test)]
+                DRAWN_COUNT.with_borrow_mut(|drawn| drawn.clone_from(&counted));
                 let legend = legend_fits(count, help_width(window), window).then(|| {
                     native_accessibility::static_text(div().id("shortcut-help-legend"), modifier_legend())
                         .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
                 });
                 div().flex().text_color(rgb(p.muted))
                     .child(native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
-                        .polite(), counted.clone()).child(counted))
+                        .polite(), self.announced.clone()).child(counted))
                     .children(legend)
             })
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
@@ -1632,14 +1728,13 @@ impl Render for ShortcutHelpView {
             // needed above the dialog's clip. It lies along the view's top
             // instead, which the dialog always draws: along its foot, it lay
             // past the clip wherever the dialog cut its foot, and the AT-SPI
-            // adapter reported it not showing.
+            // adapter reported it not showing. It is named by the entry last
+            // announced (`announced_entry`): a search's entry once the search
+            // rests, with the count, and a moved selection at once.
             .child(native_accessibility::static_text(
                 div().id("shortcut-help-selected").role(Role::Status).polite()
                     .absolute().left_0().top_0().w_full().h(px(1.)).overflow_hidden(),
-                match self.rows.get(self.selected) {
-                    Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key),
-                    _ => String::new(),
-                }))
+                self.announced_entry.clone()))
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
                 // Every key the list takes: it named Up and Down alone. The
                 // search keeps its other editing keys, Shift-Home and
@@ -3355,6 +3450,330 @@ mod list_tests {
                 "{keys} selects {selected:?} in the search"
             );
         }
+        close(cx);
+    }
+
+    /// What a screen reader hears from the count above the list, frame by
+    /// frame: the polite status's name each time it changes, as AT-SPI
+    /// announces a live node whose name changes, and on Linux what the
+    /// window's AT-SPI adapter itself announced, fed each frame's tree.
+    struct Heard {
+        /// The status listened to, by element ID.
+        node: &'static str,
+        /// Whether the AT-SPI adapter's announcement is this status's.
+        #[cfg(target_os = "linux")]
+        says: fn(&str) -> bool,
+        named: Option<String>,
+        heard: Vec<String>,
+        #[cfg(target_os = "linux")]
+        bus: crate::native_accessibility::atspi_state_tests::Bus,
+        #[cfg(target_os = "linux")]
+        adapter: Vec<String>,
+    }
+
+    impl Heard {
+        /// Starts listening to the open dialog's count, as it opened
+        /// already heard.
+        fn new(cx: &mut VisualTestContext) -> Self {
+            Self::to("shortcut-help-count", cx, |said| {
+                said.ends_with(" shortcut") || said.ends_with(" shortcuts")
+            })
+        }
+
+        /// Starts listening to the open dialog's selected entry, as it
+        /// opened already heard.
+        fn entry(cx: &mut VisualTestContext) -> Self {
+            // An entry reads its label and its key, which a count does not.
+            Self::to("shortcut-help-selected", cx, |said| said.contains(": "))
+        }
+
+        /// Starts listening to the status `node`, whose announcements on
+        /// the AT-SPI bus `says` tells apart.
+        fn to(node: &'static str, cx: &mut VisualTestContext, says: fn(&str) -> bool) -> Self {
+            #[cfg(target_os = "linux")]
+            let bus = crate::native_accessibility::atspi_state_tests::Bus::new(
+                crate::native_accessibility::atspi_state_tests::next_frame(cx),
+            );
+            // Only Linux has an AT-SPI adapter to tell announcements apart.
+            #[cfg(not(target_os = "linux"))]
+            let _ = says;
+            let mut heard = Self {
+                node,
+                #[cfg(target_os = "linux")]
+                says,
+                named: None,
+                heard: Vec::new(),
+                #[cfg(target_os = "linux")]
+                bus,
+                #[cfg(target_os = "linux")]
+                adapter: Vec::new(),
+            };
+            heard.frame(cx);
+            heard.heard.clear();
+            #[cfg(target_os = "linux")]
+            heard.adapter.clear();
+            heard
+        }
+
+        /// Draws a frame and records what it announces.
+        fn frame(&mut self, cx: &mut VisualTestContext) {
+            use crate::native_accessibility::written;
+            #[cfg(target_os = "linux")]
+            let tree = crate::native_accessibility::atspi_state_tests::next_frame(cx);
+            #[cfg(not(target_os = "linux"))]
+            {
+                written::forget();
+                draw(cx);
+            }
+            // A status added with a name is announced as it is added, as
+            // the dialog opens; one no longer drawn is gone.
+            let name = written::get(self.node).and_then(|status| {
+                assert_eq!(
+                    written::announced(self.node).map(|live| live.live),
+                    Some(gpui::accesskit::Live::Polite),
+                    "{} is a polite status",
+                    self.node
+                );
+                status.node.label().map(str::to_owned)
+            });
+            if name != self.named {
+                self.heard.extend(name.clone());
+                self.named = name;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                self.bus.update(tree);
+                let says = self.says;
+                self.adapter
+                    .extend(self.bus.announced().into_iter().filter(|said| says(said)));
+            }
+        }
+
+        /// Lets the test clock run `millis` and draws, recording what the
+        /// frame announces.
+        fn wait(&mut self, cx: &mut VisualTestContext, millis: u64) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            cx.run_until_parked();
+            self.frame(cx);
+        }
+
+        /// What was announced since the last call, which on Linux the AT-SPI
+        /// adapter announced too.
+        fn take(&mut self) -> Vec<String> {
+            let heard = std::mem::take(&mut self.heard);
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                std::mem::take(&mut self.adapter),
+                heard,
+                "the AT-SPI adapter announces what the status's name says"
+            );
+            heard
+        }
+    }
+
+    /// The count Keyboard Shortcuts draws above its list.
+    fn drawn_count() -> String {
+        DRAWN_COUNT.with_borrow(Clone::clone)
+    }
+
+    /// The count a search for `query` draws.
+    fn count_for(query: &str) -> String {
+        counted_entries(&help_matches(query)).to_string()
+    }
+
+    /// Typing "palette" into Keyboard Shortcuts' search 60 ms a key, as
+    /// steady typing does, draws each key's count at once and announces
+    /// only the count the search rests on, once, 500 ms after the last key
+    /// ([`COUNT_REST`]): not at 499 ms, and nothing more after it. The status
+    /// was named by each key's count, so each was announced, and Orca's echo
+    /// of the next key cut it off: at 60 ms a key it spoke "34 shortcuts"
+    /// and never the settled "1 shortcut".
+    #[gpui::test]
+    async fn a_burst_of_keys_announces_only_the_count_it_rests_on(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let settled = count_for("palette");
+        assert_ne!(count_for("p"), settled, "the first key counts more");
+        let mut typed = String::new();
+        for key in "palette".chars() {
+            typed.push(key);
+            cx.simulate_input(&key.to_string());
+            heard.frame(cx);
+            assert_eq!(
+                drawn_count(),
+                count_for(&typed),
+                "after {typed:?} the line draws its count at once"
+            );
+            heard.wait(cx, 60);
+        }
+        heard.wait(cx, 499 - 60);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the search has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&settled),
+            "the settled count, once"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        assert_eq!(drawn_count(), settled, "the line draws what was announced");
+        close(cx);
+    }
+
+    /// A pause after each key announces each key's count: "p", a rest, then
+    /// "a" and a rest announce both counts. A count the search comes back to
+    /// within the rest is not announced again: "l" and Backspace inside the
+    /// rest leave the count announced for "pa", and nothing is said.
+    #[gpui::test]
+    async fn a_pause_after_each_key_announces_each_count_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        assert_ne!(
+            count_for("p"),
+            count_for("pa"),
+            "the second key counts fewer"
+        );
+        assert_ne!(
+            count_for("pal"),
+            count_for("pa"),
+            "and the third fewer still"
+        );
+        for (key, typed) in [("p", "p"), ("a", "pa")] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, COUNT_REST.as_millis() as u64);
+            assert_eq!(
+                heard.take(),
+                [count_for(typed)],
+                "{typed:?} and a rest announce its count"
+            );
+        }
+        cx.simulate_input("l");
+        heard.wait(cx, 100);
+        cx.simulate_keystrokes("backspace");
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(drawn_count(), count_for("pa"), "back at \"pa\"");
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "the count announced last is not announced again"
+        );
+        close(cx);
+    }
+
+    /// The selected entry's status rests with the count: typing two keys 60 ms a
+    /// key, each key selecting its list's first entry, announces only the
+    /// entry the search rests on, once, 500 ms after the last key and not at
+    /// 499; Down then announces the entry it moves to at once, and nothing
+    /// follows. Named by each key's first entry, the status was announced on
+    /// every key that changed it, as the count was.
+    #[gpui::test]
+    async fn the_selected_entry_is_announced_once_the_search_rests(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::entry(cx);
+        let entries = |rows: &[HelpRow]| -> Vec<usize> {
+            (0..rows.len())
+                .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
+                .collect()
+        };
+        // A search of two keys that finds two entries or more and selects
+        // another first entry than the whole list's.
+        let whole = entry_reading(&help_matches(""), 1);
+        let query = ["ta", "hi", "br", "co", "st", "re"]
+            .into_iter()
+            .find(|query| {
+                let rows = help_matches(query);
+                entries(&rows).len() > 1 && entry_reading(&rows, 1) != whole
+            })
+            .expect("a two-key search selects another entry");
+        let rows = help_matches(query);
+        let (first, second) = (
+            entry_reading(&rows, 1).to_string(),
+            entry_reading(&rows, entries(&rows)[1]).to_string(),
+        );
+        for key in query.chars() {
+            let key = key.to_string();
+            cx.simulate_input(&key);
+            heard.frame(cx);
+            heard.wait(cx, 60);
+        }
+        heard.wait(cx, 499 - 60);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the search has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(heard.take(), [first], "the entry the search rests on, once");
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        assert_eq!(heard.take(), [second], "Down announces its entry at once");
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        close(cx);
+    }
+
+    /// Closing Keyboard Shortcuts while its count rests announces nothing:
+    /// "p" typed and Escape pressed 100 ms later, the rest passes in silence,
+    /// and the dialog opened again announces only its own whole count as it
+    /// opens.
+    #[gpui::test]
+    async fn closing_while_the_count_rests_announces_nothing(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let view = OPENED_HELP
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open view");
+        cx.simulate_input("p");
+        heard.wait(cx, 100);
+        assert!(
+            cx.update(|_, cx| view.read(cx).settling.is_some()),
+            "the count rests"
+        );
+        cx.simulate_keystrokes("escape");
+        heard.frame(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the dialog"
+        );
+        // Held here past its close, the view no longer waits for the rest.
+        assert!(
+            cx.update(|_, cx| view.read(cx).settling.is_none()),
+            "closing drops the count's rest"
+        );
+        drop(view);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "the rest passes in silence"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let whole = count_for("");
+        assert_eq!(drawn_count(), whole, "the dialog opens on its whole list");
+        assert!(
+            heard.take().iter().all(|said| *said == whole),
+            "nothing of the closed search is announced"
+        );
         close(cx);
     }
 }

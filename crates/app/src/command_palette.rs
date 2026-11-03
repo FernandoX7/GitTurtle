@@ -1542,8 +1542,10 @@ mod render_tests {
         draw(cx);
         cx.simulate_input("command palette");
         // The list's height lands in its first frame; the scroll that keeps
-        // the entry in view, in the next, whose nodes are read.
+        // the entry in view, in the next, whose nodes are read, once the
+        // search has rested and the status announces its count.
         draw(cx);
+        cx.executor().advance_clock(crate::shortcuts::COUNT_REST);
         written::forget();
         draw(cx);
         let list = cx.debug_bounds("shortcut-help-results").expect("the list");
@@ -1732,9 +1734,9 @@ mod render_tests {
     /// as the count changes: at 18 pt, resizing the window between 640 and
     /// 400 px wide brings and takes the modifier legend after the count and
     /// leaves the status's name as it was, "61 shortcuts", while a search
-    /// changes it. Drawn and named as one line, the status's name changed as
-    /// a resize crossed the width where the legend fits, and AT-SPI
-    /// announces a live region whose name changes.
+    /// changes it once the search has rested. Drawn and named as one line,
+    /// the status's name changed as a resize crossed the width where the
+    /// legend fits, and AT-SPI announces a live region whose name changes.
     #[gpui::test]
     async fn the_shortcut_count_is_announced_only_as_it_changes(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -1780,10 +1782,11 @@ mod render_tests {
         );
         cx.simulate_input("command palette");
         draw(cx);
+        cx.executor().advance_clock(crate::shortcuts::COUNT_REST);
         assert_eq!(
             read(cx).0.as_deref(),
             Some("1 shortcut"),
-            "a search changes the count"
+            "a search changes the count once it rests"
         );
         cx.simulate_keystrokes("escape");
         draw(cx);
