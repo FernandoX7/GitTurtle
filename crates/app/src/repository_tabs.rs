@@ -1132,6 +1132,7 @@ impl GitTurtle {
             self.restore_commit_draft(path, window, cx);
         }
         self.resume_file_history(window, cx);
+        self.resume_tab_preview(window, cx);
         self.ensure_local_watcher(true, window, cx);
         self.queue_automatic_refresh(
             local_refresh::LocalChange {
@@ -1858,6 +1859,27 @@ impl GitTurtle {
         } else {
             self.request_restored_comparison(saved, window, cx);
         }
+    }
+
+    /// Reads again the preview a warm tab shown again in Compare was left
+    /// reading, which the switch cancelled (`retain_active_tab`), without
+    /// activating its file, as File history reads its selected revision
+    /// again (`resume_file_history`). A comparison restored with the tab is
+    /// read again under its own label first (`resume_tab_documents`), and
+    /// File history's revision by File history, so neither is read twice;
+    /// attribution shown over the comparison reads it as it closes. A Quick
+    /// Open source is read as it was opened, by its tracked read
+    /// (`read_selected_preview`). The tab came back in Compare with its file
+    /// selected, no content and nothing reading it.
+    fn resume_tab_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != WorkspaceMode::Compare
+            || self.content.is_some()
+            || self.loading.is_some()
+            || self.blame.is_visible()
+        {
+            return;
+        }
+        self.read_selected_preview(window, cx);
     }
 
     /// Restores the documents of the comparison restored with the tab to
@@ -6421,12 +6443,26 @@ mod tests {
                 });
                 break;
             }
-            // Shown again, the second tab comes back as it was saved.
+            // Shown again, the second tab comes back as it was saved. Left
+            // warm while its comparison was read, it reads it once, under
+            // its own label (`resume_tab_documents`), before a returning
+            // tab's preview would be read again (`resume_tab_preview`).
+            let previews = app.read_with(cx, |app, _| app.worker.previews());
+            let comparison = stage == ColdStage::Comparison;
             cx.update(|window, cx| {
-                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+                app.update(cx, |app, cx| {
+                    app.switch_repository_tab(1, window, cx);
+                    if comparison {
+                        assert_eq!(app.loading, Some(RESTORED_PREVIEW_LABEL), "{when}");
+                        assert_eq!(app.worker.previews(), previews + 1, "{when}: one read");
+                    }
+                })
             });
             settle_tab_test(&app, cx).await;
             app.read_with(cx, |app, _| {
+                if comparison {
+                    assert_eq!(app.worker.previews(), previews + 1, "{when}: read once");
+                }
                 assert_eq!(app.repository_tabs.active, Some(1), "{when}");
                 assert_eq!(selected_oid(app), Some(second_oid.clone()), "{when}");
                 let file = app.selected_file.and_then(|index| app.files.get(index));
@@ -6459,4 +6495,184 @@ mod tests {
         }
     }
 
+    /// A warm tab left while its comparison's preview is read reads it
+    /// again as it is shown again: one read, of the same file, whose reply
+    /// shows. Back still cancels such a read and stays in History when the
+    /// reply would have landed. The switch cancelled the read, and the tab
+    /// came back in Compare with its file selected, no content and nothing
+    /// reading it.
+    #[gpui::test]
+    async fn a_tab_left_while_its_preview_is_read_reads_it_again(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let shown = |app: &GitTurtle| {
+            app.selected_file
+                .and_then(|index| app.files.get(index))
+                .cloned()
+        };
+        let hold = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            })
+        };
+        // The first tab's preview is read, held, as the tab is left.
+        let held = hold(cx);
+        let file = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_file(0, window, cx);
+                assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                let file = shown(app).expect("a selected file");
+                app.switch_repository_tab(1, window, cx);
+                file
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        for back in [false, true] {
+            let held = hold(cx);
+            let previews = app.read_with(cx, |app, _| app.worker.previews());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.switch_repository_tab(0, window, cx);
+                    assert!(app.mode == WorkspaceMode::Compare);
+                    assert_eq!(shown(app).as_ref(), Some(&file), "its file stays selected");
+                    assert_eq!(
+                        app.loading,
+                        Some(PREVIEW_LABEL),
+                        "its preview is read again"
+                    );
+                    assert_eq!(app.worker.previews(), previews + 1, "once");
+                    if back {
+                        app.automatic.hold_quiet_reads(true);
+                        app.back_to_history(window, cx);
+                        assert_eq!(app.loading, None, "Back cancels the read");
+                    }
+                })
+            });
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(
+                    app.worker.previews(),
+                    previews + 1,
+                    "nothing reads it twice"
+                );
+                if back {
+                    assert!(
+                        app.mode == WorkspaceMode::History,
+                        "the reply opens nothing"
+                    );
+                    assert!(app.content.is_none());
+                } else {
+                    assert!(app.mode == WorkspaceMode::Compare);
+                    assert_eq!(shown(app).as_ref(), Some(&file));
+                    assert!(app.content.is_some(), "its reply shows");
+                }
+            });
+            if !back {
+                // Left again while it is read, for Back on the return.
+                let held = hold(cx);
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.clear_preview();
+                        app.load_file(0, window, cx);
+                        assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                        app.switch_repository_tab(1, window, cx);
+                    })
+                });
+                drop(held);
+                settle_tab_test(&app, cx).await;
+            }
+        }
+    }
+
+    /// A warm tab left while its Quick Open working-tree source is read
+    /// reads it again as it returns, as it was opened, by one tracked read
+    /// and no comparison read: the file's working content shows. Read again
+    /// as a comparison, the source asked for neither side's object, since
+    /// its working side has none, and showed an empty file.
+    #[gpui::test]
+    async fn a_tab_left_while_its_source_is_read_reads_it_again(cx: &mut TestAppContext) {
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        // The fixture's history is imported: its file is checked out and
+        // changed, for a working-tree source of its own.
+        let first_path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        crate::tags::tests::git(&first_path, &["reset", "--quiet", "--hard"]);
+        std::fs::write(first_path.join("notes.txt"), "working notes\n").unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let repo = crate::views::tests::fixture_repository(second.path().join("second"));
+        std::fs::write(repo.path().join("second.txt"), "second notes\n").unwrap();
+        crate::tags::tests::git(repo.path(), &["add", "second.txt"]);
+        crate::tags::tests::git(repo.path(), &["commit", "--quiet", "-m", "second notes"]);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let hold = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            })
+        };
+        let reads = |app: &GitTurtle| (app.worker.previews(), app.worker.tracked_previews());
+        // The source is read, held, as the tab is left.
+        let held = hold(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let repo = app.repository.clone().expect("a repository");
+                let paths = repo
+                    .search_tracked_paths(
+                        &PathScope::Worktree,
+                        "notes",
+                        &HistoryCancellation::default(),
+                    )
+                    .expect("tracked paths");
+                let entry = paths.entries.first().expect("the file").clone();
+                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                assert_eq!(app.loading, Some("Reading tracked file…"));
+                app.switch_repository_tab(1, window, cx);
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        let held = hold(cx);
+        let (previews, tracked) = app.read_with(cx, |app, _| reads(app));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(0, window, cx);
+                assert!(app.is_quick_source(), "the source stays shown");
+                assert_eq!(
+                    app.loading,
+                    Some("Reading tracked file…"),
+                    "it is read again"
+                );
+                assert_eq!(reads(app), (previews, tracked + 1), "by its tracked read");
+            })
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(reads(app), (previews, tracked + 1), "once");
+            assert!(app.mode == WorkspaceMode::Compare && app.is_quick_source());
+            assert!(
+                matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { new, .. }) if new == "working notes\n"
+                ),
+                "its working content shows"
+            );
+        });
+    }
 }

@@ -3128,10 +3128,8 @@ impl GitTurtle {
                         if let Some((index, area)) = self.working_selected {
                             self.select_working(index, area, window, cx);
                         }
-                    } else if !self.reload_tracked_inspection(window, cx)
-                        && let Some(index) = self.selected_file
-                    {
-                        self.load_file(index, window, cx);
+                    } else {
+                        self.read_selected_preview(window, cx);
                     }
                 }
             } else {

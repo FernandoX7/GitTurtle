@@ -549,10 +549,8 @@ impl GitTurtle {
             && !self.blame.is_visible()
             && self.content.is_none()
             && self.error.is_none()
-            && !self.reload_tracked_inspection(window, cx)
-            && let Some(index) = self.selected_file
         {
-            self.load_file(index, window, cx);
+            self.read_selected_preview(window, cx);
         }
         // Page transitions and explicit writes may close this pane too. Wait
         // until their current handler finishes before resuming queued changes.

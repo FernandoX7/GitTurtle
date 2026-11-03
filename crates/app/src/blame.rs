@@ -204,11 +204,8 @@ impl GitTurtle {
             .take()
             .map(|previous| *previous)
             .unwrap_or_default();
-        if self.mode == WorkspaceMode::Compare
-            && self.content.is_none()
-            && let Some(index) = self.selected_file
-        {
-            self.load_file(index, window, cx);
+        if self.mode == WorkspaceMode::Compare && self.content.is_none() {
+            self.read_selected_preview(window, cx);
         }
         // Blame holds quiet reads off while it is shown, as File history
         // does; they start once this handler has finished. A quiet read it
@@ -812,5 +809,72 @@ mod tests {
             },
             Pending::History(3)
         ));
+    }
+
+    /// Attribution opened over a Quick Open working-tree source, whose read
+    /// it cancels, and closed, reads the source again as it was opened, by
+    /// its tracked read and no comparison read: the file's working content
+    /// shows. Read again as a comparison, the source asked for neither
+    /// side's object, since its working side has none, and showed an empty
+    /// file.
+    #[gpui_kit::test]
+    async fn closing_attribution_over_a_source_shows_its_content(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::{Content, GitTurtle, WorkspaceMode};
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // The fixture's history is imported: its file is checked out and
+        // changed, for a working-tree source of its own.
+        let path = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        crate::tags::tests::git(&path, &["reset", "--quiet", "--hard"]);
+        std::fs::write(path.join("notes.txt"), "working notes\n").unwrap();
+        crate::views::tests::settle(&app, cx).await;
+        let reads = |app: &GitTurtle| (app.worker.previews(), app.worker.tracked_previews());
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let repo = app.repository.clone().expect("a repository");
+                let paths = repo
+                    .search_tracked_paths(
+                        &PathScope::Worktree,
+                        "notes",
+                        &HistoryCancellation::default(),
+                    )
+                    .expect("tracked paths");
+                let entry = paths.entries.first().expect("the file").clone();
+                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                assert_eq!(app.loading, Some("Reading tracked file…"));
+                app.open_blame(0, window, cx);
+                assert!(app.blame.is_visible());
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        let (previews, tracked) = app.read_with(cx, |app, _| {
+            assert!(app.content.is_none(), "the source's read was cancelled");
+            reads(app)
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.close_blame(window, cx));
+                assert_eq!(app.loading, Some("Reading tracked file…"));
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(reads(app), (previews, tracked + 1), "by its tracked read");
+            assert!(app.mode == WorkspaceMode::Compare && app.is_quick_source());
+            assert!(
+                matches!(
+                    app.content.as_deref(),
+                    Some(Content::Text { new, .. }) if new == "working notes\n"
+                ),
+                "its working content shows"
+            );
+        });
     }
 }

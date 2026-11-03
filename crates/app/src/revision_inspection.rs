@@ -416,10 +416,8 @@ impl GitTurtle {
                 if let Some((index, area)) = self.working_selected {
                     self.select_working(index, area, window, cx);
                 }
-            } else if !self.reload_tracked_inspection(window, cx)
-                && let Some(index) = self.selected_file
-            {
-                self.load_file(index, window, cx);
+            } else {
+                self.read_selected_preview(window, cx);
             }
         }
         let owner = cx.entity().downgrade();
@@ -441,11 +439,24 @@ impl GitTurtle {
             )
     }
 
-    pub(super) fn reload_tracked_inspection(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    /// Reads the selected file's preview again without activating it, as
+    /// it was first read: a Quick Open source through its own tracked read,
+    /// whose working-tree side has no object to read, any other comparison
+    /// through `load_file`. Each way back to a comparison left with no
+    /// content reads it here: an inspection, File history or attribution
+    /// closed over it, an LFS download for it, a warm tab shown again
+    /// (`resume_tab_preview`). Read through `load_file`, a working-tree
+    /// source asked for a comparison with neither side's object, and showed
+    /// an empty file.
+    pub(super) fn read_selected_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.reload_tracked_inspection(window, cx)
+            && let Some(index) = self.selected_file
+        {
+            self.load_file(index, window, cx);
+        }
+    }
+
+    fn reload_tracked_inspection(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.is_quick_source() {
             return false;
         }

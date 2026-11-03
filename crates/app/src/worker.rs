@@ -592,6 +592,14 @@ pub struct Worker {
     /// ([`Self::working_previews`]).
     #[cfg(test)]
     working_previews: AtomicU64,
+    /// Test-only: the comparison previews among them (`Job::Preview`)
+    /// ([`Self::previews`]).
+    #[cfg(test)]
+    previews: AtomicU64,
+    /// Test-only: Quick Open's source reads among them
+    /// (`Job::TrackedPreview`) ([`Self::tracked_previews`]).
+    #[cfg(test)]
+    tracked_previews: AtomicU64,
 }
 
 impl Default for Worker {
@@ -697,6 +705,10 @@ impl Worker {
             submissions: AtomicU64::new(0),
             #[cfg(test)]
             working_previews: AtomicU64::new(0),
+            #[cfg(test)]
+            previews: AtomicU64::new(0),
+            #[cfg(test)]
+            tracked_previews: AtomicU64::new(0),
         }
     }
 
@@ -713,6 +725,20 @@ impl Worker {
     #[cfg(test)]
     pub fn working_previews(&self) -> u64 {
         self.working_previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: the comparison previews (`Job::Preview`) submitted so
+    /// far, a restored comparison's included.
+    #[cfg(test)]
+    pub fn previews(&self) -> u64 {
+        self.previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: Quick Open's source reads (`Job::TrackedPreview`)
+    /// submitted so far.
+    #[cfg(test)]
+    pub fn tracked_previews(&self) -> u64 {
+        self.tracked_previews.load(Ordering::Acquire)
     }
 
     /// Test-only: keeps the reader from taking a request until the
@@ -785,6 +811,14 @@ impl Worker {
         #[cfg(test)]
         if matches!(job, Job::WorkingPreview { .. }) {
             self.working_previews.fetch_add(1, Ordering::AcqRel);
+        }
+        #[cfg(test)]
+        if matches!(job, Job::Preview { .. }) {
+            self.previews.fetch_add(1, Ordering::AcqRel);
+        }
+        #[cfg(test)]
+        if matches!(job, Job::TrackedPreview { .. }) {
+            self.tracked_previews.fetch_add(1, Ordering::AcqRel);
         }
         let (reply, receiver) = oneshot::channel();
         let (lock, ready) = &*self.queue;
