@@ -446,6 +446,38 @@ mod tests {
         }
     }
 
+    /// A real `hayro-jpeg2000` 0.4.1 panic past every preflight bound,
+    /// requirement 12's (kept for A3): a one-column 7-bit palette (no `colr`,
+    /// so grey, one output byte per pixel) whose `cmap` maps column 0 twice.
+    /// `interleave_and_convert` takes its slow path for the 7-bit planes and
+    /// writes both into the grey buffer until an `unwrap()` meets its end
+    /// (`lib.rs:482`); `serve` turns the panic into `DecoderFailed`. With the
+    /// fixture's 8-bit columns and sRGB `colr` the same mapping decodes.
+    #[test]
+    fn a_hayro_panic_past_the_preflight_ends_as_decoder_failed() {
+        let palette = fixture("jpeg2000-palette.jp2");
+        // Four entries in one 7-bit column.
+        let one_column = jp2_box(b"pclr", &[0, 4, 1, 6, 0, 40, 80, 127]);
+        let bytes = jp2(
+            &[
+                &whole_box(&palette, b"ihdr"),
+                &one_column,
+                &cmap(&[entry(0, 1, 0); 2]),
+            ],
+            &palette,
+        );
+        // 64 × 48 f32 samples in one component and two mapped planes, and
+        // the one 64 × 48 tile-component: well inside the budget.
+        assert_eq!(
+            jpeg2000::preflight(&bytes).unwrap().decode_bytes(0),
+            64 * 48 * 4 * (1 + 2) + 64 * 48 * 4
+        );
+        assert_eq!(
+            jpeg2000(&bytes, 1600).unwrap_err(),
+            ImageErrorKind::DecoderFailed
+        );
+    }
+
     #[test]
     fn hostile_jpeg2000_ends_in_its_error_kind_before_decoding() {
         use ImageErrorKind::*;
