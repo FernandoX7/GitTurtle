@@ -3036,6 +3036,47 @@ mod tests {
         assert!(!labelled.zooms_lead(false, px(400.), room));
     }
 
+    /// At 13 pt and scale 1.2, as Hyprland gives a panel it cannot set to
+    /// 1.25, in a 461 × 490 window, the zoom menu leads a row of its own by
+    /// the exact-fit rule, not a device pixel early. The widths below are
+    /// inputs, not layout: a temporary probe measured them in the bundled
+    /// interface font in that window, at that size and scale, and they are
+    /// entered here as numbers, so this test pins the rule's arithmetic on
+    /// them, the device-pixel sums (`on_device_pixel_at`) and the choice
+    /// (`ToolbarForms::zooms_lead`). In device pixels the probe found the
+    /// toolbar 212 wide and its 10 px padding drawn 12 a side, so its room
+    /// is 188; the run is the mode menu's 113 (its widest choice laid out
+    /// 65 px wide), less the 7 of the inset it gives back, the gap's 8 and
+    /// the zoom menu's 75 (its widest choice 33 px): 189, one past the room.
+    /// A window a pixel wider gives a 213 device pixel toolbar and a 189
+    /// room, which the run fills exactly, and the zoom menu shares the
+    /// modes' row. QA-89 saw the menu take its own row there and asked
+    /// whether it wrapped a pixel early.
+    #[test]
+    fn at_13_pt_scale_1_2_in_461_px_the_zoom_menu_leads_one_device_pixel_past_the_room() {
+        use super::on_device_pixel_at;
+        let scale = 1.2_f32;
+        let device = |pixels: f32| px(pixels / scale);
+        // The run as `drawn_run` sums it, and the room as `drawn_room`
+        // leaves it inside a toolbar `toolbar` device pixels wide.
+        let run = on_device_pixel_at(device(113.) + device(-7.) + device(8.) + device(75.), scale);
+        let room = |toolbar: f32| on_device_pixel_at(device(toolbar) - device(12.) * 2., scale);
+        assert_eq!((run, room(212.)), (device(189.), device(188.)));
+        // At Fit the toolbar draws the zoom menu with no pan beside it.
+        let menu = ToolbarForms {
+            zooms_labelled: false,
+            pan: None,
+        };
+        assert!(
+            menu.zooms_lead(false, run, room(212.)),
+            "461 px: the run is a device pixel past the room"
+        );
+        assert!(
+            !menu.zooms_lead(false, run, room(213.)),
+            "462 px: the run fills the room exactly"
+        );
+    }
+
     /// The images can move back towards their start where they have left it,
     /// and further where they have room: a pan control that cannot move them
     /// is unavailable.
