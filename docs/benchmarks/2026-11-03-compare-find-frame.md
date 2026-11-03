@@ -1,6 +1,6 @@
 # A Compare frame with Find open, 2026-11-03
 
-This is the procedure for the release measurement of QA89F-B on the Compare render path. `3ee892ca` (`fix(app): give the find bar's controls icon forms before the field shrinks`) lays the find bar out from its own width in the frame it is drawn: `editor_find::Fitted` measures the controls (`Widths`) and takes a one-line plan from the bar's width (`Widths::plan`: the `Forms` and the plan's `lines`) as it prepaints. Split sizes both sides' bars in one layout pass (`split_diff.rs`), and the unified bar spans the line numbers (`diff_view.rs`). `88bbfa75` (Keyboard Shortcuts' count) landed with it and is not on this path. The question is what a Compare frame with Find open costs before and after: a redraw, a resize step that changes the bar's plan and one that does not, and a key typed into the field.
+This is the procedure and result of the release measurement of QA89F-B on the Compare render path. `3ee892ca` (`fix(app): give the find bar's controls icon forms before the field shrinks`) lays the find bar out from its own width in the frame it is drawn: `editor_find::Fitted` measures the controls (`Widths`) and takes a one-line plan from the bar's width (`Widths::plan`: the `Forms` and the plan's `lines`) as it prepaints. Split sizes both sides' bars in one layout pass (`split_diff.rs`), and the unified bar spans the line numbers (`diff_view.rs`). `88bbfa75` (Keyboard Shortcuts' count) landed with it and is not on this path. The question is what a Compare frame with Find open costs before and after: a redraw, a resize step that changes the bar's plan and one that does not, and a key typed into the field.
 
 ## Driver
 
@@ -45,6 +45,34 @@ env -u GIT_ASKPASS -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE -u GIT_CONFIG_PARAMETER
   taskset -c 8 .local/find-frame-2026-11-03/bench-<build> \
   find_bench::find_bar_frame_release_benchmark --exact --ignored --test-threads=1
 ```
+
+## Results
+
+Measured by the coordinator on 2026-11-03 from 02:52 to 02:55 on the Asahi M2 Pro host (Omarchy, Hyprland), pinned to performance core 8, with the build slots held quiet (`.local/build-slots/quiet`; no other build ran; the native QA agent's release app was open on the desktop, mostly idle; load average fell from 11.1 to 3.9 over the six runs). Three rounds, alternating base and candidate, 200 samples a series after 20 warm-ups, 28 series a run; warm file cache, fixture made by each run.
+
+- **Base:** `8e7998ac` (the head just before QA89F-B landed) with the driver `133fd449` applied, target `.local/target-fb-base`; executable sha256 `33c13175b84cc514d43ac7c9af24fc96ddf54b3c5fb0839b1402f5b031c1d9aa`, `strings` finds `8e7998ac…` (2).
+- **Candidate:** `cfb23eee` (QA89F landed, with the driver), target `.local/target-0dd91c0`; sha256 `8276944b99be91724e2551c825cab9af60413af30d997a2bcd1048730499c10c`, `strings` finds `cfb23eee…` (3).
+
+Each sample is the action plus every frame drawn until the executor parks, plus the frame callbacks it left (`us + next_frame_us`), in µs, pooled over the three rounds (600 samples). Every action drew one frame.
+
+| Layout | Find | pt | Case | Base p50 / p95 / max | Candidate p50 / p95 / max | p50 ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| unified | closed | 13 | redraw | 1,814 / 1,886 / 1,970 | 1,852 / 1,870 / 1,903 | 1.02 |
+| unified | open | 13 | redraw | 2,089 / 2,177 / 2,232 | 2,082 / 2,161 / 2,377 | 1.00 |
+| unified | open | 13 | resize across the wrap | 2,070 / 2,110 / 2,151 | 2,004 / 2,078 / 2,129 | 0.97 |
+| unified | open | 13 | keystroke | 2,506 / 2,630 / 3,015 | 2,493 / 2,609 / 2,805 | 1.00 |
+| unified | open | 18 | resize across the wrap | 1,982 / 2,063 / 2,671 | 1,947 / 2,031 / 2,201 | 0.98 |
+| unified | open | 18 | keystroke | 2,482 / 2,569 / 2,649 | 2,430 / 2,545 / 2,690 | 0.98 |
+| Split | closed | 13 | redraw | 2,031 / 2,117 / 2,139 | 2,018 / 2,099 / 2,137 | 0.99 |
+| Split | open | 13 | redraw | 2,316 / 2,423 / 2,449 | 2,294 / 2,467 / 2,604 | 0.99 |
+| Split | open | 13 | resize across the wrap | 2,336 / 2,464 / 2,894 | 2,304 / 2,426 / 2,476 | 0.99 |
+| Split | open | 13 | keystroke | 3,246 / 3,409 / 3,668 | 3,192 / 3,347 / 3,455 | 0.98 |
+| Split | open | 18 | resize across the wrap | 2,289 / 2,400 / 2,546 | 2,259 / 2,362 / 2,526 | 0.99 |
+| Split | open | 18 | keystroke | 3,186 / 3,326 / 3,473 | 3,114 / 3,266 / 3,386 | 0.98 |
+
+All 28 series, with each round's median, are in [`raw/summary.txt`](2026-11-03-compare-find-frame/raw/summary.txt); the raw samples (compact JSON, same data as written), the run log with load averages, the executables' hashes and the run script are beside it in [`raw/`](2026-11-03-compare-find-frame/raw/).
+
+**Reading:** QA89F-B is neutral on this path. Across all 28 series the candidate's median is 0.96 to 1.02 of the base's and its p95 within about 5 %, inside the spread between rounds of one build (up to about 4 %); Split with Find open, where the bar now plans both sides in one layout pass, is 1 to 2 % faster at p50 and p95. The worst single sample in either build is 4.2 ms (Split, Find closed, 18 pt redraw, both builds), well inside a 60 Hz frame. Resizing across the one-line/wrap boundary costs what resizing within one form does. Split's first showing at 13 pt draws twelve frame callbacks and stops (a one-time settle the driver waits out before timing; not traced here).
 
 ## Limits of the method
 
