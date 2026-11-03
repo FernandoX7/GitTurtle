@@ -22,6 +22,15 @@ success-output = "never"
 # ignored test as `cargo test` did (scripts/ci/executed_tests.py compares them).
 status-level = "skip"
 
+# The Linux helper's evidence, printed on success too, so one hosted run's log
+# carries it for each runner's architecture: the image client against the real
+# binary under its filter (`/proc` status lines, dav1d's logged refusal, the
+# helper's peak memory), libdav1d's ABI probe and the PDF helper's address
+# space at confinement. Other targets compile these tests to nothing.
+[[profile.ci.overrides]]
+filter = 'binary(image_helper) | test(libdav1d_layouts_match_the_binding) | test(a_confined_helper_round_trips_a_page) | test(a_helper_started_under_an_outer_filter_round_trips_a_page)'
+success-output = "immediate"
+
 [profile.ci.junit]
 path = "junit.xml"
 

@@ -172,6 +172,56 @@ jobs:
       # shared proc-macro dependency. Only doctest names contain "(line ".
       - name: Locked workspace tests with nextest
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Print the libdav1d link and initializers
+        # Requirement 15 of the AVIF and JPEG 2000 security review
+        # (docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) on
+        # this runner's architecture: the app the tests built links the system
+        # libdav1d (NEEDED, every dav1d_* undefined), and libdav1d's DT_INIT
+        # and .init_array entries with a few instructions at each. It only
+        # reads ELF files; a missing pkg-config skips the library's records.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for tool in readelf objdump; do
+            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
+          done
+          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
+          echo "== readelf -d -W $app"
+          LC_ALL=C readelf -d -W "$app"
+          echo "== dav1d_* in its .dynsym"
+          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
+          if ! command -v pkg-config >/dev/null; then
+            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
+            exit 0
+          fi
+          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
+          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
+          echo "== readelf -d -W $lib"
+          echo "$dynamic"
+          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
+          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
+          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
+          relocations="$(LC_ALL=C readelf -r -W "$lib")"
+          targets=()
+          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
+          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
+            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
+            for ((at = array; at < array + size; at += 8)); do
+              entry="$(printf '%016x' "$at")"
+              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
+              # A RELA relocation's addend, else the address stored in place (RELR).
+              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
+              if [[ -z "$target" ]]; then
+                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
+              fi
+              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
+            done
+          fi
+          for target in "${targets[@]}"; do
+            read -r address label <<<"$target"
+            echo "== $label: $address"
+            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
+          done
       - name: Locked workspace doctests
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Locked all-target Clippy
@@ -424,6 +474,50 @@ jobs:
       # The same two phases as rust-debug, which explains the doctest filter.
       - name: Locked workspace tests with nextest
         run: python3 scripts/ci/metrics.py measure --name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings
+      - name: Print the libdav1d link and initializers
+        # The same records as in rust-debug, for Arch's libdav1d.
+        run: |
+          set -euo pipefail
+          for tool in readelf objdump; do
+            if ! command -v "$tool" >/dev/null; then echo "::error::$tool is missing"; exit 1; fi
+          done
+          app="${CARGO_TARGET_DIR:-target}/debug/gitturtle"
+          echo "== readelf -d -W $app"
+          LC_ALL=C readelf -d -W "$app"
+          echo "== dav1d_* in its .dynsym"
+          LC_ALL=C readelf --dyn-syms -W "$app" | grep dav1d_ || echo "none"
+          if ! command -v pkg-config >/dev/null; then
+            echo "::notice::pkg-config is missing, so libdav1d's initializers are not printed"
+            exit 0
+          fi
+          lib="$(readlink -f -- "$(pkg-config --variable=libdir dav1d)/libdav1d.so.7")"
+          dynamic="$(LC_ALL=C readelf -d -W "$lib")"
+          echo "== readelf -d -W $lib"
+          echo "$dynamic"
+          tag() { awk -v tag="($1)" '$2 == tag { print $3; exit }' <<<"$dynamic"; }
+          init="$(tag INIT)" array="$(tag INIT_ARRAY)" size="$(tag INIT_ARRAYSZ)"
+          offset="$(LC_ALL=C readelf -S -W "$lib" | awk '{ for (i = 1; i < NF; i++) if ($i == ".init_array") { print $(i + 3); exit } }')"
+          relocations="$(LC_ALL=C readelf -r -W "$lib")"
+          targets=()
+          if [[ -n "$init" ]]; then targets+=("$init DT_INIT"); fi
+          if [[ -n "$array" && -n "$size" && -n "$offset" ]]; then
+            echo "== .init_array at $array, $size bytes: each entry's relocation and target"
+            for ((at = array; at < array + size; at += 8)); do
+              entry="$(printf '%016x' "$at")"
+              grep -F "$entry" <<<"$relocations" || echo "$entry: no relocation"
+              # A RELA relocation's addend, else the address stored in place (RELR).
+              target="$(awk -v entry="$entry" '$1 == entry && $3 ~ /_RELATIVE$/ { print $NF; exit }' <<<"$relocations")"
+              if [[ -z "$target" ]]; then
+                target="$(od -An -t x8 -j "$((16#$offset + at - array))" -N 8 -- "$lib" | tr -d ' ')"
+              fi
+              if [[ "$target" =~ ^[0-9a-f]+$ ]]; then targets+=("0x$target .init_array[$(((at - array) / 8))]"); fi
+            done
+          fi
+          for target in "${targets[@]}"; do
+            read -r address label <<<"$target"
+            echo "== $label: $address"
+            LC_ALL=C objdump -d --start-address="$address" --stop-address="$((address + 24))" -- "$lib" | sed '1,/^Disassembly of section/d'
+          done
       - name: Locked workspace doctests
         run: python3 scripts/ci/metrics.py measure --name doctests --directory "$RUNNER_TEMP/ci-metrics" -- cargo test --locked --workspace --timings -- "(line "
       - name: Prepare bounded successful-main debug cache save
