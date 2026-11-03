@@ -1,6 +1,6 @@
 #!/bin/bash
 set -u
-R=/home/fernando/Projects/GitTurtle; M=$R/.local/find-frame-2026-11-03; cd $R
+R=$(git rev-parse --show-toplevel); M=$R/.local/find-frame-2026-11-03; cd $R
 touch $R/.local/build-slots/quiet
 echo "quiet set $(date +%T)"
 while fuser $R/.local/build-slots/1 $R/.local/build-slots/2 $R/.local/build-slots/3 >/dev/null 2>&1; do sleep 15; done
