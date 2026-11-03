@@ -568,9 +568,9 @@ dropdowns do not call. GPUI's X11 backend marks no key-down held, so under
 X11 a repeat still reads as a fresh press there too, as it does on Wayland
 with an input method, such as fcitx5, enabled through text-input, which
 GPUI enables whenever the focused element has no input handler, as on a
-default Omarchy: the held key arrives as a release and a press every 25 ms,
-each a fresh press (native probe QA-90, 2026-11-03; details in the
-component patch). The rule holds on macOS and on Wayland without an input
+default Omarchy: the held key arrives as a release and a press at the
+seat's repeat rate (every 25 ms on the probe's host), each a fresh press
+(native probe QA-90, 2026-11-03; details in the component patch). The rule holds on macOS and on Wayland without an input
 method; neither case is a regression, and a separate queued task enables
 text-input only while a text input has focus.
 `popover::tests::a_held_key_on_the_trigger_opens_nothing` holds Enter and

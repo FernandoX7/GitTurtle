@@ -52,11 +52,12 @@ pub(crate) fn init(cx: &mut App) {
 /// still runs, while an auto-repeat, whose `is_held` is set, does nothing;
 /// either way the key goes no further, as the binding took it. It is taken
 /// in the capture phase, ahead of anything inside the trigger, which the
-/// binding kept it from too. A key that goes down in the content, whose
-/// innermost popover context is not a trigger's, passes on to the content's
-/// own binding, as before. Bound to [`Confirm`], a still-held Enter or Space
-/// that had chosen a dropdown's item reopened its menu once focus returned
-/// to the button. Under X11, and on Wayland with an input method, a held key
+/// binding kept it from too. In the content, whose innermost popover context
+/// is not a trigger's, the content's own binding outranks the trigger's
+/// `NoAction` and takes the key as before, so the key reaches this listener
+/// only where nothing there binds it, and it passes over it. Bound to
+/// [`Confirm`], a still-held Enter or Space that had chosen a dropdown's
+/// item reopened its menu once focus returned to the button. Under X11, and on Wayland with an input method, a held key
 /// arrives as fresh presses, which this cannot tell apart
 /// (`GITTURTLE-PATCH.md`).
 fn open_key(event: &KeyDownEvent, window: &mut Window, cx: &mut App) {

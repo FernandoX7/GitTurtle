@@ -1735,8 +1735,8 @@ Nor does the rule hold on Wayland with an input method, such as fcitx5,
 enabled through text-input, which GPUI enables whenever the focused element
 has no input handler (`gpui-pre-linux` `src/linux/wayland/window.rs:1039-1046`),
 as on a default Omarchy: a held Enter or Space reaches the app as a release
-and a press every 25 ms after about 243 ms, each a fresh press GPUI cannot
-tell from a new one (native probe QA-90, 2026-11-03, fcitx5 5.1.22 on
+and a press at the seat's repeat rate (every 25 ms after about 243 ms on
+the probe's host), each a fresh press GPUI cannot tell from a new one (native probe QA-90, 2026-11-03, fcitx5 5.1.22 on
 Hyprland, `WAYLAND_DEBUG=1`; that the input method forwards its own repeat
 is inferred). The rule holds on macOS and on Wayland without an input
 method. Neither case is a regression, as every repeat acted before; a
