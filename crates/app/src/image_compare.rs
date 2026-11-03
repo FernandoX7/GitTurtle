@@ -3712,6 +3712,103 @@ mod render_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Where the zoom menu shares the modes' row, the two are one run the
+    /// layout never breaks, so the toolbar keeps the row chosen from its
+    /// width as drawn in the window whose room that run fills to the device
+    /// pixel: at 18 pt and scale 1.75 beside the mode menu, 1,164 device
+    /// pixels wide, run and room are 244 px as drawn, and at 13 pt and scale
+    /// 1.4 beside the labelled modes, 901 wide, 299.29 px. Laid out as two
+    /// of the row's items, the zoom menu wrapped onto a row of its own in
+    /// both, beneath modes it fit beside: the layout reaches the room from
+    /// the column's width divided by the scale and multiplied back, a
+    /// float's error short of the run (243.99998 px). Each window is found
+    /// by bisection on the drawn toolbar and read with one either side.
+    #[gpui::test]
+    async fn the_zoom_menu_keeps_the_modes_row_its_run_fills_exactly(cx: &mut TestAppContext) {
+        let png = |text: &[u8]| crate::system_preview::tests::png(Some(text));
+        let (before, after) = (png(b"before"), png(b"after"));
+        let input = image_commits(&[Some(&before), Some(&after)]);
+        let (_fixture, app, cx) = history_window_from(cx, input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let hair = px(0.01);
+        for (text, scale, modes_id) in [(18, 1.75, "image-mode-menu"), (13, 1.4, "image-modes")] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let form = format!("{text} pt at scale {scale} beside {modes_id}");
+            // Windows are counted in device pixels, as in
+            // `the_zoom_menu_keeps_the_modes_row_wherever_the_row_fits`.
+            let pixels = |width: f32| (width * scale).round() as i32;
+            let width = |n: i32| n as f32 / scale;
+            let toolbar = |n: i32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width(n)), px(490.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                cx.debug_bounds("image-toolbar").expect("the toolbar")
+            };
+            toolbar(pixels(461.), cx);
+            let (padding, gap) = cx.update(|window, _| {
+                (
+                    window.pixel_snap(window.rem_size() * 0.75),
+                    window.pixel_snap(window.rem_size() * 0.5),
+                )
+            });
+            // The first window with the labelled modes ends the mode menu's.
+            let first = first_drawn(
+                (pixels(461.), pixels(1400.)),
+                cx,
+                |n, cx| {
+                    toolbar(n, cx);
+                    cx.debug_bounds("image-modes").is_some()
+                },
+                &form,
+            );
+            let windows = if modes_id == "image-modes" {
+                (first, pixels(1400.))
+            } else {
+                (pixels(461.), first - 1)
+            };
+            let drawn = |n: i32, cx: &mut VisualTestContext| {
+                let bar = toolbar(n, cx);
+                let Some(modes) = cx.debug_bounds(modes_id) else {
+                    panic!("{form} in {} × 490: the modes are drawn", width(n));
+                };
+                (bar, modes, cx.debug_bounds("image-zoom-menu"))
+            };
+            let holds = first_drawn(
+                windows,
+                cx,
+                |n, cx| {
+                    let (_, modes, zooms) = drawn(n, cx);
+                    zooms.is_none_or(|zooms| zooms.top() < modes.bottom())
+                },
+                &form,
+            );
+            let mut exact = false;
+            for n in holds - 1..=holds + 1 {
+                let (bar, modes, zooms) = drawn(n, cx);
+                let at = format!("{form} in {} × 490", width(n));
+                let Some(zooms) = zooms else {
+                    panic!("{at}: the zoom menu is drawn");
+                };
+                let room = bar.size.width - padding * 2.;
+                let run = modes.right() - (bar.left() + padding) + gap + zooms.size.width;
+                let sharing = zooms.top() < modes.bottom();
+                exact |= sharing && (run - room).abs() < hair;
+                assert_eq!(
+                    sharing,
+                    run <= room + hair,
+                    "{at}: the zoom menu {zooms:?} shares the modes' {modes:?} row exactly where \
+                     the {run:?} run fits the {room:?} room"
+                );
+            }
+            assert!(
+                exact,
+                "{form}: the walk meets the run filling the room to the device pixel"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The first of the device widths past `lo` up to `hi` whose window
     /// draws what `drawn` looks for, bisected on what is drawn: `drawn` is
     /// false at `lo` and true at `hi`, which the search checks, and once
