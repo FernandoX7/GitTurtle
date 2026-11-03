@@ -302,11 +302,20 @@ pub(super) fn preflight(
         // would decode the last). A second `jp2h` before it is refused as well:
         // I.5.3 allows exactly one, and hayro keeps only the last one's
         // `pclr`, `cmap`, `colr` and `cdef`, so checking either alone could
-        // miss what the other holds. Any box that does not frame is refused,
-        // so no box hayro reads goes unseen.
+        // miss what the other holds. hayro, not strict, stops at the first
+        // bytes that do not frame a box (`jp2/box.rs::read` frames as
+        // `next_box` does). After the first `jp2c` this walk stops there
+        // too, so padding after the codestream decodes as hayro decodes it;
+        // before it such bytes are refused. Either way no box hayro reads goes
+        // unseen.
         let (mut header_box, mut codestream) = (None, None);
         while !boxes.is_empty() {
-            let (kind, payload) = next_box(&mut boxes).map_err(|_| Jpeg2000Unreadable)?;
+            let Ok((kind, payload)) = next_box(&mut boxes) else {
+                if codestream.is_some() {
+                    break;
+                }
+                return Err(Jpeg2000Unreadable);
+            };
             match &kind {
                 b"jp2h" if header_box.is_none() && codestream.is_none() => {
                     header_box = Some(payload);

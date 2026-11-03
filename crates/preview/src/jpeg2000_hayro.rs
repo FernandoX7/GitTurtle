@@ -527,6 +527,32 @@ mod tests {
         assert_eq!(jpeg2000(&appended, 100).unwrap_err(), Jpeg2000Unreadable);
     }
 
+    /// hayro-jpeg2000, not strict, stops reading top-level boxes at bytes
+    /// that frame none, and so does the preflight: padding after the
+    /// codestream decodes, and the same bytes before it leave no codestream.
+    #[test]
+    fn bytes_that_frame_no_box_end_the_walk() {
+        let rgb = fixture("jpeg2000-rgb.jp2");
+        // The codestream's explicit length ends the file.
+        let jp2c = position(&rgb, b"jp2c") - 4;
+        assert_eq!(whole_box(&rgb, b"jp2c").len(), rgb.len() - jp2c);
+        // Fewer bytes than a box header, and a header longer than the file.
+        let mut tails: Vec<Vec<u8>> = (1..8).map(|length| vec![0; length]).collect();
+        tails.push(b"\xff\xff\xff\xf0uuid".to_vec());
+        for tail in &tails {
+            let padded = [&rgb[..], tail].concat();
+            let reply =
+                jpeg2000(&padded, 1600).unwrap_or_else(|kind| panic!("after {tail:?}: {kind:?}"));
+            assert_quadrants(&reply.image, QUADRANTS, 2, &format!("after {tail:?}"));
+            let before = [&rgb[..jp2c], tail, &rgb[jp2c..]].concat();
+            assert_eq!(
+                jpeg2000(&before, 1600).unwrap_err(),
+                ImageErrorKind::Jpeg2000Unreadable,
+                "before {tail:?}"
+            );
+        }
+    }
+
     /// hayro-jpeg2000 0.4.1 decodes with the last `jp2h` of a file; the
     /// preflight accepts exactly one, before the codestream.
     #[test]
