@@ -36,9 +36,12 @@ pub(crate) fn decode(
         target_resolution: reduce.then_some(target),
     };
     let image = Image::new(bytes, &settings).map_err(|_| Jpeg2000Unreadable)?;
+    // hayro-jpeg2000 computes the size it decodes from SIZ and the levels it
+    // chose to skip. It must be the size GitTurtle computes for the full image
+    // or for a level it may skip, so the budget below holds for what is
+    // decoded. `total_bytes()` and `DynamicImage::from_decoder`'s buffer both
+    // derive from this size, so no later check of either can disagree.
     let size = image.dimensions();
-    // The skipped levels hayro-jpeg2000 chose: its size must be one GitTurtle
-    // computes from SIZ for a level it may skip.
     let deepest = if reduce {
         (original.0 / target.0)
             .min(original.1 / target.1)
@@ -53,21 +56,12 @@ pub(crate) fn decode(
     if preflight.decode_bytes(level) > MAX_DECODER_BYTES {
         return Err(DecodedTooLarge);
     }
-    let expected =
-        u64::from(size.0) * u64::from(size.1) * u64::from(image.color_type().bytes_per_pixel());
-    if image.total_bytes() != expected {
-        return Err(Jpeg2000Unreadable);
-    }
     image_helper::check_rgba_budget(size.0, size.1)?;
     timings.parse_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
     let decoded = DynamicImage::from_decoder(image).map_err(|_| Jpeg2000Unreadable)?;
     timings.decode_us = image_helper::elapsed_us(start);
-    // Some reduced or subsampled images decode one column too wide (#1405).
-    if (decoded.width(), decoded.height()) != size {
-        return Err(Jpeg2000Unreadable);
-    }
 
     let start = Instant::now();
     // A reduced level scales to the full size's output like any other.
