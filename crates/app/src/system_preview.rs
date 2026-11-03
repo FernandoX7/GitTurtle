@@ -1886,7 +1886,8 @@ pub(crate) mod tests {
     /// down to the narrowest whose sides' header lines still hold the
     /// scaled 28 px icon, `step` px at a time, at 13 and 18 pt: `check` is
     /// passed each frame's text size, width and the side header controls it
-    /// drew ([`DRAWN_CONTROLS`]).
+    /// drew ([`DRAWN_CONTROLS`]), each width drawn as [`draw_answered`]
+    /// draws it.
     #[cfg(target_os = "linux")]
     pub(crate) fn walk_side_widths(
         cx: &mut gpui_kit::TestAppContext,
@@ -1908,6 +1909,7 @@ pub(crate) mod tests {
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let paged = has_page_view(&content);
         let (sides, cx) = cx.add_window_view(|_, _| Sides {
             content,
             width: 1480.,
@@ -1928,15 +1930,40 @@ pub(crate) mod tests {
                     cx.notify();
                 });
                 DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
-                crate::tags::tests::draw(cx);
-                crate::pdf_view::tests::drain_pages();
-                crate::tags::tests::draw(cx);
+                draw_answered(cx, paged);
                 let drawn = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
                 check(cx, &sides, (text, width as f32), &drawn);
                 width -= step;
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Whether either side of `content` shows a page view, the only view
+    /// that asks the page lane for anything ([`draw_answered`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_page_view(content: &crate::worker::Content) -> bool {
+        matches!(
+            content,
+            crate::worker::Content::Rich(comparison)
+                if comparison.old.pdf.is_some() || comparison.new.pdf.is_some()
+        )
+    }
+
+    /// Draws the window and, where a side shows a page view (`paged`), lets
+    /// the page lane answer what that frame asked of it and draws again, so
+    /// the frame read draws the pages' answers. Without a page view nothing
+    /// asks the page lane for anything, so the second frame drew the first
+    /// again: at every width the side header walks drew, 2 px apart at 13
+    /// and 18 pt, a model comparison drew the same controls in the same
+    /// bounds in both, and drawn twice, its walks took twice as long.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn draw_answered(cx: &mut gpui_kit::VisualTestContext, paged: bool) {
+        crate::tags::tests::draw(cx);
+        if paged {
+            crate::pdf_view::tests::drain_pages();
+            crate::tags::tests::draw(cx);
+        }
     }
 
     /// Whether the control `selector` lies across its side's header whole
@@ -1966,6 +1993,16 @@ pub(crate) mod tests {
         control.left() >= header.left() - px(0.01) && control.right() <= header.right() + px(0.01)
     }
 
+    /// What a walk of the side headers' controls drew
+    /// ([`walk_controls_on_their_line`]): the page number's forms in the
+    /// order it drew them at each size, and each form it drew each control
+    /// in at each size.
+    #[cfg(target_os = "linux")]
+    type ControlsDrawn = (
+        Vec<(u8, &'static str)>,
+        std::collections::BTreeSet<(u8, String, &'static str)>,
+    );
+
     /// Each control of a side's own header that the side header helper
     /// draws ([`HeaderControl`]; not the open control, Copy source, the page
     /// arrows or the zooms, which it does not draw) lies across the side
@@ -1980,59 +2017,91 @@ pub(crate) mod tests {
     /// `pdf_view::tests::a_page_number_is_measured_at_its_widest_page`).
     /// Retry page names its side and page, and Edges the state it shows,
     /// where it once read "Toggle all triangle edges" while it showed Solid.
+    /// `content`'s walk returns what it drew ([`ControlsDrawn`]).
     #[cfg(target_os = "linux")]
-    #[gpui::test]
-    fn a_side_header_s_controls_lie_whole_on_their_line(cx: &mut gpui_kit::TestAppContext) {
-        let [model, document] = document_sides(111, 107);
+    fn walk_controls_on_their_line(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+    ) -> ControlsDrawn {
         let mut forms = Vec::new();
         let mut reached = std::collections::BTreeSet::new();
-        for content in [model, document] {
-            walk_side_widths(cx, content, 2, |cx, _, (text, width), drawn| {
-                if width == 1480. && drawn.contains_key("model-camera-4") {
-                    // Edges shows Solid once the triangle edges are shown.
-                    let name = |cx: &mut gpui_kit::VisualTestContext| {
-                        let edges = cx.debug_bounds("model-camera-4").expect("Edges");
-                        cx.simulate_click(edges.center(), Modifiers::none());
-                        crate::tags::tests::draw(cx);
-                        DRAWN_CONTROLS.with(|drawn| drawn.borrow()["model-camera-4"].clone())
-                    };
-                    let shown = name(cx);
-                    assert_eq!(
-                        (shown.shows.as_str(), shown.name.as_str()),
-                        (
-                            "Solid",
-                            "Before: Triangle edges shown. Switch to solid shading"
-                        )
-                    );
-                    let solid = name(cx);
-                    assert_eq!(
-                        (solid.shows.as_str(), solid.name.as_str()),
-                        ("Edges", "Before: Solid shading. Show all triangle edges")
-                    );
+        walk_side_widths(cx, content, 2, |cx, _, (text, width), drawn| {
+            if width == 1480. && drawn.contains_key("model-camera-4") {
+                // Edges shows Solid once the triangle edges are shown.
+                let name = |cx: &mut gpui_kit::VisualTestContext| {
+                    let edges = cx.debug_bounds("model-camera-4").expect("Edges");
+                    cx.simulate_click(edges.center(), Modifiers::none());
+                    crate::tags::tests::draw(cx);
+                    DRAWN_CONTROLS.with(|drawn| drawn.borrow()["model-camera-4"].clone())
+                };
+                let shown = name(cx);
+                assert_eq!(
+                    (shown.shows.as_str(), shown.name.as_str()),
+                    (
+                        "Solid",
+                        "Before: Triangle edges shown. Switch to solid shading"
+                    )
+                );
+                let solid = name(cx);
+                assert_eq!(
+                    (solid.shows.as_str(), solid.name.as_str()),
+                    ("Edges", "Before: Solid shading. Show all triangle edges")
+                );
+            }
+            for (selector, control) in drawn {
+                let at = format!("{text} pt, {width} px: {selector} {control:?}");
+                assert!(lies_on_its_line(cx, selector), "{at} lies on its line");
+                reached.insert((text, selector.clone(), control.form));
+            }
+            if let Some(number) = drawn.get("pdf-page-number-1") {
+                if forms.last() != Some(&(text, number.form)) {
+                    forms.push((text, number.form));
                 }
-                for (selector, control) in drawn {
-                    let at = format!("{text} pt, {width} px: {selector} {control:?}");
-                    assert!(lies_on_its_line(cx, selector), "{at} lies on its line");
-                    reached.insert((text, selector.clone(), control.form));
-                }
-                if let Some(number) = drawn.get("pdf-page-number-1") {
-                    if forms.last() != Some(&(text, number.form)) {
-                        forms.push((text, number.form));
-                    }
-                    assert_eq!(number.name, "After: page 108 of 111. Enter page number");
-                    assert_eq!(
-                        number.tooltip.as_deref(),
-                        (number.form != "labelled").then_some("Page 108 / 111")
-                    );
-                }
-                if let Some(retry) = drawn.get("pdf-retry-0") {
-                    assert_eq!(retry.name, "Before: retry page 108");
-                }
-                if let Some(edges) = drawn.get("model-camera-4") {
-                    assert_eq!(edges.name, "Before: Solid shading. Show all triangle edges");
-                }
-            });
+                assert_eq!(number.name, "After: page 108 of 111. Enter page number");
+                assert_eq!(
+                    number.tooltip.as_deref(),
+                    (number.form != "labelled").then_some("Page 108 / 111")
+                );
+            }
+            if let Some(retry) = drawn.get("pdf-retry-0") {
+                assert_eq!(retry.name, "Before: retry page 108");
+            }
+            if let Some(edges) = drawn.get("model-camera-4") {
+                assert_eq!(edges.name, "Before: Solid shading. Show all triangle edges");
+            }
+        });
+        (forms, reached)
+    }
+
+    /// A model comparison's side headers' controls lie whole on their line
+    /// ([`walk_controls_on_their_line`]), its clip menu reached labelled and
+    /// as its icon at each size.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_model_side_header_s_controls_lie_whole_on_their_line(cx: &mut gpui_kit::TestAppContext) {
+        let [model, _] = document_sides(111, 107);
+        let (_, reached) = walk_controls_on_their_line(cx, model);
+        for text in [13, 18] {
+            for form in ["labelled", "icon"] {
+                assert!(
+                    reached.contains(&(text, "model-clip-0".to_owned(), form)),
+                    "at {text} pt model-clip-0 is drawn {form}"
+                );
+            }
         }
+    }
+
+    /// A page view's side headers' controls lie whole on their line
+    /// ([`walk_controls_on_their_line`]), the page number giving way through
+    /// its three forms in order at each size, and it and Retry page reached
+    /// labelled and as their icons.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_page_view_side_header_s_controls_lie_whole_on_their_line(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let [_, document] = document_sides(111, 107);
+        let (forms, reached) = walk_controls_on_their_line(cx, document);
         assert_eq!(
             forms,
             [13, 18]
@@ -2042,7 +2111,7 @@ pub(crate) mod tests {
             "the page number gives way through its three forms"
         );
         for text in [13, 18] {
-            for selector in ["model-clip-0", "pdf-page-number-0", "pdf-retry-1"] {
+            for selector in ["pdf-page-number-0", "pdf-retry-1"] {
                 for form in ["labelled", "icon"] {
                     assert!(
                         reached.contains(&(text, selector.to_owned(), form)),
@@ -2252,7 +2321,7 @@ pub(crate) mod tests {
                             .get(&(text, selector.to_string(), *form))
                             .unwrap_or_else(|| panic!("at {text} pt {selector} is drawn {form}"));
                         // What a toggle's form was measured at is
-                        // `a_side_header_s_toggles_take_one_form_in_both_states`.
+                        // `walk_toggles_in_both_states`.
                         assert_eq!(
                             drawn,
                             &DrawnControl {
@@ -2304,18 +2373,14 @@ pub(crate) mod tests {
     /// is the wider: the tests' font gives every character one width, so
     /// the labels each form's measure laid out are checked as well, as the
     /// measure recorded them. The check once read back the readings the
-    /// toggle was given, so a measure of one of them passed it.
+    /// toggle was given, so a measure of one of them passed it. `content`
+    /// is walked for its `toggles`, each with its two readings.
     #[cfg(target_os = "linux")]
-    #[gpui::test]
-    fn a_side_header_s_toggles_take_one_form_in_both_states(cx: &mut gpui_kit::TestAppContext) {
-        const TOGGLES: [(&str, [&str; 2]); 6] = [
-            ("model-camera-4", ["Edges", "Solid"]),
-            ("model-camera-9", ["Edges", "Solid"]),
-            ("model-link-0", ["Independent", "Linked"]),
-            ("model-link-1", ["Independent", "Linked"]),
-            ("pdf-link-0", ["Independent pages", "Linked pages"]),
-            ("pdf-link-1", ["Independent pages", "Linked pages"]),
-        ];
+    fn walk_toggles_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+        content: crate::worker::Content,
+        toggles: &[(&'static str, [&'static str; 2])],
+    ) {
         // What a control reads: its label, or where it draws its icon, the
         // reading leading its tooltip.
         let reading = |control: &DrawnControl| match control.form {
@@ -2324,50 +2389,45 @@ pub(crate) mod tests {
         };
         let mut reached = std::collections::BTreeSet::new();
         let mut measured = std::collections::BTreeMap::<_, Vec<_>>::new();
-        let [model, document] = document_sides(3, 0);
-        for content in [model, document] {
-            walk_side_widths(cx, content, 4, |cx, sides, (text, width), drawn| {
-                let at = |selector: &str| format!("{text} pt, {width} px: {selector}");
-                for (selector, _) in TOGGLES {
-                    if drawn.contains_key(selector) {
-                        assert!(
-                            lies_on_its_line(cx, selector),
-                            "{} lies on its line",
-                            at(selector)
-                        );
-                    }
-                }
-                flip_toggles(sides, cx);
-                DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
-                crate::tags::tests::draw(cx);
-                crate::pdf_view::tests::drain_pages();
-                crate::tags::tests::draw(cx);
-                let flipped = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
-                for (selector, readings) in TOGGLES {
-                    let (Some(one), Some(other)) = (drawn.get(selector), flipped.get(selector))
-                    else {
-                        continue;
-                    };
-                    let at = format!("{}, {one:?} and flipped {other:?}", at(selector));
-                    assert_eq!(one.form, other.form, "{at}: one form in both states");
-                    let mut read = [reading(one), reading(other)];
-                    read.sort();
-                    assert_eq!(read, readings, "{at}: each state reads its own reading");
+        let paged = has_page_view(&content);
+        walk_side_widths(cx, content, 4, |cx, sides, (text, width), drawn| {
+            let at = |selector: &str| format!("{text} pt, {width} px: {selector}");
+            for &(selector, _) in toggles {
+                if drawn.contains_key(selector) {
                     assert!(
                         lies_on_its_line(cx, selector),
-                        "{at}: flipped, it lies on its line"
+                        "{} lies on its line",
+                        at(selector)
                     );
-                    for state in [one, other] {
-                        reached.insert((text, selector, state.form, reading(state)));
-                        measured
-                            .entry(selector)
-                            .or_default()
-                            .push(state.measured.clone());
-                    }
                 }
-            });
-        }
-        for (selector, readings) in TOGGLES {
+            }
+            flip_toggles(sides, cx);
+            DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
+            draw_answered(cx, paged);
+            let flipped = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+            for &(selector, readings) in toggles {
+                let (Some(one), Some(other)) = (drawn.get(selector), flipped.get(selector)) else {
+                    continue;
+                };
+                let at = format!("{}, {one:?} and flipped {other:?}", at(selector));
+                assert_eq!(one.form, other.form, "{at}: one form in both states");
+                let mut read = [reading(one), reading(other)];
+                read.sort();
+                assert_eq!(read, readings, "{at}: each state reads its own reading");
+                assert!(
+                    lies_on_its_line(cx, selector),
+                    "{at}: flipped, it lies on its line"
+                );
+                for state in [one, other] {
+                    reached.insert((text, selector, state.form, reading(state)));
+                    measured
+                        .entry(selector)
+                        .or_default()
+                        .push(state.measured.clone());
+                }
+            }
+        });
+        for &(selector, readings) in toggles {
             for text in [13, 18] {
                 for form in ["labelled", "icon"] {
                     for read in readings {
@@ -2387,6 +2447,44 @@ pub(crate) mod tests {
                 measured[selector]
             );
         }
+    }
+
+    /// A model comparison's toggles, each side's Edges and link, take one
+    /// form in both their states ([`walk_toggles_in_both_states`]).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_model_side_header_s_toggles_take_one_form_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let [model, _] = document_sides(3, 0);
+        walk_toggles_in_both_states(
+            cx,
+            model,
+            &[
+                ("model-camera-4", ["Edges", "Solid"]),
+                ("model-camera-9", ["Edges", "Solid"]),
+                ("model-link-0", ["Independent", "Linked"]),
+                ("model-link-1", ["Independent", "Linked"]),
+            ],
+        );
+    }
+
+    /// A page view's toggles, each side's link, take one form in both their
+    /// states ([`walk_toggles_in_both_states`]).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_page_view_side_header_s_toggles_take_one_form_in_both_states(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let [_, document] = document_sides(3, 0);
+        walk_toggles_in_both_states(
+            cx,
+            document,
+            &[
+                ("pdf-link-0", ["Independent pages", "Linked pages"]),
+                ("pdf-link-1", ["Independent pages", "Linked pages"]),
+            ],
+        );
     }
 
     /// The clip menu's readings and the page number's twenty are built and
