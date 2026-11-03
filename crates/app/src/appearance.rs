@@ -3282,6 +3282,9 @@ mod tests {
             point,
         };
         cx.update(gpui_kit::init);
+        // The dialog otherwise slides in on the wall clock, its Cancel
+        // moving between the bounds read and the press.
+        cx.update(|cx| cx.set_reduce_motion(true));
         let (_, cx) = cx.add_window_view(|window, cx| {
             let probe = cx.new(|_| DialogProbe);
             Root::new(probe, window, cx)

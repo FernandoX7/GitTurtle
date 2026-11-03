@@ -3255,6 +3255,9 @@ pub(crate) mod tests {
     #[gpui::test]
     fn new_edit_save_cancel_and_delete_follow_the_saved_selection(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
+        // The editor dialog otherwise slides in on the wall clock, its Save
+        // moving between the bounds read and the press.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         let initial = applied(cx);
         click(cx, "custom-themes-new");
         let form = form(cx, &app);
@@ -4399,10 +4402,12 @@ pub(crate) mod tests {
     #[gpui::test]
     fn a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
-        cx.update(|window, cx| {
-            window.activate_window();
-            cx.set_reduce_motion(true);
-        });
+        cx.update(|window, _| window.activate_window());
+        settle(cx);
+        // Set once the activation has settled: on macOS the window's
+        // activation reads the system's setting again
+        // (`native_accessibility::sync_preferences`), and the dialog slid in.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.simulate_resize(size(px(1000.), px(680.)));
         let (ring, footprint) = installed_ring(cx);
         for text_size in [13, 18] {
@@ -5600,6 +5605,11 @@ pub(crate) mod tests {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
         settle(cx);
+        // The editor dialog otherwise slides in on the wall clock, its Save
+        // moving between the bounds read and the press. Set once the
+        // activation has settled: on macOS the window's activation reads
+        // the system's setting again (`native_accessibility::sync_preferences`).
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         seed_themes(cx, &app, 2);
 
         // A Settings theme switch. The first save also writes the status line,

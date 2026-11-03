@@ -5840,6 +5840,9 @@ mod tests {
     #[gpui::test]
     async fn a_refused_workspace_name_is_announced_at_once(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = views::tests::history_window(cx).await;
+        // The dialog otherwise slides in on the wall clock, and under load
+        // its button moved between the press and the release: no click.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         crate::focus_ring::sweep::open_dialog(&app, cx, "Local workspaces", |app, window, cx| {
             app.open_repository_library(window, cx)
         })
