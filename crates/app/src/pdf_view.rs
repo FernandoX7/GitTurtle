@@ -607,12 +607,10 @@ thread_local! {
     static BEFORE_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_FORMAT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Read page text's and Retry page's labels, laid out; the link is a
-    /// toggle, laid out at both its readings
-    /// (`system_preview::HeaderControl::toggle`), and here at the wider,
-    /// the width it is drawn at.
+    /// toggle, laid out at both its readings and drawn at the wider
+    /// (`system_preview::HeaderControl::toggle`).
     static READ_TEXT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static RETRY_PAGE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    static LINK: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The zoom's widest reading, "400%", laid out.
     static ZOOM_LEVEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// Each side's page number, whole and short, at its widest for a count
@@ -783,28 +781,6 @@ fn page_number_widths(index: usize, count: usize, window: &Window) -> (Pixels, P
     })
 }
 
-/// `control`, a control of a side's own header whose labelled form is
-/// `labelled` wide at its widest reading and whose short form, where it has
-/// one, is `short` wide at its widest, drawn as wide as the form a line
-/// `room` wide gives it (`system_preview::HeaderControl::button`) whatever it
-/// reads now; its icon keeps its square. A page turn, a click on the link or
-/// a page that fails then changes what the control reads and moves nothing
-/// after it. Drawn at its own reading's width, the page number grew with
-/// "Page 10 / 10", and in a proportional font with any page whose digits are
-/// wider, and moved the link and the zooms after it, and "Linked pages" was
-/// narrower than "Independent pages", so each click on the link moved the
-/// zooms.
-fn at_widest(control: Button, labelled: Pixels, short: Option<Pixels>, room: Pixels) -> Button {
-    use crate::system_preview::Form;
-    if Form::fitting(labelled, room) == Form::Labelled {
-        control.w(labelled)
-    } else if let Some(short) = short.filter(|short| *short <= room) {
-        control.w(short)
-    } else {
-        control
-    }
-}
-
 /// Read page text while its page is prepared: disabled, its tooltip saying
 /// why as its accessible name does ([`PREPARING`]), and recorded as it is
 /// drawn for side `index`'s tests (`system_preview::DRAWN_CONTROLS`), which
@@ -918,7 +894,7 @@ pub(super) fn render_comparison<T: 'static>(
         // Its node recorded in tests as it is drawn, so they read the state
         // an AT-SPI client is given; outside tests the Button as it is.
         use crate::native_accessibility::DrawnButton as _;
-        header=header.child(at_widest(page_control, slot, None, line_room).node_recorded());
+        header=header.child(page_control.node_recorded());
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
             let document = document.clone(); let partner = partner.clone();
             let id = if previous {"pdf-back"} else {"pdf-forward"};
@@ -936,7 +912,7 @@ pub(super) fn render_comparison<T: 'static>(
         let (labelled, short) = page_number_widths(index, document.count, window);
         let number = HeaderControl::new(("pdf-page-number",index), format!("pdf-page-number-{index}"), format!("Page {} / {}",page+1,document.count), format!("{label}: page {} of {}. Enter page number",page+1,document.count), "page", labelled)
             .short(format!("{}/{}",page+1,document.count), short).button(line_room);
-        let number = at_widest(number, labelled, Some(short), line_room)
+        let number = number
             .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx));
         header = header.child(held.track(("pdf-page-number",index), number, cx));
         if let Some(partner) = partner {
@@ -945,7 +921,6 @@ pub(super) fn render_comparison<T: 'static>(
             // Named for the state it shows, as the model's link is.
             let name = if linked {"Pages linked. Switch to independent pages"} else {"Pages independent. Link pages to this page"};
             let link = HeaderControl::toggle(("pdf-link",index), format!("pdf-link-{index}"), LINK_READINGS, format!("{label}: {name}"), "link", linked, window).button(line_room);
-            let link = at_widest(link, text_button_width(&LINK_READINGS, &LINK, window), None, line_room);
             header = header.child(held.track(("pdf-link",index), link.on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }

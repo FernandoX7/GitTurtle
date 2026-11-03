@@ -993,7 +993,9 @@ pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
 /// shows less than its reading leads its tooltip with the reading, and every
 /// form has the one accessible name, the one it has labelled. The form is
 /// chosen from the widest reading, so a toggle, a view, a clip or a page
-/// turn never changes it.
+/// turn never changes it, and drawn as wide as that form's widest reading
+/// whatever it reads now ([`HeaderControl::button`]), so they move nothing
+/// after it either.
 pub(crate) struct HeaderControl {
     id: ElementId,
     selector: String,
@@ -1141,12 +1143,27 @@ impl HeaderControl {
         self
     }
 
-    /// The control in the form a line `room` wide holds.
+    /// The control in the form a line `room` wide holds, as wide as that
+    /// form's widest reading whatever it reads now; its icon keeps its
+    /// square. A page turn, a toggle, a view or a page that fails then
+    /// changes what it reads and moves nothing after it. Drawn at its own
+    /// reading's width, the page number grew with "Page 10 / 10" and moved
+    /// the link and the zooms after it, "Linked pages" was narrower than
+    /// "Independent pages", so each click on the link moved the zooms, and
+    /// the model's "Linked" was narrower than "Independent", so each click
+    /// on it moved what follows; the page view once widened its own
+    /// controls after this drew them, from a second measure of the link's
+    /// readings.
     pub(crate) fn button(self, room: Pixels) -> Button {
         let labelled = Form::fitting(self.widest, room) == Form::Labelled;
         let short = self
             .short
             .filter(|(_, widest)| !labelled && *widest <= room);
+        let width = match &short {
+            _ if labelled => Some(self.widest),
+            Some((_, widest)) => Some(*widest),
+            None => None,
+        };
         let (shows, icon) = match short {
             _ if labelled => (
                 self.reading.clone(),
@@ -1192,6 +1209,7 @@ impl HeaderControl {
             button.dropdown_caret(true)
         })
         .when_some(self.on, |button, on| button.toggled(on))
+        .when_some(width, |button, width| button.w(width))
         .when_some(tooltip, |button, tooltip| button.tooltip(tooltip))
         .debug_selector(move || selector)
         .accessibility_label(self.name);
@@ -2367,7 +2385,10 @@ pub(crate) mod tests {
     /// the page view's link, takes one form in both its states at every
     /// width down to the narrowest side whose line holds an icon, at 13 and
     /// 18 pt, labelled or its icon, each reading lying whole with its ring
-    /// on its line, and its form is measured at both its readings. Measured
+    /// on its line, and its form is measured at both its readings. Each
+    /// keeps its bounds in both states, so a click moves nothing after it:
+    /// the model's link was drawn at its current reading's width, and
+    /// "Linked" moved what follows it from where "Independent" left it. Measured
     /// at "Linked" alone, an unlinked model's "Independent" could be cut
     /// where "Linked" fits, and measured at "Edges" alone, "Solid" where it
     /// is the wider: the tests' font gives every character one width, so
@@ -2401,10 +2422,24 @@ pub(crate) mod tests {
                     );
                 }
             }
+            let placed = |cx: &mut gpui_kit::VisualTestContext| {
+                toggles
+                    .iter()
+                    .map(|&(selector, _)| cx.debug_bounds(selector))
+                    .collect::<Vec<_>>()
+            };
+            let before = placed(cx);
             flip_toggles(sides, cx);
             DRAWN_CONTROLS.with(|drawn| drawn.borrow_mut().clear());
             draw_answered(cx, paged);
             let flipped = DRAWN_CONTROLS.with(|drawn| drawn.borrow().clone());
+            // Each toggle keeps its place and its width in both states, so
+            // a click moves nothing after it (`HeaderControl::button`).
+            assert_eq!(
+                placed(cx),
+                before,
+                "{text} pt, {width} px: the toggles keep their bounds when flipped"
+            );
             for &(selector, readings) in toggles {
                 let (Some(one), Some(other)) = (drawn.get(selector), flipped.get(selector)) else {
                     continue;
