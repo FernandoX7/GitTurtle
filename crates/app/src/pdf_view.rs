@@ -710,6 +710,9 @@ struct Heading {
     caption: Option<SharedString>,
     /// Their width together, with the gap between them.
     width: Pixels,
+    /// Whether it reads its kind, "· PDF" or its format's caption, rather
+    /// than the side's name alone.
+    kind: bool,
 }
 
 /// Side `index`'s heading, as wide as layout draws it on this display's
@@ -730,12 +733,15 @@ struct Heading {
 /// "Before Absent" beside a locked one. Measured in whole pixels alone, the
 /// heading was drawn up to a device pixel wider than measured at scale 1.2,
 /// at 15 pt 130 device pixels for 129, so a line that held the measure cut
-/// the name where its caption had been chosen.
+/// the name where its caption had been chosen. Where `kind` is false it
+/// reads the name alone, as its partner's heading does where its line does
+/// not hold its own kind ([`pair_headings`]).
 fn side_heading(
     index: usize,
     label: &str,
     side: &rich_preview::Side,
     line: Pixels,
+    kind: bool,
     window: &Window,
 ) -> Heading {
     let [whole_cache, name_cache, format_cache] = if index == 0 {
@@ -772,19 +778,50 @@ fn side_heading(
         );
         (label.to_owned(), Some(format.to_owned().into()), width)
     };
-    if width <= line {
+    if kind && width <= line {
         Heading {
             text,
             caption,
             width,
+            kind: true,
         }
     } else {
         Heading {
             text: label.to_owned(),
             caption: None,
             width: name.min(line),
+            kind: false,
         }
     }
+}
+
+/// Both sides' headings on each of their lines (`lines`, without the
+/// scrollbar's gutter and with it), side `index` headed `labels[index]`
+/// for what `sides[index]` holds ([`side_heading`]), where both are drawn:
+/// both read their kind, "· PDF" or a format's caption, or neither, the
+/// pair dropping it together where either side's line does not hold its
+/// own, so a reader across the two compares like with like. Each side once
+/// dropped its kind alone, and at 18 pt in a 461 × 490 window two paged PDFs
+/// were headed "Before" beside "After · PDF", "Before · PDF" the wider.
+fn pair_headings(
+    labels: [&str; 2],
+    sides: [&rich_preview::Side; 2],
+    lines: [Pixels; 2],
+    window: &Window,
+) -> [[Heading; 2]; 2] {
+    let headings = [0, 1].map(|index| {
+        lines.map(|line| side_heading(index, labels[index], sides[index], line, true, window))
+    });
+    let kinds = [0, 1].map(|at| headings.iter().all(|side| side[at].kind));
+    [0, 1].map(|index| {
+        [0, 1].map(|at| {
+            if kinds[at] {
+                headings[index][at].clone()
+            } else {
+                side_heading(index, labels[index], sides[index], lines[at], false, window)
+            }
+        })
+    })
 }
 
 /// The room the first line of a side's header leaves its open control, on
@@ -1627,11 +1664,21 @@ pub(super) fn render_comparison<T: 'static>(
     let mut answers = opens
         .each_ref()
         .map(|open| open.as_ref().and_then(|(target, _)| target.answered(cx)));
-    // Each side's heading on each line ([`side_heading`]).
-    let headings = [0, 1].map(|index| {
-        let (label, side, _) = sides[index];
-        lines.map(|line| side_heading(index, label, side, line, window))
-    });
+    // Each side's heading on each line ([`side_heading`]), both reading
+    // their kind or neither where both are drawn ([`pair_headings`]).
+    let headings = if quick {
+        [0, 1].map(|index| {
+            let (label, side, _) = sides[index];
+            lines.map(|line| side_heading(index, label, side, line, true, window))
+        })
+    } else {
+        pair_headings(
+            sides.map(|(label, _, _)| label),
+            sides.map(|(_, side, _)| side.as_ref()),
+            lines,
+            window,
+        )
+    };
     // What both sides' headers draw, measured once for the frame, laid out
     // as a pair in it ([`Pair`]).
     let pair = std::rc::Rc::new(Pair {
@@ -3037,8 +3084,9 @@ pub(crate) mod tests {
                 });
                 let mut holding = rich_preview::Side::unavailable(Path::new("a.pdf"), true, None);
                 holding.pdf = Some(document.clone());
-                let heading =
-                    cx.update(|window, _| side_heading(0, "Before", &holding, px(1000.), window));
+                let heading = cx.update(|window, _| {
+                    side_heading(0, "Before", &holding, px(1000.), true, window)
+                });
                 assert_eq!(
                     (heading.text.as_str(), heading.caption, heading.width),
                     ("Before · PDF", None, whole)
@@ -4109,6 +4157,90 @@ pub(crate) mod tests {
             );
         }
 
+        /// Both sides of a comparison read their kind, "· PDF", or neither:
+        /// two paged PDFs side by side, at scales 1.2 and 2, at 13 and 18 pt,
+        /// in a 461 px window's 87 px sides and at every side width from 60
+        /// to 200 px every other device pixel, are headed "Before · PDF"
+        /// beside "After · PDF" or "Before" beside "After", never one beside
+        /// the other, across the band where After's heading would fit its
+        /// line whole and Before's, the wider, would not. Each side once
+        /// dropped its kind alone, and at 18 pt in a 461 × 490 window the
+        /// two were headed "Before" beside "After · PDF".
+        #[gpui::test]
+        fn both_sides_read_their_kind_or_neither(cx: &mut gpui_kit::TestAppContext) {
+            let started = std::time::Instant::now();
+            let (content, documents) = both_sides("headings of one kind", 3);
+            let (view, cx) = window(cx, content);
+            // A side that holds a PDF, as each does here.
+            let mut holding = rich_preview::Side::unavailable(Path::new("a.pdf"), true, None);
+            holding.pdf = Some(documents[0].clone());
+            let mut failures = Vec::new();
+            let mut band = std::collections::BTreeSet::new();
+            for scale in [1.2f32, 2.] {
+                cx.update(|window, _| window.set_scale_factor(scale));
+                for text in [13u8, 18] {
+                    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                    crate::tags::tests::draw(cx);
+                    let devices = ((60. * 2. * scale) as i32..=(200. * 2. * scale) as i32)
+                        .step_by(2)
+                        .chain([(87. * 2. * scale) as i32]);
+                    for device in devices {
+                        let width = px(device as f32 / scale);
+                        view.update(cx, |view, cx| {
+                            view.width = width;
+                            cx.notify();
+                        });
+                        cx.update(|window, cx| {
+                            window.simulate_next_frame(cx);
+                            window.draw(cx).clear(cx);
+                        });
+                        let kinds = [
+                            ("pdf-side-heading-0", "Before"),
+                            ("pdf-side-heading-1", "After"),
+                        ]
+                        .map(|(heading, label)| {
+                            let kind = cx
+                                .debug_bounds(format!("{heading}/{label} · PDF").leak())
+                                .is_some();
+                            let name = cx
+                                .debug_bounds(format!("{heading}/{label}").leak())
+                                .is_some();
+                            assert!(kind != name, "{heading} reads one heading");
+                            kind
+                        });
+                        let side = width / 2.;
+                        if kinds[0] != kinds[1] {
+                            failures.push(format!(
+                                "scale {scale}, {text} pt, side {side:?}: Before reads its kind {}, After {}",
+                                kinds[0], kinds[1]
+                            ));
+                        }
+                        // Where the sides' own headings would differ.
+                        let alone = cx.update(|window, _| {
+                            let line = pair_line(width, false, false, window);
+                            [(0, "Before"), (1, "After")].map(|(index, label)| {
+                                side_heading(index, label, &holding, line, true, window).kind
+                            })
+                        });
+                        if alone[0] != alone[1] {
+                            band.insert((scale.to_bits(), text));
+                        }
+                    }
+                }
+            }
+            cx.update(|window, cx| {
+                window.set_scale_factor(2.);
+                appearance::apply_text_sizes(13, 12, window, cx)
+            });
+            eprintln!("took {:?}", started.elapsed());
+            assert_eq!(
+                band.len(),
+                4,
+                "at both scales and sizes the walk crosses widths where Before's own heading would drop its kind and After's would not: {band:?}"
+            );
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+        }
+
         /// The room fallback takes the compact form only where its run fits
         /// one line: a side whose full form fits its width but not its room,
         /// and whose compact run wraps, takes the narrowest, never a wrapping
@@ -4404,7 +4536,7 @@ pub(crate) mod tests {
                 ];
                 cx.update(|window, _| {
                     let at = format!("at {text} pt and scale {scale}");
-                    let heading = |line| side_heading(0, "Before", &absent, line, window);
+                    let heading = |line| side_heading(0, "Before", &absent, line, true, window);
                     let whole = heading(px(1000.));
                     assert!(
                         whole.caption.is_some() && (whole.width - before).abs() < px(0.01),
@@ -4420,7 +4552,7 @@ pub(crate) mod tests {
                         narrower.caption.is_none() && narrower.text == "Before",
                         "{at} a line a device pixel narrower holds the name alone"
                     );
-                    let pdf_heading = side_heading(1, "After", &added, px(1000.), window);
+                    let pdf_heading = side_heading(1, "After", &added, px(1000.), true, window);
                     assert!(
                         pdf_heading.text == "After · PDF"
                             && (pdf_heading.width - after).abs() < px(0.01),
