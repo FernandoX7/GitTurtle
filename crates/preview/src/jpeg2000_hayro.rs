@@ -247,6 +247,137 @@ mod tests {
         bytes[start..start + length as usize].to_vec()
     }
 
+    /// The RGB fixture's signature and `ftyp` boxes, a `jp2h` of `children`,
+    /// then the `jp2c` box that ends `codestream_of`.
+    fn jp2(children: &[&[u8]], codestream_of: &[u8]) -> Vec<u8> {
+        let mut bytes = fixture("jpeg2000-rgb.jp2")[..32].to_vec();
+        bytes.extend(jp2_box(b"jp2h", &children.concat()));
+        bytes.extend_from_slice(&codestream_of[position(codestream_of, b"jp2c") - 4..]);
+        bytes
+    }
+
+    /// A `cmap` entry: SIZ component, mapping type and palette column.
+    fn entry(component: u16, kind: u8, column: u8) -> [u8; 4] {
+        let [high, low] = component.to_be_bytes();
+        [high, low, kind, column]
+    }
+
+    fn cmap(entries: &[[u8; 4]]) -> Vec<u8> {
+        jp2_box(b"cmap", &entries.concat())
+    }
+
+    /// The palette fixture (one 8-bit index component; four entries in three
+    /// 8-bit columns; sRGB) with `mapping` for its `cmap` box.
+    fn palette_with(mapping: &[u8]) -> Vec<u8> {
+        let palette = fixture("jpeg2000-palette.jp2");
+        let [ihdr, colr, pclr] = [b"ihdr", b"colr", b"pclr"].map(|kind| whole_box(&palette, kind));
+        jp2(&[&ihdr, &colr, &pclr, mapping], &palette)
+    }
+
+    /// hayro-jpeg2000 makes one full-size plane per `cmap` entry and one
+    /// output channel each; the preflight refuses a mapping it cannot account
+    /// for, before anything is decoded.
+    #[test]
+    fn palette_component_mappings_are_refused_before_decoding() {
+        use ImageErrorKind::{Jpeg2000TooManyComponents, Jpeg2000Unreadable};
+        // The fixture's own mapping, rebuilt, decodes as before.
+        let columns = [entry(0, 1, 0), entry(0, 1, 1), entry(0, 1, 2)];
+        let reply = jpeg2000(&palette_with(&cmap(&columns)), 1600).unwrap();
+        assert_quadrants(&reply.image, QUADRANTS, 2, "rebuilt palette");
+        let mut wrong = Vec::new();
+        for (case, mapping, kind) in [
+            (
+                "16 entries",
+                cmap(&[entry(0, 1, 0); 16]),
+                Jpeg2000TooManyComponents,
+            ),
+            (
+                "5 entries",
+                cmap(&[entry(0, 1, 0); 5]),
+                Jpeg2000TooManyComponents,
+            ),
+            (
+                "component 1 of 1",
+                cmap(&[entry(0, 1, 0), entry(1, 1, 1), entry(0, 1, 2)]),
+                Jpeg2000Unreadable,
+            ),
+            (
+                "mapping type 2",
+                cmap(&[entry(0, 1, 0), entry(0, 2, 1), entry(0, 1, 2)]),
+                Jpeg2000Unreadable,
+            ),
+            (
+                "column 3 of 3",
+                cmap(&[entry(0, 1, 0), entry(0, 1, 1), entry(0, 1, 3)]),
+                Jpeg2000Unreadable,
+            ),
+            (
+                "a partial entry",
+                jp2_box(b"cmap", &[0, 0, 1]),
+                Jpeg2000Unreadable,
+            ),
+        ] {
+            let bytes = palette_with(&mapping);
+            // Refused by the preflight itself, and so through `serve`.
+            let found = (
+                jpeg2000::preflight(&bytes).err(),
+                jpeg2000(&bytes, 100).err(),
+            );
+            if found != (Some(kind), Some(kind)) {
+                wrong.push((case, found));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:?}");
+    }
+
+    /// The budget counts every codestream plane and one per `cmap` entry,
+    /// alpha included.
+    #[test]
+    fn palette_budget_counts_each_component_and_mapping_entry() {
+        // The alpha fixture's four 8-bit components: the first indexes the
+        // palette fixture's three columns and the fourth is used directly,
+        // as opacity (`cdef`: channel, type, association; 0 is the image).
+        let alpha = fixture("jpeg2000-alpha.jp2");
+        let palette = fixture("jpeg2000-palette.jp2");
+        let mapping = cmap(&[
+            entry(0, 1, 0),
+            entry(0, 1, 1),
+            entry(0, 1, 2),
+            entry(3, 0, 0),
+        ]);
+        let channels = [[0, 0, 1], [1, 0, 2], [2, 0, 3], [3, 1, 0]];
+        let mut definitions = 4u16.to_be_bytes().to_vec();
+        for value in channels.as_flattened() {
+            definitions.extend_from_slice(&u16::to_be_bytes(*value));
+        }
+        let bytes = jp2(
+            &[
+                &whole_box(&alpha, b"ihdr"),
+                &whole_box(&alpha, b"colr"),
+                &whole_box(&palette, b"pclr"),
+                &mapping,
+                &jp2_box(b"cdef", &definitions),
+            ],
+            &alpha,
+        );
+        // 64 × 48 f32 samples in four component and four mapped planes, and
+        // the one 64 × 48 tile-component.
+        assert_eq!(
+            jpeg2000::preflight(&bytes).unwrap().decode_bytes(0),
+            64 * 48 * 4 * (4 + 4) + 64 * 48 * 4
+        );
+        // Every first-component value indexes the last palette entry; the
+        // opacity is the fixture's.
+        let reply = jpeg2000(&bytes, 1600).unwrap();
+        let [opaque, half] = [255, 128].map(|alpha| [240, 240, 240, alpha]);
+        assert_quadrants(
+            &reply.image,
+            [opaque, half, opaque, half],
+            2,
+            "palette and alpha",
+        );
+    }
+
     /// hayro-jpeg2000 0.4.1 decodes the last `jp2c` of a file; the preflight
     /// checks the first and refuses any after it.
     #[test]

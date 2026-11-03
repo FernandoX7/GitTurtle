@@ -210,8 +210,9 @@ pub(super) struct Preflight {
     shrink: (u32, u32),
     /// The first tile's size within the area, the largest a tile can be.
     tile: (u32, u32),
-    /// Output components: SIZ's, or the palette's columns when larger.
-    components: u32,
+    /// The f32 planes alive at once: one per SIZ component, plus one per
+    /// `cmap` entry when a palette is resolved (always at full resolution).
+    planes: u32,
     /// Every component samples 1 × 1.
     unit_sampling: bool,
     palette: bool,
@@ -243,12 +244,12 @@ impl Preflight {
         self.unit_sampling && !self.palette
     }
 
-    /// f32 samples of every component at `level` plus the largest
-    /// tile-component there (#1558's formula; the tile count is bounded).
+    /// f32 samples of every plane at `level` plus the largest tile-component
+    /// there (#1558's formula; the tile count is bounded).
     pub(super) fn decode_bytes(&self, level: u32) -> u64 {
         let (width, height) = self.at_level(level);
         let tile = |size: u32| u64::from(size).div_ceil(1 << level);
-        u64::from(width) * u64::from(height) * u64::from(self.components) * 4
+        u64::from(width) * u64::from(height) * u64::from(self.planes) * 4
             + tile(self.tile.0) * tile(self.tile.1) * 4
     }
 }
@@ -258,7 +259,8 @@ impl Preflight {
 /// kind, `ihdr` agreeing with SIZ, the source bounds, at most
 /// 65,535 tiles by formula B-5, 1 to 4 components of at most 16 bits, and a
 /// palette of 1 to 1,024 entries and 1 to 4 columns of at most 16 bits with a
-/// non-empty component mapping (#1649).
+/// component mapping of 1 to 4 entries that each name a component and column
+/// that exist (#1649).
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -328,11 +330,8 @@ pub(super) fn preflight(
         if header.len() != 14 {
             return Err(Jpeg2000Unreadable);
         }
-        let palette = match palette {
-            Some(palette) => Some(palette_columns(palette, mapping)?),
-            None => None,
-        };
         let size = (be_u32(&header[4..8]), be_u32(&header[..4]));
+        let palette = palette.map(|palette| (palette, mapping));
         (codestream.ok_or(Jpeg2000Unreadable)?, Some(size), palette)
     } else {
         return Err(Jpeg2000Unreadable);
@@ -397,6 +396,12 @@ pub(super) fn preflight(
         uniform &= *sampling.get_or_insert((x_sampling, y_sampling)) == (x_sampling, y_sampling);
     }
     let (x_sampling, y_sampling) = sampling.ok_or(Jpeg2000Unreadable)?;
+    // hayro-jpeg2000 resolves a palette into one plane per `cmap` entry while
+    // it still holds the codestream's planes.
+    let mapped = match palette {
+        Some((palette, mapping)) => palette_mapping(palette, mapping, components)?,
+        None => 0,
+    };
     let preflight = Preflight {
         area,
         shrink: if uniform {
@@ -405,7 +410,7 @@ pub(super) fn preflight(
             (1, 1)
         },
         tile: (tile_width.min(area.0), tile_height.min(area.1)),
-        components: (components as u32).max(palette.unwrap_or(0)),
+        planes: components as u32 + mapped,
         unit_sampling: table.iter().all(|component| component[1..] == [1, 1]),
         palette: palette.is_some(),
     };
@@ -415,16 +420,26 @@ pub(super) fn preflight(
 }
 
 /// A `pclr` box (I.5.3.4) with 1 to 1,024 entries and 1 to 4 columns of at
-/// most 16 bits, and a non-empty `cmap` (I.5.3.5) beside it: its column count.
+/// most 16 bits, and its `cmap` (I.5.3.5) of 1 to 4 entries. Each entry names a
+/// SIZ component below `components`, a mapping type of 0 (the component itself)
+/// or 1 (through a palette column), and a column below the palette's count
+/// (0 for type 0). Returns the entry count: `hayro-jpeg2000` 0.4.1's
+/// `resolve_palette_indices` makes one full-size f32 plane per entry while it
+/// still holds the codestream's planes, and its output takes one channel per
+/// entry, so more than four are too many components for an RGBA image. A
+/// missing or empty `cmap` is refused (#1649).
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn palette_columns(
+fn palette_mapping(
     palette: &[u8],
     mapping: Option<&[u8]>,
+    components: usize,
 ) -> std::result::Result<u32, image_helper::ImageErrorKind> {
-    use image_helper::ImageErrorKind::{Jpeg2000TooDeep, Jpeg2000Unreadable};
+    use image_helper::ImageErrorKind::{
+        Jpeg2000TooDeep, Jpeg2000TooManyComponents, Jpeg2000Unreadable,
+    };
     if palette.len() < 3 {
         return Err(Jpeg2000Unreadable);
     }
@@ -445,12 +460,23 @@ fn palette_columns(
     if palette.len() < 3 + columns + entries * entry_bytes {
         return Err(Jpeg2000Unreadable);
     }
-    match mapping {
-        Some(mapping) if !mapping.is_empty() && mapping.len().is_multiple_of(4) => {
-            Ok(columns as u32)
-        }
-        _ => Err(Jpeg2000Unreadable),
+    // One output channel per `cmap` entry.
+    let (channels, partial) = mapping.unwrap_or_default().as_chunks::<4>();
+    if channels.is_empty() || !partial.is_empty() {
+        return Err(Jpeg2000Unreadable);
     }
+    if channels.len() > 4 {
+        return Err(Jpeg2000TooManyComponents);
+    }
+    for &[high, low, kind, column] in channels {
+        if usize::from(u16::from_be_bytes([high, low])) >= components
+            || kind > 1
+            || usize::from(column) >= columns
+        {
+            return Err(Jpeg2000Unreadable);
+        }
+    }
+    Ok(channels.len() as u32)
 }
 
 #[cfg(test)]

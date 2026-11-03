@@ -65,9 +65,9 @@ Decision: on Linux nothing decodes AVIF or JPEG 2000 in the app process. `decode
 **Bounds before allocation: JPEG 2000:**
 1. Signature; for JP2, brand `jp2 ` or a compatibility list containing `jp2 ` (JPX that is not JP2-compatible is refused on Linux); exactly one `jp2h`, then one `jp2c`, and neither kind after it (`hayro-jpeg2000` 0.4.1 reads every top-level box and decodes the last of each); `ihdr` and SIZ agree and both pass `check_dimensions` (existing `jpeg2000::dimensions`).
 2. SIZ: 1–4 components, precision ≤ 16 bits, tiles `ceil(w / tw) × ceil(h / th)` ≤ 65,535 (SOT's tile index is 16 bits; covers the 25.8 GB tile vector).
-3. `pclr`: 1–1,024 entries, 1–4 columns, depth ≤ 16 bits, with a non-empty `cmap` (covers #1649). A palette turns reduced resolution off, so its budget is at full size.
+3. `pclr`: 1–1,024 entries, 1–4 columns, depth ≤ 16 bits, with a `cmap` of 1–4 entries, each naming a SIZ component, mapping type 0 or 1 and an existing column (covers #1649; `resolve_palette_indices` makes one full-size plane per entry). A palette turns reduced resolution off, so its budget is at full size.
 4. Resolution: target `scaled_dimensions(size, edge)`; reduced resolution only when every component samples 1 × 1 and there is no palette (0.4.1 panics on subsampled components at reduced resolution, #1409, fixed only on `main`), otherwise full resolution.
-5. Budget before `decode`, from the size `Image::new` reports: width × height × components × 4 bytes (f32 samples) plus the largest tile-component at that resolution × 4 bytes ≤ 256 MiB (#1558's formula; step 2 covers its gap). `total_bytes()` checked as for other rasters.
+5. Budget before `decode`, from the size `Image::new` reports: width × height × (components + `cmap` entries with a palette) × 4 bytes (f32 samples) plus the largest tile-component at that resolution × 4 bytes ≤ 256 MiB (#1558's formula; step 2 covers its gap). `total_bytes()` checked as for other rasters.
 6. `decode` under `catch_unwind`; code-block, precinct and packet structures are not budgeted by anyone: `RLIMIT_DATA` and the deadline cover them.
 
 **Colour, depth, alpha and orientation.**
