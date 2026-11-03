@@ -1103,10 +1103,12 @@ mod tests {
         assert!(supported_libdav1d(&installed), "{installed}");
     }
 
-    /// Source files of this crate, for the structural checks below.
+    /// Source files of this crate and its examples, for the structural checks
+    /// below.
     fn sources() -> Vec<(String, String)> {
         let mut sources = Vec::new();
-        let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut directories = vec![root.join("src"), root.join("examples")];
         while let Some(directory) = directories.pop() {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let path = entry.unwrap().path();
@@ -1119,6 +1121,19 @@ mod tests {
             }
         }
         sources
+    }
+
+    /// Whether a line names the `moxcms` crate: the whole word anywhere but in
+    /// a line that is only a comment. A trailing or block comment naming it
+    /// counts too, on the safe side.
+    fn names_moxcms(line: &str) -> bool {
+        if line.trim_start().starts_with("//") {
+            return false;
+        }
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        line.match_indices("moxcms").any(|(at, name)| {
+            !line[..at].ends_with(word) && !line[at + name.len()..].starts_with(word)
+        })
     }
 
     #[test]
@@ -1159,17 +1174,37 @@ mod tests {
                 assert!(!code.contains(needle.as_str()), "{path} uses {needle}");
             }
         }
-        // Every dav1d call is in that module, and so is every direct moxcms
-        // call (an AVIF's ICC profile; `image` and hayro-jpeg2000 call it
-        // themselves).
+        // Every dav1d call is in that module, and so is every use of the
+        // moxcms crate (an AVIF's ICC profile; `image` and hayro-jpeg2000 call
+        // it themselves): no other line names it, as a path, `use moxcms as`,
+        // `extern crate` or in a macro, and the manifest gives it no other name.
+        for line in [
+            "use moxcms as cms;",
+            "extern crate moxcms;",
+            "    convert!(::moxcms::ColorProfile::new_srgb());",
+            "let profile = r#moxcms::ColorProfile::new_srgb(); // sRGB",
+        ] {
+            assert!(names_moxcms(line), "{line}");
+        }
+        for line in [
+            "/// Converts as moxcms does.",
+            "    // moxcms",
+            "moxcms_profile",
+        ] {
+            assert!(!names_moxcms(line), "{line}");
+        }
         for (path, text) in &sources {
             if !path.ends_with("/avif.rs") && !path.ends_with("/lib.rs") {
                 assert!(!text.contains(["dav1d", "::"].concat().as_str()), "{path}");
             }
             if !path.ends_with("/avif.rs") {
-                assert!(!text.contains(["moxcms", "::"].concat().as_str()), "{path}");
+                for (index, line) in text.lines().enumerate() {
+                    assert!(!names_moxcms(line), "{path}:{} names moxcms", index + 1);
+                }
             }
         }
+        let manifest: String = include_str!("../Cargo.toml").split_whitespace().collect();
+        assert!(!manifest.contains("package=\"moxcms\""));
         for module in ["avif.rs", "jpeg2000_hayro.rs", "image_helper.rs"] {
             let (path, text) = sources
                 .iter()
