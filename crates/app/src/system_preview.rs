@@ -988,8 +988,8 @@ impl HeaderRoom {
 
     /// The room of a partner side beside this one, as tall, whose own open
     /// control `answered`, so a side can lay out its header in step with its
-    /// partner's, as a PDF side without pages takes the rhythm of a partner's
-    /// narrowest header (`pdf_view::render_comparison`).
+    /// partner's: both PDF sides of a comparison take one form, the narrower,
+    /// and a side without pages takes its partner's rhythm (`pdf_view::Pair`).
     pub(crate) fn beside(self, answered: bool, window: &Window, cx: &App) -> Pixels {
         Self::new(
             self.height,
