@@ -1743,8 +1743,10 @@ own repeat is inferred). The
 [Linux backend patch](../gpui-pre-linux/GITTURTLE-PATCH.md), a backport of
 upstream zed-industries/zed#63776, enables text input only while a focused
 text field accepts it, so a focused menu or button gets GPUI's own
-repeats, marked held, and the rule holds on Wayland as on macOS, with or
-without an input method.
+repeats, marked held, and from the first frame drawn after focus or
+activation the rule holds on Wayland as on macOS, with or without an input
+method (the backend's note records the one-frame transient after
+activation).
 `a_held_enter_runs_no_item_a_rebuild_makes_able_to_act` rests the cursor on
 the waiting Two, presses Enter and repeats it, rebuilds the menu with Two
 able to act and repeats again: nothing runs and the menu stays open, and a

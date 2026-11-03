@@ -574,8 +574,10 @@ repeat rate (every 25 ms on the probe's host), each a fresh press (native
 probe QA-90, 2026-11-03; details in the component patch). The
 [Linux backend patch](../gpui-pre-linux/GITTURTLE-PATCH.md) turns text
 input on only while a focused text field accepts it, so a focused trigger
-gets GPUI's own repeats, marked held, and the rule holds on Wayland as on
-macOS, with or without an input method.
+gets GPUI's own repeats, marked held, and from the first frame drawn after
+focus or activation the rule holds on Wayland as on macOS, with or without
+an input method (the backend's note records the one-frame transient after
+activation).
 `popover::tests::a_held_key_on_the_trigger_opens_nothing` holds Enter and
 then Space on a trigger, which opens nothing until a fresh press opens the
 popover, closes it with Escape, which returns focus to the trigger, and
