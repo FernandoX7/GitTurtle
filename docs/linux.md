@@ -109,7 +109,7 @@ Install the runtime packages above, then the build/packaging prerequisites:
 sudo apt-get install -y --no-install-recommends \
   build-essential clang cmake pkg-config curl \
   libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev libvulkan-dev python3-pil
+  libssl-dev libzstd-dev libvulkan-dev libdav1d-dev python3-pil
 ```
 
 Install Rust through [rustup](https://rustup.rs/) if needed. The checked-in
@@ -261,8 +261,8 @@ python3 dist/gitturtle-linux-$(uname -m)/install.py
 `rustup` needs no default toolchain: the checkout's `rust-toolchain.toml`
 installs Rust 1.99.0 on the first build. On another Arch system also install
 `base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
-libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
-`xdg-desktop-portal` and a FileChooser backend. No font package is needed for
+libx11 libxcb openssl zstd vulkan-icd-loader dav1d`, the Vulkan driver for your
+GPU, `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
 interface text, which uses the embedded IBM Plex Sans, or for
 code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font

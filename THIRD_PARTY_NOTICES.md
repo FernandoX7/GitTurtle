@@ -32,10 +32,33 @@ names, versions, declared licenses, authors, source URLs, and notice hashes in
 `licenses/dependencies.json`, copies available license/notice files, includes
 the local patch records, and includes the complete published sources of
 MPL-2.0 dependencies in `licenses/sources/`. This currently includes `option-ext`
-on Linux; target-specific source records are authoritative. The traversal excludes
+on Linux and `mp4parse` on Linux x86-64 and AArch64; target-specific source
+records are authoritative. The traversal excludes
 development dependency edges; Cargo workspace feature unification can still
 conservatively include additional packages. This is a metadata inventory, not
 a claim about every linked object. Test fixtures are not packaged.
+
+Linux builds for x86-64 and AArch64 include the AVIF and JPEG 2000 decoders
+for GitTurtle's confined preview helper; macOS builds include none of them and
+decode both formats with ImageIO.
+
+- `mp4parse` 0.17.0 (MPL-2.0) reads AVIF containers. GitTurtle uses the
+  crates.io release unmodified. The collector places its complete source in
+  each package, as MPL-2.0 section 3.2(a) asks: it generates
+  `licenses/sources/mp4parse-0.17.0.tar.gz` from Cargo's unpacked copy of the
+  crates.io archive whose SHA-256 is
+  `63a35203d3c6ce92d5251c77520acb2e57108c88728695aa883f70023624c570`, the
+  checksum `Cargo.lock` pins; the generated file's own SHA-256 differs. The
+  source is also available from crates.io and
+  [the upstream repository](https://github.com/mozilla/mp4parse-rust).
+- `dav1d` 0.11.1 and `dav1d-sys` 0.8.3 (MIT) bind libdav1d, VideoLAN's AV1
+  decoder (BSD-2-Clause, copyright VideoLAN and the dav1d authors).
+  libdav1d is a dynamically linked system library: builds use the
+  distribution's package (Arch `dav1d`, Ubuntu `libdav1d7`) through
+  pkg-config, never a copy built from source, and GitTurtle packages do not
+  ship it. A package that ever bundles libdav1d must ship its notice too.
+- `hayro-jpeg2000` 0.4.1 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
+  reached Linux builds through hayro and now adds its `image` integration.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
 preserve inspected upstream texts with immutable source URLs and hashes. Five

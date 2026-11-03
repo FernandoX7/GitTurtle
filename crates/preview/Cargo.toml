@@ -19,11 +19,21 @@ ufbx = "0.11.5"
 stl_io = "0.11.0"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
-# Linux PDF pages, reachable only through `pdf_helper::serve` in GitTurtle's
-# confined helper process, which supports x86-64 and AArch64. Embedded
-# standard fonts and predefined CMaps keep the helper from reading system files.
+# Linux PDF pages and AVIF and JPEG 2000 images, reachable only through
+# `pdf_helper::serve` in GitTurtle's confined helper process, which supports
+# x86-64 and AArch64. Embedded standard fonts and predefined CMaps keep the
+# helper from reading system files. `hayro-jpeg2000` stays at the version hayro
+# uses and adds only its `image` integration. `mp4parse` is MPL-2.0 and used
+# unmodified (its source ships in the notices). `dav1d` links the system
+# libdav1d through pkg-config, never a copy built from source. `dav1d-sys` is
+# pinned exactly because its C struct layouts are written by hand, so a version
+# change needs a layout review; it is direct only for reading `dav1d_version`.
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 hayro = { version = "=0.8.0", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
+hayro-jpeg2000 = { version = "=0.4.1", default-features = false, features = ["std", "simd", "image"] }
+mp4parse = "=0.17.0"
+dav1d = "=0.11.1"
+dav1d-sys = "=0.8.3"
 
 [dev-dependencies]
 tempfile = "3"

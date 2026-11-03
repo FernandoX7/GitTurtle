@@ -37,13 +37,13 @@ VENDOR_PREFIX = "vendor/"
 VENDOR_MTIME_NS = 1_153_704_088 * 10**9
 # The Arch container's inputs to compiled output, by pacman package: the C
 # toolchain and its headers, then the libraries that build scripts probe or
-# the test binaries link (aws-lc-sys probes openssl's pkg-config files). The
-# rest of the rolling inventory stays out of the key, so an unrelated update
-# does not discard the entry. Keep this in step with the job's install list
-# (a test compares them).
+# the test binaries link (aws-lc-sys probes openssl's pkg-config files, and
+# dav1d-sys dav1d's). The rest of the rolling inventory stays out of the key,
+# so an unrelated update does not discard the entry. Keep this in step with the
+# job's install list (a test compares them).
 ARCH_NATIVE_PACKAGES = (
     "binutils", "clang", "cmake", "gcc", "gcc-libs", "glibc", "linux-api-headers", "llvm-libs", "make", "pkgconf",
-    "fontconfig", "freetype2", "libx11", "libxcb", "libxkbcommon", "libxkbcommon-x11", "openssl", "wayland",
+    "dav1d", "fontconfig", "freetype2", "libx11", "libxcb", "libxkbcommon", "libxkbcommon-x11", "openssl", "wayland",
 )
 # Used only at run time, by the tests or the job's pkg-config check (Vulkan and
 # zstd) or as the MIME database the tests' GIO reads (shared-mime-info): no

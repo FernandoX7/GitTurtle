@@ -51,11 +51,18 @@ if ! python3 -c 'from PIL import Image' 2>/dev/null; then
   echo "Install python3-pil (Ubuntu: sudo apt-get install python3-pil)." >&2
   exit 1
 fi
+# A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link that copy
+# statically. GitTurtle links only the distribution's libdav1d.
+if system_deps="$(compgen -e | grep '^SYSTEM_DEPS_')"; then
+  echo "Unset these variables before packaging; GitTurtle links the system libdav1d: $(tr '\n' ' ' <<<"$system_deps")" >&2
+  exit 1
+fi
 if [[ "$build" == true ]]; then
-  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan; then
+  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan dav1d; then
     echo "Native development libraries are missing. Install all build dependencies in docs/linux.md; do not create local library symlinks." >&2
     exit 1
   fi
+  echo "Building against libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
   # Force the packaged target, even if the user's Cargo configuration selects
   # another target. Never build one path and silently ship an older executable.
   (cd "$project_root" && cargo build --release --locked -p gitturtle --target "$target" --target-dir "$project_root/target")

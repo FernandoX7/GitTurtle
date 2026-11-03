@@ -47,7 +47,10 @@ class LinuxPackageRefusalTests(unittest.TestCase):
         modules = self.root / "modules" / "PIL"
         modules.mkdir(parents=True)
         (modules / "__init__.py").write_text("Image = None\n")
-        self.environment = dict(os.environ, PATH=f"{self.tools}:{os.environ['PATH']}",
+        # The packager refuses every SYSTEM_DEPS_ variable; one in the caller's
+        # environment must not decide these fixtures.
+        inherited = {name: value for name, value in os.environ.items() if not name.startswith("SYSTEM_DEPS_")}
+        self.environment = dict(inherited, PATH=f"{self.tools}:{os.environ['PATH']}",
                                 PYTHONPATH=str(modules.parent), FIXTURE_EVENTS=str(self.events))
         self.tool("cargo", 'printf "cargo %s\\n" "$*" >> "$FIXTURE_EVENTS"\nexit 73')
         self.tool("desktop-file-validate", "exit 0")
@@ -170,6 +173,26 @@ if "--require-complete" in args:
     def test_binary_option_requires_no_build_before_any_tool_runs(self):
         result = self.run_package("--binary", str(self.binary), no_build=False)
         self.assertIn("--binary requires --no-build", result.stderr)
+        self.assertFalse(self.events.exists())
+        self.assert_no_output()
+
+    def test_system_deps_variable_is_refused_before_any_tool_runs(self):
+        # Any SYSTEM_DEPS_ variable can make dav1d-sys build and statically link
+        # its own libdav1d, so the build must not start.
+        self.environment["SYSTEM_DEPS_X"] = "1"
+        result = self.run_package(no_build=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("GitTurtle links the system libdav1d: SYSTEM_DEPS_X", result.stderr)
+        self.assertFalse(self.events.exists())
+        self.assert_no_output()
+
+    def test_every_system_deps_variable_is_named_in_the_refusal(self):
+        self.environment.update(SYSTEM_DEPS_DAV1D_BUILD_INTERNAL="always", SYSTEM_DEPS_LINK="static")
+        result = self.run_package()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unset these variables before packaging", result.stderr)
+        self.assertIn("SYSTEM_DEPS_DAV1D_BUILD_INTERNAL", result.stderr)
+        self.assertIn("SYSTEM_DEPS_LINK", result.stderr)
         self.assertFalse(self.events.exists())
         self.assert_no_output()
 

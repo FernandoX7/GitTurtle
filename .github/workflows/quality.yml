@@ -356,14 +356,21 @@ jobs:
             check_siglevel "$repo" "$(pacman-conf --repo="$repo" SigLevel)"
           done
           echo "pacman SigLevel: $(tr '\n' ' ' <<<"$global")"
+          # A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link
+          # that copy statically; the build links only the signed system package.
+          if names=$(compgen -e | grep '^SYSTEM_DEPS_'); then
+            echo "::error::SYSTEM_DEPS_ variables must not reach the build: $(tr '\n' ' ' <<<"$names")"
+            exit 1
+          fi
           pacman -Sy --noconfirm --noprogressbar --needed archlinux-keyring
           pacman -Su --noconfirm --noprogressbar --needed \
             base-devel clang cmake git openssh python rustup ca-certificates \
-            fontconfig freetype2 wayland libxkbcommon libxkbcommon-x11 libx11 libxcb \
+            fontconfig freetype2 wayland libxkbcommon libxkbcommon-x11 libx11 libxcb dav1d \
             vulkan-icd-loader vulkan-headers openssl zstd shared-mime-info
-          pkg-config --exists fontconfig freetype2 wayland-client xkbcommon xkbcommon-x11 x11-xcb vulkan
+          pkg-config --exists fontconfig freetype2 wayland-client xkbcommon xkbcommon-x11 x11-xcb vulkan dav1d
+          echo "libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
           # The rolling versions this run built against, for comparing runs.
-          pacman -Q glibc gcc clang cmake git python rustup fontconfig freetype2 wayland libxkbcommon libx11 shared-mime-info
+          pacman -Q glibc gcc clang cmake git python rustup fontconfig freetype2 wayland libxkbcommon libx11 dav1d shared-mime-info
       # The runner's account owns RUNNER_TEMP, HOME and the file-command files;
       # the build user takes its UID so later steps can write them.
       - name: Create the unprivileged build user

@@ -420,8 +420,9 @@ Steps, in order:
    archlinux-keyring` and `pacman -Su` with the build and
    test packages: `base-devel clang cmake git openssh python rustup ca-certificates`
    plus the GPUI native libraries (`fontconfig freetype2 wayland libxkbcommon
-   libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`),
-   the Arch counterparts of the Ubuntu jobs' packages, and `shared-mime-info`, the
+   libxkbcommon-x11 libx11 libxcb vulkan-icd-loader vulkan-headers openssl zstd`)
+   and `dav1d`, the system AV1 decoder that `dav1d-sys` links, the Arch
+   counterparts of the Ubuntu jobs' packages, and `shared-mime-info`, the
    MIME database GIO types files with: without it `gio` types every file
    `application/octet-stream` and the real-GIO check in `system_preview::launch`
    fails, naming the missing database. It checks the libraries' `pkg-config`
@@ -504,10 +505,11 @@ action](#bounded-rust-dependency-caching) and its pinned `rust-cache`, with the 
   [helper](../.github/actions/setup-rust/cache.py): the C toolchain and its
   headers (`binutils clang cmake gcc gcc-libs glibc linux-api-headers llvm-libs
   make pkgconf`), and the libraries that build scripts probe or the test binaries
-  link (`fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11 openssl
-  wayland`). `freetype-sys` links the system FreeType, `yeslogic-fontconfig-sys`
-  and `aws-lc-sys` probe pkg-config (the latter for `libcrypto` and `openssl`),
-  and the app links `libxcb` and `libxkbcommon`. The job's other packages
+  link (`dav1d fontconfig freetype2 libx11 libxcb libxkbcommon libxkbcommon-x11
+  openssl wayland`). `freetype-sys` links the system FreeType, `dav1d-sys`,
+  `yeslogic-fontconfig-sys` and `aws-lc-sys` probe pkg-config (`dav1d-sys` for
+  the libdav1d it links, `aws-lc-sys` for `libcrypto` and `openssl`), and the app
+  links `libxcb` and `libxkbcommon`. The job's other packages
   (`ARCH_RUNTIME_PACKAGES`) are used only at run time: `vulkan-headers`,
   `vulkan-icd-loader` and `zstd` by the tests and its `pkg-config --exists`
   check, and `shared-mime-info` by the tests, as the MIME database `gio` reads.
