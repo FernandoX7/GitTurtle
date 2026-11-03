@@ -485,22 +485,22 @@ impl Form {
 
 impl Offer {
     /// The form of a control on a line that leaves it `room`: labelled where
-    /// its frame, icon and label fit, and otherwise its icon.
+    /// its frame, icon and label fit as layout places them
+    /// ([`Self::placed_width`]), and otherwise its icon. Chosen from their
+    /// unrounded sum, at 18 pt it was drawn labelled in a room two device
+    /// pixels narrower than itself at scale 1.2, and as its icon in a room
+    /// that held it labelled at 1.25.
     pub(crate) fn form(self, room: Pixels, window: &Window) -> Form {
-        Form::fitting(self.labelled_width(window), room)
+        Form::fitting(self.placed_width(window), room)
     }
 
-    /// The control's width labelled: its frame, icon and label.
-    pub(crate) fn labelled_width(self, window: &Window) -> Pixels {
-        labelled_button_width(self.label(), &LABEL, window)
-    }
-
-    /// The control's width labelled as layout places it on this display's
-    /// device pixels (`crate::placed_button_width`), for a header that lays
-    /// its controls out in lines by their drawn widths, as the PDF page
-    /// view's does (`pdf_view::full_fits`).
+    /// The control's width labelled, its frame, icon and label, as layout
+    /// places it on this display's device pixels
+    /// (`crate::labelled_button_width`): its form is chosen from it, and a
+    /// header that lays its controls out in lines by their drawn widths
+    /// measures it, as the PDF page view's does (`pdf_view::full_fits`).
     pub(crate) fn placed_width(self, window: &Window) -> Pixels {
-        placed_button_width(label_text_width(self.label(), &LABEL, window), true, window)
+        labelled_button_width(self.label(), &LABEL, window)
     }
 }
 
@@ -1171,7 +1171,8 @@ pub(crate) struct HeaderControl {
 }
 
 thread_local! {
-    /// Each toggle's two readings laid out, by its readings.
+    /// Each toggle's wider reading laid out in whole pixels, by its
+    /// readings.
     static TOGGLE_WIDTHS: std::cell::RefCell<
         std::collections::BTreeMap<[&'static str; 2], (crate::views::LineKey, Pixels)>,
     > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
@@ -1214,7 +1215,9 @@ thread_local! {
 impl HeaderControl {
     /// The control `id`, found by tests as `selector`, reading `reading`
     /// labelled and named `name` in every form, whose labelled form is
-    /// `widest` wide at its widest reading and whose icon is `icon`.
+    /// `widest` wide at its widest reading, as layout places it on this
+    /// display's device pixels (`crate::placed_button_width`), and whose
+    /// icon is `icon`.
     pub(crate) fn new(
         id: impl Into<ElementId>,
         selector: String,
@@ -1255,22 +1258,25 @@ impl HeaderControl {
         window: &Window,
     ) -> Self {
         let key = crate::views::LineKey::current(window);
-        let widest = TOGGLE_WIDTHS.with(|widths| {
+        let text = TOGGLE_WIDTHS.with(|widths| {
             let mut widths = widths.borrow_mut();
             match widths.get(&readings) {
-                Some((laid_out, width)) if *laid_out == key => *width,
+                Some((laid_out, text)) if *laid_out == key => *text,
                 _ => {
-                    let width = crate::text_button_width_now(&readings, window);
+                    let text = crate::widest_label_now(&readings, window);
                     // What the measure laid out, which a test reads back.
                     #[cfg(test)]
                     TOGGLE_MEASURED.with_borrow_mut(|measured| {
                         measured.insert(readings, crate::laid_out_labels())
                     });
-                    widths.insert(readings, (key, width));
-                    width
+                    widths.insert(readings, (key, text));
+                    text
                 }
             }
         });
+        // Placed on this display's device pixels as it is drawn, so its
+        // label is never cut ([`Self::button`]).
+        let widest = crate::placed_button_width(text, false, window);
         Self {
             on: Some(on),
             #[cfg(test)]
@@ -1321,7 +1327,11 @@ impl HeaderControl {
     /// the model's "Linked" was narrower than "Independent", so each click
     /// on it moved what follows; the page view once widened its own
     /// controls after this drew them, from a second measure of the link's
-    /// readings.
+    /// readings. That width is the one layout places the reading at, so its
+    /// label is never cut: drawn at the unrounded sum of its insets and
+    /// label, at scale 1.2 the 3D model's Reset and Edges were a device
+    /// pixel short of their labels at 13 pt, which cut them, and two at
+    /// 18 pt.
     pub(crate) fn button(self, room: Pixels) -> Button {
         let labelled = Form::fitting(self.widest, room) == Form::Labelled;
         let short = self
@@ -2061,6 +2071,119 @@ pub(crate) mod tests {
                 ),
             )
         }
+    }
+
+    /// An open control in a room `room` device pixels wide, in the form its
+    /// offer takes there, which a frame records in `form`; beneath it the
+    /// same control labelled, at its own width.
+    #[cfg(target_os = "linux")]
+    struct OpenRoom {
+        room: f32,
+        bytes: Arc<[u8]>,
+        offer: Offer,
+        showing: Showing,
+        form: Option<Form>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for OpenRoom {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let room = px(self.room / window.scale_factor());
+            let opener = Opener::new(WeakEntity::new_invalid(), self.showing);
+            let target = |index: usize| {
+                opener.target(
+                    ("open-room", index),
+                    "After",
+                    &self.bytes,
+                    std::path::Path::new("report.pdf"),
+                    "PDF",
+                    self.offer,
+                )
+            };
+            let form = self.offer.form(room, window);
+            self.form = Some(form);
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(div().w(room).flex().child(target(0).control(form, cx)))
+                .child(div().flex().child(target(1).control(Form::Labelled, cx)))
+        }
+    }
+
+    /// An open control is labelled exactly where its labelled form fits as
+    /// drawn ([`Offer::form`]): at scales 1.2 and 1.25, at 13 and 18 pt, in
+    /// rooms from three device pixels narrower than the control labelled at
+    /// its own width to three wider, it is labelled where that control fits
+    /// the room, lying within it, and its icon where it does not. Chosen
+    /// from the unrounded sum of its frame, icon and label, at 18 pt it was
+    /// drawn labelled in rooms one and two device pixels narrower than
+    /// itself at scale 1.2, and at 1.25 as its icon in a room that held it
+    /// labelled, at 13 and 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn an_open_control_is_labelled_where_it_fits_as_drawn(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let bytes: Arc<[u8]> =
+            Arc::from(&b"%PDF-1.4\n% open\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"[..]);
+        let offer = super::offer(&bytes, &|| Ok(()))
+            .expect("the bytes are read")
+            .expect("a PDF is offered");
+        let (view, cx) = cx.add_window_view(|_, _| OpenRoom {
+            room: 400.,
+            bytes,
+            offer,
+            showing: Showing::next(),
+            form: None,
+        });
+        let mut failures = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        for scale in [1.2f32, 1.25] {
+            for text in [13u8, 18] {
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                crate::tags::tests::draw(cx);
+                let labelled = cx
+                    .debug_bounds("open-room-1")
+                    .expect("the labelled control")
+                    .size
+                    .width;
+                let device = (f32::from(labelled) * scale).round() as i32;
+                for room in device - 3..=device + 3 {
+                    view.update(cx, |view, cx| {
+                        view.room = room as f32;
+                        cx.notify();
+                    });
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let form = view.read_with(cx, |view, _| view.form).expect("a form");
+                    let drawn = cx
+                        .debug_bounds("open-room-0")
+                        .expect("the control")
+                        .size
+                        .width;
+                    let width = px(room as f32 / scale);
+                    let fits = labelled <= width + px(0.01);
+                    reached.insert(form == Form::Labelled);
+                    if (form == Form::Labelled) != fits || drawn > width + px(0.01) {
+                        failures.push(format!(
+                            "scale {scale}, {text} pt, a room of {room} device pixels: {form:?}, drawn {drawn:?} wide, labelled {labelled:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        assert_eq!(reached.len(), 2, "both forms are drawn");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// A model comparison whose Before, a GLB, has animation clips and whose

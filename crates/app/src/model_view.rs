@@ -105,8 +105,8 @@ struct State {
     timeline_focus: Option<FocusHandle>,
     timeline_bounds: Bounds<Pixels>,
     scrubbing: bool,
-    /// The clip menu's width at its widest reading, "Default pose" or one of
-    /// the scene's clip names, by what it was laid out with
+    /// The clip menu's widest reading, "Default pose" or one of the scene's
+    /// clip names, laid out in whole pixels, by what it was laid out with
     /// (`playback::clip_control`).
     clip_menu: Option<(crate::views::LineKey, Pixels)>,
 }
@@ -634,8 +634,8 @@ thread_local! {
     static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The Copy source control's label, laid out.
     static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
-    /// The views menu's width at its widest reading, by what it was laid out
-    /// with ([`views_menu_width`]).
+    /// The views menu's widest reading laid out in whole pixels, by what it
+    /// was laid out with ([`views_menu_width`]).
     static VIEWS_MENU: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { std::cell::RefCell::new(None) };
     /// The camera's Reset, laid out; Edges and the link are toggles, laid
@@ -654,37 +654,25 @@ thread_local! {
 }
 
 /// The views menu labelled at its widest reading, a standard view's name or
-/// "Custom view", whatever the view ([`menu_width_now`]). Its readings never
-/// change, so it is laid out once per font and size and kept by what it was
-/// laid out with, as the clip menu's width is (`playback::clip_control`):
-/// the seven views' names were once gathered and joined on every frame, a
+/// "Custom view", whatever the view, as layout places it on this display's
+/// device pixels (`crate::placed_menu_width`). Its readings never change,
+/// so its label is laid out once per font and size and kept by what it was
+/// laid out with, as the clip menu's is (`playback::clip_control`): the
+/// seven views' names were once gathered and joined on every frame, a
 /// drag's orbit and a clip's playback among them, to look the width up.
 fn views_menu_width(window: &Window) -> Pixels {
-    crate::views::cached_width(&VIEWS_MENU, &crate::views::LineKey::current(window), || {
-        #[cfg(test)]
-        VIEW_READINGS_BUILT.with(|built| built.set(built.get() + 1));
-        let names: Vec<&str> = ModelStandardView::ALL
-            .iter()
-            .map(|view| view.label())
-            .chain(["Custom view"])
-            .collect();
-        menu_width_now(&names, window)
-    })
-}
-
-/// A menu's trigger labelled at the widest of `readings`, laid out now: the
-/// label's control, then the shared `button` helper's 6 px gap and the kit's
-/// 0.875 rem caret, for a caller that keeps the width itself, as the views
-/// menu does by font and size ([`views_menu_width`]) and the clip menu with
-/// its document (`playback::clip_control`).
-pub(super) fn menu_width_now(readings: &[&str], window: &Window) -> Pixels {
-    crate::text_button_width_now(readings, window) + menu_caret(window)
-}
-
-/// The room a menu trigger's caret takes after its label: the shared
-/// `button` helper's 6 px gap and the kit's 0.875 rem caret.
-fn menu_caret(window: &Window) -> Pixels {
-    appearance::ui_size(6.) + window.rem_size() * 0.875
+    let text =
+        crate::views::cached_width(&VIEWS_MENU, &crate::views::LineKey::current(window), || {
+            #[cfg(test)]
+            VIEW_READINGS_BUILT.with(|built| built.set(built.get() + 1));
+            let names: Vec<&str> = ModelStandardView::ALL
+                .iter()
+                .map(|view| view.label())
+                .chain(["Custom view"])
+                .collect();
+            crate::widest_label_now(&names, window)
+        });
+    crate::placed_menu_width(text, window)
 }
 
 /// The room side `index`'s source row leaves its open control in a side
@@ -1735,6 +1723,239 @@ pub(crate) mod tests {
             ringed(cx),
             "{at}: moving the pointer over the canvas and away keeps its ring: {:?}",
             edge(cx)
+        );
+    }
+
+    /// A comparison drawn as Compare draws it, `width` wide, with a mark
+    /// behind every text run a test finds among the painted quads, as wide
+    /// as the run drawn, its ellipsis included (`width_walk::text_mark`).
+    #[cfg(target_os = "linux")]
+    struct Marked {
+        content: crate::worker::Content,
+        width: f32,
+        showing: crate::system_preview::Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for Marked {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let crate::worker::Content::Rich(comparison) = &self.content else {
+                panic!("a document comparison");
+            };
+            let opener =
+                crate::system_preview::Opener::new(WeakEntity::new_invalid(), self.showing);
+            div()
+                .w(px(self.width))
+                .h(px(600.))
+                .flex()
+                .flex_col()
+                .text_bg(crate::width_walk::text_mark())
+                .child(crate::rich_preview::render_comparison(
+                    comparison,
+                    false,
+                    opener,
+                    px(self.width),
+                    window,
+                    cx,
+                ))
+        }
+    }
+
+    /// No label in a 3D model's side headers is cut at a fractional scale:
+    /// at scales 1.2 and 1.25, at 13 and 18 pt, as the comparison narrows
+    /// from 1,000 px 4 px at a time, and a device pixel at a time wherever
+    /// a control changes its form between steps, each control drawn at a
+    /// set width (Reset, Edges or Solid, the views menu, Linked or
+    /// Independent and the clip menu) and Copy source, wherever labelled and
+    /// shown in its header's region, paints its whole label and is at least
+    /// as wide as layout places that
+    /// label in its frame (`crate::placed_button_width`), its caret after
+    /// it in a menu's. Drawn at the unrounded sums of their insets and
+    /// labels, at scale 1.2 Reset and Edges were a device pixel narrower
+    /// than that at 13 pt, where their labels were cut, and two at 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn no_model_header_label_is_cut_at_fractional_scales(cx: &mut gpui_kit::TestAppContext) {
+        use crate::system_preview::DRAWN_CONTROLS;
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let [model, _] = crate::system_preview::tests::document_sides(1, 0);
+        let (view, cx) = cx.add_window_view(|_, _| Marked {
+            content: model,
+            width: 1000.,
+            showing: crate::system_preview::Showing::next(),
+        });
+        cx.simulate_resize(size(px(1500.), px(700.)));
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let mut failures = Vec::new();
+        let mut reached = std::collections::BTreeSet::new();
+        let mut drawn_count = 0usize;
+        for scale in [1.2f32, 1.25] {
+            for text in [13u8, 18] {
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                crate::tags::tests::draw(cx);
+                // The comparison `device` device pixels wide: what each
+                // labelled control reads, checked, and every control's form.
+                let mut at = |cx: &mut gpui_kit::VisualTestContext, device: i32| {
+                    drawn_count += 1;
+                    view.update(cx, |view, cx| {
+                        view.width = device as f32 / scale;
+                        cx.notify();
+                    });
+                    DRAWN_CONTROLS.with_borrow_mut(|drawn| drawn.clear());
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    let drawn = DRAWN_CONTROLS.with_borrow(Clone::clone);
+                    // Each labelled control: its selector, what it reads,
+                    // whether it draws its icon, and whether it is a menu.
+                    let mut labelled: Vec<(String, String, bool, bool)> = drawn
+                        .iter()
+                        .filter(|(selector, control)| {
+                            selector.starts_with("model-") && control.form == "labelled"
+                        })
+                        .map(|(selector, control)| {
+                            let menu = selector.starts_with("model-views-")
+                                || selector.starts_with("model-clip-");
+                            (selector.clone(), control.shows.clone(), false, menu)
+                        })
+                        .collect();
+                    for index in 0..2 {
+                        let copy = format!("model-source-{index}");
+                        if cx
+                            .debug_bounds(format!("{copy}/rest/text").leak())
+                            .is_some()
+                        {
+                            labelled.push((copy, "Copy source".to_owned(), true, false));
+                        }
+                    }
+                    let mut forms: Vec<(String, String)> = drawn
+                        .iter()
+                        .filter(|(selector, _)| selector.starts_with("model-"))
+                        .map(|(selector, control)| (selector.clone(), control.form.to_owned()))
+                        .collect();
+                    let place = format!(
+                        "scale {scale}, {text} pt, comparison {:.2} px",
+                        device as f32 / scale
+                    );
+                    for (selector, shows, icon, menu) in labelled {
+                        forms.push((selector.clone(), "labelled".to_owned()));
+                        let bounds = cx
+                            .debug_bounds(selector.clone().leak())
+                            .expect("a drawn control");
+                        // Only a control its header's region shows: one it
+                        // scrolls past paints nothing.
+                        let (_, index) = selector.rsplit_once('-').expect("an indexed control");
+                        let index: usize = index.parse().expect("an indexed control");
+                        let side = if selector.starts_with("model-camera-") {
+                            index / 5
+                        } else {
+                            index
+                        };
+                        let region = cx
+                            .debug_bounds(["model-side-0/header", "model-side-1/header"][side])
+                            .expect("the side's header region");
+                        if bounds.top() < region.top() - px(0.01)
+                            || bounds.bottom() > region.bottom() + px(0.01)
+                        {
+                            continue;
+                        }
+                        reached.insert((text, selector.clone()));
+                        let (painted, whole, placed) = cx.update(|window, _| {
+                            let scale = window.scale_factor();
+                            let painted = window
+                                .painted_quads()
+                                .iter()
+                                .filter(|quad| quad.background == mark)
+                                .filter(|quad| {
+                                    let middle = point(
+                                        px((quad.bounds.left() + quad.bounds.size.width / 2.).0
+                                            / scale),
+                                        px((quad.bounds.top() + quad.bounds.size.height / 2.).0
+                                            / scale),
+                                    );
+                                    bounds.contains(&middle)
+                                })
+                                .map(|quad| px(quad.bounds.size.width.0 / scale))
+                                .fold(Pixels::ZERO, |sum, width| sum + width);
+                            let size = appearance::ui_text(12.);
+                            let weight = window.text_style().font_weight;
+                            let whole = crate::views::shaped_width(&shows, size, weight, window);
+                            let label = crate::views::line_widths(&[(&shows, size)], window);
+                            let placed = if menu {
+                                crate::placed_menu_width(label, window)
+                            } else {
+                                crate::placed_button_width(label, icon, window)
+                            };
+                            (painted, whole, placed)
+                        });
+                        // The painted label proves the fix: a control drawn
+                        // narrower than its label paints it cut.
+                        if painted < whole - px(0.5) {
+                            failures.push(format!(
+                                "{place}: {selector} reads {shows:?} cut, {painted:?} of {whole:?}"
+                            ));
+                        }
+                        // Measured with the helpers the controls are sized
+                        // with, this only guards the wiring: that each is
+                        // drawn at the width those helpers place it at.
+                        if bounds.size.width < placed - px(0.01) {
+                            failures.push(format!(
+                                "{place}: {selector} reading {shows:?} is {:?} wide, short of the {placed:?} layout places it at",
+                                bounds.size.width
+                            ));
+                        }
+                    }
+                    forms.sort();
+                    forms
+                };
+                let device = |width: f32| (width * scale).round() as i32;
+                let mut last: Option<(i32, Vec<(String, String)>)> = None;
+                let mut width = 1000f32;
+                while width >= 160. {
+                    let here = device(width);
+                    let forms = at(cx, here);
+                    if let Some((there, was)) = &last
+                        && *was != forms
+                    {
+                        for between in here + 1..*there {
+                            at(cx, between);
+                        }
+                    }
+                    last = Some((here, forms));
+                    width -= 4.;
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        eprintln!("{drawn_count} widths drawn");
+        for text in [13u8, 18] {
+            for selector in [
+                "model-camera-1",
+                "model-camera-4",
+                "model-views-0",
+                "model-link-0",
+                "model-clip-0",
+                "model-source-1",
+            ] {
+                assert!(
+                    reached.contains(&(text, selector.to_owned())),
+                    "at {text} pt {selector} is drawn labelled: {reached:?}"
+                );
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} labels cut or short:\n{}",
+            failures.len(),
+            failures.join("\n")
         );
     }
 

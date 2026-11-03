@@ -2327,16 +2327,21 @@ fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: boo
 
 /// The width [`button`] gives a labelled control with an icon, and
 /// `copy_feedback::copy_button` one whose label is the longer of its two
-/// contents: its 10 px insets, the 16 px icon and its 6 px gap at the
-/// interface size, and `label` at 12 pt, laid out once per font and size in
-/// `cache`. A layout that would rather show such a control as its icon than
-/// cut it compares this with the room it has.
+/// contents, as layout places it on this display's device pixels
+/// ([`placed_button_width`]): `label` at 12 pt, laid out once per font and
+/// size in `cache`, after the icon. A layout that would rather show such a
+/// control as its icon than cut it compares this with the room it has.
+/// Summed unrounded, its 10 px insets, 16 px icon and 6 px gap at the
+/// interface size and the label in whole pixels, it missed the drawn
+/// control by up to two device pixels, so at 18 pt an open control was
+/// drawn labelled in a room two device pixels narrower than itself at scale
+/// 1.2, and as its icon in a room that held it labelled at 1.25.
 fn labelled_button_width(
     label: &str,
     cache: &'static std::thread::LocalKey<views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    appearance::ui_size(LABEL_INSET * 2. + 16. + 6.) + label_text_width(label, cache, window)
+    placed_button_width(label_text_width(label, cache, window), true, window)
 }
 
 /// `label` at a compact Button's 12 pt in whole pixels, laid out once per
@@ -2359,11 +2364,14 @@ fn label_text_width(
 /// device pixel as its text is measured
 /// ([`views::laid_out_text_width`]), at least its 28 px square. Drawn this
 /// wide, the label is never cut, and a row of such controls measured from
-/// these widths is as wide as layout places it. Summed unrounded, as
-/// [`labelled_button_width`] and [`text_button_width_now`] are, a width
-/// fell up to a device pixel short of its label at scale 1.2, so the PDF
-/// page view's "Independent pages" was drawn "Independent pag…", and a row
-/// measured from such sums fit a line that layout wrapped.
+/// these widths is as wide as layout places it. Summed unrounded, a width
+/// fell up to two device pixels short of its label at scale 1.2, so the PDF
+/// page view's "Independent pages" was drawn "Independent pag…", the 3D
+/// model's Reset and Edges, drawn that wide, were cut a device pixel short
+/// of their labels at 13 pt and two short at 18 pt, and a row measured from
+/// such sums fit a line that layout wrapped. Rounded up to a device pixel
+/// after, as the find bar sized Close, Previous and Next, such a sum still
+/// fell a device pixel short at scales 1.1 to 1.75.
 fn placed_button_width(text: Pixels, icon: bool, window: &Window) -> Pixels {
     let snap = |length: Pixels| window.pixel_snap(length);
     let icon = if icon {
@@ -2381,46 +2389,69 @@ fn placed_button_width(text: Pixels, icon: bool, window: &Window) -> Pixels {
 }
 
 /// The width [`button`] gives a control that reads one of `labels` without
-/// an icon, at the widest of them: its 10 px insets at the interface size
-/// and the label at 12 pt, at least its 28 px square, laid out once per font
-/// and size in `cache`. A control whose label changes with its state, as a
-/// toggle's or a page number's does, so takes one form whatever it reads.
+/// an icon, at the widest of them, as layout places it on this display's
+/// device pixels ([`placed_button_width`]): the widest label at 12 pt, laid
+/// out once per font and size in `cache`. A control whose label changes
+/// with its state, as a toggle's or a page number's does, so takes one form
+/// whatever it reads.
 fn text_button_width(
     labels: &[&str],
     cache: &'static std::thread::LocalKey<views::TextWidth>,
     window: &Window,
 ) -> Pixels {
-    views::cached_text_width(cache, &labels.join("\n"), window, || {
-        text_button_width_now(labels, window)
-    })
+    placed_button_width(
+        views::cached_text_width(cache, &labels.join("\n"), window, || {
+            widest_label_now(labels, window)
+        }),
+        false,
+        window,
+    )
+}
+
+/// A menu's trigger reading a label `text` wide in whole pixels
+/// ([`views::line_widths`]), as layout places it on this display's device
+/// pixels: the label's control ([`placed_button_width`]), then the shared
+/// `button` helper's 6 px gap and the kit's 0.875 rem caret, each on its
+/// device pixel, halves toward zero (`Window::pixel_snap`).
+fn placed_menu_width(text: Pixels, window: &Window) -> Pixels {
+    image_compare::on_device_pixel(
+        placed_button_width(text, false, window)
+            + window.pixel_snap(appearance::ui_size(6.))
+            + window.pixel_snap(window.rem_size() * 0.875),
+        window,
+    )
 }
 
 #[cfg(test)]
 thread_local! {
-    /// The labels [`text_button_width_now`] last laid out, for a test to
+    /// The labels [`widest_label_now`] last laid out, for a test to
     /// read what a width was measured from.
     static LAID_OUT_LABELS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The labels [`text_button_width_now`] last laid out.
+/// The labels [`widest_label_now`] last laid out.
 #[cfg(test)]
 fn laid_out_labels() -> Vec<String> {
     LAID_OUT_LABELS.with_borrow(Clone::clone)
 }
 
-/// [`text_button_width`] laid out now, for a caller that keeps the width
-/// itself, as a side header's toggle does (`system_preview::HeaderControl`).
-fn text_button_width_now(labels: &[&str], window: &Window) -> Pixels {
+/// The widest of `labels` at a compact Button's 12 pt in whole pixels
+/// ([`views::line_widths`]), laid out now, for a caller that keeps it
+/// itself and places it as it draws ([`placed_button_width`]), as a side
+/// header's toggle and the 3D model's menus do
+/// (`system_preview::HeaderControl`), and the find bar's Close, Previous and
+/// Next (`editor_find::Widths::measure`): a placed width depends on the
+/// display's scale, which the font and sizes it is kept by do not.
+fn widest_label_now(labels: &[&str], window: &Window) -> Pixels {
     #[cfg(test)]
     LAID_OUT_LABELS.with_borrow_mut(|laid_out| {
         *laid_out = labels.iter().map(|label| label.to_string()).collect();
     });
-    let widest = labels
+    labels
         .iter()
-        .map(|label| views::line_widths(&[(label, appearance::ui_text(12.))], window))
-        .fold(px(0.), Pixels::max);
-    (appearance::ui_size(LABEL_INSET * 2.) + widest).max(appearance::ui_size(28.))
+        .map(|label| views::line_widths(&[(label, appearance::ui_text(LABEL_TEXT))], window))
+        .fold(px(0.), Pixels::max)
 }
 
 /// A control's 16 px icon, `icons/<symbol>.svg`, tinted with its text.

@@ -213,17 +213,20 @@ pub(super) fn clip_control<T: 'static>(
     let text = selected
         .and_then(|index| clips.get(index))
         .map_or_else(|| "Default pose".to_owned(), |clip| clip.name.clone());
-    let widest = measured.unwrap_or_else(|| {
+    let reading = measured.unwrap_or_else(|| {
         #[cfg(test)]
         super::CLIP_READINGS_BUILT.with(|built| built.set(built.get() + 1));
         let readings: Vec<&str> = std::iter::once("Default pose")
             .chain(clips.iter().map(|clip| clip.name.as_str()))
             .collect();
-        let width = super::menu_width_now(&readings, window);
+        let reading = crate::widest_label_now(&readings, window);
         let mut state = document.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.clip_menu = Some((key, width));
-        width
+        state.clip_menu = Some((key, reading));
+        reading
     });
+    // As layout places it on this display's device pixels, so the clip's
+    // name is never cut ([`crate::placed_menu_width`]).
+    let widest = crate::placed_menu_width(reading, window);
     let menu = crate::system_preview::HeaderControl::new(
         ("model-clip", index),
         format!("model-clip-{index}"),

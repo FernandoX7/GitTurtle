@@ -1125,10 +1125,30 @@ pub(crate) struct Forms {
     pub(crate) case: bool,
 }
 
+/// The find bar's texts at the sizes it lays them out at, in whole pixels
+/// ([`crate::views::line_widths`]), which [`Widths::measure`] places on the
+/// display's device pixels on every frame: kept by the font and sizes they
+/// were laid out at, which do not change with the display's scale.
+#[derive(Clone, Copy)]
+struct Labels {
+    /// [`FIELD_FLOOR`] at the field's 0.875 rem.
+    floor: Pixels,
+    /// Close, Previous, Next and the "Aa" toggle's labels at a compact
+    /// Button's 12 pt ([`crate::widest_label_now`]).
+    close: Pixels,
+    previous: Pixels,
+    next: Pixels,
+    toggle: Pixels,
+    /// "Match case" at its checkbox's 1 rem.
+    case: Pixels,
+    /// [`COUNT_ROOM`] at the count's 11 pt.
+    count: Pixels,
+}
+
 thread_local! {
-    /// [`Widths`] but the count, by the font, size and scale they were laid
-    /// out at.
-    static WIDTHS: RefCell<Option<(crate::views::LineKey, Widths)>> = const { RefCell::new(None) };
+    /// [`Labels`], by the font and sizes they were laid out at.
+    static LABELS: RefCell<Option<(crate::views::LineKey, Labels)>> = const { RefCell::new(None) };
+    /// The count's text in whole pixels, by the same.
     static COUNT: crate::views::TextWidth = const { RefCell::new(None) };
 }
 
@@ -1141,56 +1161,71 @@ thread_local! {
 
 impl Widths {
     /// The parts' widths in the font the bar lays them out in, with `count`
-    /// as the count and `gap` between parts. The font, size and scale are
-    /// read once ([`crate::views::LineKey::current`]): each read builds
-    /// GPUI's default font features, and the bar is measured every frame.
+    /// as the count and `gap` between parts, as layout places them on this
+    /// display's device pixels. Their texts are laid out once for each font
+    /// and size ([`Labels`]) and placed here on every frame, by arithmetic,
+    /// so a window moved to a display of another scale takes that scale's
+    /// widths; the font and sizes are read once
+    /// ([`crate::views::LineKey::current`]): each read builds GPUI's
+    /// default font features, and the bar is measured every frame.
+    ///
+    /// Close, Previous and Next take the width layout places their labels
+    /// at (`crate::placed_button_width`), which a labelled one is drawn at
+    /// ([`crate::system_preview::HeaderControl::button`]), and the bar's
+    /// forms and lines are chosen from those widths. Sized as the unrounded
+    /// sum of their insets and labels rounded up to a device pixel, each was
+    /// drawn a device pixel narrower than that at some size from 11 to
+    /// 18 pt at scales 1.1, 1.2, 1.25, 1.5 and 1.75 (Close 78.33 px where
+    /// layout places its label at 79.17, at 1.2 and 18 pt), and the widths
+    /// kept were the last display's, the key holding no display scale.
     fn measure(count: &str, gap: Pixels, window: &Window) -> Self {
-        let scale = window.scale_factor();
-        let device = |width: Pixels| px((f32::from(width) * scale).ceil() / scale);
-        let text = |text: &str, size: Pixels| {
-            crate::views::laid_out_text_width(
-                crate::views::line_widths(&[(text, size)], window),
-                window,
-            )
-        };
         let small = crate::appearance::ui_text(11.);
         let key = crate::views::LineKey::current(window);
         let count = COUNT.with_borrow_mut(|cached| match cached {
             Some((laid_out, text, width)) if *laid_out == key && text == count => *width,
             _ => {
-                let width = text(count, small);
+                let width = crate::views::line_widths(&[(count, small)], window);
                 *cached = Some((key.clone(), count.to_owned(), width));
                 width
             }
         });
-        let fixed = WIDTHS.with_borrow_mut(|cached| match cached {
-            Some((laid_out, widths)) if *laid_out == key => *widths,
-            _ => {
-                let rem = window.rem_size();
-                let button = |label: &str| device(crate::text_button_width_now(&[label], window));
-                let widths = Self {
-                    // The kit's small field: 8 px of padding and a 1 px
-                    // border either side of its text, at 0.875 rem.
-                    floor: device(text(FIELD_FLOOR, rem * 0.875) + px(18.)),
-                    close: button("Close"),
-                    previous: button("Previous"),
-                    next: button("Next"),
-                    // The kit's checkbox: a 1 rem box and 0.5 rem before
-                    // its label at 1 rem.
-                    case: device(rem * 1.5) + text("Match case", rem),
-                    toggle: button("Aa"),
-                    count: text(COUNT_ROOM, small),
-                    icon: device(crate::appearance::ui_size(28.)),
-                    gap,
-                };
-                *cached = Some((key, widths));
-                widths
+        let labels = crate::views::cached_width(&LABELS, &key, || {
+            let rem = window.rem_size();
+            let button = |label: &str| crate::widest_label_now(&[label], window);
+            Labels {
+                floor: crate::views::line_widths(&[(FIELD_FLOOR, rem * 0.875)], window),
+                close: button("Close"),
+                previous: button("Previous"),
+                next: button("Next"),
+                toggle: button("Aa"),
+                case: crate::views::line_widths(&[("Match case", rem)], window),
+                count: crate::views::line_widths(&[(COUNT_ROOM, small)], window),
             }
         });
+        let scale = window.scale_factor();
+        let device = |width: Pixels| px((f32::from(width) * scale).ceil() / scale);
+        let text = |width: Pixels| crate::views::laid_out_text_width(width, window);
+        let button = |label: Pixels| crate::placed_button_width(label, false, window);
+        let rem = window.rem_size();
         Self {
-            count: fixed.count.max(count),
+            // The kit's small field: 8 px of padding and a 1 px border
+            // either side of its text, at 0.875 rem.
+            floor: device(text(labels.floor) + px(18.)),
+            close: button(labels.close),
+            previous: button(labels.previous),
+            next: button(labels.next),
+            // The kit's checkbox: a 1 rem box and 0.5 rem before its label
+            // at 1 rem.
+            case: device(rem * 1.5) + text(labels.case),
+            toggle: button(labels.toggle),
+            count: text(labels.count.max(count)),
+            // The icon form's 28 px square, on its device pixel as GPUI
+            // rounds a length before layout.
+            icon: crate::image_compare::on_device_pixel(
+                window.pixel_snap(crate::appearance::ui_size(28.)),
+                window,
+            ),
             gap,
-            ..fixed
         }
     }
 
@@ -2163,6 +2198,121 @@ mod bar_tests {
         ] {
             assert!(met.contains(&forms), "the walk meets {forms:?}: {met:?}");
         }
+    }
+
+    /// The find bar's Close, Previous and Next paint their whole labels at
+    /// fractional scales: at scales 1.1, 1.2, 1.25, 1.5 and 1.75 and every
+    /// interface size from 11 to 18 pt, in the unified patch and Split's
+    /// first side, each paints its whole label between the insets it draws
+    /// either side of it, and is at least as wide as layout places that
+    /// label in its frame (`crate::placed_button_width`). Each size meets
+    /// the scales in turn, so a width the bar kept from another scale's
+    /// frame is drawn too. Sized as the unrounded sum of their insets and
+    /// labels rounded up to a device pixel, 24 of the 120 controls each
+    /// mode draws here were a device pixel narrower than that, at 13 of the
+    /// 40 sizes and scales (Close 78.33 px where layout places it at 79.17
+    /// at 1.2 and 18 pt);
+    /// the tests' font painted those labels whole, inside their insets, in
+    /// the rounding to a whole pixel their widths leave, which the desktop's
+    /// fonts need not leave.
+    #[gpui::test]
+    async fn the_find_bar_paints_its_labels_whole_at_fractional_scales(cx: &mut TestAppContext) {
+        use crate::system_preview::DRAWN_CONTROLS;
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let mut failures = Vec::new();
+        for (name, mode) in [("unified", TextMode::Unified), ("split", TextMode::Split)] {
+            open_find(&app, cx, mode, 1800.);
+            for text in 11..=18 {
+                for scale in [1.1f32, 1.2, 1.25, 1.5, 1.75] {
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        appearance::apply_text_sizes(text, 12, window, cx)
+                    });
+                    DRAWN_CONTROLS.with_borrow_mut(|drawn| drawn.clear());
+                    crate::width_walk::frame(cx);
+                    let at = format!("{name}, scale {scale}, {text} pt");
+                    for part in ["close-file-find", "previous-file-match", "next-file-match"] {
+                        let control = DRAWN_CONTROLS
+                            .with_borrow(|drawn| drawn.get(part).cloned())
+                            .unwrap_or_else(|| panic!("{at}: {part} is drawn"));
+                        assert_eq!(control.form, "labelled", "{at}: {part} is labelled");
+                        let bounds = drawn(cx, part, &at);
+                        let label = control.shows;
+                        let (runs, whole, inset, placed) = cx.update(|window, _| {
+                            let scale = window.scale_factor();
+                            let runs: Vec<_> = window
+                                .painted_quads()
+                                .iter()
+                                .filter(|quad| quad.background == mark)
+                                .map(|quad| {
+                                    let left = px(quad.bounds.left().0 / scale);
+                                    let width = px(quad.bounds.size.width.0 / scale);
+                                    (left, width, px(quad.bounds.top().0 / scale))
+                                })
+                                .filter(|(left, width, top)| {
+                                    bounds.contains(&point(*left + *width / 2., *top + px(1.)))
+                                })
+                                .map(|(left, width, _)| (left, width))
+                                .collect();
+                            let size = appearance::ui_text(12.);
+                            let weight = window.text_style().font_weight;
+                            let whole = crate::views::shaped_width(&label, size, weight, window);
+                            let text = crate::views::line_widths(&[(&label, size)], window);
+                            (
+                                runs,
+                                whole,
+                                window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)),
+                                crate::placed_button_width(text, false, window),
+                            )
+                        });
+                        let painted = runs.iter().fold(Pixels::ZERO, |sum, run| sum + run.1);
+                        if painted < whole - px(0.5) {
+                            failures.push(format!(
+                                "{at}: {part} reads {label:?} cut, {painted:?} of {whole:?}"
+                            ));
+                        }
+                        // The label's painted run, between the insets the
+                        // control draws either side of it: drawn narrower
+                        // than its label, its run reaches into the inset,
+                        // where the control's frame clips it.
+                        let left = runs.iter().map(|run| run.0).fold(Pixels::MAX, Pixels::min);
+                        let right = runs
+                            .iter()
+                            .map(|run| run.0 + run.1)
+                            .fold(Pixels::MIN, Pixels::max);
+                        if left < bounds.left() + inset - px(0.01)
+                            || right > bounds.right() - inset + px(0.01)
+                        {
+                            failures.push(format!(
+                                "{at}: {part}'s {label:?} is painted from {left:?} to {right:?}, \
+                                 into its {inset:?} insets in {bounds:?}"
+                            ));
+                        }
+                        if bounds.size.width < placed - px(0.01) {
+                            failures.push(format!(
+                                "{at}: {part} is {:?} wide, short of the {placed:?} layout \
+                                 places {label:?} at",
+                                bounds.size.width
+                            ));
+                        }
+                    }
+                }
+            }
+            cx.simulate_keystrokes("escape");
+            crate::width_walk::frame(cx);
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        assert!(
+            failures.is_empty(),
+            "{} labels cut or short:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     /// Pastes `text` into the focused field, as Primary+V does, in one edit.
