@@ -5242,7 +5242,9 @@ mod tests {
     /// header's padding above and below, beneath which the model or page
     /// gives way, and Tab reveals each of the header's controls whole with
     /// its ring there, at 13 and 18 pt in a 1000 × 560 window with the
-    /// detail scrolled to the comparison. The floor once counted the ring's
+    /// detail scrolled to the comparison; the PDF's sides take the narrowest
+    /// form, which at 13 pt fits whole on one 34 px line beneath that floor
+    /// and is shown unscrolled. The floor once counted the ring's
     /// room and the padding together, about 6 px more than either needed.
     /// Each side's open control is the detail's too: with the detail
     /// scrolled away from the comparison, stacked in a 461 × 490 window and,
@@ -5257,7 +5259,7 @@ mod tests {
     #[gpui::test]
     async fn a_stashed_side_header_keeps_its_floor(cx: &mut gpui_kit::TestAppContext) {
         use crate::focus_reveal::tests::{Control, control};
-        use crate::system_preview::tests::assert_a_header_keeps_its_floor;
+        use crate::system_preview::tests::{Shown, assert_a_header_keeps_its_floor};
         use crate::tags::tests::{draw, git, scroll_down, tagged_repository, window};
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
@@ -5365,7 +5367,7 @@ mod tests {
                 cx,
                 &format!("the stashed model's After at {text} pt"),
                 (view, "model-side-1"),
-                px(floor),
+                (px(floor), Shown::Floor),
                 &control("model-source", 1),
                 &cameras,
             );
@@ -5391,36 +5393,47 @@ mod tests {
         draw(cx);
         crate::pdf_view::tests::drain_pages();
         draw(cx);
-        for (text, floor) in [(13, 41.), (18, 57.)] {
+        // At 13 pt the narrowest form, its heading and its run on one line a
+        // quarter rem from its edges, 34 px, fits whole beneath the 41 px
+        // floor; at 18 pt its run takes a line beneath its heading and it
+        // scrolls at its floor.
+        for (text, floor, shown) in [(13, 41., Shown::Whole), (18, 57., Shown::FloorOneLine)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
             to_the_comparison(cx);
-            for (side, page) in [(0, "pdf-read-text"), (1, "pdf-retry")] {
-                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+            for side in [0, 1] {
+                // The narrowest header a narrow box's side takes, from the
+                // page number (Previous is unavailable on the first page).
+                let controls = ["pdf-forward", "pdf-more"]
                     .map(|name| control(name, side))
                     .to_vec();
-                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", side * 3 + zoom)));
                 let name = if side == 0 {
                     "pdf-side-0"
                 } else {
                     "pdf-side-1"
                 };
+                assert_eq!(
+                    crate::pdf_view::DRAWN_FORMS.with_borrow(|drawn| drawn.get(&side).copied()),
+                    Some(crate::pdf_view::HeaderForm::Narrowest),
+                    "the stashed {name} at {text} pt"
+                );
                 assert_a_header_keeps_its_floor(
                     cx,
                     &format!("the stashed {name} at {text} pt"),
                     (view, name),
-                    px(floor),
-                    &control("pdf-system", side),
+                    (px(floor), shown),
+                    &control("pdf-page-number", side),
                     &controls,
                 );
             }
             // The wide window's detail shows a PDF's open controls at its top.
-            for (side, name, page) in [
-                (0, "pdf-side-0", "pdf-read-text"),
-                (1, "pdf-side-1", "pdf-retry"),
-            ] {
+            for (side, name) in [(0, "pdf-side-0"), (1, "pdf-side-1")] {
                 let windows = [(461., 490.)];
-                let open = (&control("pdf-system", side), &control(page, side));
+                // The narrowest header's first control and the next.
+                let open = (
+                    &control("pdf-page-number", side),
+                    &control("pdf-forward", side),
+                );
                 in_the_detail(cx, text, &windows, name, open);
             }
         }

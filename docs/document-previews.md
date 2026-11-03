@@ -80,7 +80,23 @@ arrives, the page's room says “Preparing the page…”, and Read page text ke
 its place in the side's header, disabled, its tooltip and accessible name
 saying the same sentence, and a failed page's
 Retry page takes the same place at the same width, so the page arrows, the
-page number, the link and the zooms never move while a page is prepared. A reply that
+page number, the link and the zooms never move while a page is prepared. A
+side too narrow for that whole header takes a compact one rather than a
+whole header that scrolls ([design](../DESIGN.md#documents-media-and-exact-source)):
+where they fit one line, Previous, the page number, Next, a zoom menu reading
+the zoom (Fit page width, Zoom out, Zoom in) and a “more” menu holding Read
+page text or Retry page, Linked pages (checked while linked) and the open
+control; narrower, Previous, the page number, Next and a “more” menu that
+holds the zooms first, then the same, each item named as the button it
+stands for. Both sides of a comparison take one form, the narrower of the
+two sides' own, so their headings lie level and they show the same controls.
+Only a side whose room above its page is shorter than even the narrowest form
+scrolls its header. In either form Read page text, while its
+page is prepared, is an unavailable item with “Preparing the page…” stated
+beside it.
+The message where a page would be shows the whole lines its room holds, the
+last ending in an ellipsis where it must be cut, and its accessible name is
+the whole sentence. A reply that
 puts a requested page outside the document is called unreadable rather than
 shown with its own page count, which would contradict the count the view
 already shows (every page the view asks for lies within the count of the

@@ -487,7 +487,12 @@ impl Offer {
     /// The form of a control on a line that leaves it `room`: labelled where
     /// its frame, icon and label fit, and otherwise its icon.
     pub(crate) fn form(self, room: Pixels, window: &Window) -> Form {
-        Form::fitting(labelled_button_width(self.label(), &LABEL, window), room)
+        Form::fitting(self.labelled_width(window), room)
+    }
+
+    /// The control's width labelled: its frame, icon and label.
+    pub(crate) fn labelled_width(self, window: &Window) -> Pixels {
+        labelled_button_width(self.label(), &LABEL, window)
     }
 }
 
@@ -729,6 +734,22 @@ impl Target {
             .into_any_element()
     }
 
+    /// The control as an item of a menu it folds into, the PDF page view's
+    /// "more" menu: reading its label ([`Offer::label`]), named as the
+    /// control is ([`accessible_name`]), and opening as its click does,
+    /// answered beneath the header as the control's click is.
+    pub(crate) fn menu_item(&self) -> gpui_kit::component::menu::PopupMenuItem {
+        let target = self.clone();
+        gpui_kit::component::menu::PopupMenuItem::new(self.offer.label())
+            .accessibility_label(self.name())
+            .on_click(move |_, window, cx| {
+                let opener = target.opener.owner.clone();
+                let _ = opener.update(cx, |this, cx| {
+                    this.open_captured_bytes(target.clone(), window, cx)
+                });
+            })
+    }
+
     /// What its click hands over, as its accessible name ends.
     fn copy(&self) -> String {
         #[cfg(target_os = "linux")]
@@ -894,33 +915,147 @@ pub(crate) fn header_ends(
     else {
         return ends(name, answers, end, body);
     };
-    let answered = answers.iter().any(Option::is_some);
-    crate::in_frame::in_frame(move |bounds, window, cx| {
-        let height = bounds.size.height;
+    own_header_ends(
+        name,
+        Box::new(move |_, _, _| header),
+        foot,
+        padding,
+        held,
+        answers,
+        end,
+        body,
+    )
+}
+
+/// The room a side's own header is laid out in, in the frame it is drawn
+/// ([`header_ends_for_room`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HeaderRoom {
+    /// The most height its region holds the header in without scrolling.
+    pub(crate) most: Pixels,
+    /// The side's height, and the header's padding, from which the room of
+    /// a partner side beside it is found ([`Self::beside`]).
+    height: Pixels,
+    padding: Rems,
+    /// The padding beneath the line saying why a click opened nothing.
+    bottom: Pixels,
+}
+
+impl HeaderRoom {
+    /// The room of a side `height` tall whose header's padding is `padding`,
+    /// where a click on its open control `answered`, its line `bottom` above
+    /// the rule ([`HeaderEnd::bottom`]), with the height the
+    /// rule and that line keep beneath the header: the content keeps its
+    /// minimum, and the header the rest, where that is at least its floor;
+    /// otherwise the header keeps its floor, so each control Tab moves onto
+    /// shows whole with its ring, and the content the rest. The floor holds
+    /// the scaled 28 px control and the larger of what lies above and below
+    /// it: in a header that scrolls, its ring's room, which the reveal keeps
+    /// clear of the region's edges, and in a header of one row, the header's
+    /// own padding, so that header shows whole there, unscrolled. Both are
+    /// counted as GPUI lays them out, snapped to device pixels, a half
+    /// rounding toward zero: the model's `py_1` at 18 pt on a 1× display is
+    /// 4.5 px, drawn as 4, so unsnapped it would make the floor a pixel
+    /// taller than a header of one row, a pixel the model needs. Counting
+    /// both, the floor once took a PDF page about 6 px more than it needed at
+    /// 18 pt in a 461 × 490 window.
+    fn new(
+        height: Pixels,
+        answered: bool,
+        (padding, bottom): (Rems, Pixels),
+        window: &Window,
+        cx: &App,
+    ) -> (Self, Pixels) {
         // The rule's pixel, and the line's one whole line with its padding
         // where a click answered.
         let line = crate::image_compare::text_line(appearance::ui_text(11.), window);
-        let reserve = (px(1.) + if answered { line + end.bottom } else { px(0.) }).min(height);
-        // The content keeps its minimum, and the header the rest, where
-        // that is at least its floor; otherwise the header keeps its floor,
-        // so each control Tab moves onto shows whole with its ring, and the
-        // content the rest. The floor holds the scaled 28 px control and the
-        // larger of what lies above and below it: in a header that scrolls,
-        // its ring's room, which the reveal keeps clear of the region's
-        // edges, and in a header of one row, the header's own padding, so
-        // that header shows whole there, unscrolled. Both are counted as
-        // GPUI lays them out, snapped to device pixels, a half rounding
-        // toward zero: the model's `py_1` at 18 pt on a 1× display is 4.5 px,
-        // drawn as 4, so unsnapped it would make the floor a pixel taller than
-        // a header of one row, a pixel the model needs. Counting both, the
-        // floor once took a PDF page about 6 px more than it needed at 18 pt
-        // in a 461 × 490 window.
+        let reserve = (px(1.) + if answered { line + bottom } else { px(0.) }).min(height);
         let around = (window.pixel_snap(padding.to_pixels(window.rem_size())) * 2.)
             .max(appearance::button_ring_room(cx) * 2.);
         let row = (window.pixel_snap(appearance::ui_size(28.)) + around).min(height - reserve);
         let most =
             (height - reserve - appearance::ui_size(crate::image_compare::STAGE_MIN)).max(row);
+        (
+            Self {
+                most,
+                height,
+                padding,
+                bottom,
+            },
+            reserve,
+        )
+    }
+
+    /// The room of a partner side beside this one, as tall, whose own open
+    /// control `answered`, so a side can lay out its header in step with its
+    /// partner's, as a PDF side without pages takes the rhythm of a partner's
+    /// narrowest header (`pdf_view::render_comparison`).
+    pub(crate) fn beside(self, answered: bool, window: &Window, cx: &App) -> Pixels {
+        Self::new(
+            self.height,
+            answered,
+            (self.padding, self.bottom),
+            window,
+            cx,
+        )
+        .0
+        .most
+    }
+}
+
+/// What a side's header is built from in the frame it is drawn: the room
+/// its region holds the header in without scrolling.
+type HeaderForRoom = Box<dyn FnOnce(HeaderRoom, &mut Window, &mut App) -> AnyElement>;
+
+/// [`header_ends`] for a side whose header is laid out for the room the side
+/// leaves it in the frame drawn: `header` is built with the most height its
+/// region holds without scrolling, so it can choose its form, and whether its
+/// lines leave the scrollbar's gutter, from that room, as the PDF page view
+/// does (`pdf_view::header_layout`). Its padding and scrolling state are
+/// `padding` and `held`, as an [`OwnHeader`]'s are.
+pub(crate) fn header_ends_for_room(
+    name: &'static str,
+    header: impl FnOnce(HeaderRoom, &mut Window, &mut App) -> AnyElement + 'static,
+    padding: Rems,
+    held: SideHeader,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    own_header_ends(
+        name,
+        Box::new(header),
+        None,
+        padding,
+        held,
+        answers,
+        end,
+        body,
+    )
+}
+
+/// [`header_ends`] for a side with a header of its own, which `header`
+/// builds for the most room its region holds it in.
+#[allow(clippy::too_many_arguments)]
+fn own_header_ends(
+    name: &'static str,
+    header: HeaderForRoom,
+    foot: Option<AnyElement>,
+    padding: Rems,
+    held: SideHeader,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    let answered = answers.iter().any(Option::is_some);
+    crate::in_frame::in_frame(move |bounds, window, cx| {
+        let height = bounds.size.height;
+        // The rule and the line beneath the header, and the most the header
+        // holds above the content's minimum ([`HeaderRoom::new`]).
+        let (room, reserve) = HeaderRoom::new(height, answered, (padding, end.bottom), window, cx);
+        let most = room.most;
         let content = height - reserve - most;
+        let header = header(room, window, cx);
         let cue = crate::tags::ScrollCue::revealing(&held.reveal, px(0.));
         let region = div()
             .on_children_prepainted(cue.observe(held.reveal.observe()))
@@ -982,7 +1117,21 @@ pub(crate) fn header_ends(
 /// text, Retry page, page number and Linked pages were cut at the side's
 /// edge, and the model's clip menu was cut on a narrow side after them.
 pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
-    side - px(1.) - inset * 2. - crate::tags::ScrollCue::gutter()
+    side_line_room(side, inset, true)
+}
+
+/// [`header_line_room`] for a header that keeps the scrollbar's gutter only
+/// where it `scrolls`, as the PDF page view's does
+/// (`pdf_view::header_layout`): it decides that from the room it is laid out
+/// in before it lays out its lines, so the gutter never changes with the
+/// scroll it causes, and a header that fits its room keeps none.
+pub(crate) fn side_line_room(side: Pixels, inset: Pixels, scrolls: bool) -> Pixels {
+    let gutter = if scrolls {
+        crate::tags::ScrollCue::gutter()
+    } else {
+        Pixels::ZERO
+    };
+    side - px(1.) - inset * 2. - gutter
 }
 
 /// A control of a side's own header in the form a line of the header to
@@ -1121,6 +1270,12 @@ impl HeaderControl {
                 .with_borrow(|measured| measured.get(&readings).cloned().unwrap_or_default()),
             ..Self::new(id, selector, readings[usize::from(on)], name, icon, widest)
         }
+    }
+
+    /// Its labelled form's width at its widest reading, which it is drawn
+    /// at labelled ([`Self::button`]).
+    pub(crate) fn widest(&self) -> Pixels {
+        self.widest
     }
 
     /// Labelled, it draws its icon before its label, as Read page text does.
@@ -1339,6 +1494,29 @@ impl SideHeader {
         cue.list(area, scrollbar)
             .on_children_prepainted(observe)
             .min_h_0()
+    }
+
+    /// `button`, tracked as [`Self::track`] tracks it, as `own`, or where
+    /// one of `counterparts` holds focus, as that one: a control a header's
+    /// other form folds into a menu, or the menu it folds into, so focus
+    /// stays where the person put it as the form changes, on the control
+    /// that now stands for the one they focused, in the frame that draws
+    /// the change. The handle keeps focus; only the control drawing it
+    /// changes.
+    pub(crate) fn track_for(
+        &self,
+        own: impl Into<ElementId>,
+        counterparts: &[ElementId],
+        button: Button,
+        window: &Window,
+        cx: &mut App,
+    ) -> Button {
+        let id = counterparts
+            .iter()
+            .find(|id| self.reveal.focus((*id).clone(), cx).is_focused(window))
+            .cloned()
+            .unwrap_or_else(|| own.into());
+        self.track(id, button, cx)
     }
 
     /// `button`, which Tab reveals in the header's region, and in the
@@ -2012,12 +2190,12 @@ pub(crate) mod tests {
     }
 
     /// What a walk of the side headers' controls drew
-    /// ([`walk_controls_on_their_line`]): the page number's forms in the
-    /// order it drew them at each size, and each form it drew each control
-    /// in at each size.
+    /// ([`walk_controls_on_their_line`]): After's page number's forms in the
+    /// order it drew them at each size, each with the form of the header it
+    /// lay in, and each form it drew each control in at each size.
     #[cfg(target_os = "linux")]
     type ControlsDrawn = (
-        Vec<(u8, &'static str)>,
+        Vec<(u8, Option<crate::pdf_view::HeaderForm>, &'static str)>,
         std::collections::BTreeSet<(u8, String, &'static str)>,
     );
 
@@ -2072,8 +2250,10 @@ pub(crate) mod tests {
                 reached.insert((text, selector.clone(), control.form));
             }
             if let Some(number) = drawn.get("pdf-page-number-1") {
-                if forms.last() != Some(&(text, number.form)) {
-                    forms.push((text, number.form));
+                let header =
+                    crate::pdf_view::DRAWN_FORMS.with_borrow(|forms| forms.get(&1).copied());
+                if forms.last() != Some(&(text, header, number.form)) {
+                    forms.push((text, header, number.form));
                 }
                 assert_eq!(number.name, "After: page 108 of 111. Enter page number");
                 assert_eq!(
@@ -2110,27 +2290,58 @@ pub(crate) mod tests {
     }
 
     /// A page view's side headers' controls lie whole on their line
-    /// ([`walk_controls_on_their_line`]), the page number giving way through
-    /// its three forms in order at each size, and it and Retry page reached
-    /// labelled and as their icons.
+    /// ([`walk_controls_on_their_line`]) as the sides narrow 2 px at a time:
+    /// After's header takes its full, compact and narrowest forms in that
+    /// order, never back to a wider one, and in each the page number gives
+    /// way in one order, labelled, short, then its icon, reaching all three
+    /// at each size (a compact form's number takes the widest reading that
+    /// keeps its run on one line, so the narrowest form, which folds the zoom
+    /// menu away, may start it labelled again); the number is reached
+    /// labelled and as its icon on Before too, and Retry page labelled (a
+    /// side too narrow for it takes a compact form, whose "more" menu holds
+    /// it).
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_page_view_side_header_s_controls_lie_whole_on_their_line(
         cx: &mut gpui_kit::TestAppContext,
     ) {
+        use crate::pdf_view::HeaderForm;
         let [_, document] = document_sides(111, 107);
         let (forms, reached) = walk_controls_on_their_line(cx, document);
-        assert_eq!(
-            forms,
-            [13, 18]
-                .into_iter()
-                .flat_map(|text| ["labelled", "short", "icon"].map(|form| (text, form)))
-                .collect::<Vec<_>>(),
-            "the page number gives way through its three forms"
-        );
+        let order = |form: &str| {
+            ["labelled", "short", "icon"]
+                .iter()
+                .position(|at| *at == form)
+        };
         for text in [13, 18] {
-            for selector in ["pdf-page-number-0", "pdf-retry-1"] {
-                for form in ["labelled", "icon"] {
+            let drawn: Vec<_> = forms.iter().filter(|(at, ..)| *at == text).collect();
+            let headers: Vec<_> = drawn.iter().map(|(_, header, _)| *header).collect();
+            assert!(
+                headers.windows(2).all(|pair| pair[0] <= pair[1])
+                    && [HeaderForm::Full, HeaderForm::Compact, HeaderForm::Narrowest]
+                        .iter()
+                        .all(|form| headers.contains(&Some(*form))),
+                "at {text} pt After's header takes its three forms in order: {drawn:?}"
+            );
+            assert!(
+                drawn
+                    .windows(2)
+                    .all(|pair| pair[0].1 != pair[1].1 || order(pair[0].2) < order(pair[1].2)),
+                "at {text} pt the page number gives way in one order in each form: {drawn:?}"
+            );
+            for form in ["labelled", "short", "icon"] {
+                assert!(
+                    drawn.iter().any(|(.., number)| *number == form),
+                    "at {text} pt the page number is drawn {form}: {drawn:?}"
+                );
+            }
+        }
+        for text in [13, 18] {
+            for (selector, forms) in [
+                ("pdf-page-number-0", &["labelled", "icon"][..]),
+                ("pdf-retry-1", &["labelled"][..]),
+            ] {
+                for &form in forms {
                     assert!(
                         reached.contains(&(text, selector.to_owned(), form)),
                         "at {text} pt {selector} is drawn {form}"
@@ -2144,7 +2355,9 @@ pub(crate) mod tests {
     /// 18 pt, down to the narrowest side whose line holds an icon: what it
     /// shows, its icon, its tooltip and its accessible name, which is the
     /// same in every form, and a drawn width that agrees with the form, the
-    /// icon alone in the scaled 28 px square. Reset and Edges, the views
+    /// icon alone in the scaled 28 px square; the page view's zoom and
+    /// "more" menus in the compact form a narrow side takes. Reset and
+    /// Edges, the views
     /// menu, the links, the clip menu, Read page text, Retry page and the
     /// page number, whose short reading comes between, once had no test of
     /// their icon forms, tooltips or names: Compare's narrowest side, 88 px
@@ -2258,18 +2471,12 @@ pub(crate) mod tests {
         let document: &[(&str, Forms, &str)] = &[
             (
                 "pdf-read-text-0",
-                &[
-                    ("labelled", "Read page text", Some("file-text"), None),
-                    ("icon", "", Some("file-text"), Some("Read page text")),
-                ],
+                &[("labelled", "Read page text", Some("file-text"), None)],
                 "Before: read extracted text from page 1",
             ),
             (
                 "pdf-retry-1",
-                &[
-                    ("labelled", "Retry page", Some("refresh"), None),
-                    ("icon", "", Some("refresh"), Some("Retry page")),
-                ],
+                &[("labelled", "Retry page", Some("refresh"), None)],
                 "After: retry page 1",
             ),
             (
@@ -2292,19 +2499,73 @@ pub(crate) mod tests {
             ),
             (
                 "pdf-link-0",
-                &[
-                    ("labelled", "Independent pages", None, None),
-                    ("icon", "", Some("link"), Some("Independent pages")),
-                ],
+                &[("labelled", "Independent pages", None, None)],
                 "Before: Pages independent. Link pages to this page",
             ),
             (
                 "pdf-link-1",
-                &[
-                    ("labelled", "Independent pages", None, None),
-                    ("icon", "", Some("link"), Some("Independent pages")),
-                ],
+                &[("labelled", "Independent pages", None, None)],
                 "After: Pages independent. Link pages to this page",
+            ),
+            // The compact form's menus: the zoom menu reading the zoom,
+            // labelled wherever the form is drawn, since the form is chosen
+            // only where its whole run fits a line, and the "more" menu its
+            // icon alone, each listing in its tooltip what it holds.
+            (
+                "pdf-zoom-menu-0",
+                &[(
+                    "labelled",
+                    "100%",
+                    None,
+                    Some("Fit page width, Zoom out or Zoom in"),
+                )],
+                "Before: Zoom, 100%",
+            ),
+            (
+                "pdf-more-0",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some("More · Read page text, Linked pages, Open in default app"),
+                )],
+                "Before: More page actions",
+            ),
+            (
+                "pdf-more-1",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some("More · Retry page, Linked pages, Open in default app"),
+                )],
+                "After: More page actions",
+            ),
+            // The narrowest form's "more" menu, which holds the zooms first
+            // and reads the zoom.
+            (
+                "pdf-more-0",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some(
+                        "More · 100% · Fit page width, Zoom out, Zoom in, Read page text, Linked pages, Open in default app",
+                    ),
+                )],
+                "Before: More page actions, zoom 100%",
+            ),
+            (
+                "pdf-more-1",
+                &[(
+                    "icon",
+                    "",
+                    Some("more"),
+                    Some(
+                        "More · 100% · Fit page width, Zoom out, Zoom in, Retry page, Linked pages, Open in default app",
+                    ),
+                )],
+                "After: More page actions, zoom 100%",
             ),
         ];
         let [model_sides, document_sides] = document_sides(3, 0);
@@ -2329,28 +2590,65 @@ pub(crate) mod tests {
                             "{at} is wider than its icon"
                         );
                     }
-                    seen.insert((text, selector.clone(), control.form), control.clone());
+                    // Each way a control is drawn in a form: the "more"
+                    // menu is drawn one way in the compact form and another
+                    // in the narrowest.
+                    let drawn: &mut Vec<DrawnControl> = seen
+                        .entry((text, selector.clone(), control.form))
+                        .or_default();
+                    if !drawn.contains(control) {
+                        drawn.push(control.clone());
+                    }
                 }
             });
+            // What a control is expected to be in a form, with what it
+            // measured ([`walk_toggles_in_both_states`] checks that).
+            let expected = |(form, shows, icon, tooltip): &(
+                &'static str,
+                &'static str,
+                Option<&'static str>,
+                Option<&'static str>,
+            ),
+                            name: &str,
+                            drawn: &DrawnControl| DrawnControl {
+                form,
+                shows: shows.to_string(),
+                icon: *icon,
+                tooltip: tooltip.map(str::to_owned),
+                name: name.to_string(),
+                measured: drawn.measured.clone(),
+            };
             for text in [13u8, 18] {
                 for (selector, forms, name) in controls {
-                    for (form, shows, icon, tooltip) in *forms {
+                    for form in *forms {
                         let drawn = seen
-                            .get(&(text, selector.to_string(), *form))
-                            .unwrap_or_else(|| panic!("at {text} pt {selector} is drawn {form}"));
-                        // What a toggle's form was measured at is
-                        // `walk_toggles_in_both_states`.
-                        assert_eq!(
-                            drawn,
-                            &DrawnControl {
-                                form,
-                                shows: shows.to_string(),
-                                icon: *icon,
-                                tooltip: tooltip.map(str::to_owned),
-                                name: name.to_string(),
-                                measured: drawn.measured.clone(),
-                            },
-                            "at {text} pt {selector} drawn {form}"
+                            .get(&(text, selector.to_string(), form.0))
+                            .unwrap_or_else(|| {
+                                panic!("at {text} pt {selector} is drawn {}", form.0)
+                            });
+                        assert!(
+                            drawn
+                                .iter()
+                                .any(|drawn| *drawn == expected(form, name, drawn)),
+                            "at {text} pt {selector} drawn {} as {form:?}, named {name:?}: {drawn:?}",
+                            form.0
+                        );
+                    }
+                }
+                // And each way a control expected is drawn is one expected.
+                for ((at, selector, form), drawn) in &seen {
+                    let listed: Vec<_> = controls
+                        .iter()
+                        .filter(|(listed, ..)| *at == text && *listed == selector.as_str())
+                        .collect();
+                    for drawn in drawn.iter().filter(|_| !listed.is_empty()) {
+                        assert!(
+                            listed.iter().any(|(_, forms, name)| {
+                                forms.iter().any(|expect| {
+                                    expect.0 == *form && *drawn == expected(expect, name, drawn)
+                                })
+                            }),
+                            "at {text} pt {selector} drawn {form} is one expected: {drawn:?}"
                         );
                     }
                 }
@@ -2463,8 +2761,16 @@ pub(crate) mod tests {
             }
         });
         for &(selector, readings) in toggles {
+            // The page view's link is drawn labelled only: a side too
+            // narrow for it takes a compact form, whose "more" menu holds it
+            // (`pdf_view::header_layout`).
+            let forms: &[&str] = if selector.starts_with("pdf-link") {
+                &["labelled"]
+            } else {
+                &["labelled", "icon"]
+            };
             for text in [13, 18] {
-                for form in ["labelled", "icon"] {
+                for &form in forms {
                     for read in readings {
                         assert!(
                             reached.contains(&(text, selector, form, read.to_owned())),
@@ -2560,6 +2866,24 @@ pub(crate) mod tests {
         );
     }
 
+    /// How a side's own header shows in a box its content gives way in
+    /// ([`assert_a_header_keeps_its_floor`]).
+    #[cfg(target_os = "linux")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Shown {
+        /// At its floor, the controls after the first on lines below it,
+        /// which Tab scrolls into view.
+        Floor,
+        /// At its floor, the controls after the first on its line, which the
+        /// first's reveal scrolls into view, as the PDF narrowest form's run
+        /// of Previous, the page number, Next and the "more" menu lies
+        /// beneath its heading.
+        FloorOneLine,
+        /// Whole and unscrolled beneath its floor, as the PDF narrowest form
+        /// of one line is (34 px at 13 pt in the Stashes dialog).
+        Whole,
+    }
+
     /// Side `name`'s own header, which `view` draws in a box its content
     /// gives way in, keeps its `floor` exactly: the scaled 28 px control and
     /// the larger of its ring's room and the header's padding above and
@@ -2567,16 +2891,18 @@ pub(crate) mod tests {
     /// 13 pt 34 px under the model's `py_1` (3.25 px drawn as 3, so 34.5
     /// unsnapped) and 41 px under the page view's `p_2`, at 18 pt 48 and
     /// 57 px (on a 1× display, where GPUI rounds a half toward zero, so the
-    /// model's 4.5 px `py_1` at 18 pt is 4, 34 and 40, 47 and 57). From
-    /// `first`, revealed as a page that opens on it does, Tab moves through
-    /// `controls` and Shift+Tab back, each revealed whole with its ring in
-    /// every frame painted after the key. `at` names the case.
+    /// model's 4.5 px `py_1` at 18 pt is 4, 34 and 40, 47 and 57); or, as
+    /// `shown` says ([`Shown`]), holds a header shorter than that whole and
+    /// unscrolled. From `first`, revealed as a page that opens on it does,
+    /// Tab moves through `controls` and Shift+Tab back, each revealed whole
+    /// with its ring in every frame painted after the key. `at` names the
+    /// case.
     #[cfg(target_os = "linux")]
     pub(crate) fn assert_a_header_keeps_its_floor(
         cx: &mut gpui_kit::VisualTestContext,
         at: &str,
         (view, name): (EntityId, &'static str),
-        floor: Pixels,
+        (floor, shown): (Pixels, Shown),
         first: &crate::focus_reveal::tests::Control,
         controls: &[crate::focus_reveal::tests::Control],
     ) {
@@ -2590,17 +2916,76 @@ pub(crate) mod tests {
             "{at}: the content {body:?} gives way below its minimum {minimum:?}"
         );
         let held = rendered(cx, region);
-        assert!(
-            (held.size.height - floor).abs() < px(0.01),
-            "{at}: the header's region {held:?} keeps its floor, {floor:?}"
-        );
         let list = cx
             .update(|_, cx| side_header(view, name, cx))
             .expect("the side's header");
         list.reveal_next_focus();
         cx.update(|window, cx| list.focus(first.0.clone(), cx).focus(window, cx));
         draw(cx);
-        crate::focus_reveal::tests::assert_every_frame_reveals(cx, &list, region, controls);
+        let scroll = list.scroll().clone();
+        match shown {
+            Shown::Whole => assert!(
+                held.size.height < floor - px(0.01) && scroll.max_offset().y == px(0.),
+                "{at}: the header's region {held:?} holds the whole header beneath its floor, \
+                 {floor:?}, unscrolled ({:?})",
+                scroll.max_offset()
+            ),
+            Shown::Floor | Shown::FloorOneLine => assert!(
+                (held.size.height - floor).abs() < px(0.01),
+                "{at}: the header's region {held:?} keeps its floor, {floor:?}"
+            ),
+        }
+        if shown == Shown::Floor {
+            crate::focus_reveal::tests::assert_every_frame_reveals(cx, &list, region, controls);
+            return;
+        }
+        if shown == Shown::FloorOneLine {
+            assert!(
+                scroll.offset().y < px(0.),
+                "{at}: revealing {} scrolled the region to its line",
+                first.1
+            );
+        }
+        // Tab through `controls` and Shift+Tab back to `first`: each focused
+        // control lies whole with its ring in the region in every frame
+        // painted after the key.
+        let room = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        let steps = controls.iter().map(|control| ("tab", control)).chain(
+            controls
+                .iter()
+                .rev()
+                .skip(1)
+                .chain(std::iter::once(first))
+                .map(|control| ("shift-tab", control)),
+        );
+        for (key, (id, selector)) in steps {
+            list.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| list.focused(window)).as_ref(),
+                Some(id),
+                "{at}: {key} reaches {selector}"
+            );
+            let frames = list.take_painted();
+            assert!(
+                !frames.is_empty(),
+                "{at}: {key} onto {selector} paints the region"
+            );
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {index} after {key} draws {selector}"))
+                    .dilate(room);
+                assert!(
+                    ring.top() >= frame.viewport.top() - px(0.01)
+                        && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                    "{at}: frame {index} after {key} paints {selector} with its ring {ring:?} \
+                     outside the region {:?}",
+                    frame.viewport
+                );
+            }
+        }
     }
 
     /// Queues what the next click on an open control reports, in place of

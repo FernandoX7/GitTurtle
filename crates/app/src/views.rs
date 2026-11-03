@@ -16789,10 +16789,14 @@ pub(crate) mod tests {
     /// and a side whose document has none each say why a click on Open in
     /// default app opened nothing in the short line beneath their controls,
     /// which shows at least one whole line, inside the preview at every size
-    /// beneath the side's header, which lies in the preview and scrolls to its
-    /// end and back where its controls are taller than the room the line
-    /// leaves them (a narrow After side's once wrapped past the preview's
-    /// foot and took the line out of view), above a page that keeps its
+    /// beneath the side's header, which lies in the preview: a narrow side
+    /// takes the compact header, whose "more" menu holds the open control,
+    /// and it never scrolls at 1,480 × 980 or at 13 pt in 640 × 680; in
+    /// 461 × 490, and at 18 pt in 640 × 680, where the page's minimum leaves
+    /// its region shorter than the compact header, it scrolls to its end and
+    /// back (a narrow After side's
+    /// controls once wrapped past the preview's foot and took the line out
+    /// of view), above a page that keeps its
     /// scaled 96 px minimum wherever the
     /// line shows more than one and gives way below it only for the one line,
     /// with one more line cutting into it where the line shows fewer than it
@@ -16881,7 +16885,37 @@ pub(crate) mod tests {
                 let at = format!("{region} at {text} pt in {width} × {height}");
                 let content = bounds("preview-content", cx);
                 queue(Err(seen_as_svg("a PDF document")));
-                let center = bounds(control, cx).center();
+                // Where the side's header is compact, its "more" menu holds
+                // the open control: the menu opens, and its item is clicked.
+                let center = match cx.debug_bounds(control) {
+                    Some(drawn) => drawn.center(),
+                    None => {
+                        // Focused, so the header's region reveals it where
+                        // it scrolls, and opened from the keyboard.
+                        let side = if region == "pdf-side-0" { 0usize } else { 1 };
+                        let reveal = cx
+                            .update(|_, cx| {
+                                crate::system_preview::side_header(app.entity_id(), region, cx)
+                            })
+                            .expect("the side's header");
+                        reveal.reveal_next_focus();
+                        cx.update(|window, cx| {
+                            reveal.focus(("pdf-more", side), cx).focus(window, cx)
+                        });
+                        draw(cx);
+                        cx.simulate_keystrokes("enter");
+                        draw(cx);
+                        let item = format!(
+                            "menu-item: Open in default app: {}, a read-only copy as a PDF document · MenuItem",
+                            if region == "pdf-side-0" {
+                                "Before"
+                            } else {
+                                "After"
+                            }
+                        );
+                        bounds(item.leak(), cx).center()
+                    }
+                };
                 frames_match_their_settled_frame(cx, &at, region, Some("header-note"), |cx| {
                     cx.simulate_click(center, Modifiers::default());
                     cx.run_until_parked();
@@ -16929,8 +16963,24 @@ pub(crate) mod tests {
                         "{at}: the page {body:?} gives way below its minimum {minimum:?} only for the line's one line"
                     );
                 }
+                // A narrow side takes the compact header rather than a
+                // whole one that scrolls. In 461 × 490 the preview is 199 px
+                // tall at 13 pt and 225 px at 18 pt, so the page's minimum
+                // leaves the header's region 75.5 px and its 57.5 px floor,
+                // shorter than even a side without pages' header at 18 pt
+                // (105 px), and at 18 pt in 640 × 680 After's region is
+                // 110.5 px for a compact header 297 px tall: there the
+                // region scrolls, as a short box's does. Elsewhere it holds
+                // the header whole.
                 let held = format!("{region}/header").leak();
-                scrolled |= side_header_scrolls(cx, &at, held, header, line, content);
+                let scrolls = side_header_scrolls(cx, &at, held, header, line, content);
+                assert!(
+                    !scrolls
+                        || (width, height) == (461., 490.)
+                        || (text, width, height) == (18, 640., 680.),
+                    "{at}: the header scrolls only where its region is at its floor"
+                );
+                scrolled |= scrolls;
                 // At 18 pt in 461 × 490 the header's floor leaves the page
                 // its minimum: counting the ring's room and the padding
                 // together, it once took 5.5 px of it.
@@ -16940,10 +16990,13 @@ pub(crate) mod tests {
                         body.size.height >= minimum - slack,
                         "{at}: the page {body:?} keeps its minimum {minimum:?} beneath the header's floor"
                     );
+                    eprintln!("{at}: the page's room {:?}", body.size);
                 }
                 // The header's region shows each control Tab reaches whole
                 // with its ring.
                 let side = if region == "pdf-side-0" { 0 } else { 1 };
+                // In either form: the compact one's menus hold the open
+                // control, Retry page and the zooms.
                 let controls: Vec<_> = [
                     ("pdf-system", side),
                     ("pdf-retry", side),
@@ -16951,6 +17004,8 @@ pub(crate) mod tests {
                     ("pdf-zoom", side * 3 + 1),
                     ("pdf-zoom", side * 3),
                     ("pdf-zoom", side * 3 + 2),
+                    ("pdf-zoom-menu", side),
+                    ("pdf-more", side),
                 ]
                 .into_iter()
                 .map(|(name, index)| crate::focus_reveal::tests::control(name, index))
@@ -16985,6 +17040,152 @@ pub(crate) mod tests {
         );
         assert!(kept_at_18, "the walk draws the page at 18 pt in 461 × 490");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A PDF side's header scrolls only where even its narrowest form is
+    /// taller than the room the page's minimum leaves it, and keeps the
+    /// scrollbar's gutter only there (`pdf_view::header_layout`). At 13 pt in
+    /// a 461 × 490 window (88 px sides, 102 px of room) and at 18 pt in
+    /// 640 × 680 (122 px sides, 144 px), lines that always kept the gutter
+    /// put Previous and Next on separate lines and the header scrolled; now
+    /// the narrowest form, Previous, the page number, Next and the "more"
+    /// menu, holds both whole, at scales 2, 1.2 and 1, as it does at
+    /// 1,000 × 680 and 1,480 × 980 at 13 and 18 pt. Each side's header is as
+    /// tall as its layout says, so the choice made before layout holds, as
+    /// wide as its region where it does not scroll (no gutter), and the same
+    /// in a second frame. At 18 pt in 461 × 490 (91 px of room) the narrowest
+    /// form scrolls, its lines less the gutter, and Tab reaches each of its
+    /// controls whole with its ring, each drawn in the header.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_pdf_side_header_scrolls_only_where_its_narrowest_form_overflows(
+        cx: &mut TestAppContext,
+    ) {
+        let started = std::time::Instant::now();
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let (first, second) = (pdf("first"), pdf("second"));
+        let input = file_commits(&[
+            ("first", &[("document.pdf", first.as_bytes())]),
+            ("second", &[("document.pdf", second.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        app.update(cx, |app, cx| {
+            let Some(Content::Rich(preview)) = app.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            app.content = Some(Arc::new(crate::pdf_view::tests::paged(preview)));
+            cx.notify();
+        });
+        draw(cx);
+        crate::pdf_view::tests::drain_pages();
+        draw(cx);
+        let gutter = crate::tags::ScrollCue::gutter();
+        let mut fell_back = false;
+        for scale in [2f32, 1.2, 1.] {
+            for (text, width, height) in [
+                (13, 461., 490.),
+                (18, 461., 490.),
+                (13, 640., 680.),
+                (18, 640., 680.),
+                (13, 1000., 680.),
+                (18, 1000., 680.),
+                (13, 1480., 980.),
+                (18, 1480., 980.),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                // A resize sets the platform's scale again.
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                let at = format!("scale {scale}, {text} pt in {width} × {height}");
+                let falls_back = (text, width, height) == (18, 461., 490.);
+                for side in 0..2usize {
+                    let read = |cx: &mut VisualTestContext| {
+                        let layout = crate::pdf_view::DRAWN_LAYOUTS
+                            .with_borrow(|drawn| drawn.get(&side).copied())
+                            .expect("the side's header is laid out");
+                        let header = cx
+                            .debug_bounds(format!("pdf-side-header-{side}").leak())
+                            .expect("the header");
+                        let region = cx
+                            .debug_bounds(format!("pdf-side-{side}/header").leak())
+                            .expect("its region");
+                        (layout, header, region)
+                    };
+                    let (layout, header, region) = read(cx);
+                    eprintln!(
+                        "{at}, side {side}: {:?}, {} gutter, header {:?} tall in {:?} of room, region {:?}",
+                        layout.form,
+                        if layout.scrolls { "with the" } else { "no" },
+                        header.size.height,
+                        crate::pdf_view::DRAWN_ROOMS.with_borrow(|drawn| drawn[&side]),
+                        region.size.height,
+                    );
+                    assert!(
+                        (header.size.height - layout.height).abs() < px(0.01),
+                        "{at}, side {side}: the header {header:?} is as tall as its layout {layout:?}"
+                    );
+                    assert_eq!(layout.scrolls, falls_back, "{at}, side {side}: {layout:?}");
+                    if falls_back {
+                        assert!(
+                            layout.form == crate::pdf_view::HeaderForm::Narrowest
+                                && header.size.height > region.size.height
+                                && (region.size.width - header.size.width - gutter).abs()
+                                    < px(0.51),
+                            "{at}, side {side}: the narrowest header {header:?} scrolls in {region:?}, less the gutter"
+                        );
+                    } else {
+                        assert!(
+                            header.size.height <= region.size.height + px(0.01)
+                                && (region.size.width - header.size.width).abs() < px(0.01),
+                            "{at}, side {side}: the header {header:?} fits its region {region:?}, keeping no gutter"
+                        );
+                    }
+                    // A second frame lays it out alike.
+                    app.update(cx, |_, cx| cx.notify());
+                    draw(cx);
+                    assert_eq!(read(cx).0, layout, "{at}, side {side}: a second frame");
+                }
+                if falls_back {
+                    fell_back = true;
+                    let controls: Vec<_> = [
+                        ("pdf-back", 1),
+                        ("pdf-page-number", 1),
+                        ("pdf-forward", 1),
+                        ("pdf-more", 1),
+                    ]
+                    .into_iter()
+                    .map(|(name, index)| crate::focus_reveal::tests::control(name, index))
+                    .collect();
+                    // Previous is unavailable on the first page: the walk
+                    // starts on the page number.
+                    assert_tab_shows_each_control_whole(
+                        cx,
+                        &app,
+                        "pdf-side-1",
+                        "pdf-side-header-1",
+                        &controls[1..],
+                        &at,
+                    );
+                    for (_, selector) in &controls {
+                        assert!(
+                            cx.debug_bounds(selector).is_some(),
+                            "{at}: {selector} is drawn"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(fell_back, "the walk reaches the narrowest form's fallback");
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        eprintln!("took {:?}", started.elapsed());
     }
 
     /// A side's own header's region `<name>/header`, which never holds less
@@ -17060,9 +17261,15 @@ pub(crate) mod tests {
     /// edge. At 18 pt the side is 121 px. At the region's floor no fade lies
     /// over the ring of the control Tab or Shift+Tab brings to its edge, and
     /// a fade cut short of a ring returns whole as focus leaves the region.
+    /// The page view's sides, too narrow for their whole headers and for
+    /// the compact form's line, take the narrowest form (Previous, the page
+    /// number, Next and the "more" menu, which holds the zooms and Read page
+    /// text or Retry page), which their regions, shorter here than even that
+    /// form, scroll; Tab moves through it from the page number.
     /// The page view's position, a polite live region, lies outside the
-    /// region that can scroll it out of reach. A header scrolled down starts
-    /// at its top again in the next showing, as a new file's does.
+    /// header's region, over none of its controls. A
+    /// header scrolled down starts at its top again in the next showing, as
+    /// a new file's does.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_narrow_side_header_keeps_its_content_and_reveals_its_controls(
@@ -17355,11 +17562,32 @@ pub(crate) mod tests {
         draw(cx);
         crate::pdf_view::tests::drain_pages();
         draw(cx);
-        assert!(
-            cx.debug_bounds("pdf-retry-1").is_some()
-                && cx.debug_bounds("pdf-read-text-0").is_some(),
-            "After's failed page offers Retry page, Before's prepared one Read page text"
-        );
+        // Each side, too narrow for its whole header and for the compact
+        // form's line, takes the narrowest form, whose "more" menu holds the
+        // zooms, then After's Retry page and Before's Read page text, as
+        // its tooltip lists.
+        for (index, holds) in [
+            (
+                0,
+                "More · 100% · Fit page width, Zoom out, Zoom in, Read page text, Linked pages, Open in default app",
+            ),
+            (
+                1,
+                "More · 100% · Fit page width, Zoom out, Zoom in, Retry page, Linked pages, Open in default app",
+            ),
+        ] {
+            assert_eq!(
+                crate::pdf_view::DRAWN_FORMS.with_borrow(|drawn| drawn.get(&index).copied()),
+                Some(crate::pdf_view::HeaderForm::Narrowest),
+                "side {index}'s form"
+            );
+            let tooltip = crate::system_preview::DRAWN_CONTROLS.with_borrow(|drawn| {
+                drawn
+                    .get(&format!("pdf-more-{index}"))
+                    .and_then(|more| more.tooltip.clone())
+            });
+            assert_eq!(tooltip.as_deref(), Some(holds), "side {index}'s more menu");
+        }
         let body = bounds("pdf-side-1/body", cx);
         assert!(
             body.size.height >= minimum - slack,
@@ -17386,12 +17614,15 @@ pub(crate) mod tests {
             for selector in [
                 "pdf-system-1",
                 "pdf-retry-1",
+                "pdf-back-1",
                 "pdf-forward-1",
                 "pdf-page-number-1",
                 "pdf-link-1",
                 "pdf-zoom-3",
                 "pdf-zoom-4",
                 "pdf-zoom-5",
+                "pdf-zoom-menu-1",
+                "pdf-more-1",
                 "pdf-side-1/body",
             ] {
                 let Some(drawn) = cx.debug_bounds(selector) else {
@@ -17408,23 +17639,22 @@ pub(crate) mod tests {
             }
         };
         uncovered(cx, "at the header's top");
-        // Tab moves through each side's controls from its open control, its
-        // page's own (Read page text or Retry page), Next, the page number,
-        // the link and the zooms, at 13 and 18 pt.
+        // Tab moves through each side's narrowest header from the page
+        // number (Previous is unavailable on the first page): Next and the
+        // "more" menu, at 13 and 18 pt.
         let sides = [
-            (("pdf-side-0", "pdf-side-header-0"), "pdf-read-text", 0),
-            (("pdf-side-1", "pdf-side-header-1"), "pdf-retry", 1),
+            (("pdf-side-0", "pdf-side-header-0"), 0),
+            (("pdf-side-1", "pdf-side-header-1"), 1),
         ];
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
-            for (side, page, index) in sides {
-                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+            for (side, index) in sides {
+                let controls = ["pdf-forward", "pdf-more"]
                     .map(|name| control(name, index))
                     .to_vec();
-                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", index * 3 + zoom)));
                 let at = format!("{} at {text} pt", side.0);
-                walk(cx, &at, side, &control("pdf-system", index), &controls);
+                walk(cx, &at, side, &control("pdf-page-number", index), &controls);
             }
             // Scrolled to its end, After's header leaves its controls
             // uncovered too.

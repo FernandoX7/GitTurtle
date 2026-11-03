@@ -1136,7 +1136,7 @@ mod tests {
         cx: &mut gpui_kit::TestAppContext,
     ) {
         use crate::focus_reveal::tests::control;
-        use crate::system_preview::tests::assert_a_header_keeps_its_floor;
+        use crate::system_preview::tests::{Shown, assert_a_header_keeps_its_floor};
         use crate::tags::tests::{draw, git, tagged_repository, window};
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
@@ -1223,7 +1223,7 @@ mod tests {
                 cx,
                 &format!("the model's After at {text} pt"),
                 (view, "model-side-1"),
-                px(floor),
+                (px(floor), Shown::Floor),
                 &control("model-source", 1),
                 &cameras,
             );
@@ -1241,25 +1241,35 @@ mod tests {
         draw(cx);
         crate::pdf_view::tests::drain_pages();
         draw(cx);
-        for (text, floor) in [(13, 41.), (18, 57.)] {
+        // At 13 pt the narrowest form's run takes a line beneath its
+        // heading; at 18 pt it wraps to a second, the "more" menu on its own.
+        for (text, floor, shown) in [(13, 41., Shown::FloorOneLine), (18, 57., Shown::Floor)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             draw(cx);
-            for (side, page) in [(0, "pdf-read-text"), (1, "pdf-retry")] {
-                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+            for side in [0, 1] {
+                // The narrowest header a narrow box's side takes, its run on
+                // a line beneath its heading, which scrolls at its floor,
+                // from the page number (Previous is unavailable on the first
+                // page).
+                let controls = ["pdf-forward", "pdf-more"]
                     .map(|name| control(name, side))
                     .to_vec();
-                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", side * 3 + zoom)));
                 let name = if side == 0 {
                     "pdf-side-0"
                 } else {
                     "pdf-side-1"
                 };
+                assert_eq!(
+                    crate::pdf_view::DRAWN_FORMS.with_borrow(|drawn| drawn.get(&side).copied()),
+                    Some(crate::pdf_view::HeaderForm::Narrowest),
+                    "{name} at {text} pt"
+                );
                 assert_a_header_keeps_its_floor(
                     cx,
                     &format!("{name} at {text} pt"),
                     (view, name),
-                    px(floor),
-                    &control("pdf-system", side),
+                    (px(floor), shown),
+                    &control("pdf-page-number", side),
                     &controls,
                 );
             }
