@@ -937,6 +937,30 @@ mod tests {
         assert!(decode_image(b"\xff\x4f\xff\x51", "broken.j2k", 32).is_err());
     }
 
+    /// Linux decodes AVIF only in the confined helper and HEIF not at all, so
+    /// `decode_image` refuses both in the app process, each with its sentence.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_decode_image_refuses_avif_and_heif_in_process() {
+        for (bytes, sentence) in [
+            (
+                include_bytes!("../tests/fixtures/half-red-blue.avif").as_slice(),
+                "AVIF rendering is not available on this platform",
+            ),
+            (
+                include_bytes!("../tests/fixtures/half-red-blue.heic").as_slice(),
+                "HEIF / HEIC images are not decoded on Linux.",
+            ),
+        ] {
+            assert_eq!(
+                decode_image(bytes, "image.png", 32)
+                    .map(|image| image.format)
+                    .map_err(|error| error.to_string()),
+                Err(sentence.to_owned())
+            );
+        }
+    }
+
     #[test]
     fn applies_jpeg_exif_orientation() {
         let bytes = encoded(
