@@ -14,7 +14,7 @@ use gpui_kit::{
         checkbox::Checkbox,
         input::{
             Editor as NativeEditor, EditorState, Enter, Escape, Input, InputEvent, InputState,
-            Replace, Search, TextDecoration, TextDecorationCollection,
+            OutdentInline, Replace, Search, TextDecoration, TextDecorationCollection,
         },
     },
     div, px, relative, rgb,
@@ -255,8 +255,7 @@ fn panel(editor: &Entity<EditorState>, cx: &App) -> Option<Entity<FindBar>> {
 }
 
 /// The open find bar's height as it last prepainted, for a view that fits
-/// whole lines below it (the GitHub review's source); Split's sides line up
-/// in the layout pass instead ([`Editor::aligned_with`]).
+/// whole lines below it (the GitHub review's source).
 pub fn panel_height(editor: &Entity<EditorState>, cx: &App) -> Pixels {
     panel(editor, cx).map_or(px(0.), |panel| {
         let panel = panel.read(cx);
@@ -274,9 +273,45 @@ pub struct Editor {
     /// What stands beside the text under Find's bar, and the room it takes
     /// ([`Self::beside`]).
     beside: Option<(Pixels, Vec<AnyElement>)>,
-    /// The editor whose find bar this one's rows line up with
-    /// ([`Self::aligned_with`]).
-    partner: Option<Entity<EditorState>>,
+    /// The editor this one shares one Find bar with, which their owner
+    /// draws across both, and the side this one is
+    /// ([`Self::sharing_find_with`]).
+    partner: Option<(Entity<EditorState>, Side)>,
+}
+
+/// Which of two editors that share one Find bar
+/// ([`Editor::sharing_find_with`]) an editor is: Split's Before, the left
+/// side, or After, the right. The bar's empty field names it, and the bar
+/// marks its half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Before,
+    After,
+}
+
+thread_local! {
+    /// The placeholders the shared bar's field last fitted on each side.
+    static BEFORE_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+    static AFTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+}
+
+impl Side {
+    /// What the bar's empty field says while it searches this side, from
+    /// its longest form: the side's name stays whole where "Find in" does
+    /// not fit beside it.
+    fn placeholders(self) -> &'static [&'static str] {
+        match self {
+            Self::Before => &["Find in Before", "Before"],
+            Self::After => &["Find in After", "After"],
+        }
+    }
+
+    fn fit(self) -> &'static std::thread::LocalKey<crate::workspace::PlaceholderFit> {
+        match self {
+            Self::Before => &BEFORE_FIT,
+            Self::After => &AFTER_FIT,
+        }
+    }
 }
 
 impl Editor {
@@ -298,13 +333,15 @@ impl Editor {
         self.beside = Some((width, elements));
         self
     }
-    /// Keeps this editor's rows level with `partner`'s, as Split's sides
-    /// are: Find's region takes the height of the taller of the two sides'
-    /// open bars, each laid out at this side's width in the frame being
-    /// drawn. The sides are equally wide, so the partner's bar takes here
-    /// the lines it takes there ([`FindBar::ghost`]).
-    pub fn aligned_with(mut self, partner: &Entity<EditorState>) -> Self {
-        self.partner = Some(partner.clone());
+    /// Shares one Find bar with `partner`, as Split's sides do, this editor
+    /// being `side`: their owner draws the bar of either across both
+    /// ([`shared_bar`]), so this editor draws none above its text. Opening
+    /// Find here moves the partner's open bar here, with its query and Match
+    /// case, so the two never stack; Escape in either's text closes it. The
+    /// bar's empty field names the side it searches, and the bar marks that
+    /// side's half of its foot in the accent colour.
+    pub fn sharing_find_with(mut self, partner: &Entity<EditorState>, side: Side) -> Self {
+        self.partner = Some((partner.clone(), side));
         self
     }
     /// The kit editor this wrapper renders. Code keeps its characters as
@@ -348,6 +385,7 @@ impl RenderOnce for Editor {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (source, label, height) = (self.state.clone(), self.label.clone(), self.height);
         let (beside, partner) = (self.beside.take(), self.partner.take());
+        let side = partner.as_ref().map(|(_, side)| *side);
         let native = self.native(cx);
         let owner = window.current_view();
         let existing = panel(&source, cx);
@@ -360,7 +398,22 @@ impl RenderOnce for Editor {
         let state = source.downgrade();
         let replacement = state.clone();
         let replacement_label = label.clone();
-        let closing = existing.as_ref().map(Entity::downgrade);
+        let shared = partner.as_ref().map(|(partner, _)| partner.downgrade());
+        let replacement_shared = shared.clone();
+        // Escape in the text closes its own bar, or the bar it shares with
+        // its partner, which the partner opened.
+        let closing = [
+            existing.as_ref().map(Entity::downgrade),
+            partner
+                .as_ref()
+                .and_then(|(partner, _)| panel(partner, cx))
+                .map(|bar| bar.downgrade()),
+        ];
+        // Shift+Tab from the text returns to the bar searching it, whose
+        // last control comes before the text in Tab order.
+        let returning = existing.as_ref().map(Entity::downgrade);
+        // A shared bar is drawn by the editors' owner ([`shared_bar`]).
+        let own_bar = existing.filter(|bar| partner.is_none() && bar.read(cx).open);
         div()
             .w_full()
             .h(height)
@@ -369,7 +422,8 @@ impl RenderOnce for Editor {
             .flex_col()
             .capture_action(move |_: &Search, window, cx| {
                 if let Some(editor) = state.upgrade() {
-                    show(&editor, owner, label.clone(), window, cx);
+                    let carried = close_partner(shared.as_ref(), window, cx);
+                    show(&editor, owner, (label.clone(), side), carried, window, cx);
                     cx.stop_propagation();
                 }
             })
@@ -377,26 +431,39 @@ impl RenderOnce for Editor {
                 // These readers are immutable. The inherited Replace shortcut
                 // must not open the inaccessible private native overlay either.
                 if let Some(editor) = replacement.upgrade() {
-                    show(&editor, owner, replacement_label.clone(), window, cx);
+                    let carried = close_partner(replacement_shared.as_ref(), window, cx);
+                    let opening = (replacement_label.clone(), side);
+                    show(&editor, owner, opening, carried, window, cx);
                     cx.stop_propagation();
                 }
             })
             .capture_action(move |_: &Escape, window, cx| {
-                if let Some(bar) = closing.as_ref().and_then(WeakEntity::upgrade)
-                    && bar.read(cx).open
+                // Its own bar returns focus to this text, where Escape may
+                // have come from the bar; the partner's leaves focus here.
+                if let Some((own, bar)) = closing
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(at, bar)| Some((at == 0, bar.as_ref()?.upgrade()?)))
+                    .find(|(_, bar)| bar.read(cx).open)
                 {
-                    bar.update(cx, |bar, cx| bar.hide(true, window, cx));
+                    bar.update(cx, |bar, cx| bar.hide(own, window, cx));
                     cx.stop_propagation();
                 }
             })
-            .children(find_region(
-                existing.filter(|bar| bar.read(cx).open),
-                partner
-                    .and_then(|partner| panel(&partner, cx))
-                    .filter(|bar| bar.read(cx).open),
-                window,
-                cx,
-            ))
+            // Shift+Tab, which a read-only text takes for outdenting and
+            // does nothing with, returns to the open bar searching it.
+            .capture_action(move |_: &OutdentInline, window, cx| {
+                if let Some(bar) = returning
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .filter(|bar| bar.read(cx).open)
+                {
+                    let focus = bar.read(cx).focus.clone();
+                    FindBar::focus_last(&focus, window, cx);
+                    cx.stop_propagation();
+                }
+            })
+            .children(own_bar)
             .child({
                 let code = div()
                     // Code scrolls sideways in here: the width walk
@@ -418,38 +485,72 @@ impl RenderOnce for Editor {
     }
 }
 
-/// Find's region above an editor's text: its own open bar, and where a
-/// partner's bar is open, as Split's other side's, that bar's invisible
-/// twin in the same grid cell, so the region is as tall as the taller of
-/// the two in the layout pass that draws them. Laid out a frame later, from
-/// heights the frame before measured, the sides' rows stood a line apart in
-/// the first frame after a resize that changed a bar's line count.
-fn find_region(
-    own: Option<Entity<FindBar>>,
-    partner: Option<Entity<FindBar>>,
-    window: &Window,
-    cx: &App,
-) -> Option<AnyElement> {
-    let Some(partner) = partner else {
-        return own.map(IntoElement::into_any_element);
-    };
-    let cell = || div().row_start(1).col_start(1).min_w_0();
-    Some(
-        div()
-            .w_full()
-            .flex_none()
-            .grid()
-            .grid_cols(1)
-            .children(own.map(|bar| cell().child(bar)))
-            .child(cell().child(partner.read(cx).ghost(window, cx)))
-            .into_any_element(),
-    )
+/// The open Find bar of editors that share one ([`Editor::sharing_find_with`]),
+/// for their owner to draw across them all, as Split draws it across both
+/// sides in place of their headings. Opening one closes the others, so at
+/// most one is open.
+pub fn shared_bar(editors: &[Entity<EditorState>], cx: &App) -> Option<AnyElement> {
+    editors
+        .iter()
+        .filter_map(|editor| panel(editor, cx))
+        .find(|bar| bar.read(cx).open)
+        .map(IntoElement::into_any_element)
 }
 
+/// The height the open Find bar of `editors` that share one takes drawn
+/// `width` across, as layout lays it out, or `None` where none is open: for
+/// their owner to choose what gives way to it in the frame that draws it,
+/// as Compare's footer does where it would leave fewer than three rows of
+/// Split's text in view.
+pub fn shared_bar_height(
+    editors: &[Entity<EditorState>],
+    width: Pixels,
+    window: &Window,
+    cx: &App,
+) -> Option<Pixels> {
+    let bar = editors
+        .iter()
+        .filter_map(|editor| panel(editor, cx))
+        .find(|bar| bar.read(cx).open)?;
+    Some(bar.read(cx).height_at(width, window, cx))
+}
+
+/// What a shared bar carries as it moves to the other side: its field's
+/// value and whether it matches case.
+struct Carried {
+    value: SharedString,
+    sensitive: bool,
+}
+
+/// Closes the shared bar of `partner`, if open, as Find opens over the
+/// editor it shares one with, and hands back its field's value and Match
+/// case, which the bar takes there: it is one bar, so it moves with its
+/// query. Focus goes to the editor opening its own.
+fn close_partner(
+    partner: Option<&WeakEntity<EditorState>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Carried> {
+    let bar = partner
+        .and_then(WeakEntity::upgrade)
+        .and_then(|partner| panel(&partner, cx))
+        .filter(|bar| bar.read(cx).open)?;
+    let carried = Carried {
+        value: bar.read(cx).query.read(cx).value(),
+        sensitive: bar.read(cx).reading(cx).0,
+    };
+    bar.update(cx, |bar, cx| bar.hide(false, window, cx));
+    Some(carried)
+}
+
+/// Opens `editor`'s Find bar, made on first use with what its field is
+/// named after and the side it searches where it is shared, `(label,
+/// side)`, taking a moved bar's query and Match case where `carried`.
 fn show(
     editor: &Entity<EditorState>,
     owner: EntityId,
-    label: SharedString,
+    (label, side): (SharedString, Option<Side>),
+    carried: Option<Carried>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -483,7 +584,7 @@ fn show(
                 return;
             }
         }
-        let bar = cx.new(|cx| FindBar::new(editor, owner, label.clone(), window, cx));
+        let bar = cx.new(|cx| FindBar::new(editor, owner, label.clone(), side, window, cx));
         panels.push(bar.clone());
         cx.default_global::<Panels>().0 = panels;
         bar
@@ -492,6 +593,9 @@ fn show(
         bar.open = true;
         bar.owner = owner;
         bar.label = label;
+        if let Some(Carried { value, sensitive }) = carried {
+            bar.carry(value, sensitive, window, cx);
+        }
         bar.sync_highlights(cx);
         // The field selects its whole query, as a macOS find field does when
         // Command-F returns to it, and shows it from its start, where its
@@ -515,6 +619,9 @@ struct FindBar {
     editor: WeakEntity<EditorState>,
     owner: EntityId,
     label: SharedString,
+    /// The side it searches, where it is a bar two editors share
+    /// ([`Editor::sharing_find_with`]).
+    side: Option<Side>,
     query: Entity<InputState>,
     focus: FocusHandle,
     /// Match case's focus, which its checkbox and its "Aa" toggle share, so
@@ -545,6 +652,7 @@ impl FindBar {
         editor: &Entity<EditorState>,
         owner: EntityId,
         label: SharedString,
+        side: Option<Side>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -577,11 +685,14 @@ impl FindBar {
             }
             reserved.unwrap_or_else(|| source.create_decorations_collection(Vec::new(), cx))
         });
+        // A shared bar fits its placeholder to its field ([`Controls`]).
+        let placeholder = side.map_or("Find in file", |side| side.placeholders()[0]);
         let query = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Find in file")
+                .placeholder(placeholder)
                 .default_value(initial)
         });
+        let tabbing = cx.weak_entity();
         let subscriptions = vec![
             cx.subscribe(&query, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -593,11 +704,39 @@ impl FindBar {
                     this.sync_highlights(cx);
                 }
             }),
+            // Tab out of the bar goes to the text it searches, After's while
+            // it searches After, though Before's text follows the bar in the
+            // window's order of controls, the bar standing above both sides.
+            // The toolkit's Tab action is private to it, so the key is taken
+            // before the window resolves it.
+            cx.intercept_keystrokes(move |event, window, cx| {
+                let keystroke = &event.keystroke;
+                if keystroke.key != "tab" || keystroke.modifiers.modified() {
+                    return;
+                }
+                let Some((focus, editor)) = tabbing.upgrade().and_then(|bar| {
+                    let bar = bar.read(cx);
+                    bar.open.then(|| (bar.focus.clone(), bar.editor.clone()))
+                }) else {
+                    return;
+                };
+                if !focus.contains_focused(window, cx) {
+                    return;
+                }
+                window.focus_next(cx);
+                if !focus.contains_focused(window, cx)
+                    && let Some(editor) = editor.upgrade()
+                {
+                    editor.focus_handle(cx).focus(window, cx);
+                }
+                cx.stop_propagation();
+            }),
         ];
         Self {
             editor: editor.downgrade(),
             owner,
             label,
+            side,
             query,
             focus: cx.focus_handle(),
             case_focus: cx.focus_handle(),
@@ -643,6 +782,46 @@ impl FindBar {
         }
         self.sync_highlights(cx);
         cx.notify();
+    }
+    /// Takes `value` into the field and the search, matching case where
+    /// `sensitive`, as the bar moves here from the other side.
+    fn carry(
+        &mut self,
+        value: SharedString,
+        sensitive: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query.update(cx, |query, cx| {
+            if query.value() != value {
+                query.set_value(value.clone(), window, cx);
+            }
+        });
+        if let Some(editor) = self.editor.upgrade() {
+            editor.update(cx, |source, cx| {
+                source.set_search_query(bounded_query(value.as_str()), !sensitive, cx)
+            });
+        }
+    }
+    /// Focuses the last control of the bar whose box tracks `bar`, as
+    /// Shift+Tab from the text it searches does: the last of its controls in
+    /// the window's order, which a wrapped bar draws on its last line.
+    fn focus_last(bar: &FocusHandle, window: &mut Window, cx: &mut App) {
+        // Its box holds no stop of its own and comes before its controls,
+        // which it walks to the last.
+        let from = window.focused(cx);
+        window.focus(bar, cx);
+        let mut last = None;
+        for _ in 0..=ONE_LINE.len() {
+            window.focus_next(cx);
+            if !bar.contains_focused(window, cx) {
+                break;
+            }
+            last = window.focused(cx);
+        }
+        if let Some(to) = last.or(from) {
+            window.focus(&to, cx);
+        }
     }
     fn hide(&mut self, focus_source: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
@@ -729,10 +908,9 @@ impl FindBar {
         self.query.read(cx).value().len() > MAX_QUERY_BYTES
     }
 
-    /// The bar's box, which its twin ([`Self::ghost`]) shares, so the two
-    /// take one height at one width. Spanning the line numbers, it stands
-    /// its controls at a pane's content edge (`appearance::PANE_INSET`),
-    /// where Split's side headings start their text.
+    /// The bar's box. Spanning the line numbers, it stands its controls at
+    /// a pane's content edge (`appearance::PANE_INSET`), where Split's side
+    /// headings start their text.
     fn frame() -> gpui_kit::Div {
         div()
             .w_full()
@@ -763,19 +941,26 @@ impl FindBar {
         div().child("Find is limited to 4 KiB; shorten this query.")
     }
 
-    /// This bar's invisible twin, for the other side of a Split
-    /// ([`find_region`]): its box, its controls' measure and its notice,
-    /// laid out as the bar is, with nothing drawn, focusable or named.
-    fn ghost(&self, window: &Window, cx: &App) -> AnyElement {
-        let (_, count, _) = self.reading(cx);
-        Self::frame()
-            .invisible()
-            .child(Fitted {
-                fit: Self::fit(count, window),
-                controls: None,
-            })
-            .children(self.too_long(cx).then(Self::limit_notice))
-            .into_any_element()
+    /// The height the bar takes `width` across, as layout gives it
+    /// ([`Self::frame`], [`Fitted`]): its controls' lines inside its pane
+    /// insets, its padding and its 1 px rule, and the limit's notice where
+    /// it states it, which never wraps at a width the bar is drawn.
+    fn height_at(&self, width: Pixels, window: &Window, cx: &App) -> Pixels {
+        let fit = Self::fit(self.reading(cx).1, window);
+        let widths = Widths::measure(&fit.count, fit.gap, window);
+        let inset = crate::appearance::ui_size(crate::appearance::PANE_INSET);
+        let controls = planned_width((width - inset * 2.).max(px(0.)), window.scale_factor());
+        // `py_1` above and below, and `gap_1` before the notice.
+        let padding = window.rem_size() * 0.25;
+        let lines = widths.plan(controls).height(fit.row, fit.gap);
+        let notice = if self.too_long(cx) {
+            let mut style = window.text_style();
+            style.font_size = crate::appearance::ui_text(11.).into();
+            padding + style.line_height_in_pixels(window.rem_size())
+        } else {
+            px(0.)
+        };
+        lines + padding * 2. + px(1.) + notice
     }
 }
 
@@ -787,6 +972,7 @@ impl Render for FindBar {
         let panel = cx.weak_entity();
         let enter = cx.weak_entity();
         let escape = cx.weak_entity();
+        let again = cx.weak_entity();
         Self::frame()
             .id("accessible-editor-find")
             .debug_selector(|| "file-find-bar".into())
@@ -805,25 +991,57 @@ impl Render for FindBar {
                 let _ = escape.update(cx, |bar, cx| bar.hide(true, window, cx));
                 cx.stop_propagation();
             })
+            // Primary+F in the bar returns to its field, selecting its query,
+            // as it does from the text; a bar its editors' owner draws across
+            // them (`shared_bar`) stands outside the text's element, which
+            // catches it there.
+            .capture_action(move |_: &Search, window, cx| {
+                let reopening = again.upgrade().and_then(|bar| {
+                    let bar = bar.read(cx);
+                    Some((
+                        bar.editor.upgrade()?,
+                        bar.owner,
+                        (bar.label.clone(), bar.side),
+                    ))
+                });
+                if let Some((editor, owner, opening)) = reopening {
+                    show(&editor, owner, opening, None, window, cx);
+                    cx.stop_propagation();
+                }
+            })
             // The controls take their forms from the bar's width in the frame
             // it is drawn ([`Controls`]).
             .child(Fitted {
                 fit: Self::fit(count.clone(), window),
-                controls: Some(Controls {
+                controls: Controls {
                     bar: cx.weak_entity(),
                     query: self.query.clone(),
                     label: self.label.clone(),
+                    side: self.side,
                     case_focus: self.case_focus.clone(),
                     case_sensitive,
                     count,
                     empty,
                     muted: colors.muted,
-                }),
+                },
             })
             .children(
                 self.too_long(cx)
                     .then(|| Self::limit_notice().text_color(rgb(colors.warning))),
             )
+            // A shared bar marks the side it searches: that side's half of
+            // its 1 px rule, over the rule, in the accent colour, which says
+            // which side it searches whatever its field holds.
+            .children(self.side.map(|side| {
+                div()
+                    .debug_selector(|| "file-find-side".into())
+                    .absolute()
+                    .bottom(px(-1.))
+                    .h(px(1.))
+                    .w(relative(0.5))
+                    .left(relative(if side == Side::Before { 0. } else { 0.5 }))
+                    .bg(rgb(colors.accent))
+            }))
             .on_prepaint(move |bounds, _, cx| {
                 let _ = panel.update(cx, |bar, cx| {
                     if bar.open && bar.height != bounds.size.height {
@@ -838,6 +1056,10 @@ impl Render for FindBar {
 /// The text whose width is the Find field's floor: eight digits, about eight
 /// characters of a query at the field's text size.
 const FIELD_FLOOR: &str = "00000000";
+
+/// The size the field draws its text at, at the default interface size: the
+/// kit's small field's 0.875 rem.
+const FIELD_TEXT: f32 = 13. * 0.875;
 
 /// The count's least reserved width, so the forms do not change as a query
 /// typed into the field finds its first hundred matches.
@@ -854,6 +1076,8 @@ struct Controls {
     bar: WeakEntity<FindBar>,
     query: Entity<InputState>,
     label: SharedString,
+    /// The side a shared bar searches, which its empty field names.
+    side: Option<Side>,
     case_focus: FocusHandle,
     case_sensitive: bool,
     count: SharedString,
@@ -1105,9 +1329,7 @@ impl Plan {
 /// the width layout gives them ([`Widths::plan`]), and built for that width
 /// as they are prepainted, so a resize lays the bar out in the frame it is
 /// drawn. Built a frame later, from the width the frame before measured, a
-/// narrowing window would first draw the wider frame's forms cut. Without
-/// controls, as a bar's twin ([`FindBar::ghost`]), it takes their height and
-/// draws nothing.
+/// narrowing window would first draw the wider frame's forms cut.
 ///
 /// Its height and its lines come from one width ([`Planned`]): the width
 /// layout measured it at, on the whole device pixel at or below it. Layout
@@ -1125,7 +1347,7 @@ impl Plan {
 /// bar takes the height of its lines.
 struct Fitted {
     fit: Fit,
-    controls: Option<Controls>,
+    controls: Controls,
 }
 
 /// The width a [`Fitted`]'s measure planned its lines from, which its
@@ -1204,7 +1426,6 @@ impl gpui_kit::Element for Fitted {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        let controls = self.controls.take()?;
         let (widths, planned) = measured.as_ref()?;
         // The width the measure planned from, which the drawn width holds,
         // exceeding it by less than a device pixel and a float's error; a
@@ -1218,7 +1439,7 @@ impl gpui_kit::Element for Fitted {
                 *planned <= drawn + slack && drawn - *planned < px(1. / scale) + slack
             })
             .unwrap_or_else(|| planned_width(drawn, scale));
-        let mut element = controls.rows(widths.plan(width), *widths, &self.fit);
+        let mut element = self.controls.rows(widths.plan(width), *widths, &self.fit);
         element.layout_as_root(
             gpui_kit::size(
                 gpui_kit::AvailableSpace::Definite(bounds.size.width),
@@ -1249,7 +1470,7 @@ impl gpui_kit::Element for Fitted {
 
 impl Controls {
     /// The bar's lines as `plan` places its parts, `widths` wide.
-    fn rows(self, plan: Plan, widths: Widths, fit: &Fit) -> AnyElement {
+    fn rows(&self, plan: Plan, widths: Widths, fit: &Fit) -> AnyElement {
         use crate::system_preview::HeaderControl;
         let forms = plan.forms;
         #[cfg(test)]
@@ -1328,20 +1549,32 @@ impl Controls {
                 .on_click(move |_, _, cx| toggle(cx))
                 .into_any_element()
         };
+        // A shared bar's empty field names the side it searches, its name
+        // alone where "Find in" does not fit beside it, as at the field's
+        // floor (`workspace::placeholder_fit`).
         let field = div()
             .debug_selector(|| "file-find-field".into())
+            .relative()
             .flex_1()
             .min_w(plan.field)
             .child(
                 Input::new(&self.query)
                     .small()
                     .aria_label(format!("Find in {}", self.label)),
-            );
+            )
+            .children(self.side.map(|side| {
+                crate::workspace::placeholder_fit(
+                    self.query.clone(),
+                    side.fit(),
+                    side.placeholders(),
+                    FIELD_TEXT,
+                )
+            }));
         let count = div()
             .debug_selector(|| "file-find-count".into())
             .flex_shrink_0()
             .text_color(rgb(self.muted))
-            .child(self.count);
+            .child(self.count.clone());
         let mut parts = [
             Some(field.into_any_element()),
             Some(close.into_any_element()),
@@ -1643,7 +1876,8 @@ mod tests {
             editor.update(cx, |source, cx| {
                 source.set_search_query("needle", false, cx)
             });
-            super::show(&editor, editor.entity_id(), "File text".into(), window, cx);
+            let opening = ("File text".into(), None);
+            super::show(&editor, editor.entity_id(), opening, None, window, cx);
             editor
         });
         let tint = HighlightStyle {
@@ -1718,7 +1952,7 @@ mod tests {
 
 #[cfg(test)]
 mod bar_tests {
-    use super::{DRAWN_FORMS, FIELD_FLOOR, Forms, MAX_QUERY_BYTES, panel_height};
+    use super::{DRAWN_FORMS, FIELD_FLOOR, Forms, panel_height};
     use crate::*;
     use core::prelude::v1::test;
 
@@ -1788,9 +2022,9 @@ mod bar_tests {
     /// The find bar keeps each control whole, its focus ring inside the bar,
     /// and the field at least its floor, eight digits of its text inside its
     /// padding and border, from a 1,480 px window down to 461 × 490 at 13 and
-    /// 18 pt, in the unified patch and in Split's first side, whose bar,
-    /// across that side's line numbers and text, is the narrowest the app
-    /// draws (about 88 px at 13 pt in that window). It keeps one line, one
+    /// 18 pt, in the unified patch and in Split, opened over Before, whose
+    /// bar spans both sides (about 177 px at 13 pt in that window, as the
+    /// unified patch's). It keeps one line, one
     /// 28 px control's height, while the field's floor and every control fit
     /// it, no taller at 1,480 px than the two lines of 20 and 24 px controls
     /// before (46.5 px at 13 pt, 64 at 18), Previous and Next taking their
@@ -2063,17 +2297,18 @@ mod bar_tests {
     }
 
     /// The find bar's height is the lines its controls are drawn on, in
-    /// Split's narrow sides at 13 and 18 pt, Before's and After's, in the
+    /// Split at 13 and 18 pt, opened over Before, in the
     /// windows a device pixel apart around each width where the bar's lines
     /// change, which the walk finds by bisection: the bar's last line ends as
     /// far above its 1 px rule as the first starts below its top. Layout
     /// measures the bar at its unrounded width and draws it on device pixels,
     /// rounding each edge, and the bar took its height from the first and its
     /// lines from the second: on Before's side at 13 pt in a 572.5 × 490
-    /// window at the test window's scale, 2, it was three lines tall and drew
-    /// four, the last below its rule, over the code. Rounding toward Before's
-    /// width and away from After's, the two sides meet that at different
-    /// widths, so the walk reads both.
+    /// window at the test window's scale, 2, when each side drew a bar of its
+    /// own, it was three lines tall and drew four, the last below its rule,
+    /// over the code. Across both sides now, the bar changes its lines once
+    /// between the walk's ends, from two to one, and is the same bar opened
+    /// over either side.
     #[gpui::test]
     async fn the_find_bar_is_as_tall_as_the_lines_it_draws(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) =
@@ -2085,76 +2320,75 @@ mod bar_tests {
         let mut changes = 0;
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            for (side, name) in [(0, "Before"), (1, "After")] {
-                open_find_on(&app, cx, TextMode::Split, side, width(wide));
-                // The lines drawn in a window `n` device pixels wide, whose
-                // bar must be as tall as they are.
-                let lines = |n: i32, cx: &mut VisualTestContext| {
-                    let at = format!("{text} pt, {name}'s bar in {} × 490", width(n));
-                    cx.simulate_resize(size(px(width(n)), px(490.)));
-                    crate::width_walk::frame(cx);
-                    let (bar, parts, lines) = drawn_lines(cx, &at);
-                    let top = parts
-                        .iter()
-                        .map(|part| part.top())
-                        .fold(bar.bottom(), Pixels::min);
-                    let bottom = parts
-                        .iter()
-                        .map(|part| part.bottom())
-                        .fold(bar.top(), Pixels::max);
-                    // Its padding above the first line and above its rule
-                    // below the last, which lines of a control's height, a
-                    // shorter control centred on one, cannot tell apart from
-                    // a missing line or an empty one.
-                    let (above, below) = (top - bar.top(), bar.bottom() - px(1.) - bottom);
-                    assert!(
-                        below >= -EDGE && (above - below).abs() < appearance::ui_size(14.),
-                        "{at}: the bar {bar:?} draws {lines} lines, its parts from {above:?} \
-                         below its top to {below:?} above its rule"
-                    );
-                    lines
-                };
-                // Walked 16 px at a time, then bisected where the lines change.
-                let step = (16. * scale) as i32;
-                let mut wider = (narrow, lines(narrow, cx));
-                let mut n = narrow + step;
-                while n <= wide {
-                    let here = lines(n, cx);
-                    if here != wider.1 {
-                        let (mut lo, mut hi) = (wider.0, n);
-                        while hi - lo > 1 {
-                            let middle = lo + (hi - lo) / 2;
-                            if lines(middle, cx) == here {
-                                hi = middle;
-                            } else {
-                                lo = middle;
-                            }
-                        }
-                        for n in hi - 3..=hi + 3 {
-                            lines(n, cx);
-                        }
-                        changes += 1;
-                    }
-                    wider = (n, here);
-                    n += step;
-                }
-                cx.simulate_keystrokes("escape");
+            open_find_on(&app, cx, TextMode::Split, 0, width(wide));
+            // The lines drawn in a window `n` device pixels wide, whose
+            // bar must be as tall as they are.
+            let lines = |n: i32, cx: &mut VisualTestContext| {
+                let at = format!("{text} pt, Before's bar in {} × 490", width(n));
+                cx.simulate_resize(size(px(width(n)), px(490.)));
                 crate::width_walk::frame(cx);
+                let (bar, parts, lines) = drawn_lines(cx, &at);
+                let top = parts
+                    .iter()
+                    .map(|part| part.top())
+                    .fold(bar.bottom(), Pixels::min);
+                let bottom = parts
+                    .iter()
+                    .map(|part| part.bottom())
+                    .fold(bar.top(), Pixels::max);
+                // Its padding above the first line and above its rule
+                // below the last, which lines of a control's height, a
+                // shorter control centred on one, cannot tell apart from
+                // a missing line or an empty one.
+                let (above, below) = (top - bar.top(), bar.bottom() - px(1.) - bottom);
+                assert!(
+                    below >= -EDGE && (above - below).abs() < appearance::ui_size(14.),
+                    "{at}: the bar {bar:?} draws {lines} lines, its parts from {above:?} \
+                     below its top to {below:?} above its rule"
+                );
+                lines
+            };
+            // Walked 16 px at a time, then bisected where the lines change.
+            let step = (16. * scale) as i32;
+            let mut wider = (narrow, lines(narrow, cx));
+            let mut n = narrow + step;
+            while n <= wide {
+                let here = lines(n, cx);
+                if here != wider.1 {
+                    let (mut lo, mut hi) = (wider.0, n);
+                    while hi - lo > 1 {
+                        let middle = lo + (hi - lo) / 2;
+                        if lines(middle, cx) == here {
+                            hi = middle;
+                        } else {
+                            lo = middle;
+                        }
+                    }
+                    for n in hi - 3..=hi + 3 {
+                        lines(n, cx);
+                    }
+                    changes += 1;
+                }
+                wider = (n, here);
+                n += step;
             }
+            cx.simulate_keystrokes("escape");
+            crate::width_walk::frame(cx);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         assert!(
-            changes >= 8,
-            "the walk meets the bar's lines changing on both sides at both sizes: {changes}"
+            changes >= 2,
+            "the walk meets the bar's lines changing at both sizes: {changes}"
         );
     }
 
-    /// In Split with Find open on Before alone, the two sides' first rows
-    /// stand level in every frame drawn after a resize that changes the
-    /// bar's lines, the first among them, at 13 and 18 pt: After's Find
-    /// region takes Before's bar's lines in the layout pass that draws it.
-    /// Padded a frame later from the bar's measured height, After's rows
-    /// stood a line apart from Before's in the first frame after the resize.
+    /// In Split with Find open on Before, the two sides' first rows stand
+    /// level in every frame drawn after a resize that changes the bar's
+    /// lines, the first among them, at 13 and 18 pt: both sides' text starts
+    /// at the foot of the one bar drawn across them. When each side drew a
+    /// bar of its own and After's was padded a frame later from the height
+    /// Before's had measured, After's rows stood a line apart from Before's
+    /// in the first frame after the resize.
     #[gpui::test]
     async fn split_rows_stay_level_in_the_frame_a_resize_changes_the_find_bar(
         cx: &mut TestAppContext,
@@ -2208,22 +2442,23 @@ mod bar_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// In Split with Find open on both sides, Before's bar the taller for the
-    /// notice under a query past Find's limit, and then on one side as each
-    /// closes, the two sides' first rows stand level in every frame drawn, as
-    /// with Find open on Before alone
-    /// ([`split_rows_stay_level_in_the_frame_a_resize_changes_the_find_bar`]),
-    /// at 13 and 18 pt: through resizes that change the bars' lines, in the
-    /// frame Escape closes Before's bar, with After's alone through resizes,
-    /// and in the frame it closes too. Each side's Find region takes the
-    /// taller of its own open bar and the other side's.
+    /// Split's sides share one Find bar, drawn across both in their
+    /// headings' row, at 13 and 18 pt: opened over Before's text it spans
+    /// both sides, the headings giving it their row; opened
+    /// over After's it closes Before's, so one bar stands there; Primary+F in
+    /// its field keeps it open, the field focused, and selects its whole
+    /// query again from wherever its caret stood; Escape in Before's text
+    /// closes After's bar, focus staying in that text, and the headings
+    /// return; and the sides' first rows stand level in every frame, through
+    /// resizes that change the bar's lines. On a side of its own each bar
+    /// took four lines in a 461 × 490 window and left no row in view.
     #[gpui::test]
-    async fn split_rows_stay_level_with_find_open_on_both_sides_and_as_each_closes(
-        cx: &mut TestAppContext,
-    ) {
+    async fn split_sides_share_one_find_bar_across_both(cx: &mut TestAppContext) {
         use crate::diff_view::painted_rows;
         let (_fixture, app, cx, _) =
             crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        // The caret is drawn only in the active window.
+        cx.update(|window, _| window.activate_window());
         // Each frame paints Before's rows, then After's, level.
         let level = |at: &str, sides: [gpui_kit::EntityId; 2]| {
             let painted = painted_rows::take();
@@ -2244,61 +2479,567 @@ mod bar_tests {
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             open_find_on(&app, cx, TextMode::Split, 0, 1480.);
-            // Past Find's limit, Before's bar states it below its controls.
-            paste(cx, &"x".repeat(MAX_QUERY_BYTES + 1));
-            open_find_on(&app, cx, TextMode::Split, 1, 1480.);
             let editors = cx.update(|_, cx| {
                 let split = app.read(cx).split_view.clone().expect("the split view");
                 split.read(cx).editors().clone()
             });
             let sides = editors.clone().map(|editor| editor.entity_id());
-            let heights = |cx: &mut VisualTestContext| {
-                cx.update(|_, cx| editors.clone().map(|editor| panel_height(&editor, cx)))
+            let open = |cx: &mut VisualTestContext| {
+                cx.update(|_, cx| {
+                    editors.clone().map(|editor| {
+                        super::panel(&editor, cx).is_some_and(|bar| bar.read(cx).open)
+                    })
+                })
             };
-            let [before, after] = heights(cx);
+            // The bar spans both sides, standing on them.
+            let spans = |at: &str, cx: &mut VisualTestContext| {
+                let bar = drawn(cx, "file-find-bar", at);
+                let before = drawn(cx, "split-text-0", at);
+                let after = drawn(cx, "split-text-1", at);
+                assert!(
+                    (bar.left() - before.left()).abs() <= EDGE
+                        && (bar.right() - after.right()).abs() <= px(1.) + EDGE
+                        && (bar.bottom() - before.top()).abs() <= EDGE
+                        && (bar.bottom() - after.top()).abs() <= EDGE,
+                    "{at}: the bar {bar:?} spans Before {before:?} and After {after:?}, \
+                     standing on both"
+                );
+            };
+            let at = format!("{text} pt, Find opened over Before");
+            assert_eq!(open(cx), [true, false], "{at}: Before's bar is open");
+            spans(&at, cx);
+            open_find_on(&app, cx, TextMode::Split, 1, 1480.);
+            let at = format!("{text} pt, Find opened over After");
+            assert_eq!(
+                open(cx),
+                [false, true],
+                "{at}: After's bar replaces Before's"
+            );
+            spans(&at, cx);
+            // Primary+F in the field, its caret at the end of a query wider
+            // than the field, which follows the caret there, selects the
+            // whole query again and shows it from its start, as from the
+            // text: the bar, which stands outside the text's element, takes
+            // the key itself.
+            let query = "zq ".repeat(100);
+            paste(cx, &query);
+            cx.simulate_keystrokes("end");
+            crate::width_walk::frame(cx);
+            let field = drawn(cx, "file-find-field", &at);
+            let reading = |cx: &mut VisualTestContext| {
+                cx.update(|window, cx| {
+                    let bar = super::panel(&editors[1], cx).expect("After's bar");
+                    let query = bar.read(cx).query.read(cx);
+                    (
+                        query.selected_range(),
+                        query.cursor(),
+                        query.focus_handle(cx).is_focused(window),
+                    )
+                })
+            };
+            assert_eq!(
+                reading(cx),
+                (query.len()..query.len(), query.len(), true),
+                "{at}: the caret stands at the query's end"
+            );
+            let carets = painted_carets(cx);
             assert!(
-                before > after,
-                "{text} pt: Before's bar, {before:?}, stands taller than After's, {after:?}"
+                carets.len() == 1 && carets[0].left() >= field.left() + field.size.width / 2.,
+                "{at}: the field shows the query's end, its caret {carets:?} there"
+            );
+            cx.dispatch_action(gpui_kit::component::input::Search);
+            crate::width_walk::frame(cx);
+            assert!(
+                reading(cx) == (0..query.len(), 0, true) && open(cx) == [false, true],
+                "{text} pt: Primary+F in the field keeps After's bar open, its field focused, \
+                 its whole query selected, the caret at its start: {:?}",
+                reading(cx)
+            );
+            let carets = painted_carets(cx);
+            assert!(
+                carets.len() == 1
+                    && carets[0].left() >= field.left()
+                    && carets[0].right() <= field.left() + field.size.width / 2.,
+                "{text} pt: the field shows the query from its start, its caret {carets:?} \
+                 there, in {field:?}"
             );
             painted_rows::watch();
             for width in [461., 1480., 640., 1480.] {
                 cx.simulate_resize(size(px(width), px(490.)));
                 crate::views::tests::draw(cx);
-                level(
-                    &format!("{text} pt, both open, resized to {width} × 490"),
-                    sides,
-                );
+                level(&format!("{text} pt, resized to {width} × 490"), sides);
             }
-            // Escape in Before's text closes its bar alone.
+            // Escape in Before's text closes the bar After opened.
             let before_focus = cx.update(|_, cx| editors[0].focus_handle(cx));
             cx.update(|window, cx| window.focus(&before_focus, cx));
             painted_rows::take();
             cx.simulate_keystrokes("escape");
             crate::views::tests::draw(cx);
-            level(&format!("{text} pt, as Before's bar closes"), sides);
-            let [before, after] = heights(cx);
-            assert!(
-                before == px(0.) && after > px(0.),
-                "{text} pt: Before's bar closed ({before:?}) and After's open ({after:?})"
-            );
-            for width in [461., 1480.] {
-                cx.simulate_resize(size(px(width), px(490.)));
-                crate::views::tests::draw(cx);
-                level(
-                    &format!("{text} pt, After's alone, resized to {width} × 490"),
-                    sides,
-                );
-            }
-            let after_focus = cx.update(|_, cx| editors[1].focus_handle(cx));
-            cx.update(|window, cx| window.focus(&after_focus, cx));
-            painted_rows::take();
-            cx.simulate_keystrokes("escape");
-            crate::views::tests::draw(cx);
-            level(&format!("{text} pt, as After's bar closes"), sides);
-            assert_eq!(heights(cx), [px(0.); 2], "{text} pt: both bars closed");
+            level(&format!("{text} pt, as the bar closes"), sides);
             painted_rows::stop();
+            assert_eq!(open(cx), [false, false], "{text} pt: Escape closes the bar");
+            assert!(
+                cx.update(|window, _| before_focus.is_focused(window)),
+                "{text} pt: focus stays in Before's text"
+            );
+            assert!(
+                cx.debug_bounds("file-find-bar").is_none(),
+                "{text} pt: no bar is drawn"
+            );
+            let heights =
+                cx.update(|_, cx| editors.clone().map(|editor| panel_height(&editor, cx)));
+            assert_eq!(heights, [px(0.); 2], "{text} pt: both bars closed");
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The editors of Split's sides, Before's and After's.
+    fn split_editors(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> [Entity<EditorState>; 2] {
+        cx.update(|_, cx| {
+            let split = app.read(cx).split_view.clone().expect("the split view");
+            split.read(cx).editors().clone()
+        })
+    }
+
+    /// The shared bar marks the side it searches in every state: that
+    /// side's half of its 1 px rule is painted in the accent colour, the
+    /// other half not, opened over Before and over After, with a query that
+    /// matches nothing, in 461 and 1,480 px windows; and its empty field
+    /// names that side whole, "Find in Before" or, where that does not fit
+    /// the field, "Before", as at the width where the bar has just become
+    /// one line, its field near its floor, reporting the whole form to
+    /// assistive technology there. With a query typed, the headings hidden,
+    /// nothing said which side the bar searched, and "Find in Before" was
+    /// cut at that width.
+    #[gpui::test]
+    async fn the_shared_bar_marks_and_names_the_side_it_searches(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let accent = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(appearance::palette(cx).accent)))
+        });
+        open_find_on(&app, cx, TextMode::Split, 0, 1480.);
+        let editors = split_editors(&app, cx);
+        cx.simulate_keystrokes("escape");
+        crate::width_walk::frame(cx);
+        for (side, name) in [(0, "Before"), (1, "After")] {
+            for width in [461., 1480.] {
+                let at = format!("Find over {name} in {width} × 490");
+                open_find_on(&app, cx, TextMode::Split, side, width);
+                paste(cx, "no such text");
+                crate::views::tests::draw(cx);
+                let bar = drawn(cx, "file-find-bar", &at);
+                let sides = ["split-text-0", "split-text-1"].map(|text| drawn(cx, text, &at));
+                let empty = cx.update(|_, cx| {
+                    let bar = super::panel(&editors[side], cx).expect("the bar");
+                    bar.read(cx).reading(cx).2
+                });
+                assert!(empty, "{at}: the query matches nothing");
+                // The accent quads one device pixel tall on the bar's rule.
+                let marks: Vec<_> = cx.update(|window, _| {
+                    let scale = window.scale_factor();
+                    window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| quad.background == accent)
+                        .map(|quad| {
+                            let b = quad.bounds;
+                            Bounds::new(
+                                point(
+                                    px(b.origin.x.as_f32() / scale),
+                                    px(b.origin.y.as_f32() / scale),
+                                ),
+                                size(
+                                    px(b.size.width.as_f32() / scale),
+                                    px(b.size.height.as_f32() / scale),
+                                ),
+                            )
+                        })
+                        .filter(|mark| {
+                            (mark.bottom() - bar.bottom()).abs() <= EDGE
+                                && mark.size.height <= px(1.) + EDGE
+                        })
+                        .collect()
+                });
+                let searched = sides[side];
+                assert!(
+                    marks.len() == 1
+                        && (marks[0].left() - searched.left()).abs() <= EDGE
+                        && (marks[0].right() - (searched.right())).abs() <= px(1.) + EDGE,
+                    "{at}: the rule's accent half {marks:?} lies under {name}'s side {searched:?} \
+                     alone, in the bar {bar:?}"
+                );
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+            }
+        }
+        // The width where the bar has just become one line, a device pixel
+        // past the widest of two, found by bisection.
+        // Reopened, the field selects its query, which a key clears.
+        open_find_on(&app, cx, TextMode::Split, 0, 1480.);
+        cx.simulate_keystrokes("backspace");
+        crate::width_walk::frame(cx);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let lines = |n: i32, cx: &mut VisualTestContext| {
+            cx.simulate_resize(size(px(n as f32 / scale), px(490.)));
+            crate::width_walk::frame(cx);
+            DRAWN_FORMS.with_borrow(|drawn| drawn.expect("the controls are laid out").2)
+        };
+        let (mut lo, mut hi) = ((461. * scale) as i32, (1480. * scale) as i32);
+        assert!(
+            lines(lo, cx) == 2 && lines(hi, cx) == 1,
+            "the bar takes two lines, then one"
+        );
+        while hi - lo > 1 {
+            let middle = lo + (hi - lo) / 2;
+            if lines(middle, cx) == 1 {
+                hi = middle;
+            } else {
+                lo = middle;
+            }
+        }
+        for n in [lo, hi] {
+            lines(n, cx);
+            let at = format!("Find over Before in {} × 490", n as f32 / scale);
+            let (shown, whole, room, wide) = cx.update(|window, cx| {
+                let bar = super::panel(&editors[0], cx).expect("Before's bar");
+                let query = bar.read(cx).query.read(cx);
+                let presented = query.presentation();
+                let shown = presented.placeholder().clone();
+                let room = query
+                    .text_bounds()
+                    .expect("the field is laid out")
+                    .size
+                    .width;
+                let weight = window.text_style().font_weight;
+                let wide =
+                    crate::views::shaped_width(&shown, window.rem_size() * 0.875, weight, window);
+                (
+                    shown,
+                    presented.accessible_placeholder().clone(),
+                    room,
+                    wide,
+                )
+            });
+            assert!(
+                ["Find in Before", "Before"].contains(&shown.as_ref()) && wide <= room + px(0.01),
+                "{at}: the field shows {shown:?}, {wide:?} wide, whole in its {room:?}"
+            );
+            assert_eq!(
+                whole.as_ref(),
+                "Find in Before",
+                "{at}: its accessible placeholder"
+            );
+        }
+        cx.simulate_keystrokes("escape");
+        crate::width_walk::frame(cx);
+    }
+
+    /// Split's bar is one bar with one query: opened over After's text while
+    /// it searches Before, it moves there with its query and Match case,
+    /// searches After with them, its field showing the query, and Before's
+    /// matches clear. Opened anew over After, its bar took After's own last
+    /// query, here none, so a search typed over Before was lost.
+    #[gpui::test]
+    async fn split_s_bar_moves_with_its_query_and_match_case(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        open_find_on(&app, cx, TextMode::Split, 0, 1480.);
+        let editors = split_editors(&app, cx);
+        paste(cx, "Line");
+        cx.update(|_, cx| {
+            let bar = super::panel(&editors[0], cx).expect("Before's bar");
+            bar.update(cx, |bar, cx| bar.match_case(true, cx));
+        });
+        crate::width_walk::frame(cx);
+        let state = |side: usize, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                let bar = super::panel(&editors[side], cx).expect("the bar");
+                let bar = bar.read(cx);
+                let session = editors[side].read(cx).search_session();
+                (
+                    bar.open,
+                    bar.query.read(cx).value().to_string(),
+                    session.query.clone(),
+                    !session.case_insensitive,
+                    bar.painted
+                        .as_ref()
+                        .map_or(0, |painted| painted.ranges.len()),
+                )
+            })
+        };
+        let (open, field, query, sensitive, matches) = state(0, cx);
+        assert!(
+            open && field == "Line" && query == "Line" && sensitive && matches > 0,
+            "Before's bar searches it for Line, matching case: {:?}",
+            state(0, cx)
+        );
+        open_find_on(&app, cx, TextMode::Split, 1, 1480.);
+        let (open, field, query, sensitive, matches) = state(1, cx);
+        assert!(
+            open && field == "Line" && query == "Line" && sensitive && matches > 0,
+            "the bar over After shows Line, matching case, and finds it there: {:?}",
+            state(1, cx)
+        );
+        let (open, _, _, _, matches) = state(0, cx);
+        assert!(
+            !open && matches == 0,
+            "Before's bar is closed, its matches cleared"
+        );
+        let lowered = cx.update(|_, cx| {
+            let bar = super::panel(&editors[1], cx).expect("After's bar");
+            bar.read(cx).reading(cx).0
+        });
+        assert!(lowered, "Match case shows checked over After");
+        cx.simulate_keystrokes("escape");
+        crate::width_walk::frame(cx);
+    }
+
+    /// Tab from the shared bar's last control goes to the text it searches,
+    /// After's while it searches After, at 13 pt in a 461 × 490 window, where
+    /// Next ends the bar's second line; and Shift+Tab from that text returns
+    /// to that control. Before's text follows the bar in the window's order,
+    /// so Tab from it went there, and the read-only text took Shift+Tab for
+    /// outdenting and kept focus.
+    #[gpui::test]
+    async fn tab_leaves_split_s_bar_for_the_text_it_searches_and_returns(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        open_find_on(&app, cx, TextMode::Split, 1, 461.);
+        let editors = split_editors(&app, cx);
+        paste(cx, "Line");
+        let (bar, after) = cx.update(|_, cx| {
+            let bar = super::panel(&editors[1], cx).expect("After's bar");
+            (bar.read(cx).focus.clone(), editors[1].focus_handle(cx))
+        });
+        // Tab through the bar's controls to the last.
+        let mut last = None;
+        for _ in 0..8 {
+            if !cx.update(|window, cx| bar.contains_focused(window, cx)) {
+                break;
+            }
+            last = cx.update(|window, cx| window.focused(cx));
+            cx.simulate_keystrokes("tab");
+            crate::width_walk::frame(cx);
+        }
+        let last = last.expect("the bar holds focus");
+        assert!(
+            cx.update(|window, _| after.is_focused(window)),
+            "Tab from the bar's last control goes to After's text, which it searches"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        crate::width_walk::frame(cx);
+        assert!(
+            cx.update(|window, _| last.is_focused(window)),
+            "Shift+Tab from After's text returns to the bar's last control"
+        );
+        cx.simulate_keystrokes("escape");
+        crate::width_walk::frame(cx);
+    }
+
+    /// What Split shows with Find open over Before in the window as it is,
+    /// checked: the bar's lines, at most two; every control and the count
+    /// whole inside the bar with its focus ring, and the bar above Compare's
+    /// footer, or the preview's foot where the footer gave way; both sides'
+    /// first rows level; and the rows each side shows whole between the
+    /// bar's foot and the footer, at least three, which it returns with the
+    /// lines and whether the footer is drawn.
+    fn split_find_holds(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) -> (usize, usize, bool) {
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let (bar, parts, lines) = drawn_lines(cx, at);
+        let planned = DRAWN_FORMS
+            .with_borrow(|drawn| *drawn)
+            .unwrap_or_else(|| panic!("{at}: the controls are laid out"))
+            .2;
+        assert!(
+            lines <= 2 && planned == lines,
+            "{at}: the bar {bar:?} draws {lines} lines, planned {planned}, at most two"
+        );
+        let footer = cx.debug_bounds("compare-footer");
+        // The footer's top, or the preview's foot where it gave way.
+        let foot = match footer {
+            Some(footer) => footer.top(),
+            None => drawn(cx, "preview-content", at).bottom(),
+        };
+        assert!(
+            bar.bottom() <= foot + EDGE,
+            "{at}: the bar {bar:?} stands above the footer {footer:?}, or the preview's \
+             foot at {foot:?}"
+        );
+        for (part, bounds) in PARTS.iter().chain(&["file-find-count"]).zip(&parts) {
+            let ring = if *part == "file-find-count" {
+                px(0.)
+            } else {
+                ring
+            };
+            assert!(
+                bounds.left() - ring >= bar.left() - EDGE
+                    && bounds.right() + ring <= bar.right() + EDGE
+                    && bounds.top() - ring >= bar.top() - EDGE
+                    && bounds.bottom() + ring <= bar.bottom() - px(1.) + EDGE,
+                "{at}: {part} {bounds:?} lies whole with its {ring:?} ring inside the bar \
+                 {bar:?}, above the footer {footer:?}"
+            );
+        }
+        let editors = cx.update(|_, cx| {
+            let split = app.read(cx).split_view.clone().expect("the split view");
+            split.read(cx).editors().clone()
+        });
+        let shown: Vec<_> = cx.update(|_, cx| {
+            editors
+                .iter()
+                .map(|editor| {
+                    let editor = editor.read(cx);
+                    let viewport = editor.text_bounds().expect("the text is laid out");
+                    let line = editor.line_height().expect("the text is laid out");
+                    let first = viewport.top() + editor.scroll_offset().y;
+                    // The rows standing whole in the text's viewport.
+                    let whole = (0..editor.value().lines().count())
+                        .filter(|row| {
+                            let top = first + line * *row as f32;
+                            top >= viewport.top() - EDGE && top + line <= viewport.bottom() + EDGE
+                        })
+                        .count();
+                    (first, viewport, whole)
+                })
+                .collect()
+        });
+        let [
+            (before, before_view, before_rows),
+            (after, after_view, after_rows),
+        ] = [shown[0], shown[1]];
+        assert!(
+            before == after,
+            "{at}: Before's first row stands at {before:?} and After's at {after:?}"
+        );
+        for (side, view) in [("Before", before_view), ("After", after_view)] {
+            assert!(
+                view.top() >= bar.bottom() - EDGE && view.bottom() <= foot + EDGE,
+                "{at}: {side}'s text {view:?} lies between the bar {bar:?} and the footer \
+                 {footer:?}, or the preview's foot at {foot:?}"
+            );
+        }
+        let whole = before_rows.min(after_rows);
+        assert!(
+            whole >= 3,
+            "{at}: Before shows {before_rows} rows whole and After {after_rows}, at least \
+             three, the footer {footer:?}: {before_view:?}, {after_view:?}"
+        );
+        (lines, whole, footer.is_some())
+    }
+
+    /// Compare's footer, drawn whole beneath the preview: as Find closes, or
+    /// in a window that leaves Split's text its rows beside it.
+    fn footer_is_back(cx: &mut VisualTestContext, at: &str) {
+        let footer = drawn(cx, "compare-footer", at);
+        let content = drawn(cx, "preview-content", at);
+        assert!(
+            (footer.top() - content.bottom()).abs() <= EDGE,
+            "{at}: the footer {footer:?} is back beneath the preview {content:?}"
+        );
+    }
+
+    /// In Split in a 461 × 490 window, at 13 and 18 pt and display scales 2
+    /// and 1.2, Find's bar, open over Before and across both sides, takes at
+    /// most two lines, keeps every control whole inside it and above
+    /// Compare's footer, and leaves both sides' rows level and three whole
+    /// in view: at 18 pt Compare's footer gives way to them, where the bar's
+    /// two lines, 92.5 px, left two whole rows and the top of a third above
+    /// the footer, and comes back as Find closes, its words kept in the
+    /// comparison's accessible description while it is away. On a side of
+    /// its own the bar took four lines, 129 px at 13 pt and 179 at 18, its
+    /// last cut by the footer, and no row of either side was in view.
+    #[gpui::test]
+    async fn split_find_bar_in_a_461_by_490_window_keeps_its_lines_controls_and_rows(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let mut met = Vec::new();
+        for scale in [2., 1.2] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                crate::views::COMPACT_LABELS.with_borrow_mut(|labels| {
+                    labels.remove("split-comparison");
+                });
+                open_find(&app, cx, TextMode::Split, 461.);
+                let at = format!("scale {scale}, {text} pt, Split in 461 × 490");
+                let bar = drawn(cx, "file-find-bar", &at);
+                let (lines, whole, footer) = split_find_holds(&app, cx, &at);
+                if !footer {
+                    let line = crate::views::COMPACT_LABELS
+                        .with_borrow(|labels| labels.get("split-comparison").cloned());
+                    assert!(
+                        line.as_ref().is_some_and(|line| line.contains(" → ")),
+                        "{at}: the comparison is described by the footer's words: {line:?}"
+                    );
+                }
+                met.push((scale, text, bar.size.height, lines, whole, footer));
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+                footer_is_back(cx, &format!("{at}, Find closed"));
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        eprintln!("scale, size, bar height, its lines, whole rows and the footer: {met:?}");
+        assert!(
+            met.iter()
+                .any(|(_, text, _, _, _, footer)| *text == 18 && !footer),
+            "the footer gives way at 18 pt: {met:?}"
+        );
+    }
+
+    /// The same, walked from a 461 px window to a 1,000 px one 12 px at a
+    /// time at 13 and 18 pt and scales 2 and 1.2, Find open over Before: no
+    /// width between draws the bar on more than two lines, cuts a control,
+    /// stands the sides' rows apart or shows fewer than three rows; and
+    /// Compare's footer is back in a 1,480 px window and as Find closes.
+    #[gpui::test]
+    async fn split_find_bar_holds_from_461_to_1000_px(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        for scale in [2., 1.2] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                open_find(&app, cx, TextMode::Split, 461.);
+                let mut width = 461.;
+                while width <= 1000. {
+                    cx.simulate_resize(size(px(width), px(490.)));
+                    crate::width_walk::frame(cx);
+                    let at = format!("scale {scale}, {text} pt, Split in {width} × 490");
+                    split_find_holds(&app, cx, &at);
+                    width += 12.;
+                }
+                cx.simulate_resize(size(px(1480.), px(490.)));
+                crate::width_walk::frame(cx);
+                let at = format!("scale {scale}, {text} pt, Split in 1480 × 490");
+                split_find_holds(&app, cx, &at);
+                footer_is_back(cx, &at);
+                cx.simulate_resize(size(px(461.), px(490.)));
+                crate::width_walk::frame(cx);
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+                let at = format!("scale {scale}, {text} pt, Find closed in 461 × 490");
+                footer_is_back(cx, &at);
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
     }
 
     /// The accessibility node `control`, a kit component, writes as it is

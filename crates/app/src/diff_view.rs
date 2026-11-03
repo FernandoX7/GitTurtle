@@ -79,9 +79,10 @@ pub struct DiffView {
     viewport: Viewport,
     pending_scroll: Rc<PendingScroll>,
     gutter_origin: Rc<Cell<Option<Point<Pixels>>>>,
-    /// The other Split side's editor, whose rows this view's stay level
-    /// with under Find ([`Self::align_find_with`]).
-    find_partner: Option<Entity<EditorState>>,
+    /// The other Split side's editor, which shares one Find bar with this
+    /// view's, drawn across both sides, and which side this view is
+    /// ([`Self::share_find_with`]).
+    find_partner: Option<(Entity<EditorState>, crate::editor_find::Side)>,
     _subscription: Subscription,
 }
 
@@ -120,10 +121,15 @@ impl DiffView {
         cx.notify();
     }
 
-    /// Keeps this view's rows level with `partner`'s under Find, as Split's
-    /// sides are ([`crate::editor_find::Editor::aligned_with`]).
-    pub fn align_find_with(&mut self, partner: Entity<EditorState>) {
-        self.find_partner = Some(partner);
+    /// Shares one Find bar with `partner`'s editor, as Split's sides do, this
+    /// view being `side`: the split view draws it across both, so this view
+    /// draws none ([`crate::editor_find::Editor::sharing_find_with`]).
+    pub fn share_find_with(
+        &mut self,
+        partner: Entity<EditorState>,
+        side: crate::editor_find::Side,
+    ) {
+        self.find_partner = Some((partner, side));
     }
 
     pub fn refresh(
@@ -336,7 +342,9 @@ impl Render for DiffView {
             .aria_label(self.label.clone())
             .text_size(crate::appearance::code_text());
         let editor = match &find_partner {
-            Some(partner) => editor.aligned_with(partner),
+            // Split's headings give their row to the shared bar, which names
+            // and marks the side it searches instead.
+            Some((partner, side)) => editor.sharing_find_with(partner, *side),
             None => editor,
         };
         let content = div()

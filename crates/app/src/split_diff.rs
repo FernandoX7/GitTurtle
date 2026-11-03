@@ -408,14 +408,16 @@ pub fn new(
                 }
             }));
         }
-        // Each side's rows stay level with the other's under Find: its Find
-        // region takes the taller of the two bars in the layout pass that
-        // draws them (`editor_find::Editor::aligned_with`). Padded a frame
-        // later from the bars' measured heights, the sides' rows stood a line
-        // apart in the first frame after a resize that changed a bar's lines.
+        // The sides share one Find bar, which `render` draws across both
+        // (`editor_find::Editor::sharing_find_with`).
         for (side, view) in views.iter().enumerate() {
             let partner = editors[1 - side].clone();
-            view.update(cx, |view, _| view.align_find_with(partner));
+            let side = if side == 0 {
+                crate::editor_find::Side::Before
+            } else {
+                crate::editor_find::Side::After
+            };
+            view.update(cx, |view, _| view.share_find_with(partner, side));
         }
         SplitView {
             initial_row: Some(presentation.first_change.saturating_sub(3)),
@@ -526,7 +528,30 @@ impl Render for SplitView {
             self.focus_ring
                 .edge(&self.editors[side].read(cx).focus_handle(cx), rgb(p.accent))
         });
-        div().size_full().relative().flex().children((0..2).map(|side| {
+        // The sides' one Find bar, open on either, stands across both in
+        // their headings' row, so their rows start level under it and a
+        // narrow window's bar takes the comparison's width, as the unified
+        // patch's does, and the headings' height: on a side of its own it
+        // took four lines in a 461 × 490 window and left no row in view.
+        let shared_bar = crate::editor_find::shared_bar(&self.editors, cx);
+        let headings = shared_bar.is_none().then(|| {
+            div().flex().children((0..2).map(|side| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(crate::appearance::ui_size(30.))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(rgb(p.border))
+                    .bg(rgb(p.panel))
+                    .text_size(crate::appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(if side == 0 { "Before" } else { "After" })
+            }))
+        });
+        let sides = div().flex_1().min_h_0().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let presentation = Arc::clone(&self.presentation);
             div()
@@ -551,17 +576,6 @@ impl Render for SplitView {
                 })
                 .child(
                     div()
-                        .h(crate::appearance::ui_size(30.))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .bg(rgb(p.panel))
-                        .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(if side == 0 { "Before" } else { "After" }),
-                )
-                .child(
-                    div()
                         .debug_selector(move || format!("split-text-{side}"))
                         .flex_1()
                         .min_h_0()
@@ -571,7 +585,16 @@ impl Render for SplitView {
                         .child(div().flex_1().min_h_0().child(self.views[side].clone()))
                         .children(edges[side].take()),
                 )
-        })).children(trace_editors.map(|editors| {
+        }));
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .children(headings)
+            .children(shared_bar)
+            .child(sides)
+            .children(trace_editors.map(|editors| {
             // Painted after both panes, so one record contains their actual
             // same-frame geometry. The transparent observer has no hitbox and
             // never requests another frame or changes either editor.

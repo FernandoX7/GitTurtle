@@ -3539,6 +3539,9 @@ impl GitTurtle {
             Some(ShownText::Editor(editor)) => Some(editor.read(cx).focus_handle(cx)),
             _ => None,
         };
+        // Split's text, which shares its room with the footer
+        // ([`split_room`]).
+        let mut split = None;
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -3696,10 +3699,13 @@ impl GitTurtle {
                             |preview| self.render_rich_preview(preview, column, window, cx),
                         )
                     } else if self.text_mode == TextMode::Split {
-                        self.split_view.as_ref().map_or_else(
-                            || empty("Loading split comparison…", ""),
-                            |view| div().size_full().child(view.clone()).into_any_element(),
-                        )
+                        match &self.split_view {
+                            Some(view) => {
+                                split = Some(view.clone());
+                                div().into_any_element()
+                            }
+                            None => empty("Loading split comparison…", ""),
+                        }
                     } else if self.text_mode == TextMode::Unified && patch.is_empty() {
                         if self.review.options.hide_whitespace {
                             empty(
@@ -3757,43 +3763,139 @@ impl GitTurtle {
                     && !quick_source,
                 |el| el.child(self.render_text_review(column, window, cx)),
             )
-            .child(
-                div()
-                    .debug_selector(|| "preview-content".into())
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .child(content)
-                    // The text holding keyboard focus rings the pane's own
-                    // edge, over its lines, so none of them moves.
-                    .children(
-                        text_focus
-                            .and_then(|focus| self.focus_ring.edge(&focus, rgb(colors.accent))),
-                    ),
-            )
-            .children(
-                self.content
+            .map(|column| {
+                // The text holding keyboard focus rings the pane's own edge,
+                // over its lines, so none of them moves.
+                let edge = text_focus
+                    .and_then(|focus| self.focus_ring.edge(&focus, rgb(colors.accent)))
+                    .map(IntoElement::into_any_element);
+                let reason = self
+                    .content
                     .as_ref()
                     .and_then(|content| match content.as_ref() {
                         Content::Text {
                             partial_unavailable,
                             ..
-                        } if self.mode == WorkspaceMode::Working => partial_unavailable.as_ref(),
+                        } if self.mode == WorkspaceMode::Working => {
+                            partial_unavailable.as_deref().map(SharedString::from)
+                        }
                         _ => None,
-                    })
-                    .map(|reason| {
-                        div()
-                            .px_3()
-                            .py_2()
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(reason.clone())
-                    }),
-            )
-            .children(footer.map(|footer| footer.element))
+                    });
+                let muted = colors.muted;
+                match split {
+                    // Laid out for the room it shares with the footer in the
+                    // frame it is drawn, where the footer gives way to Find.
+                    Some(view) => column.child(
+                        crate::in_frame::in_frame(move |bounds, window, cx| {
+                            split_room(view, edge, reason, muted, footer, bounds, window, cx)
+                        })
+                        .named("compare-split-room"),
+                    ),
+                    None => column
+                        .child(preview_content(content, edge))
+                        .children(reason.map(|reason| partial_reason(reason, muted)))
+                        .children(footer.map(|footer| footer.element)),
+                }
+            })
             .into_any_element()
     }
+}
+
+/// The pane Compare's preview draws `content` in, ringed by `edge` where
+/// its text holds keyboard focus.
+fn preview_content(content: AnyElement, edge: Option<AnyElement>) -> Div {
+    div()
+        .debug_selector(|| "preview-content".into())
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .child(content)
+        .children(edge)
+}
+
+/// Why a working file's lines cannot be staged one by one, beneath its text.
+fn partial_reason(reason: SharedString, muted: u32) -> Div {
+    div()
+        .px_3()
+        .py_2()
+        .text_size(crate::appearance::ui_text(11.))
+        .text_color(rgb(muted))
+        .child(reason)
+}
+
+/// The code editor's line height, as a multiple of its text size (the
+/// kit's `EDITOR_LINE_HEIGHT`), which GPUI rounds to a whole pixel.
+const CODE_LINE_HEIGHT: f32 = 1.5;
+
+/// The code editor's padding above and below its lines, which no line is
+/// drawn in (the kit's medium field's `input_py`, at every text size).
+const CODE_PADDING: Pixels = px(8.);
+
+/// The fewest whole rows of Split's text Compare's footer leaves in view
+/// beneath an open Find bar before it gives way.
+const SPLIT_FIND_ROWS: f32 = 3.;
+
+/// Split's text, `view`, with the reason its lines cannot be staged and
+/// Compare's footer beneath it, laid out for the room they share in the
+/// frame it is drawn, `bounds`. While Split's Find is open its bar stands
+/// across both sides above their text, and the footer gives way wherever it
+/// would leave fewer than [`SPLIT_FIND_ROWS`] whole rows of the text in
+/// view, as an image comparison's footer gives way to the image's minimum
+/// ([`CompareFooter`]): in a 461 × 490 window at 18 pt the bar's two lines
+/// left two rows and the top of a third above it. Its words stay in the
+/// accessible description of the comparison's group, which is named only
+/// while it carries them, as an image comparison keeps them in the image's;
+/// it comes back as Find closes or the room grows.
+#[allow(clippy::too_many_arguments)]
+fn split_room(
+    view: Entity<crate::split_diff::SplitView>,
+    edge: Option<AnyElement>,
+    reason: Option<SharedString>,
+    muted: u32,
+    footer: Option<CompareFooter>,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let width = bounds.size.width;
+    let editors = view.read(cx).editors().clone();
+    let gives_way = footer.is_some()
+        && crate::editor_find::shared_bar_height(&editors, width, window, cx).is_some_and(|bar| {
+            let footer = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
+            let reason = reason.clone().map_or(px(0.), |reason| {
+                crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
+            });
+            let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
+            // A device pixel short of the rows, as layout may draw the
+            // text's edges, takes the footer away.
+            let text = bounds.size.height - reason - footer - bar - CODE_PADDING * 2.;
+            text < line * SPLIT_FIND_ROWS + px(1. / window.scale_factor())
+        });
+    let (footer, described) = match footer {
+        Some(footer) if gives_way => (None, Some(footer.line)),
+        footer => (footer.map(|footer| footer.element), None),
+    };
+    // A group in every layout, so its texts keep their place in the
+    // accessibility tree as the footer comes and goes.
+    let comparison = div()
+        .id("split-comparison")
+        .size_full()
+        .role(Role::Group)
+        .when_some(described, |group, line| {
+            note_compact_label("split-comparison", &line);
+            group.aria_label("Split comparison").aria_description(line)
+        })
+        .child(view)
+        .into_any_element();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(preview_content(comparison, edge))
+        .children(reason.map(|reason| partial_reason(reason, muted)))
+        .children(footer)
+        .into_any_element()
 }
 
 /// Compare's footer beneath the preview, as [`GitTurtle::render_preview`]
