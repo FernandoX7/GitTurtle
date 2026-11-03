@@ -67,7 +67,7 @@ Decision: on Linux nothing decodes AVIF or JPEG 2000 in the app process. `decode
 2. SIZ: 1–4 components, precision ≤ 16 bits, tiles `ceil(w / tw) × ceil(h / th)` ≤ 65,535 (SOT's tile index is 16 bits; covers the 25.8 GB tile vector).
 3. `pclr`: 1–1,024 entries, 1–4 columns, depth ≤ 16 bits, with a `cmap` of 1–4 entries, each naming a SIZ component, mapping type 0 or 1 and an existing column (covers #1649; `resolve_palette_indices` makes one full-size plane per entry). A palette turns reduced resolution off, so its budget is at full size.
 4. Resolution: target `scaled_dimensions(size, edge)`; reduced resolution only when every component samples 1 × 1 and there is no palette (0.4.1 panics on subsampled components at reduced resolution, #1409, fixed only on `main`), otherwise full resolution.
-5. Budget before `decode`, from the size `Image::new` reports: width × height × (components + `cmap` entries with a palette, or twice the output planes with a `cdef` when that is more, since 0.4.1 clones them to reorder; with a first `colr` that converts through a profile, `profile_planes`: the output planes and their 8-bit copy stay alive while a refused profile decodes the image again) × 4 bytes (f32 samples) plus the largest tile-component at that resolution × 4 bytes ≤ 256 MiB (#1558's formula; step 2 covers its gap). `total_bytes()` checked as for other rasters.
+5. Budget before `decode`, from the size `Image::new` reports: width × height × (components + `cmap` entries with a palette, or twice the output planes with a `cdef` when that is more, since 0.4.1 clones them to reorder; with a first `colr` that converts through a profile, `profile_planes`: the output planes and their 8-bit copy stay alive while a refused profile decodes the image again) × 4 bytes (f32 samples) plus the largest tile-component at that resolution × 4 bytes ≤ 256 MiB (#1558's formula; step 2 covers its gap). The size `Image::new` reports must equal GitTurtle's own size for the full image or a level it may skip, checked before decoding; `total_bytes()` and the output buffer derive from that size, so no later check of either can disagree.
 6. `decode` under `catch_unwind`; code-block, precinct and packet structures are not budgeted by anyone: `RLIMIT_DATA` and the deadline cover them.
 
 **Colour, depth, alpha and orientation.**
@@ -411,7 +411,7 @@ No finding blocks the design; the open facts at the end are evidence the slices 
     - 1–4 components, at most 16 bits each.
     - The `pclr` and `cmap` checks, and the budget, apply.
     - Reduced resolution is used only with 1 × 1 sampling and no palette.
-    - After decoding, width, height and `total_bytes()` must equal GitTurtle's own computation for the chosen resolution.
+    - Before decoding, the width and height `Image::new` reports must equal GitTurtle's own computation for the chosen resolution; `total_bytes()` derives from them.
     - The output is resized to exactly `scaled_dimensions(original, edge)`, with `original` taken from SIZ.
 
 12. **Fixtures through `serve`.** Everything in A2's acceptance list, plus:

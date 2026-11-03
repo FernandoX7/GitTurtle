@@ -509,8 +509,8 @@ pub(super) fn preflight(
 /// A `pclr` box (I.5.3.4) with 1 to 1,024 entries and 1 to 4 columns of at
 /// most 16 bits, and its `cmap` (I.5.3.5) of 1 to 4 entries. Each entry names a
 /// SIZ component below `components`, a mapping type of 0 (the component itself)
-/// or 1 (through a palette column), and a column below the palette's count
-/// (0 for type 0). Returns the entry count: `hayro-jpeg2000` 0.4.1's
+/// or 1 (through a palette column), and a column below the palette's count,
+/// checked for type 0 as well although hayro ignores it there. Returns the entry count: `hayro-jpeg2000` 0.4.1's
 /// `resolve_palette_indices` makes one full-size f32 plane per entry while it
 /// still holds the codestream's planes, and its output takes one channel per
 /// entry, so more than four are too many components for an RGBA image. A
