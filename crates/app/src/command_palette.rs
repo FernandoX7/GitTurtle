@@ -787,18 +787,18 @@ struct Palette {
     results: Vec<usize>,
     selection: Selection,
     /// The status's reading, its accessible name: what it last announced,
-    /// or took quietly. A move sets it at once and the query's change once
-    /// the query has rested ([`Self::settle`]); a change of context sets it
-    /// at once, and announces it, unless a rest is pending.
+    /// or took quietly. A move sets it at once; a change of the query, or
+    /// of the context that changes the selected command's reading, sets it
+    /// once they have rested ([`Self::settle`]).
     status: SharedString,
     /// Whether the status last changed quietly, for a move the list speaks
     /// itself ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux): it is no live
     /// region until it next announces, so the screen reader does not say
     /// the command a second time.
     quiet: bool,
-    /// The rest the query's next reading waits for ([`Self::settle`]):
-    /// replaced by each change to the query, so only the last one runs, and
-    /// dropped as the palette closes.
+    /// The one rest the next reading of the query or the context waits for
+    /// ([`Self::settle`]): replaced by each change to either, so only the
+    /// last one runs, and dropped as the palette closes.
     settling: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     error: Option<String>,
@@ -836,17 +836,16 @@ impl Palette {
         let owner_subscription = owner.upgrade().map(|owner| {
             cx.observe_in(&owner, window, |this, owner, window, cx| {
                 if !this.selection.closed {
+                    let was = this.reading();
                     this.context = owner.read(cx).palette_context(window, cx);
-                    if this.settling.is_none() {
-                        let reading = this.reading();
-                        if reading != this.status {
-                            this.status = reading;
-                            // Only a move is quiet: a reading the context
-                            // changes, as a write starts or ends, is
-                            // announced, as it was before moves were left
-                            // to the list.
-                            this.quiet = false;
-                        }
+                    // A reading the context changes, as a write starts or
+                    // ends, is announced once it rests, as the query's is,
+                    // and is never quiet: only a move is. Announced at once,
+                    // a Fetch's end and its reload's end 33 ms later were
+                    // two announcements, and Orca 51.1's spam filter dropped
+                    // the second, the command becoming available (QA-95).
+                    if this.reading() != was {
+                        this.settle(cx);
                     }
                     cx.notify();
                 }
@@ -907,17 +906,21 @@ impl Palette {
             })
             .unwrap_or_else(|| "No matching commands".into())
     }
-    /// Announces the selected command's reading once the query has rested
-    /// for [`shortcuts::COUNT_REST`] since this change, unless it is what
-    /// the status last said: each change drops the rest the one before it
-    /// began, so a burst of keys announces only the reading it ends on,
-    /// once, after the echo of its last key, as Keyboard Shortcuts' search
-    /// does. Announced at each key, typing "go" 60 ms a key, Orca 51.1 spoke
-    /// "GitHub pull requests… · 1 of 24" and dropped "Go to Projects · 1 of
-    /// 3", sent 51 ms after it: its spam filter drops an event of a type the
-    /// application sent less than 100 ms before ("Ignoring
-    /// object:announcement due to multiple instances in short time"), so the
-    /// last reading heard was stale (QA-94).
+    /// Announces the selected command's reading once the query and the
+    /// context have rested for [`shortcuts::COUNT_REST`] since this change,
+    /// unless it is what the status last said: each change to either drops
+    /// the rest the one before it began, so a burst of keys, or of context
+    /// changes such as a write's end and its reload's, announces only the
+    /// reading it ends on, once, after the echo of its last key, as
+    /// Keyboard Shortcuts' search does. Announced at each key, typing "go"
+    /// 60 ms a key, Orca 51.1 spoke "GitHub pull requests… · 1 of 24" and
+    /// dropped "Go to Projects · 1 of 3", sent 51 ms after it: its spam
+    /// filter drops an event of a type the application sent less than
+    /// 100 ms before ("Ignoring object:announcement due to multiple
+    /// instances in short time"), so the last reading heard was stale
+    /// (QA-94); announced at each change of context, a Fetch's end and its
+    /// reload's 33 ms later lost Browse stashes… becoming available
+    /// (QA-95).
     fn settle(&mut self, cx: &mut Context<Self>) {
         let rest = cx.background_executor().timer(shortcuts::COUNT_REST);
         self.settling = Some(cx.spawn(async move |this, cx| {
@@ -1203,8 +1206,8 @@ impl Render for Palette {
                 cx.notify();
             }))
             // The status draws nothing and reads the selected command, its
-            // place and why it cannot run, as a move or the context left it
-            // at once and as the query left it once the query has rested
+            // place and why it cannot run, as a move left it at once and as
+            // the query or the context left it once they have rested
             // (`settle`). Where the list speaks a moved
             // selection itself (`shortcuts::LIST_SPEAKS_SELECTION`, Linux), a
             // move changes it quietly, as no live region (`quiet`): Orca 51.1
@@ -3282,12 +3285,17 @@ mod render_tests {
     }
 
     /// Only a move is quiet. After Down reaches a command that a running
-    /// write makes wait, the write's start changes the command's reading,
-    /// which the status announces once, politely, even where the list spoke
-    /// the move, and the write's end changes it back, announced once too.
-    /// The status stayed quiet after a move where the list speaks it
-    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), so a reason appearing
-    /// or going as a Fetch ran went unheard.
+    /// write makes wait, the write's start, a single change of context,
+    /// changes the command's reading, which the status announces once,
+    /// politely, even where the list spoke the move, once the context has
+    /// rested for 500 ms ([`shortcuts::COUNT_REST`]) and not at 499 ms, and
+    /// Orca speaks it; the write's end changes it back, announced once the
+    /// same way. The status stayed quiet after a move where the list speaks
+    /// it ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), so a reason
+    /// appearing or going as a Fetch ran went unheard; announced at once, a
+    /// change of context followed by another lost the second to Orca 51.1's
+    /// spam filter (QA-95,
+    /// [`a_writes_end_and_its_reload_are_announced_once_as_the_reading_they_end_on`]).
     #[gpui::test]
     fn a_context_change_after_a_move_is_announced(cx: &mut TestAppContext) {
         let (app, cx) = hub(cx);
@@ -3329,18 +3337,222 @@ mod render_tests {
         } else {
             heard.take();
         }
+        #[cfg(target_os = "linux")]
+        heard.take_orca();
         fetching(cx, Some("Fetching…"));
         heard.frame(cx);
         let waiting = reading_and_row("", at, &availability(cx)).0;
         assert_ne!(waiting, quiet, "the write changes the command's reading");
+        heard.wait(cx, 499);
         assert_eq!(
             heard.take(),
-            [waiting],
-            "the write's start is announced once"
+            Vec::<String>::new(),
+            "the write's start is not announced before it has rested 500 ms"
         );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&waiting),
+            "the write's start is announced once it rests, once"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(orca.last(), Some(&waiting), "and Orca speaks it: {orca:?}");
+        }
         fetching(cx, None);
         heard.frame(cx);
-        assert_eq!(heard.take(), [quiet], "and its end");
+        heard.wait(cx, 499);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nor its end before it has rested"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&quiet),
+            "and its end once it rests"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(orca.last(), Some(&quiet), "and Orca speaks it: {orca:?}");
+        }
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+    }
+
+    /// QA-95: with the palette on Browse stashes… while a Fetch runs, the
+    /// Fetch's end changes the command's reading to wait for the file list
+    /// to refresh, and the reload's end 33 ms later makes it available.
+    /// The two make one announcement, 500 ms after the reload's end
+    /// ([`shortcuts::COUNT_REST`]) and not at 499 ms, of the command
+    /// available with its place, which Orca speaks, and nothing after it.
+    /// Each change of context was announced at once, and Orca 51.1's spam
+    /// filter, which drops an event of a type the application sent less
+    /// than 100 ms before, dropped the second, so the command becoming
+    /// available was never heard.
+    #[gpui::test]
+    fn a_writes_end_and_its_reload_are_announced_once_as_the_reading_they_end_on(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        let availability = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).palette_availability(window, cx))
+        };
+        // The Fetch is held as the palette opens and finds Browse stashes….
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        let mut heard = Heard::new(cx);
+        let query = "bro";
+        cx.simulate_input(query);
+        heard.wait(cx, 2000);
+        let at = matches(query)
+            .iter()
+            .position(|&index| COMMANDS[index].id == CommandId::Stashes)
+            .expect("\"bro\" finds Browse stashes…");
+        let palette = OPENED_PALETTE
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open palette");
+        let selected = cx.update(|_, cx| palette.read(cx).selection.index);
+        for _ in selected..at {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+        }
+        assert_eq!(
+            cx.update(|_, cx| palette.read(cx).selection.index),
+            at,
+            "Down reaches Browse stashes…"
+        );
+        drop(palette);
+        let fetching = reading_and_row(query, at, &availability(cx)).0;
+        assert!(
+            fetching.ends_with(crate::workspace::BUSY_REASON),
+            "while the Fetch runs, Browse stashes… waits for it: {fetching:?}"
+        );
+        heard.take();
+        #[cfg(target_os = "linux")]
+        heard.take_orca();
+
+        // The Fetch ends and its reload starts.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            app.status_task = Some(Task::ready(()));
+            app.status_after_write = Some(app.work_generation);
+            cx.notify();
+        });
+        heard.frame(cx);
+        let reloading = reading_and_row(query, at, &availability(cx)).0;
+        assert!(
+            reloading.ends_with(crate::workspace::REFRESHING_ROWS_REASON),
+            "through the reload, Browse stashes… waits for it: {reloading:?}"
+        );
+        // The reload ends 33 ms later.
+        heard.wait(cx, 33);
+        app.update(cx, |app, cx| {
+            app.status_task = None;
+            app.status_after_write = None;
+            cx.notify();
+        });
+        heard.frame(cx);
+        let available = reading_and_row(query, at, &availability(cx)).0;
+        assert_eq!(
+            available,
+            format!("Browse stashes… · {} of {}", at + 1, matches(query).len()),
+            "the reload's end makes Browse stashes… available"
+        );
+        heard.wait(cx, 499);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the context has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&available),
+            "one announcement: the command available"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            std::slice::from_ref(&available),
+            "Orca speaks it"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        cx.simulate_keystrokes("escape");
+        crate::tags::tests::draw(cx);
+    }
+
+    /// A change of context during the query's rest, as a Fetch starts
+    /// 300 ms after "go" is typed and makes its command wait, restarts the
+    /// one rest the query and the context share: nothing is announced at
+    /// the query's 500 ms nor 499 ms after the change, and then one
+    /// announcement of the reading both end on, the command waiting with
+    /// its place, which Orca speaks last, and nothing after it.
+    #[gpui::test]
+    fn a_context_change_while_the_query_rests_is_announced_once_as_the_final_reading(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).palette_availability(window, cx))
+        };
+        let idle = availability(cx);
+        let query = "go";
+        let at = first_available(&matches(query), &idle);
+        let typed = reading_and_row(query, at, &idle).0;
+        cx.simulate_input(query);
+        heard.frame(cx);
+        heard.wait(cx, 300);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        heard.frame(cx);
+        let waiting = reading_and_row(query, at, &availability(cx)).0;
+        assert_ne!(waiting, typed, "the Fetch makes the command wait");
+        heard.wait(cx, 200);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "the change of context restarts the query's rest"
+        );
+        heard.wait(cx, 299);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the context has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&waiting),
+            "one announcement: the reading the query and the context end on"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&waiting),
+                "Orca speaks the final reading last: {orca:?}"
+            );
+            assert!(
+                !orca.contains(&typed),
+                "and not the reading the context changed: {orca:?}"
+            );
+        }
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }
