@@ -389,9 +389,9 @@ fn cmyk_planes(output: u32, split: bool) -> u32 {
 /// JP2 compatibility, one `jp2h` and then one `jp2c` with no other of either
 /// kind, `ihdr` agreeing with SIZ, the source bounds, at most
 /// 65,535 tiles by formula B-5, 1 to 4 components of at most 16 bits, and a
-/// palette of 1 to 1,024 entries and 1 to 4 columns of at most 16 bits with a
-/// component mapping of 1 to 4 entries that each name a component and column
-/// that exist (#1649), and at most one channel definition.
+/// palette of 1 to 1,024 entries and 1 to 4 unsigned columns of at most 16
+/// bits with a component mapping of 1 to 4 entries that each name a component
+/// and column that exist (#1649), and at most one channel definition.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -601,8 +601,8 @@ pub(super) fn preflight(
     Ok(preflight)
 }
 
-/// A `pclr` box (I.5.3.4) with 1 to 1,024 entries and 1 to 4 columns of at
-/// most 16 bits, and its `cmap` (I.5.3.5) of 1 to 4 entries. Each entry names a
+/// A `pclr` box (I.5.3.4) with 1 to 1,024 entries and 1 to 4 unsigned columns
+/// of at most 16 bits, and its `cmap` (I.5.3.5) of 1 to 4 entries. Each entry names a
 /// SIZ component below `components`, a mapping type of 0 (the component itself)
 /// or 1 (through a palette column), and a column below the palette's count,
 /// checked for type 0 as well although hayro ignores it there. Returns the entry count: `hayro-jpeg2000` 0.4.1's
@@ -633,6 +633,15 @@ fn palette_mapping(
     }
     let mut entry_bytes = 0;
     for &depth in &palette[3..3 + columns] {
+        // hayro's `pclr::parse` fails on a signed column and, not strict,
+        // drops the whole palette, so the codestream's components decode as
+        // they are (four with no `colr` as CMYK) where this would budget the
+        // palette's planes. Every other `pclr` field its parse refuses is
+        // refused here too, and so is a short `cmap` or one with an unknown
+        // type, which fails hayro's whole decode rather than being dropped.
+        if depth & 0x80 != 0 {
+            return Err(Jpeg2000Unreadable);
+        }
         let bits = usize::from(depth & 0x7f) + 1;
         if bits > 16 {
             return Err(Jpeg2000TooDeep);

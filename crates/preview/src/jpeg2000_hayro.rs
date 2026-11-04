@@ -337,6 +337,47 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:?}");
     }
 
+    /// hayro-jpeg2000 0.4.1's `pclr::parse` fails on a signed palette column
+    /// (descriptor bit 0x80) and, not strict, drops the palette: the alpha
+    /// fixture's four components with no `colr` then decode as CMYK, which
+    /// the palette's budget (four component planes and one mapped) does not
+    /// cover. The preflight refuses the column.
+    #[test]
+    fn a_signed_palette_column_is_refused() {
+        use hayro_jpeg2000::ColorSpace;
+        let alpha = fixture("jpeg2000-alpha.jp2");
+        let ihdr = whole_box(&alpha, b"ihdr");
+        let mapping = cmap(&[entry(0, 1, 0)]);
+        // Two entries in one 8-bit column, unsigned (0x07) or signed (0x87).
+        let with = |descriptor: u8| {
+            let pclr = jp2_box(b"pclr", &[0, 2, 1, descriptor, 0, 1]);
+            jp2(&[&ihdr, &pclr, &mapping], &alpha)
+        };
+        let (unsigned, signed) = (with(0x07), with(0x87));
+        let settings = DecodeSettings {
+            resolve_palette_indices: true,
+            strict: false,
+            target_resolution: None,
+        };
+        let image = Image::new(&unsigned, &settings).unwrap();
+        assert!(matches!(image.color_space(), ColorSpace::Gray));
+        let image = Image::new(&signed, &settings).unwrap();
+        assert!(matches!(image.color_space(), ColorSpace::CMYK));
+        let plane = 64 * 48 * 4;
+        assert_eq!(
+            jpeg2000::preflight(&unsigned).unwrap().decode_bytes(0),
+            plane * (4 + 1) + plane
+        );
+        assert_eq!(
+            jpeg2000::preflight(&signed),
+            Err(ImageErrorKind::Jpeg2000Unreadable)
+        );
+        assert_eq!(
+            jpeg2000(&signed, 1600).unwrap_err(),
+            ImageErrorKind::Jpeg2000Unreadable
+        );
+    }
+
     /// The budget counts every codestream plane and one per `cmap` entry,
     /// alpha included.
     #[test]
