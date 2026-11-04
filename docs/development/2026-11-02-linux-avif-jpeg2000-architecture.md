@@ -484,6 +484,7 @@ No finding blocks the design; the open facts at the end are evidence the slices 
   - the ABI probe on x86-64 (Ubuntu 1.4.1);
   - requirement 15's `readelf` records;
   - the frame-larger-than-`ispe` `ru_maxrss`.
+  - Recorded 2026-11-03: quality run [`41738961057`](https://github.com/FernandoX7/GitTurtle/actions/runs/41738961057) on `99814b1f`, Ubuntu 24.04 x86-64 tests job: the real helper under the filter reads `Seccomp: 2`, `NoNewPrivs: 1`, `Threads: 1`; libdav1d 1.4.1 logged "Frame size 16384x16384 exceeds limit 4096" with a helper peak of 23,720 KiB (`VmHWM` and `ru_maxrss`); the ABI probe matched `dav1d-sys` with the installed headers (`Dav1dSettings.frame_size_limit` at offset 20) and printed the CPU flags; the executable lists NEEDED `libdav1d.so.7`, and the `.init_array` step printed each entry's relocation and target. That run's packaging job refused a correct executable over a FILE symbol named for `dav1d_sys`'s codegen unit; `d7ca36d1` fixed the check, and run [`41745637784`](https://github.com/FernandoX7/GitTurtle/actions/runs/41745637784) on `d7ca36d1` is green on all 12 jobs, so A3 is accepted. AArch64 evidence: the fast gates of the A3 rounds on the Asahi host.
 - A4:
   - requirement 17's test;
   - the release measurement;
