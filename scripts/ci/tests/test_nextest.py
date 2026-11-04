@@ -194,6 +194,13 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("permissions:", job)
         self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
 
+    def test_rust_test_jobs_keep_their_60_minute_limit(self):
+        # Runners have been seen 1.8 times slower, which takes the Arch job's
+        # 28 minutes to about 50: past 45 (docs/ci.md#test-execution-with-nextest).
+        for name in ("rust-debug", "rust-arch"):
+            job, _ = quality_job_steps(name)
+            self.assertEqual(re.findall(r"^    timeout-minutes: (.*)$", job, re.M), ["60"], name)
+
     def test_arch_job_runs_the_debug_test_phases_unprivileged_in_a_pinned_image_with_the_shared_cache(self):
         job, steps = quality_job_steps("rust-arch")
         _, debug_steps = rust_debug_steps()

@@ -358,7 +358,7 @@ so a flaky test fails the job as before. The status level prints one `PASS`,
 as libtest's `test … ok|ignored` lines did. The inherited default profile reports
 a test running longer than 60 s as slow and terminates it after 120 s; `cargo test`
 had no per-test limit, so a test that hangs now fails with a `TIMEOUT` line
-instead of holding the job until its 45-minute timeout. The profile's JUnit report
+instead of holding the job until its 60-minute timeout. The profile's JUnit report
 (`target/nextest/ci/junit.xml`) is not uploaded: it holds unsanitized captured
 output of failing tests, and the sanitized `tests.log` already lists every result.
 The measurement helper reads nextest's `Summary [ … ]` run duration as the test
@@ -420,11 +420,19 @@ log before calling the sets different. The dated
 [nextest record](benchmarks/2026-09-27-ci-nextest-tests.md) holds the hosted
 before/after durations and the test-list comparison.
 
-Each Rust matrix has two fixed OS entries, `fail-fast: false`, `max-parallel: 2`
-and a 45-minute job timeout. With the single
-[Arch Linux job](#arch-linux-container-job), also bounded at 45 minutes, at most
-seven compilation runners (three on macOS) are requested per Quality run, plus the independent
-inexpensive checks. Formatting is bounded
+Each Rust matrix has two fixed OS entries, `fail-fast: false` and `max-parallel: 2`.
+The test jobs, the [Arch Linux job](#arch-linux-container-job) among them, are
+bounded at 60 minutes, and the Clippy and release jobs at 45. A test job's limit
+only backs up a hung step, since the profile above terminates any test after
+120 s. The test jobs take about 25 to 31 minutes on a normal runner, and
+[quality run 41757534359](https://github.com/FernandoX7/GitTurtle/actions/runs/41757534359)
+met a macOS runner 1.8 times slower at the median: at that pace the Arch job's
+28 minutes become about 50, inside 60 and past the earlier 45 (see
+[Why separate test and Clippy jobs](#why-separate-test-and-clippy-jobs)). A
+workflow policy test in `scripts/ci/tests/test_nextest.py` holds the Ubuntu and
+macOS test matrix and the Arch Linux job at 60 minutes. With the
+single Arch Linux job, at most seven compilation runners (three on macOS) are
+requested per Quality run, plus the independent inexpensive checks. Formatting is bounded
 at five minutes, policy and the final gate at five, and tooling at ten.
 GitHub may queue those jobs under the repository's existing concurrency
 limits; matrix bounds do not promise simultaneous starts. See the documented

@@ -134,7 +134,12 @@ jobs:
     if: needs.changes.outputs.product == 'true'
     name: Rust tests · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The limit only backs up a hung step: nextest's ci profile terminates any
+    # test after 120 s (terminate-after in .config/nextest.toml). The test
+    # jobs take about 25 to 31 minutes on a normal runner and runners have been
+    # seen 1.8 times slower, which 60 minutes holds and 45 did not (quality run
+    # 41757534359; docs/ci.md#test-execution-with-nextest).
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -415,7 +420,11 @@ jobs:
     if: needs.changes.outputs.product == 'true'
     name: Rust tests · archlinux
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # As in rust-debug, the limit only backs up a hung step: nextest's ci
+    # profile terminates any test after 120 s (terminate-after in
+    # .config/nextest.toml). This job takes about 28 minutes on a normal
+    # runner; 1.8 times slower is 50, inside 60 and past 45.
+    timeout-minutes: 60
     container:
       image: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
     env:
