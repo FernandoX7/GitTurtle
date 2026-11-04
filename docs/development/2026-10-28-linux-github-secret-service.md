@@ -85,4 +85,11 @@ Research for the owner decision of 2026-10-28 in item 9 of phase 3 of [full Omar
 
 ## Outcome
 
-Not implemented as of 2026-10-28. Record the adopted change, its source identity and the evidence above here once it lands; keep these observations as dated evidence.
+Implemented on 2026-11-04 on `claude/omarchy-support`, in two slices, as recommended above; the research sections stay as dated evidence at `c219a6f`.
+
+- **LP3-K1, the store:** the Secret Service store through oo7 0.6.0's D-Bus client behind a backend seam, in `crates/app/src/github/transport/secret_service.rs`, commits `eb39e479`..`a97f97ea`.
+- **LP3-K2, the wiring:** `SecureStore` uses it on Linux: `9958b403` (`feat(app): store the GitHub account in the desktop keyring on Linux`), `3ed4fb78` (no token in any message or the Linux panel), `325514e9` (the opt-in hermetic test against a disposable gnome-keyring on a private bus, `secret_service::tests::hermetic`) and `734d0620` (docs).
+- **Review:** both slices passed an independent [security review](security-review.md).
+- **Hosted CI:** quality run 41881976922 ran K1's 22 tests green on Ubuntu 24.04 and Arch.
+- **Release measurement, 2026-11-04:** the release test binary built at `081c30c4`, on the Asahi aarch64 host (12 CPUs), timed 50 stored reads per run against a disposable gnome-keyring, each a fresh connection, DH session, search and secret. Over four runs the median was 3.8–5.1 ms, p95 6.0–7.4 ms and the maximum 6.3–8.0 ms, against a p95 budget of 150 ms and the 5 s read bound. The raw JSON is in `.local/bench-keyring-2026-11-04/`, local and not versioned.
+- **Still open:** the owner's own live Connect, Refresh, opening a PR without a prompt and Disconnect on Omarchy. GitHub CLI 2.102.1 is now installed at `/usr/bin/gh` on the host; on Linux GitTurtle runs `gh` only from `/usr/local/bin/gh` or `/usr/bin/gh` (`GH_CANDIDATES` in `crates/app/src/github/transport.rs`).
