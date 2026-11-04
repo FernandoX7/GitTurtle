@@ -947,19 +947,23 @@ impl FindBar {
 
     /// The limit's notice below the controls.
     fn limit_notice() -> gpui_kit::Div {
-        div().child("Find is limited to 4 KiB; shorten this query.")
+        div().child(LIMIT_NOTICE)
     }
 
     /// The height the bar takes `width` across, as layout draws it on this
     /// display's device pixels ([`Self::frame`], [`Fitted`]): its controls'
     /// lines inside its pane insets ([`Plan::height`]), rounded up to a
-    /// device pixel as layout sizes a measured element; its padding, and the gap
-    /// before the limit's notice where it states it, each a quarter rem on
-    /// its whole device pixel, halves toward zero; its 1 px rule on at
-    /// least one device pixel; and the notice's line rounded up to one, the
-    /// notice never wrapping at a width the bar is drawn. Summed from the
-    /// raw quarter rem and 1 px, the bar reckoned at 66.75 px for two lines
-    /// at 13 pt was drawn 67.5 px at scale 1.2 and 66.5 at scale 2.
+    /// device pixel as layout sizes a measured element; its padding, and
+    /// the gap before the limit's notice where it states it, each a quarter
+    /// rem on its whole device pixel, halves toward zero; its 1 px rule on
+    /// at least one device pixel; and the notice as layout lays a text out
+    /// ([`Self::notice_height`]), rounded up to a device pixel. Summed from
+    /// the raw quarter rem and 1 px, the bar reckoned at 66.75 px for two
+    /// lines at 13 pt was drawn 67.5 px at scale 1.2 and 66.5 at scale 2;
+    /// and the notice, reckoned as one line of a whole pixel rounded up to a
+    /// device pixel, was a device pixel over the line drawn at 13 pt at 1.2
+    /// and 1.25, and two lines short in a 461 px window at 13 pt, where it
+    /// wraps on three.
     fn height_at(&self, width: Pixels, window: &Window, cx: &App) -> Pixels {
         let fit = Self::fit(self.reading(cx).1, window);
         let widths = Widths::measure(&fit.count, fit.gap, window);
@@ -967,19 +971,43 @@ impl FindBar {
         // GPUI's `ceil_to_device_pixel`, as it sizes a measured element.
         let measured = |length: Pixels| px((f32::from(length) * scale).ceil() / scale);
         let inset = window.pixel_snap(crate::appearance::ui_size(crate::appearance::PANE_INSET));
-        let controls = planned_width((width - inset * 2.).max(px(0.)), scale);
+        let room = (width - inset * 2.).max(px(0.));
+        let controls = planned_width(room, scale);
         // `py_1` above and below, and `gap_1` before the notice.
         let padding = window.pixel_snap(window.rem_size() * 0.25);
         let rule = window.pixel_snap(px(1.)).max(px(1. / scale));
         let lines = measured(widths.plan(controls).height(fit.row, fit.gap, window));
         let notice = if self.too_long(cx) {
-            let mut style = window.text_style();
-            style.font_size = crate::appearance::ui_text(11.).into();
-            padding + measured(style.line_height_in_pixels(window.rem_size()))
+            padding + measured(Self::notice_height(room, window))
         } else {
             px(0.)
         };
         lines + padding * 2. + rule + notice
+    }
+
+    /// The height the limit's notice takes `room` wide, as GPUI lays a text
+    /// out (`TextLayout::layout`): its lines wrapped at that width, each
+    /// line on its whole device pixel, halves toward zero, before layout
+    /// rounds the text's height up to a device pixel.
+    fn notice_height(room: Pixels, window: &Window) -> Pixels {
+        // The style where `views::split_room`'s frame runs, outside the bar,
+        // which holds inside it: the bar sets only the text's size (and colour).
+        let mut style = window.text_style();
+        style.font_size = crate::appearance::ui_text(11.).into();
+        let rem = window.rem_size();
+        let size = style.font_size.to_pixels(rem);
+        let line = window.pixel_snap(style.line_height.to_pixels(size.into(), rem));
+        let text = SharedString::new_static(LIMIT_NOTICE);
+        let run = style.to_run(text.len());
+        match window
+            .text_system()
+            .shape_text(text, size, &[run], Some(room), None)
+        {
+            Ok(lines) => lines
+                .iter()
+                .fold(px(0.), |height, wrapped| height + wrapped.size(line).height),
+            Err(_) => line,
+        }
     }
 }
 
@@ -1093,6 +1121,10 @@ impl Render for FindBar {
             }))
     }
 }
+
+/// What the bar states below its controls while its query is past Find's
+/// limit ([`MAX_QUERY_BYTES`]).
+const LIMIT_NOTICE: &str = "Find is limited to 4 KiB; shorten this query.";
 
 /// The text whose width is the Find field's floor: eight digits, about eight
 /// characters of a query at the field's text size.
@@ -3815,6 +3847,66 @@ mod bar_tests {
             ],
             "Previous and Next end the line they fill in a room of {room:?}"
         );
+    }
+
+    /// Split's footer rule reckons the bar with the limit's notice as tall
+    /// as layout draws it (`FindBar::height_at`): with a query past Find's
+    /// 4 KiB limit typed, at display scales 1, 1.2, 1.25, 1.5 and 2 and at
+    /// 13 and 18 pt, Find open over Before in 461 and 1,480 px windows, the
+    /// bar draws the notice below its controls, and the height the rule
+    /// reckoned with is the drawn bar's: the gap before the notice on its
+    /// whole device pixel, and the notice wrapped at the bar's width inside
+    /// its insets, each line on its device pixel. Reckoned as one line of a
+    /// whole pixel, the notice was 36 px short at 13 pt in the 461 px window
+    /// at scale 1, where it wraps on three, and a device pixel over at 1.2
+    /// and 1.25 in the wide one.
+    #[gpui::test]
+    async fn split_s_footer_rule_reckons_the_find_bar_with_its_limit_notice(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let query = "z".repeat(super::MAX_QUERY_BYTES + 1);
+        let mut failures = Vec::new();
+        for scale in [1f32, 1.2, 1.25, 1.5, 2.] {
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for width in [461., 1480.] {
+                    let at = format!("scale {scale}, {text} pt, Split in {width} × 490");
+                    open_find(&app, cx, TextMode::Split, width);
+                    paste(cx, &query);
+                    crate::views::SPLIT_FIND_BAR.set(None);
+                    at_scale(cx, scale);
+                    let bar = drawn(cx, "file-find-bar", &at);
+                    let lines = DRAWN_FORMS
+                        .with_borrow(|drawn| *drawn)
+                        .unwrap_or_else(|| panic!("{at}: the controls are laid out"))
+                        .2;
+                    let last = drawn(cx, super::LINE_SELECTORS[lines - 1], &at);
+                    assert!(
+                        bar.bottom() - last.bottom() > appearance::ui_text(11.),
+                        "{at}: the bar {bar:?} states the limit below its last line {last:?}"
+                    );
+                    let reckoned = crate::views::SPLIT_FIND_BAR
+                        .get()
+                        .unwrap_or_else(|| panic!("{at}: the footer's rule reckons the bar"));
+                    if (reckoned - bar.size.height).abs() > px(0.01) {
+                        failures.push(format!(
+                            "{at}: the rule reckons the bar with its notice {reckoned:?} tall, \
+                             drawn {:?}",
+                            bar.size.height
+                        ));
+                    }
+                    cx.simulate_keystrokes("escape");
+                    crate::width_walk::frame(cx);
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// Opens Find in each case the bar's device-pixel tests walk and hands
