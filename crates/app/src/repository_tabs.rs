@@ -1226,12 +1226,19 @@ impl GitTurtle {
         {
             return;
         }
-        let fallback = if self.mode == WorkspaceMode::History {
-            self.focus.clone()
+        // The shown mode's list, focused with the pane it is, as choosing a
+        // commit or a file names it: focused alone, the window went on
+        // naming the pane it named before, which a File history or Blame
+        // opened from there keeps and returns focus to.
+        let (fallback, pane) = if self.mode == WorkspaceMode::History {
+            (self.focus.clone(), Pane::History)
         } else {
-            self.file_focus.clone()
+            (self.file_focus.clone(), Pane::Files)
         };
-        let focus = focus.unwrap_or_else(|| fallback.clone());
+        let focus = focus.unwrap_or_else(|| {
+            self.pane = pane;
+            fallback.clone()
+        });
         focus.focus(window, cx);
         // A modal opened before the next frame returns here, not to the root
         // this frame's `update_modal_focus` saw focused: one opened by its
@@ -1247,6 +1254,7 @@ impl GitTurtle {
                 return;
             }
             if this.app_focus.contains(&fallback, window) {
+                this.pane = pane;
                 fallback.focus(window, cx);
             } else {
                 this.app_focus.focus(window, cx);
@@ -7552,5 +7560,59 @@ mod tests {
                 "{opened}: closed, on the changed-file list"
             );
         }
+    }
+
+    /// A focus return that gives way as the frame ends, to a control the
+    /// frame drew nowhere in the tab, focuses Compare's changed-file list
+    /// with the pane it is: the window names the Files pane, as choosing a
+    /// file does, whatever pane it named before, and the next arrow key
+    /// moves the file selection. The fallback once focused the list and
+    /// left the pane named History, so the pane a File history or Blame
+    /// opened from there kept, and returned focus to, was History's commit
+    /// list, which Compare does not draw.
+    #[gpui::test]
+    async fn a_focus_return_giving_way_names_the_pane_it_focuses(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\nM 100644 inline other.txt\ndata 6\nother\n\ndone\n",
+        )
+        .await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        let (files, navigation) = app.read_with(cx, |app, cx| {
+            assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+            (
+                app.file_focus.clone(),
+                app.nav_search.read(cx).focus_handle(cx),
+            )
+        });
+        // Focus returns, as a switch to this tab returns it, to the
+        // navigation's filter, which Compare does not draw, with the window
+        // naming History's pane.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.pane = Pane::History;
+                app.repository_tabs.focus_return = Some(FocusReturn {
+                    path: app.path.clone(),
+                    held: app.app_focus.clone(),
+                    focus: Some(navigation.clone()),
+                });
+                app.app_focus.focus(window, cx);
+            })
+        });
+        draw_tab_frames(cx);
+        assert_eq!(drawn_focus(&app, cx), Some(files), "the changed-file list");
+        app.read_with(cx, |app, _| {
+            assert!(app.pane == Pane::Files, "the pane it focuses");
+            assert_eq!(app.selected_file, Some(0));
+        });
+        cx.simulate_keystrokes("down");
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.selected_file, Some(1), "Down moves the file selection");
+            assert!(app.pane == Pane::Files);
+        });
     }
 }
