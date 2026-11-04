@@ -613,6 +613,8 @@ pub(super) struct DesktopText {
     /// The desktop code font lookup and the generation it answers; `None`
     /// while the setting is off.
     pub code_font: Option<(u64, Result<gpui_kit::SharedString, String>)>,
+    /// The desktop's motion and contrast preferences ([`Observed::display`]).
+    pub display: crate::native_accessibility::DisplayPreferences,
 }
 
 /// Raw values as reported by the desktop; each source may be absent.
@@ -668,6 +670,25 @@ impl Observed {
             rendering,
             text_scale,
             code_font: None,
+            display: self.display(),
+        }
+    }
+
+    /// Reduces motion when any source asks for it: the portal's appearance
+    /// `reduced-motion` 1, GNOME's a11y `reduced-motion` "reduce", or GNOME's
+    /// `enable-animations` turned off. Asks for more contrast when the
+    /// appearance `contrast` is 1 or GNOME's `high-contrast` is on. Any other
+    /// value, an unknown number or word included, is no preference, as the
+    /// settings portal specifies ("Unknown values should be treated as 0"),
+    /// and so is a key the desktop lacks. Linux has no transparency
+    /// preference.
+    pub(super) fn display(&self) -> crate::native_accessibility::DisplayPreferences {
+        crate::native_accessibility::DisplayPreferences {
+            reduce_motion: self.reduced_motion == Some(1)
+                || self.gnome_reduced_motion.as_deref() == Some("reduce")
+                || self.enable_animations == Some(false),
+            increase_contrast: self.contrast == Some(1) || self.high_contrast == Some(true),
+            reduce_transparency: false,
         }
     }
 }
@@ -1602,6 +1623,7 @@ mod portal {
                     rendering: gpui_kit::TextRenderingMode::Grayscale,
                     text_scale: index as f32,
                     code_font: None,
+                    display: Default::default(),
                 }));
             }
             assert_eq!(latest.lock().unwrap().take().unwrap().text_scale, 9999.0);
@@ -1937,6 +1959,11 @@ mod portal {
             }
             let burst = latest.lock().unwrap().take().expect("the burst's snapshot");
             assert_eq!(burst.rendering, Subpixel, "fontconfig's answer stands");
+            assert!(
+                burst.display.reduce_motion && burst.display.increase_contrast,
+                "{:?}",
+                burst.display
+            );
             for _ in 0..50 {
                 super::super::pass_real_time(&executor);
             }
@@ -2374,6 +2401,7 @@ mod tests {
                 rendering: Subpixel,
                 text_scale: 1.25,
                 code_font: None,
+                display: Default::default(),
             }
         );
         let kde = Observed {
@@ -2514,5 +2542,144 @@ mod tests {
         };
         assert_eq!(broken.resolve(true).text_scale, 1.0);
         assert_eq!(Observed::default().resolve(true).text_scale, 1.0);
+    }
+
+    /// Any one motion source reduces motion and either contrast source asks
+    /// for more contrast; unknown values and absent keys ask for nothing.
+    #[test]
+    fn display_preferences_take_any_source_that_asks_and_nothing_unknown() {
+        use crate::native_accessibility::DisplayPreferences;
+        let none = DisplayPreferences::default();
+        let motion = DisplayPreferences {
+            reduce_motion: true,
+            ..none
+        };
+        let contrast = DisplayPreferences {
+            increase_contrast: true,
+            ..none
+        };
+        let both = DisplayPreferences {
+            reduce_motion: true,
+            increase_contrast: true,
+            reduce_transparency: false,
+        };
+        let display = |observed: Observed| {
+            let resolved = observed.resolve(true).display;
+            assert_eq!(resolved, observed.display(), "the snapshot carries it");
+            resolved
+        };
+        let reduced = |value: u32| Observed {
+            reduced_motion: Some(value),
+            ..Observed::default()
+        };
+        let gnome = |value: &str| Observed {
+            gnome_reduced_motion: Some(value.into()),
+            ..Observed::default()
+        };
+        let animations = |value: bool| Observed {
+            enable_animations: Some(value),
+            ..Observed::default()
+        };
+        let appearance_contrast = |value: u32| Observed {
+            contrast: Some(value),
+            ..Observed::default()
+        };
+        let high_contrast = |value: bool| Observed {
+            high_contrast: Some(value),
+            ..Observed::default()
+        };
+
+        // Every key absent, as on a desktop with no portal.
+        assert_eq!(display(Observed::default()), none);
+        // Each source alone, on and off.
+        assert_eq!(display(reduced(1)), motion);
+        assert_eq!(display(reduced(0)), none);
+        assert_eq!(display(gnome("reduce")), motion);
+        assert_eq!(display(gnome("no-preference")), none);
+        assert_eq!(display(animations(false)), motion);
+        assert_eq!(display(animations(true)), none);
+        assert_eq!(display(appearance_contrast(1)), contrast);
+        assert_eq!(display(appearance_contrast(0)), none);
+        assert_eq!(display(high_contrast(true)), contrast);
+        assert_eq!(display(high_contrast(false)), none);
+        // Unknown values are no preference.
+        for value in [2, 99, u32::MAX] {
+            assert_eq!(display(reduced(value)), none, "reduced-motion {value}");
+            assert_eq!(
+                display(appearance_contrast(value)),
+                none,
+                "contrast {value}"
+            );
+        }
+        for value in ["", "Reduce", "reduced", "1"] {
+            assert_eq!(display(gnome(value)), none, "{value:?}");
+        }
+        // One source asking is enough, whatever the others say.
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(0),
+                gnome_reduced_motion: Some("reduce".into()),
+                enable_animations: Some(true),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(1),
+                gnome_reduced_motion: Some("no-preference".into()),
+                enable_animations: Some(true),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(2),
+                gnome_reduced_motion: Some("no-preference".into()),
+                enable_animations: Some(false),
+                ..Observed::default()
+            }),
+            motion
+        );
+        assert_eq!(
+            display(Observed {
+                contrast: Some(0),
+                high_contrast: Some(true),
+                ..Observed::default()
+            }),
+            contrast
+        );
+        assert_eq!(
+            display(Observed {
+                contrast: Some(1),
+                high_contrast: Some(false),
+                ..Observed::default()
+            }),
+            contrast
+        );
+        assert_eq!(
+            display(Observed {
+                reduced_motion: Some(1),
+                contrast: Some(1),
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                enable_animations: Some(false),
+                ..Observed::default()
+            }),
+            both
+        );
+        // GNOME 49 has no `reduced-motion` key, and xdg-desktop-portal-gtk
+        // publishes no appearance `reduced-motion`: `enable-animations` alone
+        // decides.
+        let gnome_49 = |enable_animations| Observed {
+            font_rendering: Some("automatic".into()),
+            contrast: Some(0),
+            high_contrast: Some(false),
+            enable_animations: Some(enable_animations),
+            ..Observed::default()
+        };
+        assert_eq!(display(gnome_49(false)), motion);
+        assert_eq!(display(gnome_49(true)), none);
     }
 }
