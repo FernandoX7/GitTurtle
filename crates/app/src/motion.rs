@@ -7626,15 +7626,24 @@ mod tests {
         crate::path_filter::filters_land(&app, cx);
     }
 
-    /// Holds quiet reads from starting, or lets them start and land.
+    /// Holds quiet reads from starting, or lets them start and land. A read
+    /// already running is not held: it lands first, so the next quiet read
+    /// is one the test starts, as a write's reload. A read the window
+    /// started on its own, put back to wait by a fixture's refresh and a
+    /// commit's selection and started again as each landed, once ran on
+    /// through a held write in History, where a write stops no quiet read,
+    /// and the slow reader of a macOS host answered it only after the test
+    /// asserted that the write's reload waited.
     fn hold_quiet_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, held: bool) {
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.automatic.hold_quiet_reads(held);
-                app.try_automatic_refresh(window, cx);
-            })
-        });
-        if !held {
+        if held {
+            crate::views::tests::hold_quiet_reads_for_test(app, cx);
+        } else {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.automatic.hold_quiet_reads(false);
+                    app.try_automatic_refresh(window, cx);
+                })
+            });
             for _ in 0..8 {
                 if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
                     break;
