@@ -971,6 +971,7 @@ impl Render for FindBar {
         let panel = cx.weak_entity();
         let enter = cx.weak_entity();
         let escape = cx.weak_entity();
+        let dismiss = cx.weak_entity();
         let again = cx.weak_entity();
         let bar = Self::frame()
             .id("accessible-editor-find")
@@ -988,6 +989,15 @@ impl Render for FindBar {
             })
             .capture_action(move |_: &Escape, window, cx| {
                 let _ = escape.update(cx, |bar, cx| bar.hide(true, window, cx));
+                cx.stop_propagation();
+            })
+            // Escape on any of the bar's controls closes Find as Escape in
+            // its field does, focus returning to the text it searches. Only
+            // the field binds the key to the kit's Escape; off it the key is
+            // the app's Escape (`ClearSearch`), Back from Compare, so Escape
+            // on Next left Compare for History.
+            .on_action(move |_: &crate::ClearSearch, window, cx| {
+                let _ = dismiss.update(cx, |bar, cx| bar.hide(true, window, cx));
                 cx.stop_propagation();
             })
             // Primary+F in the bar returns to its field, selecting its query,
@@ -3087,6 +3097,89 @@ mod bar_tests {
         );
         cx.simulate_keystrokes("escape");
         crate::width_walk::frame(cx);
+    }
+
+    /// Escape with any of the find bar's controls focused, Match case,
+    /// Previous, Next or Close, closes Find as Escape in its field does:
+    /// focus returns to the text it searches and Compare stays, in the
+    /// unified patch's bar of its own and in Split's shared bar over either
+    /// side, on one line and on two. Off the field the key is the app's
+    /// Escape, Back from Compare, so Escape on Next left Compare for History.
+    #[gpui::test]
+    async fn escape_on_any_find_bar_control_closes_find_and_stays_in_compare(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        // The app's keys, as the window binds them: off the field Escape is
+        // the app's, which the test window binds to nothing else.
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        for (mode, side, width, name) in [
+            (TextMode::Split, 0, 461., "Split's bar over Before"),
+            (TextMode::Split, 1, 1480., "Split's bar over After"),
+            (TextMode::Unified, 0, 1480., "the unified patch's bar"),
+        ] {
+            let (mut stops, mut case) = (Vec::new(), false);
+            // The bar's four controls follow its field in Tab order.
+            for tabs in 1..=4 {
+                let at = format!("{name} in {width} × 490, Tab {tabs} from its field");
+                open_find_on(&app, cx, mode, side, width);
+                paste(cx, "Line");
+                let (editor, bar) = cx.update(|_, cx| {
+                    let app = app.read(cx);
+                    let editor = match mode {
+                        TextMode::Split => app
+                            .split_view
+                            .as_ref()
+                            .expect("the split view")
+                            .read(cx)
+                            .editors()[side]
+                            .clone(),
+                        _ => app.patch_editor.clone().expect("the patch editor"),
+                    };
+                    let bar = super::panel(&editor, cx).expect("the bar");
+                    (editor, bar)
+                });
+                let (within, field, case_focus) = cx.update(|_, cx| {
+                    let bar = bar.read(cx);
+                    let field = bar.query.read(cx).focus_handle(cx);
+                    (bar.focus.clone(), field, bar.case_focus.clone())
+                });
+                for _ in 0..tabs {
+                    cx.simulate_keystrokes("tab");
+                    crate::width_walk::frame(cx);
+                }
+                let focused = cx
+                    .update(|window, cx| window.focused(cx))
+                    .unwrap_or_else(|| panic!("{at}: something holds focus"));
+                assert!(
+                    cx.update(|window, cx| within.contains_focused(window, cx)) && focused != field,
+                    "{at}: one of the bar's controls holds focus"
+                );
+                assert!(
+                    !stops.contains(&focused),
+                    "{at}: Tab moves on to a control not focused before"
+                );
+                case |= focused == case_focus;
+                stops.push(focused);
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+                let (open, compare, back) = cx.update(|window, cx| {
+                    (
+                        bar.read(cx).open,
+                        app.read(cx).mode == WorkspaceMode::Compare,
+                        editor.focus_handle(cx).is_focused(window),
+                    )
+                });
+                assert!(
+                    !open && compare && back,
+                    "{at}: Escape closes Find ({}), Compare stays shown ({compare}) and focus \
+                     returns to the text Find searched ({back})",
+                    !open
+                );
+            }
+            assert!(case, "{name}: Match case is one of the controls");
+        }
     }
 
     /// What Split shows with Find open over Before in the window as it is,
