@@ -8,6 +8,8 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+#[cfg(target_os = "linux")]
+mod secret_service;
 
 // The store's item, which a test build never reaches: it builds no store (`CredentialStore`).
 #[cfg(all(target_os = "macos", not(test)))]
