@@ -1003,7 +1003,12 @@ impl Palette {
     /// the three-quarter bound keeps it fainter than enabled secondary text
     /// even where `muted` itself is weak.
     pub fn disabled_label(self) -> Rgba {
-        self.fit_disabled_label(DISABLED_LABEL, DISABLED_SHARE, 16)
+        self.fit_disabled_label(
+            DISABLED_LABEL,
+            DISABLED_SHARE,
+            16,
+            self.default_disabled_fill(),
+        )
     }
 
     /// [`Self::disabled_label`] under More contrast, fitted on the adjusted
@@ -1014,19 +1019,27 @@ impl Palette {
     /// secondary text's contrast, so it stays fainter than the secondary
     /// text beside it. Half of a 7:1 `muted` reads about 3:1 on a dark
     /// surface, and the three quarters [`Self::disabled_label`] stops at
-    /// about 4:1.
-    fn more_contrast_disabled_label(self) -> Rgba {
-        self.fit_disabled_label(MORE_CONTRAST_DISABLED, MORE_CONTRAST_DISABLED_SHARE, 28)
+    /// about 4:1. The default Button's disabled fill it is measured on is
+    /// `chosen`'s, the palette before the adjustment, since a fill keeps its
+    /// value under More contrast ([`Self::configure`]).
+    fn more_contrast_disabled_label(self, chosen: Palette) -> Rgba {
+        self.fit_disabled_label(
+            MORE_CONTRAST_DISABLED,
+            MORE_CONTRAST_DISABLED_SHARE,
+            28,
+            chosen.default_disabled_fill(),
+        )
     }
 
     /// The disabled label's fit: the first layer of `muted`, from half
     /// strength in up to `steps` steps of 1/64, that reads `floor` with
     /// [`DISABLED_LABEL_MARGIN`] on every surface a disabled label rests on
-    /// while keeping at most `share` of secondary text's contrast there and
-    /// on `selected`; else the first that reads `floor`; else the last step.
-    fn fit_disabled_label(self, floor: f64, share: f64, steps: u8) -> Rgba {
+    /// (the page's, the raised one and the default Button's disabled `fill`
+    /// over each) while keeping at most `share` of secondary text's contrast
+    /// there and on `selected`; else the first that reads `floor`; else the
+    /// last step.
+    fn fit_disabled_label(self, floor: f64, share: f64, steps: u8, fill: Rgba) -> Rgba {
         let page = [self.canvas, self.panel, self.subtle, self.raised()];
-        let fill = self.default_disabled_fill();
         let surfaces = page
             .into_iter()
             .chain(page.map(|surface| composite(fill, surface)));
@@ -1057,7 +1070,9 @@ impl Palette {
     /// kit's input background, which is the `input` color (the app's `border`)
     /// at 30% in a dark palette and the `background` (`canvas`) in a light
     /// one. Over Settings' panel card it is Midnight's #1a222f, where the dim
-    /// fitted without it read 3.002:1.
+    /// fitted without it read 3.002:1. Under More contrast the kit derives
+    /// the fill from the palette as chosen (`Theme::input_fill_base`,
+    /// [`Self::configure`]), so the fill drawn is the unadjusted palette's.
     fn default_disabled_fill(self) -> Rgba {
         if self.is_light() {
             Rgba {
@@ -1086,9 +1101,9 @@ impl Palette {
     /// contrast, which in practice makes the token `text` where such a
     /// surface rests. `border` takes [`Self::resting_edge`], so dividers,
     /// fields' outlines and the popup edge fitted from it
-    /// ([`Self::raised_edge`]) hold [`MORE_CONTRAST_EDGE`]; the disabled edge
-    /// and the unchecked Switch track keep the unadjusted palette's
-    /// ([`Self::configure`]). Every other
+    /// ([`Self::raised_edge`]) hold [`MORE_CONTRAST_EDGE`]; the disabled edge,
+    /// the unchecked Switch track and a dark field's fill keep the unadjusted
+    /// palette's ([`Self::configure`]). Every other
     /// token stays: the hues, the accent with its foreground, hover and
     /// pressed fills, the selection, the status and diff colours. A token
     /// already past its floor keeps its value, and nothing the floors are
@@ -2384,8 +2399,9 @@ impl Palette {
     /// fitted at [`MORE_CONTRAST_TEXT`] and the disabled label at
     /// [`MORE_CONTRAST_DISABLED`]. The changed-word tints never read worse
     /// than this palette's own ([`EditorHighlights::fit`]), and the disabled
-    /// edge, the unchecked Switch track and its hover keep this palette's
-    /// values ([`Self::configure`]). Off, the palette is applied as it is.
+    /// edge, the unchecked Switch track and its hover and a dark field's fill
+    /// keep this palette's values ([`Self::configure`]). Off, the palette is
+    /// applied as it is.
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         let more_contrast = more_contrast(cx);
         let palette = self.as_applied(cx);
@@ -2438,12 +2454,13 @@ impl Palette {
 
     /// Set the kit theme from this palette, the one [`Self::apply`] stores:
     /// adjusted under More contrast, with `chosen` the palette before that
-    /// adjustment (itself while More contrast is off). Three fills and edges
+    /// adjustment (itself while More contrast is off). These fills and edges
     /// take `chosen`'s values, so More contrast leaves them as they were: the
     /// disabled edge, whose [`DISABLED_EDGE`] fit keeps a control that cannot
     /// act fainter than the 3:1 resting edge every enabled control gains,
-    /// and the unchecked Switch track's fill and its hover, which are fills,
-    /// not edges, and under which the resting edge draws.
+    /// the unchecked Switch track's fill and its hover, and a dark field's
+    /// fill with the default Button's disabled fill derived from it, which
+    /// are fills, not edges, inside or under the adjusted edges.
     fn configure(
         self,
         is_light: bool,
@@ -2466,6 +2483,15 @@ impl Palette {
         theme.colors.primary_active = rgb(palette.accent_active).into();
         theme.colors.border = rgb(palette.border).into();
         theme.colors.input = rgb(palette.border).into();
+        // A fill is not an edge. The kit derives a field's fills from
+        // `input`, the outline: a dark field's at 30%
+        // (`Theme::input_background`), with the default Button's disabled
+        // fill at half that, and a disabled field's at 80% in either mode
+        // (`Theme::disabled_input_background`). Under More contrast they
+        // derive from the chosen `border` (`Theme::input_fill_base`), so they
+        // stay as they are off while the outline is adjusted; off, the kit
+        // derives them as upstream does.
+        theme.input_fill_base = more_contrast.then(|| rgb(chosen.border).into());
         // Text selection in the editors and inputs; rows and lists keep `selected` below.
         theme.colors.selection = rgb(highlights.selection).into();
         theme.colors.accent = rgb(palette.hover).into();
@@ -2516,7 +2542,7 @@ impl Palette {
         theme.secondary_edge = Some(dialog_edge);
         theme.disabled_label = Some(
             if more_contrast {
-                palette.more_contrast_disabled_label()
+                palette.more_contrast_disabled_label(chosen)
             } else {
                 palette.disabled_label()
             }
@@ -2950,19 +2976,19 @@ impl EditorHighlights {
     /// matches too where it can; its accent underline marks it where it cannot.
     ///
     /// Under More contrast, `palette` is the adjusted palette, `roles` are fitted at
-    /// [`MORE_CONTRAST_TEXT`] and `chosen` is the palette as chosen: the selection and Find's
-    /// matches are fitted as above, and each word tint by [`Self::raised_word_tint`], so no color
-    /// reads worse on it than it does with More contrast off. Off, `chosen` is `None`.
+    /// [`MORE_CONTRAST_TEXT`] and `chosen` is the palette as chosen, and every highlight is
+    /// raised from the one `chosen` draws off ([`Self::raised`]), so no color reads worse on it
+    /// and it stands from its lines on the same side and no nearer than it does with More
+    /// contrast off: each word tint by [`Self::raised_word_tint`], the selection and Find's
+    /// matches likewise ([`Self::fit_raised`]), the current match no nearer the other matches
+    /// than off. Off, `chosen` is `None`.
     fn fit(palette: Palette, roles: SyntaxRoles, chosen: Option<Palette>) -> Self {
+        if let Some(chosen) = chosen {
+            return Self::fit_raised(palette, roles, chosen);
+        }
         let away = Self::away(palette);
         let lines = Self::lines(palette);
-        let syntax = roles.colors().map(|color| (color, &lines[..]));
-        let diff = [
-            (palette.added, &lines[2..3]),
-            (palette.removed, &lines[3..4]),
-            (palette.hunk, &lines[..1]),
-        ];
-        let patch = [&syntax[..], &diff].concat();
+        let patch = Self::patch_colors(palette, roles, &lines);
         let fit = |seed: u32, drawn: &[(u32, &[u32])], lines: &[u32], tint: u32| {
             let fit = HighlightFit::new(drawn, lines);
             fit.search(seed, away, tint)
@@ -2974,17 +3000,116 @@ impl EditorHighlights {
         let find_current = HighlightFit::new(&patch, &[&lines[..], &[find_match]].concat())
             .search(current, away, palette.accent)
             .unwrap_or_else(|| fit(current, &patch, &lines, palette.accent));
-        let word = |diff: u32, line: u32| match chosen {
-            None => Self::word_tint(palette, roles, diff, line),
-            Some(chosen) => Self::raised_word_tint(palette, roles, chosen, diff, line),
-        };
         Self {
             selection,
             find_match,
             find_current,
+            added_word: Self::word_tint(palette, roles, palette.added, palette.added_background),
+            removed_word: Self::word_tint(
+                palette,
+                roles,
+                palette.removed,
+                palette.removed_background,
+            ),
+        }
+    }
+
+    /// [`Self::fit`] under More contrast. Each highlight is raised from the one `chosen` draws
+    /// with More contrast off ([`Self::raised`]), or else is that one: the selection, which
+    /// Find's other matches share, from `selected`; the current match from `selected` a quarter
+    /// of the way to `accent`; and each word tint by [`Self::raised_word_tint`]. Fitted only to
+    /// the text rule against the raised syntax, the selection and Find's matches settled
+    /// lighter, nearer their seeds, and the colors on them read worse than off (Midnight's
+    /// strings on the current match 6.18:1 where they read 6.63:1).
+    ///
+    /// The current match stands from the other matches at least as far as the off current
+    /// match stands from the off ones, and at least [`HIGHLIGHT_DISTANCE`] where it can. Held
+    /// to its own distance from the raised selection, it found no candidate wherever the
+    /// selection had moved, and settled beside the other matches (Omarchy alacritty-dark 0.040
+    /// to 0.024), or kept its off highlight beside a selection that had moved toward it
+    /// (Omarchy ristretto 0.090 to 0.039). Where no current match stands that far from the
+    /// raised selection and the off one stands nearer it than off, both keep their off
+    /// highlights.
+    fn fit_raised(palette: Palette, roles: SyntaxRoles, chosen: Palette) -> Self {
+        let off = Self::fit(chosen, chosen.syntax_roles(false), None);
+        let (away, lines) = (Self::away(palette), Self::lines(palette));
+        let patch = Self::patch_colors(palette, roles, &lines);
+        let own: Vec<u32> =
+            Self::patch_colors(chosen, chosen.syntax_roles(false), &Self::lines(chosen))
+                .into_iter()
+                .map(|(color, _)| color)
+                .collect();
+        let raised = |off: u32| Self::raised(&patch, &own, off, &lines);
+        let selection = raised(off.selection)
+            .raise(palette.selected, away, palette.accent)
+            .unwrap_or(off.selection);
+        let current = mix(palette.selected, palette.accent, 64);
+        let apart = oklab_distance(oklab(off.find_current), oklab(off.selection));
+        let beside = |distance: f64| {
+            raised(off.find_current)
+                .apart_from(selection, distance)
+                .raise(current, away, palette.accent)
+        };
+        let raised_current = beside(apart.max(HIGHLIGHT_DISTANCE)).or_else(|| {
+            if apart < HIGHLIGHT_DISTANCE {
+                beside(apart)
+            } else {
+                None
+            }
+        });
+        let (selection, find_current) = match raised_current {
+            Some(find_current) => (selection, find_current),
+            None if oklab_distance(oklab(off.find_current), oklab(selection)) >= apart => {
+                (selection, off.find_current)
+            }
+            None => (off.selection, off.find_current),
+        };
+        let word =
+            |diff: u32, line: u32| Self::raised_word_tint(palette, roles, chosen, diff, line);
+        Self {
+            selection,
+            find_match: selection,
+            find_current,
             added_word: word(palette.added, palette.added_background),
             removed_word: word(palette.removed, palette.removed_background),
         }
+    }
+
+    /// The fit that raises a highlight under More contrast from `off`, the same highlight fitted
+    /// with More contrast off, so it reads and marks no worse: each color in `drawn`, with the
+    /// lines it is drawn on, reaches [`MORE_CONTRAST_TEXT`], or its own lowest contrast on those
+    /// lines where that is lower ([`drawn_target`]), and at least the contrast its counterpart
+    /// in `own` reads on `off`, on a highlight that stands apart from each of `lines` as `off`
+    /// does, on the same side and at least as far ([`HighlightFit::at_least_as_apart_as`]).
+    /// [`HighlightFit::raise`] finds the candidate nearest a seed that reaches all of that,
+    /// searched as [`Self::fit`] searches, or `None`, and the caller keeps `off`.
+    fn raised(drawn: &[(u32, &[u32])], own: &[u32], off: u32, lines: &[u32]) -> HighlightFit {
+        let targets: Vec<_> = drawn
+            .iter()
+            .zip(own)
+            .map(|(&(color, on), &own)| {
+                let target =
+                    drawn_target(color, on, MORE_CONTRAST_TEXT).max(custom::contrast(own, off));
+                (color, target)
+            })
+            .collect();
+        HighlightFit::targeted(&targets, lines).at_least_as_apart_as(off)
+    }
+
+    /// The colors drawn on the selection and Find's matches, each with the lines it is drawn on:
+    /// `text` and every syntax role on every line of `lines` ([`Self::lines`]), and the patch's
+    /// `added`, `removed` and `hunk` on their line tints and the editor background.
+    fn patch_colors(palette: Palette, roles: SyntaxRoles, lines: &[u32; 4]) -> Vec<(u32, &[u32])> {
+        roles
+            .colors()
+            .map(|color| (color, &lines[..]))
+            .into_iter()
+            .chain([
+                (palette.added, &lines[2..3]),
+                (palette.removed, &lines[3..4]),
+                (palette.hunk, &lines[..1]),
+            ])
+            .collect()
     }
 
     /// The side a highlight moves toward when its seed does not read: black in a dark palette,
@@ -3050,7 +3175,7 @@ impl EditorHighlights {
     /// lowest contrast on the lines it is drawn on where that is lower, and never reads below
     /// the contrast the same role reads on `chosen`'s own tint with More contrast off: the
     /// candidate nearest the seed that reaches both and stands from its line at least as far as
-    /// that tint does ([`HighlightFit::at_least_as_apart_as`]), searched as [`Self::fit`]
+    /// that tint does ([`Self::raised`]), searched as [`Self::fit`]
     /// searches, or else `chosen`'s tint itself, where the raised colors read at least as their
     /// own did. Re-fitted at 4.75:1 against the raised syntax, the tint grew heavier and the
     /// added text on it read 5.81:1 where it read 6.45:1 with More contrast off (Midnight;
@@ -3064,21 +3189,14 @@ impl EditorHighlights {
         diff: u32,
         line: u32,
     ) -> u32 {
-        let quiet_roles = chosen.syntax_roles(false);
-        let quiet = Self::word_tint(chosen, quiet_roles, diff, line);
+        let own = chosen.syntax_roles(false);
+        let quiet = Self::word_tint(chosen, own, diff, line);
         let (lines, on_line) = (Self::lines(palette), [line]);
-        let quiet_colors = quiet_roles.word_colors().into_iter().chain([diff]);
-        let targets: Vec<_> = Self::word_colors(roles, &lines, diff, &on_line)
-            .zip(quiet_colors)
-            .map(|((color, on), own)| {
-                let target =
-                    drawn_target(color, on, MORE_CONTRAST_TEXT).max(custom::contrast(own, quiet));
-                (color, target)
-            })
-            .collect();
-        let fit = HighlightFit::targeted(&targets, &on_line).at_least_as_apart_as(quiet);
-        fit.search(Self::word_seed(diff, line), Self::away(palette), diff)
-            .filter(|&tint| fit.reading(tint) == Reading::Target)
+        let drawn: Vec<_> = Self::word_colors(roles, &lines, diff, &on_line).collect();
+        let own: Vec<_> = own.word_colors().into_iter().chain([diff]).collect();
+        let (seed, away) = (Self::word_seed(diff, line), Self::away(palette));
+        Self::raised(&drawn, &own, quiet, &on_line)
+            .raise(seed, away, diff)
             .unwrap_or(quiet)
     }
 }
@@ -3096,16 +3214,18 @@ fn drawn_target(color: u32, on: &[u32], rule: f64) -> f64 {
 /// The colors one highlight carries and sits on, measured once for its fitting.
 struct HighlightFit {
     /// Each color drawn on the highlight: its luminance and the contrast it should reach there,
-    /// 4.75:1 or its own lowest contrast on the lines it is drawn on, never below 4.5:1 (a word
-    /// tint under More contrast sets its own, [`EditorHighlights::raised_word_tint`]).
+    /// 4.75:1 or its own lowest contrast on the lines it is drawn on, never below 4.5:1 (a
+    /// highlight under More contrast sets its own, [`EditorHighlights::raised`]).
     drawn: Vec<(f64, f64)>,
-    /// Each background the highlight sits on, with how it stands apart from it.
+    /// Each background the highlight sits on, and each highlight drawn beside it
+    /// ([`Self::apart_from`]), with how it stands apart from it.
     lines: Vec<Apart>,
 }
 
-/// How a highlight stands apart from one background it sits on.
+/// How a highlight stands apart from one color: a background it sits on, or another highlight
+/// drawn beside it ([`HighlightFit::apart_from`]).
 struct Apart {
-    /// The background's OKLab coordinates.
+    /// The color's OKLab coordinates.
     oklab: [f64; 3],
     /// The distance, in ΔEOK, the highlight stands from it at least: [`HIGHLIGHT_DISTANCE`], or
     /// more for a raised highlight ([`HighlightFit::at_least_as_apart_as`]).
@@ -3188,7 +3308,8 @@ impl HighlightFit {
     /// nearer than [`HIGHLIGHT_DISTANCE`]. Under More contrast a raised highlight never marks its
     /// text more faintly than the highlight drawn with it off, and never with the other polarity:
     /// a changed-word tint that turned darker than its lighter line tint read as a gap in the
-    /// line (Midnight's added words, #0f1d19 on #19322d).
+    /// line (Midnight's added words, #0f1d19 on #19322d), and a selection that turned near black
+    /// lost its hue (Midnight's, #0b3e3e to #000001).
     fn at_least_as_apart_as(mut self, off: u32) -> Self {
         let off = oklab(off);
         for apart in &mut self.lines {
@@ -3199,6 +3320,25 @@ impl HighlightFit {
             };
         }
         self
+    }
+
+    /// This fit for a highlight that also stands at least `distance` from `color`, another
+    /// highlight drawn beside it, on either side of it: Find's current match from its other
+    /// matches.
+    fn apart_from(mut self, color: u32, distance: f64) -> Self {
+        self.lines.push(Apart {
+            oklab: oklab(color),
+            distance,
+            side: None,
+        });
+        self
+    }
+
+    /// The candidate nearest `seed` that reaches every target and stands apart, searched as
+    /// [`Self::search`] searches, `tint` lending its hue, or `None` where none does.
+    fn raise(&self, seed: u32, away: u32, tint: u32) -> Option<u32> {
+        self.search(seed, away, tint)
+            .filter(|&highlight| self.reading(highlight) == Reading::Target)
     }
 
     /// Whether `color` stands from every line at least its distance ([`HIGHLIGHT_DISTANCE`]
@@ -6233,7 +6373,9 @@ mod tests {
             }
             let dim = theme.disabled_foreground().to_rgb();
             let page = disabled_label_surfaces(applied);
-            let fill = applied.default_disabled_fill();
+            // The default Button's disabled fill is a fill, the chosen
+            // palette's, as the kit derives it from `input_fill_base`.
+            let fill = chosen.default_disabled_fill();
             let beneath = page
                 .iter()
                 .map(|&(surface, color)| (surface.to_owned(), color))
@@ -6549,10 +6691,438 @@ mod tests {
         );
     }
 
+    /// Find's current match keeps the distance it stands from the other
+    /// matches with More contrast off, in two synthetic cases built from
+    /// built-in palettes, so a run without the Omarchy palettes covers it:
+    /// Midnight and Graphite with a grey selected row and a warm accent, in
+    /// which the selection alone would be raised toward the current match
+    /// drawn off (Midnight's #44251e to #551205, 0.012 from the current match
+    /// #591509, where the selection drawn off stands 0.053 from it) and no
+    /// current match stands that far from the raised selection. Both keep the
+    /// highlights drawn off, so the current match stands from the other
+    /// matches as far as off. Held to its distance from the raised
+    /// selection, the current match settled beside it.
+    #[test]
+    fn the_current_match_keeps_its_off_distance_beside_a_raised_selection() {
+        for (case, base, selected, accent) in [
+            ("Midnight", ThemeChoice::Midnight, 0x383838, 0xc8553d),
+            ("Graphite", ThemeChoice::Graphite, 0x343335, 0xb5651d),
+        ] {
+            let mut custom = CustomTheme::from_base(1, case, base);
+            custom.palette.set(TokenKind::Selected, selected);
+            custom.palette.set(TokenKind::Accent, accent);
+            let chosen = custom.palette;
+            let palette = chosen.with_more_contrast();
+            let roles = palette.syntax_roles(true);
+            let off = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+            let on = EditorHighlights::fit(palette, roles, Some(chosen));
+            let apart = |current: u32, others: u32| oklab_distance(oklab(current), oklab(others));
+            let off_apart = apart(off.find_current, off.selection);
+            assert!(
+                off_apart >= HIGHLIGHT_DISTANCE,
+                "{case}: the current match drawn off stands {off_apart:.3} from the others"
+            );
+
+            // The selection alone, raised as `fit_raised` raises it, moves
+            // toward the current match drawn off.
+            let lines = EditorHighlights::lines(palette);
+            let patch = EditorHighlights::patch_colors(palette, roles, &lines);
+            let own: Vec<u32> = EditorHighlights::patch_colors(
+                chosen,
+                chosen.syntax_roles(false),
+                &EditorHighlights::lines(chosen),
+            )
+            .into_iter()
+            .map(|(color, _)| color)
+            .collect();
+            let alone = EditorHighlights::raised(&patch, &own, off.selection, &lines)
+                .raise(
+                    palette.selected,
+                    EditorHighlights::away(palette),
+                    palette.accent,
+                )
+                .unwrap_or(off.selection);
+            assert!(
+                alone != off.selection && apart(off.find_current, alone) < off_apart,
+                "{case}: the selection alone raised to #{alone:06x}, {:.3} from the current \
+                 match #{:06x}, off #{:06x} {off_apart:.3}",
+                apart(off.find_current, alone),
+                off.find_current,
+                off.selection
+            );
+
+            assert_eq!(
+                [on.selection, on.find_match, on.find_current],
+                [off.selection, off.find_match, off.find_current],
+                "{case}: the selection, other matches and current match drawn off"
+            );
+            assert!(
+                apart(on.find_current, on.find_match) >= off_apart,
+                "{case}: the current match #{:06x} {:.3} from the other matches #{:06x}, off \
+                 {off_apart:.3}",
+                on.find_current,
+                apart(on.find_current, on.find_match),
+                on.find_match
+            );
+        }
+    }
+
+    /// With More contrast on, no color reads worse on the text selection or on
+    /// Find's other and current matches than it does with More contrast off,
+    /// in every palette: `text`, every syntax role and the patch's `added`,
+    /// `removed` and `hunk`, the colors those highlights are fitted under, each
+    /// read on the highlight drawn on at least the contrast it reads on the
+    /// one drawn off, and where the highlight moved, 7:1 or its own contrast
+    /// on the lines it is drawn on where that is lower; each highlight stands
+    /// from every editor line, in OKLab, at least as far as the one drawn off
+    /// and on the same side of it in lightness, so in a dark palette none
+    /// turns darker than its darkest line where the one drawn off is lighter;
+    /// and wherever the current match drawn off stands
+    /// [`HIGHLIGHT_DISTANCE`] from the other matches, the current match
+    /// stands from them at least as far. Fitted only to the text rule against
+    /// the raised syntax, they settled lighter and nearer their seeds, and
+    /// 213 colors read worse on them across the palettes (Midnight's strings
+    /// on the current match 6.18:1 where they read 6.63:1); held to the
+    /// distance alone, the selection turned near black in seven dark
+    /// palettes (Midnight's #0b3e3e to #000001), and with the current
+    /// match's distance taken from the raised selection, the current match
+    /// settled beside the other matches (Omarchy alacritty-dark 0.040 to
+    /// 0.024, ristretto 0.090 to 0.039).
+    #[gpui::test]
+    fn more_contrast_never_reads_worse_on_the_selection_or_find(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        const DRAWN: [&str; 12] = [
+            "keyword",
+            "string",
+            "constant",
+            "type",
+            "function",
+            "markup",
+            "comment",
+            "removed",
+            "text",
+            "added",
+            "removed lines",
+            "hunk",
+        ];
+        let mut failures = Vec::new();
+        let (mut raised, mut kept, mut separated) = (0, 0, 0);
+        for (name, chosen) in more_contrast_palettes() {
+            let [off, on] = [false, true].map(|more| {
+                cx.update(|cx| {
+                    set_more_contrast(more, cx);
+                    chosen.apply(chosen.is_light(), None, cx);
+                    let applied = palette(cx);
+                    let lines = EditorHighlights::lines(applied);
+                    let drawn: Vec<(u32, Vec<u32>)> =
+                        EditorHighlights::patch_colors(applied, applied.syntax_roles(more), &lines)
+                            .into_iter()
+                            .map(|(color, on)| (color, on.to_vec()))
+                            .collect();
+                    (editor_highlights(cx), drawn, lines)
+                })
+            });
+            let ((off_tints, was, _), (on_tints, is, lines)) = (off, on);
+            if on_tints.selection == off_tints.selection {
+                kept += 1;
+            } else {
+                raised += 1;
+            }
+            let darkest = lines
+                .iter()
+                .map(|&line| oklab(line)[0])
+                .fold(f64::INFINITY, f64::min);
+            for (highlight, off_tint, on_tint) in [
+                ("selection", off_tints.selection, on_tints.selection),
+                ("Find match", off_tints.find_match, on_tints.find_match),
+                (
+                    "current Find match",
+                    off_tints.find_current,
+                    on_tints.find_current,
+                ),
+            ] {
+                for ((color, (was, _)), (is, on)) in DRAWN.iter().zip(&was).zip(&is) {
+                    let (was, is) = (*was, *is);
+                    let (off_ratio, on_ratio) = (contrast(was, off_tint), contrast(is, on_tint));
+                    if on_ratio < off_ratio {
+                        failures.push(format!(
+                            "{name} {color} #{is:06x} on the {highlight} #{on_tint:06x} \
+                             {on_ratio:.3}:1, off #{was:06x} on #{off_tint:06x} {off_ratio:.3}:1"
+                        ));
+                    }
+                    let floor = on
+                        .iter()
+                        .map(|&beneath| contrast(is, beneath))
+                        .fold(MORE_CONTRAST_TEXT, f64::min)
+                        .max(LABEL_RULE);
+                    if on_tint != off_tint && on_ratio < floor {
+                        failures.push(format!(
+                            "{name} {color} on the moved {highlight} #{on_tint:06x} \
+                             {on_ratio:.3}:1, needs {floor:.3}"
+                        ));
+                    }
+                }
+                for line in lines {
+                    let apart = |tint: u32| oklab_distance(oklab(tint), oklab(line));
+                    if apart(on_tint) < apart(off_tint) {
+                        failures.push(format!(
+                            "{name} {highlight} #{on_tint:06x} {:.3} from the line #{line:06x}, \
+                             off #{off_tint:06x} {:.3}",
+                            apart(on_tint),
+                            apart(off_tint)
+                        ));
+                    }
+                    let side = |tint: u32| oklab(tint)[0].total_cmp(&oklab(line)[0]);
+                    if side(on_tint) != side(off_tint) {
+                        failures.push(format!(
+                            "{name} {highlight} #{on_tint:06x} {:?} the line #{line:06x} in \
+                             lightness, off #{off_tint:06x} {:?}",
+                            side(on_tint),
+                            side(off_tint)
+                        ));
+                    }
+                }
+                if !chosen.is_light()
+                    && oklab(off_tint)[0] > darkest
+                    && oklab(on_tint)[0] <= darkest
+                {
+                    failures.push(format!(
+                        "{name} {highlight} #{on_tint:06x} darker than the darkest line, off \
+                         #{off_tint:06x} lighter"
+                    ));
+                }
+            }
+            let beside = |tints: EditorHighlights| {
+                oklab_distance(oklab(tints.find_current), oklab(tints.find_match))
+            };
+            if beside(off_tints) >= HIGHLIGHT_DISTANCE {
+                separated += 1;
+                if beside(on_tints) < beside(off_tints) {
+                    failures.push(format!(
+                        "{name} current Find match #{:06x} {:.3} from the other matches \
+                         #{:06x}, off #{:06x} {:.3} from #{:06x}",
+                        on_tints.find_current,
+                        beside(on_tints),
+                        on_tints.find_match,
+                        off_tints.find_current,
+                        beside(off_tints),
+                        off_tints.find_match
+                    ));
+                }
+            }
+        }
+        cx.update(|cx| set_more_contrast(false, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(
+            raised > 0 && kept > 0 && separated > 0,
+            "selections raised {raised}, kept {kept}; current matches apart off {separated}"
+        );
+    }
+
+    /// The controls [`FieldControls`] draws on each surface, by kind: a text
+    /// field with a placeholder, enabled and disabled, and Settings' Save
+    /// (the kit's default Button) enabled and disabled.
+    const FIELD_CONTROLS: [&str; 4] = ["field", "disabled-field", "save", "disabled-save"];
+
+    /// Each of [`FIELD_CONTROLS`] in a row on each of
+    /// [`more_contrast_edge_surfaces`] of the applied palette, selected as
+    /// `kind-surface`.
+    struct FieldControls {
+        /// Each surface's field and disabled field.
+        fields: Vec<[gpui::Entity<gpui_kit::component::input::InputState>; 2]>,
+    }
+
+    impl FieldControls {
+        fn new(window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
+            use gpui_kit::AppContext as _;
+            use gpui_kit::component::input::InputState;
+
+            let fields = more_contrast_edge_surfaces(palette(cx))
+                .map(|_| {
+                    [(); 2].map(|_| cx.new(|cx| InputState::new(window, cx).placeholder("Title")))
+                })
+                .into();
+            Self { fields }
+        }
+    }
+
+    impl gpui::Render for FieldControls {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui_kit::component::Disableable as _;
+            use gpui_kit::component::button::Button;
+            use gpui_kit::component::input::Input;
+            use gpui_kit::{InteractiveElement as _, ParentElement as _, div};
+
+            let surfaces = more_contrast_edge_surfaces(palette(cx));
+            div()
+                .flex()
+                .flex_col()
+                .children(surfaces.into_iter().zip(self.fields.clone()).map(
+                    |((surface, color), [field, disabled_field])| {
+                        let id = move |kind: &'static str| resting_selector(kind, surface);
+                        let selector = move |kind: &'static str| move || id(kind).into();
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .p_2()
+                            .bg(rgb(color))
+                            .child(
+                                div()
+                                    .w(px(200.))
+                                    .debug_selector(selector("field"))
+                                    .child(Input::new(&field)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.))
+                                    .debug_selector(selector("disabled-field"))
+                                    .child(Input::new(&disabled_field).disabled(true)),
+                            )
+                            .child(
+                                // Mirrors `settings.rs`'s Save chain: the kit's default Button.
+                                Button::new(id("save"))
+                                    .label("Save")
+                                    .debug_selector(selector("save")),
+                            )
+                            .child(
+                                Button::new(id("disabled-save"))
+                                    .label("Save")
+                                    .disabled(true)
+                                    .debug_selector(selector("disabled-save")),
+                            )
+                    },
+                ))
+        }
+    }
+
+    /// A fill is not an edge. With More contrast on, in every palette, a text
+    /// field and Settings' Save, each enabled and disabled, paint on the
+    /// canvas, panel, subtle and raised surfaces the fills they paint with it
+    /// off, while the field's outline, enabled and disabled, is the adjusted
+    /// `border` and reads 3:1 or more against each surface. The kit derived a
+    /// dark field's fill from `input`, the outline, at 30%, so the fill
+    /// lifted with the outline (Midnight #1a2330 to #2a323d), the disabled
+    /// Save's fill, half of it, with it, and the placeholder on the field
+    /// read worse (Omarchy tokyo-night 5.99:1 to 5.32:1 on the subtle
+    /// surface); a disabled field's fill, `input` at 80% in either mode,
+    /// lifted in every palette. The placeholder, drawn in `muted_foreground`,
+    /// now reads on the field at least as it does off on every surface
+    /// (tokyo-night's 6.63:1 there).
+    #[gpui::test]
+    fn more_contrast_keeps_the_field_and_save_fills_in_every_palette(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(FieldControls::new);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(gpui::size(px(800.), px(400.)));
+        let mut failures = Vec::new();
+        let mut tokyo_night = Vec::new();
+        for (name, chosen) in test_palettes() {
+            // Each control on each surface: the surface, its fills and the
+            // 1 px edges it paints, and the placeholder's color.
+            let [off, on] = [false, true].map(|more| {
+                cx.update(|window, cx| {
+                    set_more_contrast(more, cx);
+                    chosen.apply(chosen.is_light(), Some(window), cx);
+                });
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let placeholder = cx.update(|_, cx| packed(Theme::global(cx).muted_foreground));
+                let mut drawn = Vec::new();
+                for (surface, color) in more_contrast_edge_surfaces(chosen) {
+                    for kind in FIELD_CONTROLS {
+                        let bounds = cx
+                            .debug_bounds(resting_selector(kind, surface))
+                            .expect(kind);
+                        let fills = painted_button(cx, bounds).0;
+                        let edges = painted_edges(cx, bounds);
+                        drawn.push((kind, surface, color, fills, edges));
+                    }
+                }
+                (placeholder, drawn)
+            });
+            let ((off_placeholder, off), (placeholder, on)) = (off, on);
+            let outline = chosen.with_more_contrast().border;
+            for (before, after) in off.iter().zip(&on) {
+                let (kind, surface, color, fills, edges) = after;
+                let at = format!("{name} {kind} on the {surface}");
+                if *fills != before.3 {
+                    failures.push(format!("{at}: fills {fills:?}, off {:?}", before.3));
+                }
+                if !kind.ends_with("field") {
+                    continue;
+                }
+                if !edges.iter().any(|edge| {
+                    edge.one_px
+                        && edge.color == outline
+                        && contrast(edge.color, *color) >= MORE_CONTRAST_EDGE
+                }) {
+                    failures.push(format!(
+                        "{at}: no 1 px outline #{outline:06x} at 3:1 in {edges:?}"
+                    ));
+                }
+                if *kind != "field" {
+                    continue;
+                }
+                let reading = |placeholder: u32, fills: &[Background]| {
+                    let fill = fills.last().and_then(|fill| fill.as_solid())?;
+                    let beneath = composite(fill.to_rgb(), *color);
+                    Some(contrast(placeholder, beneath))
+                };
+                match (
+                    reading(placeholder, fills),
+                    reading(off_placeholder, &before.3),
+                ) {
+                    (Some(ratio), Some(off_ratio)) => {
+                        if ratio < off_ratio {
+                            failures.push(format!(
+                                "{at}: placeholder {ratio:.3}:1, off {off_ratio:.3}:1"
+                            ));
+                        }
+                        if name == "Omarchy tokyo-night" {
+                            tokyo_night.push((*surface, ratio, off_ratio));
+                        }
+                    }
+                    readings => failures.push(format!("{at}: field fills {readings:?}")),
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            set_more_contrast(false, cx);
+            ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        // Omarchy tokyo-night (on Linux): its composer's field rests on the
+        // subtle surface, where the placeholder read 5.99:1 off and 5.32:1 on
+        // the lifted fill.
+        if let Some(&(_, ratio, off_ratio)) = tokyo_night
+            .iter()
+            .find(|(surface, ..)| *surface == "subtle")
+        {
+            assert!(
+                (off_ratio - 5.99).abs() < 0.005 && ratio >= off_ratio,
+                "Omarchy tokyo-night placeholder {ratio:.3}:1, off {off_ratio:.3}:1"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// What an application left installed: the `Palette` global, its editor
     /// highlights and labels, the kit's colors and editor style as its theme
     /// format writes them, and the kit fields the palette sets beside them.
-    fn installed(cx: &App) -> (Palette, EditorHighlights, Labels, String, [Option<Hsla>; 9]) {
+    fn installed(
+        cx: &App,
+    ) -> (
+        Palette,
+        EditorHighlights,
+        Labels,
+        String,
+        [Option<Hsla>; 10],
+    ) {
         let theme = Theme::global(cx);
         let kit = serde_json::to_string(&(theme.colors, &theme.highlight_theme.style)).unwrap();
         let fields = [
@@ -6565,6 +7135,7 @@ mod tests {
             theme.ghost_hover,
             theme.ghost_active,
             theme.resting_edge,
+            theme.input_fill_base,
         ];
         let labels = *cx.global::<Labels>();
         (palette(cx), editor_highlights(cx), labels, kit, fields)
@@ -6657,6 +7228,7 @@ mod tests {
                     expected.switch_hover,
                     expected.ghost_hover,
                     expected.ghost_active,
+                    None,
                     None,
                 ],
                 "{name} kit edges and fills"
