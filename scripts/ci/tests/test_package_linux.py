@@ -53,6 +53,78 @@ def shared_object(message: bytes) -> bytes:
     return header + load + code + message
 
 
+# The codegen unit's FILE symbol in the hosted x86-64 link of dav1d-sys.
+DAV1D_SYS_UNIT = "dav1d_sys.66874b14c357f7fb-cgu.0"
+
+
+def dynamic_executable(interpreter: Path, defines: tuple[str, ...] = ()) -> bytes:
+    """A dynamically linked ELF executable for the host, as the packager's
+    readelf checks see one: PT_INTERP names `interpreter`, which the kernel
+    runs in its place; PT_DYNAMIC lists NEEDED libdav1d.so.7; .dynsym imports
+    dav1d_close and dav1d_get_picture. Its .symtab holds those imports and two
+    local symbols that define neither code nor data: the FILE symbol of
+    dav1d-sys's codegen unit and the SECTION symbol of a section named
+    dav1d_tables. Each name in `defines` adds a global function defined in that
+    section, as a static copy of dav1d has. One read-only PT_LOAD maps the
+    whole file at address 0, so every address is its file offset."""
+    imports = ("dav1d_close", "dav1d_get_picture")
+
+    def strings(*names):
+        table, offsets = bytearray(b"\0"), {}
+        for name in names:
+            offsets[name] = len(table)
+            table += name.encode() + b"\0"
+        return bytes(table), offsets
+
+    def symbol(name, info, section):  # st_value and st_size are 0
+        return struct.pack("<IBBHQQ", name, info, 0, section, 0, 0)
+
+    tables = 5  # the dav1d_tables section's index
+    local, func, section_symbol, file_symbol = 0x00, 0x12, 0x03, 0x04  # binding << 4 | type
+    dynstr, dynamic_names = strings("libdav1d.so.7", *imports)
+    strtab, names = strings(DAV1D_SYS_UNIT, *imports, *defines)
+    shstrtab, section_names = strings(".interp", ".dynstr", ".dynsym", ".dynamic", "dav1d_tables",
+                                      ".strtab", ".symtab", ".shstrtab")
+    dynsym = symbol(0, local, 0) + b"".join(symbol(dynamic_names[name], func, 0) for name in imports)
+    symtab = (symbol(0, local, 0) + symbol(names[DAV1D_SYS_UNIT], file_symbol, 0xFFF1)  # SHN_ABS
+              + symbol(0, section_symbol, tables)
+              + b"".join(symbol(names[name], func, 0) for name in imports)
+              + b"".join(symbol(names[name], func, tables) for name in defines))
+    contents = [str(interpreter).encode() + b"\0", dynstr, dynsym, bytes(6 * 16), bytes(8),
+                strtab, symtab, shstrtab]
+    offsets, position = [], 64 + 3 * 56  # after the ELF header and three program headers
+    for data in contents:
+        position += -position % 8
+        offsets.append(position)
+        position += len(data)
+    section_headers = position + -position % 8
+    size = section_headers + 9 * 64
+    contents[3] = struct.pack("<12Q", 1, dynamic_names["libdav1d.so.7"],  # DT_NEEDED
+                              5, offsets[1], 6, offsets[2],  # DT_STRTAB, DT_SYMTAB
+                              10, len(dynstr), 11, 24, 0, 0)  # DT_STRSZ, DT_SYMENT, DT_NULL
+    header = struct.pack("<4sBBBB8xHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0, 3, ELF_MACHINE, 1, 0,
+                         64, section_headers, 0, 64, 56, 3, 64, 9, 8)  # ET_DYN
+    programs = (struct.pack("<IIQQQQQQ", 3, 4, offsets[0], offsets[0], offsets[0],  # PT_INTERP
+                            len(contents[0]), len(contents[0]), 1)
+                + struct.pack("<IIQQQQQQ", 1, 4, 0, 0, 0, size, size, 0x10000)  # PT_LOAD, R
+                + struct.pack("<IIQQQQQQ", 2, 4, offsets[3], offsets[3], offsets[3],  # PT_DYNAMIC
+                              len(contents[3]), len(contents[3]), 8))
+    # Name, type, flags, link, info, alignment, entry size; SHF_ALLOC is 2.
+    layout = ((".interp", 1, 2, 0, 0, 1, 0), (".dynstr", 3, 2, 0, 0, 1, 0),
+              (".dynsym", 11, 2, 2, 1, 8, 24), (".dynamic", 6, 2, 2, 0, 8, 16),
+              ("dav1d_tables", 1, 2, 0, 0, 8, 0), (".strtab", 3, 0, 0, 0, 1, 0),
+              (".symtab", 2, 0, 6, 3, 8, 24), (".shstrtab", 3, 0, 0, 0, 1, 0))
+    sections = bytes(64) + b"".join(
+        struct.pack("<IIQQQQIIQQ", section_names[name], kind, flags, offset if flags else 0, offset,
+                    len(data), link, info, alignment, entry)
+        for (name, kind, flags, link, info, alignment, entry), offset, data
+        in zip(layout, offsets, contents))
+    image = bytearray(header + programs)
+    for offset, data in zip(offsets, contents):
+        image += bytes(offset - len(image)) + data
+    return bytes(image + bytes(section_headers - len(image)) + sections)
+
+
 @unittest.skipUnless(platform.system() == "Linux" and TARGET,
                      "Linux packager entry point requires Linux x86-64 or AArch64")
 class LinuxPackageRefusalTests(unittest.TestCase):
@@ -254,22 +326,56 @@ if "--require-complete" in args:
         self.assertIn(f"does not match {TARGET}", result.stderr)
         self.assert_no_output()
 
-    def test_a_shared_library_is_refused_once_its_identity_passes(self):
-        # A shared library in the executable's place: it runs only to print the
-        # fixture's build identity, so the notices and the identity check pass
-        # and the real readelf finds no PT_INTERP. It is the only ELF staged,
-        # so the refusal does not depend on the order find lists the files.
+    def identity_printer(self) -> bytes:
+        """A shared object that prints the fixture's build identity when run, so
+        the notices and the identity check pass."""
         revision = subprocess.run(["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
                                   capture_output=True, text=True).stdout.strip()
         identity = dict(application="GitTurtle", source_revision=revision, version="0.1.0",
                         target=TARGET, profile="release", source_tree="clean",
                         rustc="rustc 1.0.0 (fixture)", build_unix_seconds="0")
-        self.binary.write_bytes(shared_object(json.dumps(identity).encode() + b"\n"))
+        return shared_object(json.dumps(identity).encode() + b"\n")
+
+    def test_a_shared_library_is_refused_once_its_identity_passes(self):
+        # A shared library in the executable's place: it runs only to print the
+        # fixture's build identity, so the notices and the identity check pass
+        # and the real readelf finds no PT_INTERP. It is the only ELF staged,
+        # so the refusal does not depend on the order find lists the files.
+        self.binary.write_bytes(self.identity_printer())
         result = self.run_package()
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("The package ships an ELF that is not an executable: bin/gitturtle has no "
                       "PT_INTERP program header.", result.stderr)
         self.assertIn("collector ", self.events.read_text())
+        self.assert_no_output()
+
+    def linked_executable(self, defines=()):
+        # The kernel runs the identity printer as the executable's interpreter,
+        # so the real readelf checks its dynamic section and symbol tables.
+        interpreter = self.root / "fixture interpreter"
+        interpreter.write_bytes(self.identity_printer())
+        interpreter.chmod(0o755)
+        self.binary.write_bytes(dynamic_executable(interpreter, defines))
+
+    def test_file_and_section_symbols_named_for_dav1d_are_not_a_static_copy(self):
+        # The hosted x86-64 link keeps dav1d-sys's codegen unit as an ABS FILE
+        # symbol in .symtab. The check passes and packaging stops only at icon
+        # rendering, which the PIL test double cannot do.
+        self.linked_executable()
+        result = self.run_package()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Checked bin/gitturtle: NEEDED libdav1d.so.7, 2 dav1d_* symbols imported and "
+                      "none defined, no RPATH or RUNPATH", result.stdout)
+        self.assertNotIn("static copy", result.stderr)
+        self.assert_no_output()
+
+    def test_a_defined_dav1d_function_is_still_a_static_copy(self):
+        self.linked_executable(defines=("dav1d_open",))
+        result = self.run_package()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Packaged executable bin/gitturtle defines dav1d_* symbols, a static copy of "
+                      "dav1d: .symtab defined dav1d_open \n", result.stderr)
+        self.assertNotIn("Checked bin/gitturtle", result.stdout)
         self.assert_no_output()
 
 

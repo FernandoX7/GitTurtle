@@ -119,12 +119,16 @@ check_dav1d_link() {
   if grep -Eq '\((RPATH|RUNPATH)\)' <<<"$dynamic"; then
     echo "Packaged executable $name sets DT_RPATH or DT_RUNPATH." >&2; return 1
   fi
-  # One line per dav1d_* symbol: its table, whether it is defined, its name.
-  # Ndx follows the visibility and any bracketed annotation such as
-  # [VARIANT_PCS]; a version suffix is dropped from the name.
+  # One line per dav1d_* symbol of code or data: its table, whether it is
+  # defined, its name. FILE and SECTION symbols (Type, the fourth column) name
+  # a source or codegen unit, such as dav1d_sys.<hash>-cgu.0, or a section,
+  # never a definition, so they are skipped. Ndx follows the visibility and any
+  # bracketed annotation such as [VARIANT_PCS]; a version suffix is dropped
+  # from the name.
   if ! symbols="$(LC_ALL=C readelf -s -W "$file" | awk '
     /^Symbol table / { table = $3; gsub(/\047/, "", table); next }
     $1 ~ /^[0-9]+:$/ {
+      if ($4 == "FILE" || $4 == "SECTION") next
       for (i = 5; i <= NF && $i !~ /^(DEFAULT|PROTECTED|HIDDEN|INTERNAL)$/; i++) {}
       for (j = i + 1; j <= NF && $j ~ /^\[/; j++) {}
       name = $(j + 1); sub(/@.*/, "", name)
