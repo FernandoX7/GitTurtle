@@ -5898,7 +5898,7 @@ pub(super) mod confirmations {
 /// The action bar's labelled Fetch, Pull or Push frame, 34 px high, without
 /// content: `copy_feedback::confirming` draws its icon and label, `gap_2`
 /// apart as the kit's medium Button sets them.
-fn action_frame(id: impl Into<ElementId>) -> Button {
+pub(crate) fn action_frame(id: impl Into<ElementId>) -> Button {
     Button::new(id)
         .secondary()
         .h(crate::appearance::ui_size(34.))

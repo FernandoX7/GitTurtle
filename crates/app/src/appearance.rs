@@ -2382,6 +2382,11 @@ impl Palette {
             .into(),
         );
         theme.disabled_edge = Some(rgb(palette.disabled_edge()).into());
+        // Under More contrast an enabled control that rests on a fill of its
+        // own (a secondary Button, the selected shared helper, an unchecked
+        // Switch track) draws a 1 px edge at 3:1 over its bounds, moving
+        // nothing; off, the kit draws none, as upstream.
+        theme.resting_edge = more_contrast.then(|| rgb(palette.resting_edge()).into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
         theme.colors.sidebar_foreground = rgb(palette.text).into();
@@ -6010,12 +6015,16 @@ mod tests {
                     &dialog[..1],
                 ),
                 ("disabled edge", theme.disabled_edge, &page[..]),
-                (
-                    "resting edge",
-                    Some(hsla(applied.resting_edge())),
-                    &page[..],
-                ),
+                ("resting edge", theme.resting_edge, &page[..]),
             ];
+            // The kit's resting edge is the adjusted palette's own, its
+            // `border`.
+            assert_eq!(
+                theme.resting_edge,
+                Some(hsla(applied.resting_edge())),
+                "{name} resting edge"
+            );
+            assert_eq!(applied.resting_edge(), applied.border, "{name}");
             for (edge, color, surfaces) in edges {
                 let Some(color) = color.map(packed) else {
                     failures.push(format!("{name} {edge} unset"));
@@ -6037,7 +6046,7 @@ mod tests {
     /// What an application left installed: the `Palette` global, its editor
     /// highlights and labels, the kit's colors and editor style as its theme
     /// format writes them, and the kit fields the palette sets beside them.
-    fn installed(cx: &App) -> (Palette, EditorHighlights, Labels, String, [Option<Hsla>; 8]) {
+    fn installed(cx: &App) -> (Palette, EditorHighlights, Labels, String, [Option<Hsla>; 9]) {
         let theme = Theme::global(cx);
         let kit = serde_json::to_string(&(theme.colors, &theme.highlight_theme.style)).unwrap();
         let fields = [
@@ -6049,6 +6058,7 @@ mod tests {
             theme.switch_hover,
             theme.ghost_hover,
             theme.ghost_active,
+            theme.resting_edge,
         ];
         let labels = *cx.global::<Labels>();
         (palette(cx), editor_highlights(cx), labels, kit, fields)
@@ -6141,6 +6151,7 @@ mod tests {
                     expected.switch_hover,
                     expected.ghost_hover,
                     expected.ghost_active,
+                    None,
                 ],
                 "{name} kit edges and fills"
             );
@@ -6326,5 +6337,501 @@ mod tests {
             )
         });
         assert!(moved.is_empty(), "{}", moved.join("\n"));
+    }
+
+    /// The controls [`RestingControls`] draws, by kind: History's selected
+    /// and unselected mode toggles (`crate::button`, through `button_frame`),
+    /// the action bar's Fetch, a kit secondary Button (`workspace::action_frame`),
+    /// Settings' Save (the kit's default Button, which draws its own border),
+    /// a Settings switch row, unchecked, and a text field.
+    const RESTING_CONTROLS: [&str; 6] = [
+        "selected",
+        "unselected",
+        "secondary",
+        "default",
+        "switch",
+        "field",
+    ];
+
+    /// `kind-surface`, the debug selector and ID [`RestingControls`] gives a
+    /// control, made once.
+    fn resting_selector(kind: &'static str, surface: &'static str) -> &'static str {
+        thread_local! {
+            static SELECTORS: std::cell::RefCell<
+                std::collections::HashMap<(&'static str, &'static str), &'static str>,
+            > = Default::default();
+        }
+        SELECTORS.with(|selectors| {
+            *selectors
+                .borrow_mut()
+                .entry((kind, surface))
+                .or_insert_with(|| disabled_selector(kind, surface))
+        })
+    }
+
+    /// Each of [`RESTING_CONTROLS`], enabled and as the app builds it, in a
+    /// row on each of [`more_contrast_edge_surfaces`] of the applied palette,
+    /// selected as `kind-surface`, with a focus handle of its own.
+    struct RestingControls {
+        focus: std::collections::HashMap<&'static str, gpui::FocusHandle>,
+        fields: Vec<gpui::Entity<gpui_kit::component::input::InputState>>,
+    }
+
+    impl RestingControls {
+        fn new(window: &mut Window, cx: &mut gpui::Context<Self>) -> Self {
+            use gpui_kit::component::input::InputState;
+            use gpui_kit::{AppContext as _, Focusable as _};
+
+            let (mut focus, mut fields) = (std::collections::HashMap::new(), Vec::new());
+            for (surface, _) in more_contrast_edge_surfaces(palette(cx)) {
+                for kind in RESTING_CONTROLS {
+                    focus.insert(resting_selector(kind, surface), cx.focus_handle());
+                }
+                let field = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
+                focus.insert(
+                    resting_selector("field", surface),
+                    field.read(cx).focus_handle(cx),
+                );
+                fields.push(field);
+            }
+            Self { focus, fields }
+        }
+    }
+
+    impl gpui::Render for RestingControls {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui_kit::component::button::Button;
+            use gpui_kit::component::input::Input;
+            use gpui_kit::{InteractiveElement as _, ParentElement as _, div};
+
+            let surfaces = more_contrast_edge_surfaces(palette(cx));
+            div()
+                .flex()
+                .flex_col()
+                .children(surfaces.into_iter().zip(self.fields.clone()).map(
+                    |((surface, color), field)| {
+                        let id = move |kind: &'static str| resting_selector(kind, surface);
+                        let focus = |kind: &'static str| self.focus[id(kind)].clone();
+                        let selector = move |kind: &'static str| move || id(kind).into();
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .p_2()
+                            .bg(rgb(color))
+                            .child(
+                                crate::button(id("selected"), "Local", "", true)
+                                    .track_focus(&focus("selected"))
+                                    .debug_selector(selector("selected")),
+                            )
+                            .child(
+                                crate::button(id("unselected"), "Remote", "", false)
+                                    .track_focus(&focus("unselected"))
+                                    .debug_selector(selector("unselected")),
+                            )
+                            .child(
+                                crate::workspace::action_frame(id("secondary"))
+                                    .label("Fetch")
+                                    .track_focus(&focus("secondary"))
+                                    .debug_selector(selector("secondary")),
+                            )
+                            .child(
+                                // Mirrors `settings.rs`'s Save chain: the kit's default Button.
+                                Button::new(id("default"))
+                                    .label("Save")
+                                    .track_focus(&focus("default"))
+                                    .debug_selector(selector("default")),
+                            )
+                            .child(
+                                div().w(px(260.)).debug_selector(selector("switch")).child(
+                                    crate::settings::switch_row(
+                                        id("switch"),
+                                        crate::settings::FOLLOW_SYSTEM,
+                                        crate::settings::FOLLOW_SYSTEM,
+                                        "Omarchy follows your desktop theme",
+                                        &[],
+                                        cx,
+                                    )
+                                    .track_focus(&focus("switch")),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.))
+                                    .debug_selector(selector("field"))
+                                    .child(Input::new(&field)),
+                            )
+                    },
+                ))
+        }
+    }
+
+    /// A bordered quad the last frame painted inside a control's bounds.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct PaintedEdge {
+        /// Its border's color, as `0xRRGGBB` composited over `beneath`.
+        color: u32,
+        /// Whether every side is one logical pixel wide, to the device pixel.
+        one_px: bool,
+        bounds: gpui::Bounds<Pixels>,
+        /// The opaque surface painted beneath it: the topmost solid quad
+        /// drawn before it that holds its bounds and is larger than them.
+        beneath: Option<u32>,
+    }
+
+    /// Each bordered quad the last frame painted inside `bounds` (logical
+    /// pixels, within a device pixel), once: GPUI paints a border over a
+    /// transparent fill as a copy per side. A focus ring lies outside a
+    /// control's bounds, so it is not among them.
+    fn painted_edges(
+        cx: &mut gpui::VisualTestContext,
+        bounds: gpui::Bounds<Pixels>,
+    ) -> Vec<PaintedEdge> {
+        use gpui::{Bounds, ScaledPixels, point};
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |b: Bounds<ScaledPixels>| {
+                Bounds::from_corners(
+                    point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                    point(
+                        px(b.right().as_f32() / scale),
+                        px(b.bottom().as_f32() / scale),
+                    ),
+                )
+            };
+            let device = px(1. / scale);
+            let holds = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+                inner.left() >= outer.left() - device
+                    && inner.top() >= outer.top() - device
+                    && inner.right() <= outer.right() + device
+                    && inner.bottom() <= outer.bottom() + device
+            };
+            let larger = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+                holds(outer, inner) && !holds(inner, outer)
+            };
+            let quads = window.painted_quads();
+            let mut edges = Vec::new();
+            for quad in &quads {
+                let drawn = logical(quad.bounds);
+                let widths = quad.border_widths;
+                let sides = [widths.top, widths.right, widths.bottom, widths.left];
+                if !sides.iter().any(|width| width.as_f32() > 0.) || !holds(bounds, drawn) {
+                    continue;
+                }
+                let beneath = quads
+                    .iter()
+                    .filter(|under| {
+                        under.order < quad.order
+                            && under.background.as_solid().is_some_and(|fill| fill.a >= 1.)
+                            && larger(logical(under.bounds), drawn)
+                    })
+                    .max_by_key(|under| under.order)
+                    .and_then(|under| under.background.as_solid())
+                    .map(packed);
+                let border = quad.border_color.to_rgb();
+                let edge = PaintedEdge {
+                    color: beneath.map_or(packed(quad.border_color), |surface| {
+                        composite(border, surface)
+                    }),
+                    one_px: sides
+                        .iter()
+                        .all(|width| (width.as_f32() - scale).abs() < 0.5),
+                    bounds: drawn,
+                    beneath,
+                };
+                if !edges.contains(&edge) {
+                    edges.push(edge);
+                }
+            }
+            edges
+        })
+    }
+
+    /// The pointer and focus states a control's resting edge is read in.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum EdgeState {
+        Resting,
+        Hovered,
+        Pressed,
+        Focused,
+    }
+
+    /// What a control painted, as [`painted_control`] reads it.
+    type PaintedControl = (
+        gpui::Bounds<Pixels>,
+        gpui::Bounds<Pixels>,
+        Vec<PaintedEdge>,
+        (Vec<Background>, Vec<Hsla>),
+    );
+
+    /// The largest filled quad the last frame painted inside `bounds` and
+    /// smaller than them: a switch row's track.
+    fn inner_fill(
+        cx: &mut gpui::VisualTestContext,
+        bounds: gpui::Bounds<Pixels>,
+    ) -> Option<gpui::Bounds<Pixels>> {
+        use gpui::{Bounds, point};
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let device = px(1. / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent())
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .filter(|drawn| {
+                    drawn.left() >= bounds.left() - device
+                        && drawn.top() >= bounds.top() - device
+                        && drawn.right() <= bounds.right() + device
+                        && drawn.bottom() <= bounds.bottom() + device
+                        && drawn.size.width < bounds.size.width - device
+                })
+                .max_by(|a, b| {
+                    let area = |b: &Bounds<Pixels>| b.size.width.as_f32() * b.size.height.as_f32();
+                    area(a).total_cmp(&area(b))
+                })
+        })
+    }
+
+    /// What one frame painted for a control: its bounds, the frame its edge
+    /// outlines (its bounds, or a switch row's track), the bordered quads
+    /// inside its bounds, and its fills and the focus rings around that
+    /// frame (`painted_button`), with the pointer away, over it, pressing it
+    /// or away with the control focused.
+    fn painted_control(
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+        state: EdgeState,
+        focus: &gpui::FocusHandle,
+    ) -> PaintedControl {
+        use gpui::{Modifiers, MouseButton, point};
+
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(cx);
+        let center = cx.debug_bounds(selector).expect(selector).center();
+        let away = point(px(1.), px(1.));
+        match state {
+            EdgeState::Resting => cx.simulate_mouse_move(away, None, Modifiers::default()),
+            EdgeState::Hovered => cx.simulate_mouse_move(center, None, Modifiers::default()),
+            EdgeState::Pressed => {
+                cx.simulate_mouse_move(center, None, Modifiers::default());
+                cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            }
+            EdgeState::Focused => {
+                cx.simulate_mouse_move(away, None, Modifiers::default());
+                cx.update(|window, cx| window.focus(focus, cx));
+            }
+        }
+        draw(cx);
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        let edges = painted_edges(cx, bounds);
+        // A switch row's edge is its track's, and so is its ring.
+        let frame = if selector.starts_with("switch") {
+            inner_fill(cx, bounds).expect("a switch track")
+        } else {
+            bounds
+        };
+        let painted = painted_button(cx, frame);
+        if state == EdgeState::Pressed {
+            cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+        }
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        cx.update(|window, cx| window.blur(cx));
+        (bounds, frame, edges, painted)
+    }
+
+    /// The filled Buttons the kit gives no resting edge keep a boundary of
+    /// their own: with More contrast on, in every palette, the danger
+    /// Button's opaque `removed` fill (Delete theme, Discard and Force remove
+    /// worktree, the only tinted variant the app draws) and the primary
+    /// Button's opaque `accent` fill (Commit, Push and each dialog's default
+    /// action) read at least 3:1 on the canvas, panel, subtle and raised
+    /// surfaces, so each fill's own edge is its edge.
+    #[gpui::test]
+    fn more_contrast_leaves_the_danger_and_primary_fills_their_own_edge(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, chosen) in test_palettes() {
+            cx.update(|cx| {
+                set_more_contrast(true, cx);
+                chosen.apply(chosen.is_light(), None, cx);
+                let applied = palette(cx);
+                let tokens = &Theme::global(cx).tokens;
+                for (variant, fill) in [
+                    ("danger", tokens.button_danger.background.as_solid()),
+                    ("primary", tokens.button_primary.background.as_solid()),
+                ] {
+                    let Some(fill) = fill.filter(|fill| fill.a >= 1.) else {
+                        failures.push(format!("{name} {variant} fill {fill:?} is not opaque"));
+                        continue;
+                    };
+                    for (surface, color) in more_contrast_edge_surfaces(applied) {
+                        let ratio = contrast(packed(fill), color);
+                        if ratio < MORE_CONTRAST_EDGE {
+                            failures.push(format!(
+                                "{name} {variant} #{:06x} on {surface} {ratio:.3}:1",
+                                packed(fill)
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+        cx.update(|cx| set_more_contrast(false, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The palettes the resting edge is drawn in: Midnight, Braden and, on
+    /// Linux, Omarchy's default, Tokyo Night.
+    fn resting_edge_palettes() -> Vec<(String, Palette)> {
+        test_palettes()
+            .into_iter()
+            .filter(|(name, _)| {
+                ["Midnight", "Braden", "Omarchy tokyo-night"].contains(&name.as_str())
+            })
+            .collect()
+    }
+
+    /// More contrast hands the kit its resting edge. With it on, in Midnight,
+    /// Braden and Omarchy's Tokyo Night, the selected shared compact Button
+    /// (History's active mode toggle), a secondary Button (Fetch), Settings'
+    /// Save (a default Button, with its own border), an unchecked Settings
+    /// switch's track and a text field each paint a 1 px edge over their
+    /// bounds that reads 3:1 against the surface beneath, on the canvas,
+    /// panel, subtle and raised surfaces at rest, and on the panel hovered,
+    /// pressed and focused; the unselected compact Button, transparent at
+    /// rest, paints none in any state. Every control keeps its bounds and its
+    /// focus ring with it on and off, and off, the selected, secondary and
+    /// switch controls paint no edge and each frame is the one drawn before
+    /// More contrast was turned on.
+    #[gpui::test]
+    fn more_contrast_edges_the_controls_that_rest_on_a_fill(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(RestingControls::new);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(gpui::size(px(1400.), px(600.)));
+        let palettes = resting_edge_palettes();
+        assert_eq!(
+            palettes.len(),
+            if cfg!(target_os = "linux") { 3 } else { 2 }
+        );
+        let mut failures = Vec::new();
+        for (name, chosen) in palettes {
+            let mut passes: Vec<Vec<(&str, &str, EdgeState, PaintedControl)>> = Vec::new();
+            for on in [false, true, false] {
+                cx.update(|window, cx| {
+                    set_more_contrast(on, cx);
+                    chosen.apply(chosen.is_light(), Some(window), cx);
+                });
+                let mut drawn = Vec::new();
+                for (surface, _) in more_contrast_edge_surfaces(chosen) {
+                    let states: &[EdgeState] = if surface == "panel" {
+                        &[
+                            EdgeState::Resting,
+                            EdgeState::Hovered,
+                            EdgeState::Pressed,
+                            EdgeState::Focused,
+                        ]
+                    } else {
+                        &[EdgeState::Resting]
+                    };
+                    for kind in RESTING_CONTROLS {
+                        let selector = disabled_selector(kind, surface);
+                        let focus = view.read_with(cx, |view, _| view.focus[selector].clone());
+                        for &state in states {
+                            let painted = painted_control(cx, selector, state, &focus);
+                            drawn.push((kind, surface, state, painted));
+                        }
+                    }
+                }
+                passes.push(drawn);
+            }
+            let edge = chosen.with_more_contrast().resting_edge();
+            for ((before, on), after) in passes[0].iter().zip(&passes[1]).zip(&passes[2]) {
+                let (kind, surface, state, (bounds, frame, edges, painted)) = on;
+                let at = format!("{name} {kind} on {surface} {state:?}");
+                if before.3 != after.3 {
+                    failures.push(format!(
+                        "{at}: off after on {:?}, before {:?}",
+                        after.3, before.3
+                    ));
+                }
+                let (off_bounds, off_frame, off_edges, off_painted) = &before.3;
+                if (bounds, frame) != (off_bounds, off_frame) {
+                    failures.push(format!(
+                        "{at}: bounds {bounds:?} {frame:?}, off {off_bounds:?} {off_frame:?}"
+                    ));
+                }
+                if painted.1 != off_painted.1 {
+                    failures.push(format!(
+                        "{at}: rings {:?}, off {:?}",
+                        painted.1, off_painted.1
+                    ));
+                }
+                // A field shows its focus in its own border, read below.
+                if *state == EdgeState::Focused && *kind != "field" && painted.1.is_empty() {
+                    failures.push(format!("{at}: draws no focus ring"));
+                }
+                let kit_edged = matches!(*kind, "selected" | "secondary" | "switch");
+                if *kind == "unselected" {
+                    if !edges.is_empty() {
+                        failures.push(format!("{at}: paints {edges:?}"));
+                    }
+                    continue;
+                }
+                if kit_edged && !off_edges.is_empty() {
+                    failures.push(format!("{at}: off paints {off_edges:?}"));
+                }
+                let reading = edges.iter().find(|drawn| {
+                    drawn.one_px
+                        && drawn.beneath.is_some_and(|beneath| {
+                            contrast(drawn.color, beneath) >= MORE_CONTRAST_EDGE
+                        })
+                });
+                let Some(reading) = reading else {
+                    failures.push(format!("{at}: no 1 px edge reading 3:1 in {edges:?}"));
+                    continue;
+                };
+                // The kit's own layer is the palette's resting edge, over
+                // the whole control or the switch's track.
+                let over = |a: gpui::Bounds<Pixels>, b: gpui::Bounds<Pixels>| {
+                    [
+                        (a.left(), b.left()),
+                        (a.top(), b.top()),
+                        (a.right(), b.right()),
+                        (a.bottom(), b.bottom()),
+                    ]
+                    .into_iter()
+                    .all(|(a, b)| (a - b).abs() < px(0.5))
+                };
+                if kit_edged && (reading.color != edge || !over(reading.bounds, *frame)) {
+                    failures.push(format!(
+                        "{at}: edge {reading:?}, not #{edge:06x} over {frame:?}"
+                    ));
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            set_more_contrast(false, cx);
+            ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
