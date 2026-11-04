@@ -787,8 +787,12 @@ thread_local! {
 /// announcement of the same reading a third time (QA-96). So there the row's
 /// name keeps the reading it had until the context rests
 /// ([`shortcuts::COUNT_REST`]) and then takes the one the changes end on, one
-/// rename, and the status announces nothing at a rest that renames it, even
-/// where the query changed in the same rest. On macOS nothing
+/// rename, and the status announces nothing at a rest that renames it, unless
+/// the query changed in the same rest ([`Palette::queried`]): Orca drops a
+/// burst of the list's changes of selection as the person types, and ignores
+/// a rename of a row that is not its locus of focus, so a query typed as a
+/// Fetch ended, whose rest renamed the row it selected, was heard as nothing
+/// in 2 of 3 runs (QA-97). On macOS nothing
 /// shows VoiceOver speaking a rename of a row that focus is not on, so there
 /// the status announces the rested reading (not yet checked natively).
 const ROW_CARRIES_CONTEXT: bool = shortcuts::LIST_SPEAKS_SELECTION;
@@ -837,6 +841,10 @@ struct Palette {
     /// that row drops it. Only that row's name reads it; the row draws, and
     /// Enter acts on, the live context.
     held: Option<(usize, Availability)>,
+    /// Whether the query changed since the last rest ([`Self::settle`]), which
+    /// that rest announces on the status even where it renames the selected
+    /// row ([`ROW_CARRIES_CONTEXT`]).
+    queried: bool,
     /// The one rest the next reading of the query or the context waits for
     /// ([`Self::settle`]): replaced by each change to either, so only the
     /// last one runs, and dropped as the palette closes.
@@ -869,6 +877,7 @@ impl Palette {
                         this.selection_moved();
                     }
                     this.error = None;
+                    this.queried = true;
                     this.settle(cx);
                     cx.notify();
                 }
@@ -893,7 +902,8 @@ impl Palette {
                     // spam filter dropped the second, the command becoming
                     // available (QA-95). Where the selected row's name
                     // carries it (Linux), that name keeps the reading it had
-                    // until the rest, and the status takes it quietly then.
+                    // until the rest, and the status takes it quietly then,
+                    // unless the query changed too (`queried`).
                     // The hold moves to the selected row; a row a move left
                     // that still held its name takes its live reading now,
                     // a frame after the move reported the list's change of
@@ -924,6 +934,7 @@ impl Palette {
             status: SharedString::default(),
             quiet: false,
             held: None,
+            queried: false,
             settling: None,
             scroll: UniformListScrollHandle::new(),
             error: None,
@@ -1008,17 +1019,23 @@ impl Palette {
     /// Where the selected row's name carries a change of context
     /// ([`ROW_CARRIES_CONTEXT`], Linux), the rest renames that row once,
     /// from the reading it held ([`Self::held`]) to the one the changes end
-    /// on, and at a rest that renames it the status takes its reading
-    /// quietly, a query's change included: the rename carries the reading,
-    /// and the status announcing it as well was heard a second time, so
-    /// such a rest gives up the command's place. A rest that renames no row
-    /// announces as without it.
+    /// on, and at a rest of the context alone that renames it the status
+    /// takes its reading quietly: the rename carries the reading, and the
+    /// status announcing it as well was heard a second time (QA-96), so such
+    /// a rest gives up the command's place. A rest the query's change joined
+    /// ([`Self::queried`]) announces as without it, the row's rename beside
+    /// it: Orca drops a burst of the list's changes of selection as the
+    /// person types and ignores a rename of a row that is not its locus of
+    /// focus, so taken quietly, a query typed as a Fetch ended was heard as
+    /// nothing in 2 of 3 runs (QA-97). Where Orca did take the row the query
+    /// selected as its locus, it speaks the rename and the status both.
     fn settle(&mut self, cx: &mut Context<Self>) {
         let rest = cx.background_executor().timer(shortcuts::COUNT_REST);
         self.settling = Some(cx.spawn(async move |this, cx| {
             rest.await;
             let _ = this.update(cx, |this, cx| {
                 this.settling = None;
+                let queried = std::mem::take(&mut this.queried);
                 let held = this.held.take();
                 let renames_row = held.as_ref().is_some_and(|(command, held)| {
                     let id = COMMANDS[*command].id;
@@ -1028,7 +1045,7 @@ impl Palette {
                 let reading = this.reading();
                 if reading != this.status {
                     this.status = reading;
-                    this.quiet = renames_row;
+                    this.quiet = renames_row && !queried;
                     cx.notify();
                 } else if held.is_some() {
                     cx.notify();
@@ -1321,11 +1338,13 @@ impl Render for Palette {
             // move changes it quietly, as no live region (`quiet`): Orca 51.1
             // spoke each Down twice, 41 ms apart, the status's "Go to History
             // · 2 of 3" and the list's "Go to History" (QA-94); there a rest
-            // that renames the selected row, whose name carries a change of
-            // context (`ROW_CARRIES_CONTEXT`), changes it quietly too. AT-SPI
-            // announces a live node's name and macOS's adapter its value
-            // alone, so both carry the reading, as Keyboard Shortcuts'
-            // status's do: named alone, it was announced on Linux only.
+            // of the context alone that renames the selected row, whose name
+            // carries a change of context (`ROW_CARRIES_CONTEXT`), changes it
+            // quietly too, while a rest the query's change joined announces
+            // (`queried`, QA-97). AT-SPI announces a live node's name and
+            // macOS's adapter its value alone, so both carry the reading, as
+            // Keyboard Shortcuts' status's do: named alone, it was announced
+            // on Linux only.
             .child({
                 let reading = self.status.clone();
                 native_accessibility::static_text(
@@ -3825,16 +3844,17 @@ mod render_tests {
     /// 300 ms after "go" is typed and makes its command wait, restarts the
     /// one rest the query and the context share: nothing is heard at the
     /// query's 500 ms nor 499 ms after the change, and then the reading both
-    /// end on is heard once, the command waiting, and nothing after it.
-    /// Where the selected row's name carries a change of context
+    /// end on is heard once, the command waiting, and nothing after it: the
+    /// status announces it with its place, on every platform. Where the
+    /// selected row's name carries a change of context
     /// ([`ROW_CARRIES_CONTEXT`], Linux), the row keeps the name the query
     /// selected it with until the rest and is then renamed once, to the
-    /// command waiting, and the status, which takes the reading quietly at a
-    /// rest that renames the row, announces nothing, though the query
-    /// changed too: announcing its rest as well, it was heard twice, the
-    /// rename's reading and the status's. Elsewhere the row's name takes the
-    /// command waiting as the Fetch starts, and the status announces it with
-    /// its place, once, which is the reading heard.
+    /// command waiting, beside the status's announcement, which the query's
+    /// change makes ([`Palette::queried`]): taken quietly at a rest that
+    /// renamed the row, a query typed as a Fetch ended was heard as nothing
+    /// where Orca had dropped the list's change of selection to the row and
+    /// so ignored its rename (QA-97). Elsewhere the row's name takes the
+    /// command waiting as the Fetch starts.
     #[gpui::test]
     fn a_context_change_while_the_query_rests_is_heard_once_as_the_final_reading(
         cx: &mut TestAppContext,
@@ -3901,22 +3921,17 @@ mod render_tests {
             Some(waiting.as_str()),
             "the status reads the reading the query and the context end on"
         );
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&waiting),
+            "one announcement: the reading the query and the context end on, \
+             the query's change making the rest heard"
+        );
         if ROW_CARRIES_CONTEXT {
             assert_eq!(
                 heard.take_renamed(),
                 std::slice::from_ref(&waiting_row),
-                "one rename of the row, at the rest"
-            );
-            assert_eq!(
-                heard.take(),
-                Vec::<String>::new(),
-                "and the status announces none of it, the query's change included"
-            );
-        } else {
-            assert_eq!(
-                heard.take(),
-                std::slice::from_ref(&waiting),
-                "one announcement: the reading the query and the context end on"
+                "beside one rename of the row, at the rest"
             );
         }
         #[cfg(target_os = "linux")]
@@ -3927,14 +3942,169 @@ mod render_tests {
                 "which the AT-SPI adapter reports once"
             );
             let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&waiting),
+                "Orca speaks the status's reading last: {orca:?}"
+            );
             assert!(
-                !orca.contains(&typed) && !orca.contains(&waiting),
-                "and nothing announced of the status's: {orca:?}"
+                !orca.contains(&typed),
+                "and nothing of the reading the Fetch replaced: {orca:?}"
             );
         }
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
         assert_eq!(heard.take_renamed(), Vec::<String>::new(), "nor any rename");
+    }
+
+    /// QA-97: with the palette open while a Fetch runs, "bro" typed 60 ms a
+    /// key selects Browse and manage tags…, which leads its results, every
+    /// one of them waiting, and the Fetch's end 60 ms after the last key
+    /// makes that command available within the query's rest; the reload's
+    /// end 40 ms later changes only Browse stashes…. The one rest the query
+    /// and the context share, 500 ms after the Fetch's end, announces the
+    /// reading they end on, the command available with its place, once, on
+    /// every platform, and nothing after it. Where the selected row's name
+    /// carries a change of context ([`ROW_CARRIES_CONTEXT`], Linux), the row
+    /// keeps the waiting name the query selected it with until the rest and
+    /// is then renamed once, beside the announcement. With the status quiet
+    /// at that rest, Orca 51.1 heard nothing of the query in 2 of 3 runs: it
+    /// had dropped the list's change of selection to the row as one of a
+    /// burst ("multiple instances in short time"), and ignored the row's
+    /// rename as "not from the locus of focus". Elsewhere (macOS) the row's
+    /// name takes the command available as the Fetch ends.
+    #[gpui::test]
+    fn a_query_resting_with_a_writes_end_on_its_command_is_announced(cx: &mut TestAppContext) {
+        use crate::tags::tests::{tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        let availability = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).palette_availability(window, cx))
+        };
+        // The Fetch is held as the palette opens.
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        let mut heard = Heard::new(cx);
+        let query = "bro";
+        let at = first_available(&matches(query), &availability(cx));
+        assert_eq!(
+            COMMANDS[matches(query)[at]].id,
+            CommandId::Tags,
+            "while the Fetch runs, {query:?} selects Browse and manage tags…"
+        );
+        let (waiting, waiting_row) = reading_and_row(query, at, &availability(cx));
+        assert!(
+            waiting.ends_with(crate::workspace::BUSY_REASON),
+            "which waits for the Fetch: {waiting:?}"
+        );
+        for key in ["b", "r", "o"] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, 60);
+        }
+        assert_eq!(
+            heard.row_name(),
+            Some(waiting_row.as_str()),
+            "the query selects the command waiting"
+        );
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the query rests"
+        );
+        heard.take_renamed();
+        #[cfg(target_os = "linux")]
+        heard.take_items_renamed("");
+
+        // The Fetch ends and its reload starts.
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            app.status_task = Some(Task::ready(()));
+            app.status_after_write = Some(app.work_generation);
+            cx.notify();
+        });
+        heard.frame(cx);
+        let (available, available_row) = reading_and_row(query, at, &availability(cx));
+        assert_eq!(
+            available,
+            format!(
+                "Browse and manage tags… · {} of {}",
+                at + 1,
+                matches(query).len()
+            ),
+            "the Fetch's end makes Browse and manage tags… available"
+        );
+        // Where the row does not carry the change (macOS), its name follows
+        // the live context at once.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&available_row),
+            "the Fetch's end renames the row at once, to the command available"
+        );
+        // The reload ends 40 ms later and leaves the command's reading.
+        heard.wait(cx, 40);
+        app.update(cx, |app, cx| {
+            app.status_task = None;
+            app.status_after_write = None;
+            cx.notify();
+        });
+        heard.frame(cx);
+        assert_eq!(
+            reading_and_row(query, at, &availability(cx)).0,
+            available,
+            "the reload's end leaves Browse and manage tags… available"
+        );
+        heard.wait(cx, 459);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the query and the context have rested under 500 ms"
+        );
+        if ROW_CARRIES_CONTEXT {
+            assert_eq!(
+                heard.row_name(),
+                Some(waiting_row.as_str()),
+                "the row keeps the name the query selected it with until the rest"
+            );
+        }
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&available),
+            "one announcement: the reading the query and the context end on"
+        );
+        if ROW_CARRIES_CONTEXT {
+            assert_eq!(
+                heard.take_renamed(),
+                std::slice::from_ref(&available_row),
+                "beside one rename of the row, at the rest"
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                heard.take_items_renamed(COMMANDS[matches(query)[at]].label),
+                std::slice::from_ref(&available_row),
+                "which the AT-SPI adapter reports once"
+            );
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&available),
+                "Orca speaks the status's reading last: {orca:?}"
+            );
+        }
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        assert_eq!(heard.take_renamed(), Vec::<String>::new(), "nor any rename");
+        cx.simulate_keystrokes("escape");
+        crate::tags::tests::draw(cx);
     }
 
     /// A row of the whole list after its first, by its place, whose reading
