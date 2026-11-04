@@ -8,6 +8,13 @@
 //! memory budget (#1549) and panics on some inputs (#1409, #1649): the preflight
 //! refuses the known cases before the tile vector is allocated, the helper turns
 //! a panic into an error kind, and its data limit and deadline bound the rest.
+//!
+//! An image that may skip resolution levels (1 × 1 sampling, no palette) is
+//! decoded at the deepest level still at least the output's size. When the
+//! decoded-allocation budget refuses that level, it is decoded one level
+//! deeper and scaled up to the output, if the codestream has that level and
+//! the budget allows it; otherwise, and for an image that may not skip levels,
+//! the budget refuses it.
 #![forbid(unsafe_code)]
 
 use std::time::Instant;
@@ -23,39 +30,13 @@ pub(crate) fn decode(
     edge: u32,
     timings: &mut ImageTimings,
 ) -> Result<Decoded, ImageErrorKind> {
-    use ImageErrorKind::{DecodedTooLarge, Jpeg2000Unreadable};
+    use ImageErrorKind::Jpeg2000Unreadable;
     let start = Instant::now();
     let preflight = jpeg2000::preflight(bytes)?;
     let original = preflight.original();
     let target = scaled_dimensions(original.0, original.1, edge);
-    // Reduced resolution only where 0.4.1 decodes it correctly (#1409).
-    let reduce = preflight.may_reduce() && target != original;
-    let settings = DecodeSettings {
-        resolve_palette_indices: true,
-        strict: false,
-        target_resolution: reduce.then_some(target),
-    };
-    let image = Image::new(bytes, &settings).map_err(|_| Jpeg2000Unreadable)?;
-    // hayro-jpeg2000 computes the size it decodes from SIZ and the levels it
-    // chose to skip. It must be the size GitTurtle computes for the full image
-    // or for a level it may skip, so the budget below holds for what is
-    // decoded. `total_bytes()` and `DynamicImage::from_decoder`'s buffer both
-    // derive from this size, so no later check of either can disagree.
+    let (image, _) = open(bytes, &preflight, target)?;
     let size = image.dimensions();
-    let deepest = if reduce {
-        (original.0 / target.0)
-            .min(original.1 / target.1)
-            .checked_ilog2()
-            .unwrap_or(0)
-    } else {
-        0
-    };
-    let level = (0..=deepest)
-        .find(|level| preflight.at_level(*level) == size)
-        .ok_or(Jpeg2000Unreadable)?;
-    if preflight.decode_bytes(level) > MAX_DECODER_BYTES {
-        return Err(DecodedTooLarge);
-    }
     image_helper::check_rgba_budget(size.0, size.1)?;
     timings.parse_us = image_helper::elapsed_us(start);
 
@@ -64,10 +45,62 @@ pub(crate) fn decode(
     timings.decode_us = image_helper::elapsed_us(start);
 
     let start = Instant::now();
-    // A reduced level scales to the full size's output like any other.
+    // A reduced level scales to the full size's output like any other, up
+    // when it is the level below the target.
     let decoded = image_helper::finish(decoded.into_rgba8(), original, edge, ImageFlags::default());
     timings.convert_us = image_helper::elapsed_us(start);
     Ok(decoded)
+}
+
+/// hayro-jpeg2000's image at the resolution level the budget allows for
+/// `target`, and that level. It skips the levels that keep both sides at least
+/// the target's when 0.4.1 decodes them correctly (1 × 1 sampling, #1409, and
+/// no palette), and when the budget refuses that level, one more: a smaller
+/// image scaled up to the output beats a refusal. That is refused in turn
+/// (`DecodedTooLarge`) when the codestream has no deeper level, or the budget
+/// refuses that one too; a file that may not skip levels is refused at the
+/// full size.
+fn open<'a>(
+    bytes: &'a [u8],
+    preflight: &jpeg2000::Preflight,
+    target: (u32, u32),
+) -> Result<(Image<'a>, u32), ImageErrorKind> {
+    use ImageErrorKind::{DecodedTooLarge, Jpeg2000Unreadable};
+    let original = preflight.original();
+    let mut level = if preflight.may_reduce() && target != original {
+        (original.0 / target.0)
+            .min(original.1 / target.1)
+            .checked_ilog2()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if preflight.may_reduce() && preflight.decode_bytes(level) > MAX_DECODER_BYTES {
+        level += 1;
+    }
+    // hayro skips `ilog2(size / requested)` levels on each side, the fewer
+    // of the two and at most as many as every component has, so halving
+    // each side `level` times asks for exactly `level`.
+    let settings = DecodeSettings {
+        resolve_palette_indices: true,
+        strict: false,
+        target_resolution: (level > 0)
+            .then(|| ((original.0 >> level).max(1), (original.1 >> level).max(1))),
+    };
+    let image = Image::new(bytes, &settings).map_err(|_| Jpeg2000Unreadable)?;
+    // hayro-jpeg2000 computes the size it decodes from SIZ and the levels it
+    // chose to skip. It must be the size GitTurtle computes for the full image
+    // or for a level it may skip, so the budget below holds for what is
+    // decoded. `total_bytes()` and `DynamicImage::from_decoder`'s buffer both
+    // derive from this size, so no later check of either can disagree.
+    let size = image.dimensions();
+    let level = (0..=level)
+        .find(|level| preflight.at_level(*level) == size)
+        .ok_or(Jpeg2000Unreadable)?;
+    if preflight.decode_bytes(level) > MAX_DECODER_BYTES {
+        return Err(DecodedTooLarge);
+    }
+    Ok((image, level))
 }
 
 #[cfg(test)]
@@ -596,6 +629,88 @@ mod tests {
             jpeg2000(&over, 1600).unwrap_err(),
             ImageErrorKind::DecodedTooLarge
         );
+    }
+
+    /// An RGB JP2 of `width` × `height` with the Display P3 fixture's colour
+    /// profile, in one tile of `levels` decomposition levels and no coded
+    /// data: every packet is empty, so hayro decodes mid-grey.
+    fn profile_jp2(width: u32, height: u32, levels: u8) -> Vec<u8> {
+        // SIZ: three 8-bit components sampled 1 × 1, in one tile.
+        let mut codestream = b"\xff\x4f\xff\x51\x00\x2f\x00\x00".to_vec();
+        for value in [width, height, 0, 0, width, height, 0, 0] {
+            codestream.extend_from_slice(&value.to_be_bytes());
+        }
+        codestream.extend_from_slice(&[0, 3, 7, 1, 1, 7, 1, 1, 7, 1, 1]);
+        // COD: one layer, no component transform, `levels` levels, 64 × 64
+        // code-blocks, the reversible 5-3 wavelet.
+        codestream.extend_from_slice(&[0xff, 0x52, 0, 12, 0, 0, 0, 1, 0, levels, 4, 4, 0, 1]);
+        // QCD: no quantization, two guard bits, an exponent per sub-band.
+        let bands = 3 * levels + 1;
+        codestream.extend_from_slice(&[0xff, 0x5c, 0, 3 + bands, 0x40]);
+        codestream.extend(std::iter::repeat_n(0x40, usize::from(bands)));
+        // One tile-part to the end, an empty packet for each resolution and
+        // component, and EOC.
+        codestream.extend_from_slice(&[0xff, 0x90, 0, 10, 0, 0, 0, 0, 0, 0, 0, 1, 0xff, 0x93]);
+        codestream.extend(std::iter::repeat_n(0, 3 * usize::from(levels + 1)));
+        codestream.extend_from_slice(b"\xff\xd9");
+        // HEIGHT, WIDTH, three components of 8 bits, compression type 7.
+        let mut ihdr = [height.to_be_bytes(), width.to_be_bytes()].concat();
+        ihdr.extend_from_slice(&[0, 3, 7, 7, 0, 0]);
+        let icc = fixture("jpeg2000-display-p3-icc.jp2");
+        let header = [jp2_box(b"ihdr", &ihdr), whole_box(&icc, b"colr")].concat();
+        let mut bytes = fixture("jpeg2000-rgb.jp2")[..32].to_vec();
+        bytes.extend(jp2_box(b"jp2h", &header));
+        bytes.extend(jp2_box(b"jp2c", &codestream));
+        bytes
+    }
+
+    /// The benchmark's 3,000 × 2,000 RGB JP2 with a colour profile: at the 1,600 edge
+    /// no level can be skipped (the next is 1,500 wide), and its 11 f32
+    /// planes and two tile-components are over the budget at full size. It
+    /// decodes at 1,500 × 1,000 instead, scaled up to the output; with no
+    /// decomposition level to skip it is still refused.
+    #[test]
+    fn a_jp2_over_the_budget_decodes_one_level_deeper() {
+        let bytes = profile_jp2(3_000, 2_000, 4);
+        let preflight = jpeg2000::preflight(&bytes).unwrap();
+        assert!(preflight.may_reduce());
+        let samples = 3_000 * 2_000 * 4;
+        assert_eq!(preflight.decode_bytes(0), samples * 11 + 2 * samples);
+        assert!(preflight.decode_bytes(0) > MAX_DECODER_BYTES);
+        assert!(preflight.decode_bytes(1) <= MAX_DECODER_BYTES);
+        let output = scaled_dimensions(3_000, 2_000, 1_600);
+        assert_eq!(output, (1_600, 1_067));
+        let (image, level) = open(&bytes, &preflight, output).unwrap();
+        assert_eq!((image.dimensions(), level), ((1_500, 1_000), 1));
+        let reply = jpeg2000(&bytes, 1_600).unwrap();
+        assert_eq!(
+            (reply.image.original_width, reply.image.original_height),
+            (3_000, 2_000)
+        );
+        assert_eq!((reply.image.width, reply.image.height), output);
+        let middle = pixel(&reply.image, 800, 533);
+        assert!(
+            middle[..3].iter().all(|value| value.abs_diff(128) <= 8) && middle[3] == 255,
+            "{middle:?}"
+        );
+        // The same file with no level to skip: hayro decodes it at full size,
+        // which the budget refuses.
+        let full_only = profile_jp2(3_000, 2_000, 0);
+        let preflight = jpeg2000::preflight(&full_only).unwrap();
+        assert_eq!(
+            open(&full_only, &preflight, output).err(),
+            Some(ImageErrorKind::DecodedTooLarge)
+        );
+        assert_eq!(
+            jpeg2000(&full_only, 1_600).unwrap_err(),
+            ImageErrorKind::DecodedTooLarge
+        );
+        // Below the budget the deepest level at least the output's size is
+        // decoded, as before: the fixture at 1,024 × 768 for a 128 edge.
+        let large = fixture("jpeg2000-large.jp2");
+        let preflight = jpeg2000::preflight(&large).unwrap();
+        let (image, level) = open(&large, &preflight, (128, 96)).unwrap();
+        assert_eq!((image.dimensions(), level), ((128, 96), 3));
     }
 
     /// Without a colour profile, hayro-jpeg2000 0.4.1 converts CMYK to RGB
