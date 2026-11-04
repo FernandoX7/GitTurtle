@@ -3277,6 +3277,14 @@ mod bar_tests {
         (lines, whole, footer.is_some())
     }
 
+    /// Draws the window at display `scale` again after a resize, which takes
+    /// the test display's own scale, 2: set before it, a scale of 1.2 was
+    /// lost, and the walks below ran at scale 2 alone.
+    fn at_scale(cx: &mut VisualTestContext, scale: f32) {
+        cx.update(|window, _| window.set_scale_factor(scale));
+        crate::width_walk::frame(cx);
+    }
+
     /// Compare's footer, drawn whole beneath the preview: as Find closes, or
     /// in a window that leaves Split's text its rows beside it.
     fn footer_is_back(cx: &mut VisualTestContext, at: &str) {
@@ -3306,13 +3314,13 @@ mod bar_tests {
             crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
         let mut met = Vec::new();
         for scale in [2., 1.2] {
-            cx.update(|window, _| window.set_scale_factor(scale));
             for text in [13, 18] {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 crate::views::COMPACT_LABELS.with_borrow_mut(|labels| {
                     labels.remove("split-comparison");
                 });
                 open_find(&app, cx, TextMode::Split, 461.);
+                at_scale(cx, scale);
                 let at = format!("scale {scale}, {text} pt, Split in 461 × 490");
                 let bar = drawn(cx, "file-find-bar", &at);
                 let (lines, whole, footer) = split_find_holds(&app, cx, &at);
@@ -3352,25 +3360,24 @@ mod bar_tests {
         let (_fixture, app, cx, _) =
             crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
         for scale in [2., 1.2] {
-            cx.update(|window, _| window.set_scale_factor(scale));
             for text in [13, 18] {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 open_find(&app, cx, TextMode::Split, 461.);
                 let mut width = 461.;
                 while width <= 1000. {
                     cx.simulate_resize(size(px(width), px(490.)));
-                    crate::width_walk::frame(cx);
+                    at_scale(cx, scale);
                     let at = format!("scale {scale}, {text} pt, Split in {width} × 490");
                     split_find_holds(&app, cx, &at);
                     width += 12.;
                 }
                 cx.simulate_resize(size(px(1480.), px(490.)));
-                crate::width_walk::frame(cx);
+                at_scale(cx, scale);
                 let at = format!("scale {scale}, {text} pt, Split in 1480 × 490");
                 split_find_holds(&app, cx, &at);
                 footer_is_back(cx, &at);
                 cx.simulate_resize(size(px(461.), px(490.)));
-                crate::width_walk::frame(cx);
+                at_scale(cx, scale);
                 cx.simulate_keystrokes("escape");
                 crate::width_walk::frame(cx);
                 let at = format!("scale {scale}, {text} pt, Find closed in 461 × 490");
