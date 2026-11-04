@@ -172,6 +172,30 @@ const PREVIEW_LABEL: &str = "Loading preview…";
 /// The status of a captured comparison's preview read as its tab is
 /// restored (`restore_captured_tab_comparison`), which Back abandons too.
 const RESTORED_PREVIEW_LABEL: &str = "Restoring captured comparison…";
+
+/// A preview read the window asked its repository worker for
+/// ([`GitTurtle::request`]): a comparison's, a restored comparison's, a
+/// tracked file's, a working file's, or a text review's preparation of the
+/// comparison shown. Only one whose generation is still the window's, and
+/// still loading, is in flight ([`GitTurtle::preview_in_flight`]): any other
+/// read moves the generation on, and its own reply clears `loading`.
+struct PreviewRead {
+    generation: u64,
+}
+
+impl PreviewRead {
+    /// The preview read `job` is, if it is one, asked for at `generation`.
+    fn of(job: &Job, generation: u64) -> Option<Self> {
+        matches!(
+            job,
+            Job::Preview { .. }
+                | Job::TrackedPreview { .. }
+                | Job::WorkingPreview { .. }
+                | Job::ReviewText { .. }
+        )
+        .then_some(Self { generation })
+    }
+}
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
@@ -508,6 +532,10 @@ struct GitTurtle {
     /// any other landing, as a write's status read selecting the row again
     /// or an arrow key moving the selection, leaves focus where it is.
     preview_activation: Option<u64>,
+    /// The last preview read asked for, which Back abandons whatever its
+    /// label while it is in flight, and which choosing its file again keeps
+    /// (`Self::preview_in_flight`).
+    preview_read: Option<PreviewRead>,
     repository: Option<GitRepository>,
     path: Option<PathBuf>,
     scope: Option<(String, worker::Scope)>,
@@ -886,6 +914,7 @@ impl GitTurtle {
             task: None,
             generation: 0,
             preview_activation: None,
+            preview_read: None,
             repository: None,
             path: None,
             scope: None,
@@ -1127,6 +1156,7 @@ impl GitTurtle {
         let generation = self.generation;
         self.loading = Some(label);
         self.error = None;
+        self.preview_read = PreviewRead::of(&job, generation);
         let opening = matches!(&job, Job::Open { .. }).then(|| {
             self.operation_outcomes
                 .begin_open(&self.operation_error, &self.operation_notice)
@@ -1199,6 +1229,15 @@ impl GitTurtle {
             });
         }));
         cx.notify();
+    }
+
+    /// The preview read in flight, if the window's read under way is one:
+    /// asked for by `request` at the current generation and not yet
+    /// answered, whatever label it shows.
+    fn preview_in_flight(&self) -> Option<&PreviewRead> {
+        self.preview_read
+            .as_ref()
+            .filter(|read| read.generation == self.generation && self.loading.is_some())
     }
 
     fn open(
@@ -1860,15 +1899,21 @@ impl GitTurtle {
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());
         markdown_view::pause(self.content.as_deref());
-        // A preview still being read is abandoned, the comparison's own and
-        // one restored with its tab alike: cancelling the read now also
-        // stops what it prepares, such as the PDF helper rendering a first
-        // page, at its next check. A restored comparison's read once ran on
-        // after Back, its helper to the 10 s deadline, only for `receive` to
-        // drop the reply. The bookmark that waited for it goes with it.
-        if matches!(self.loading, Some(PREVIEW_LABEL | RESTORED_PREVIEW_LABEL)) {
+        // A preview still being read is abandoned whatever its label, the
+        // comparison's own, one restored with its tab, a tracked or working
+        // file's, or a text review's preparation of the comparison shown:
+        // cancelling the read now also stops what it prepares, such as the
+        // PDF helper rendering a first page or an image's decode, at its
+        // next check. A restored comparison's read once ran on after Back,
+        // its helper to the 10 s deadline, only for `receive` to drop the
+        // reply, and a text review's preparation ran on as long as Back
+        // checked only the comparison's labels. The comparison it was for
+        // is not kept, nor the bookmark that waited for its reply: a review
+        // abandoned half prepared left its partial actions suspended for
+        // the return.
+        if self.preview_in_flight().is_some() {
             self.invalidate_read();
-            self.repository_tabs.document_restore = None;
+            self.clear_preview();
         }
         if self.close_blame(window, cx) {
             return;
@@ -2887,6 +2932,88 @@ mod late_preview_tests {
             assert!(app.status.contains("content read"), "{}", app.status);
             assert!(app.repository_tabs.document_restore.is_none());
         });
+    }
+
+    /// Back abandons a preview read whatever label it shows: a text
+    /// review's preparation of the comparison shown, and Quick Open's read
+    /// of a tracked file. Each read leaves the reader's queue unrun as Back
+    /// returns, nothing is left loading, and once the reader is released no
+    /// late reply reopens Compare or keeps a comparison. Back once cancelled
+    /// only the comparison's own labels, so a review's preparation ran on
+    /// to its end after Back, and so would a decode started under any other.
+    /// The text review's label tests that fix. The tracked file's passed
+    /// without it, since Back closes the inspection Quick Open opened, whose
+    /// close already cancels its read (`close_revision_inspection`): it
+    /// guards that label against a regression. A read the reader has
+    /// already taken stops as the worker's contract has it
+    /// (`worker::tests::explicit_cancel_invalidates_active_and_pending_without_replacement`,
+    /// `worker::tests::replacement_and_explicit_cancel_signal_an_active_core_history_token`).
+    #[gpui::test]
+    async fn back_cancels_a_preview_read_under_any_label(cx: &mut TestAppContext) {
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // The fixture's history is imported: its file is checked out for a
+        // tracked source of its own.
+        let path = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::tags::tests::git(&path, &["reset", "--quiet", "--hard"]);
+        for label in ["Preparing text review…", "Reading tracked file…"] {
+            if label == "Preparing text review…" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+                crate::views::tests::settle(&app, cx).await;
+                app.read_with(cx, |app, _| {
+                    assert!(app.mode == WorkspaceMode::Compare && app.content.is_some());
+                });
+            }
+            // Quiet reads are held: one submitted replaces what waits in
+            // the reader's queue, whether Back cancelled it or not.
+            let held = app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.automatic.hold_quiet_reads(true);
+                    if label == "Preparing text review…" {
+                        let options = text_review::Options {
+                            hide_whitespace: true,
+                            ..Default::default()
+                        };
+                        app.set_text_review(options, window, cx);
+                    } else {
+                        let repo = app.repository.clone().expect("a repository");
+                        let paths = repo
+                            .search_tracked_paths(
+                                &PathScope::Worktree,
+                                "notes",
+                                &HistoryCancellation::default(),
+                            )
+                            .expect("tracked paths");
+                        let entry = paths.entries.first().expect("the file").clone();
+                        app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+                    }
+                    assert!(app.mode == WorkspaceMode::Compare, "{label}");
+                    assert_eq!(app.loading, Some(label));
+                    app.back_to_history(window, cx);
+                    assert_eq!(app.loading, None, "{label}: Back cancels the read");
+                    assert!(app.task.is_none(), "{label}: nothing waits for its reply");
+                })
+            });
+            // Left queued, the read fails this wait at once.
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle_within(std::time::Duration::ZERO);
+            });
+            drop(held);
+            crate::views::tests::settle(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.mode == WorkspaceMode::History,
+                    "{label}: Compare stays closed"
+                );
+                assert_eq!(app.loading, None, "{label}");
+                assert!(app.content.is_none(), "{label}: no comparison is kept");
+            });
+            cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+        }
     }
 
     /// A comparison restored with its tab whose reply lands while Settings
