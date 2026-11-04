@@ -927,10 +927,18 @@ impl FindBar {
     /// The measure of the bar's controls reading `count`: the gap between
     /// them, and the compact control's 28 px line they take whatever their
     /// forms, so a form never moves the code.
+    ///
+    /// The gap is the quarter rem on its whole device pixel, halves toward
+    /// zero, as layout draws each gap (`Window::pixel_snap`), so the plan's
+    /// lines sum the gaps drawn between their parts: summed from the raw
+    /// 3.25 px at 13 pt, the plan's five gaps on one line were 0.42 px
+    /// short of the 4 device pixels layout draws each at scale 1.2 and
+    /// 0.25 px over them at 1.25, so the line a form was chosen by was not
+    /// the line drawn.
     fn fit(count: SharedString, window: &Window) -> Fit {
         Fit {
             count,
-            gap: window.rem_size() * 0.25,
+            gap: window.pixel_snap(window.rem_size() * 0.25),
             row: crate::appearance::ui_size(28.),
         }
     }
@@ -1178,6 +1186,8 @@ thread_local! {
     /// The forms, the field's least width and the lines the find bar was
     /// last drawn with, for a test.
     pub(crate) static DRAWN_FORMS: RefCell<Option<(Forms, Pixels, usize)>> = const { RefCell::new(None) };
+    /// The widths the find bar's plan was last drawn from, for a test.
+    static DRAWN_WIDTHS: RefCell<Option<Widths>> = const { RefCell::new(None) };
 }
 
 impl Widths {
@@ -1236,8 +1246,11 @@ impl Widths {
             previous: button(labels.previous),
             next: button(labels.next),
             // The kit's checkbox: a 1 rem box and 0.5 rem before its label
-            // at 1 rem.
-            case: device(rem * 1.5) + text(labels.case),
+            // at 1 rem, the box and the gap each on its whole device pixel
+            // as layout draws them; rounded up together, they were a
+            // device pixel wider than drawn at scale 1.25 (25 for 24 at
+            // 13 pt).
+            case: window.pixel_snap(rem) + window.pixel_snap(rem * 0.5) + text(labels.case),
             toggle: button(labels.toggle),
             count: text(labels.count.max(count)),
             // The icon form's 28 px square, on its device pixel as GPUI
@@ -1292,7 +1305,7 @@ impl Widths {
             icons(false, false, false),
         ]
         .into_iter()
-        .find(|forms| self.line(*forms) <= room)
+        .find(|forms| self.line(*forms) <= room + FIT_SLACK)
         .map_or((icons(false, false, false), false), |forms| (forms, true))
     }
 
@@ -1323,7 +1336,9 @@ impl Widths {
                     .map(|part| width(*part))
                     .fold(self.gap * (unit.len() - 1) as f32, |sum, width| sum + width);
                 let beside_field = lines.len() == 1;
-                if (unit[0] == Part::Case && beside_field) || used + self.gap + across > room {
+                if (unit[0] == Part::Case && beside_field)
+                    || used + self.gap + across > room + FIT_SLACK
+                {
                     lines.push(unit.to_vec());
                     used = across;
                 } else {
@@ -1340,6 +1355,14 @@ impl Widths {
         }
     }
 }
+
+/// How far the parts' summed widths may run past the room they are
+/// compared with and still fit it: the float error of a sum of lengths
+/// placed on device pixels, far under one. Compared without it, Match
+/// case's checkbox line at 13 pt and scale 1.25 summed 345.60004 px, over
+/// the 345.59998 px of the 432 device pixels it fills, and the bar gave the
+/// checkbox up a device pixel early.
+const FIT_SLACK: Pixels = px(1e-3);
 
 /// The parts in their order on a bar of one line: the field, then Match
 /// case, the count with Previous and Next, and Close at the line's end, as
@@ -1488,7 +1511,7 @@ impl gpui_kit::Element for Fitted {
         // layout that measured no width it was given plans from the drawn.
         let drawn = bounds.size.width;
         let scale = window.scale_factor();
-        let slack = px(1e-3);
+        let slack = FIT_SLACK;
         let width = planned
             .get()
             .filter(|planned| {
@@ -1530,7 +1553,11 @@ impl Controls {
         use crate::system_preview::HeaderControl;
         let forms = plan.forms;
         #[cfg(test)]
-        DRAWN_FORMS.with_borrow_mut(|drawn| *drawn = Some((forms, plan.field, plan.lines.len())));
+        {
+            DRAWN_FORMS
+                .with_borrow_mut(|drawn| *drawn = Some((forms, plan.field, plan.lines.len())));
+            DRAWN_WIDTHS.with_borrow_mut(|drawn| *drawn = Some(widths));
+        }
         // Each control is handed the room that gives it the form chosen
         // for it ([`HeaderControl::button`] labels a control where its
         // labelled form fits the room).
@@ -2334,6 +2361,146 @@ mod bar_tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// The find bar's plan sums the gaps layout draws between its parts: in
+    /// the unified patch at 13 and 18 pt and display scales 1.2 and 1.25,
+    /// in the narrowest window, to the device pixel, that keeps each form
+    /// the bar draws on one line, the line the plan chose that form by (the
+    /// field's floor, the count's reserved room, each control and the gaps
+    /// between them) is as wide as the line layout draws there, the field
+    /// counted at its floor and the count at its room, every control and
+    /// gap as drawn; and the line lies inside the bar's inset. The plan
+    /// keeps the form as far as the room drawn holds it: a device pixel
+    /// narrower, the room inside the inset is under the line, so the field,
+    /// which takes the room left on the line, is drawn at its floor, with
+    /// what the count leaves of its room, and less than that device pixel's
+    /// room more. Summed from
+    /// the raw quarter rem, 3.25 px at 13 pt, the plan's five gaps were
+    /// 0.42 px short of the 4 device pixels layout draws each at 1.2 and
+    /// 0.25 px over them at 1.25; and Match case's box and gap, rounded up
+    /// together, made its checkbox a device pixel wider than drawn at 1.25.
+    #[gpui::test]
+    async fn the_find_bar_plans_its_forms_with_the_gaps_layout_draws(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let mut failures = Vec::new();
+        let mut thresholds = Vec::new();
+        for scale in [1.2f32, 1.25] {
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                open_find(&app, cx, TextMode::Unified, 1480.);
+                // Windows are counted in device pixels.
+                let width = |n: i32| n as f32 / scale;
+                let forms_at = |n: i32, cx: &mut VisualTestContext| {
+                    cx.simulate_resize(size(px(width(n)), px(490.)));
+                    at_scale(cx, scale);
+                    DRAWN_FORMS
+                        .with_borrow(|drawn| *drawn)
+                        .map(|(forms, _, lines)| (forms, lines))
+                        .expect("the controls are laid out")
+                };
+                let (narrow, wide) = ((461. * scale) as i32, (1480. * scale) as i32);
+                let step = (16. * scale) as i32;
+                let mut wider = (wide, forms_at(wide, cx));
+                let mut n = wide - step;
+                while n >= narrow {
+                    let here = forms_at(n, cx);
+                    if here != wider.1 {
+                        // The narrowest window that keeps the wider form.
+                        let (mut lo, mut hi) = (n, wider.0);
+                        while hi - lo > 1 {
+                            let middle = lo + (hi - lo) / 2;
+                            if forms_at(middle, cx) == wider.1 {
+                                hi = middle;
+                            } else {
+                                lo = middle;
+                            }
+                        }
+                        // The room inside the bar's inset a device pixel
+                        // narrower, where the bar gives the form up.
+                        forms_at(hi - 1, cx);
+                        let inset = cx.update(|window, _| {
+                            window.pixel_snap(appearance::ui_size(appearance::PANE_INSET))
+                        });
+                        let narrower = cx
+                            .debug_bounds("file-find-bar")
+                            .expect("the bar is drawn")
+                            .size
+                            .width
+                            - inset * 2.;
+                        let (forms, lines) = forms_at(hi, cx);
+                        if lines == 1 {
+                            let at =
+                                format!("scale {scale}, {text} pt, {forms:?} in {}", width(hi));
+                            let widths = super::DRAWN_WIDTHS
+                                .with_borrow(|drawn| *drawn)
+                                .expect("the controls are laid out");
+                            let line = [
+                                "file-find-field",
+                                "file-find-match-case",
+                                "file-find-count",
+                                "previous-file-match",
+                                "next-file-match",
+                                "close-file-find",
+                            ]
+                            .map(|part| drawn(cx, part, &at));
+                            let gaps = line
+                                .windows(2)
+                                .map(|pair| pair[1].left() - pair[0].right())
+                                .fold(Pixels::ZERO, |sum, gap| sum + gap);
+                            let [field, case, _, previous, next, close] = line;
+                            let laid_out = widths.floor
+                                + case.size.width
+                                + widths.count
+                                + previous.size.width
+                                + next.size.width
+                                + close.size.width
+                                + gaps;
+                            let planned = widths.line(forms);
+                            let bar = drawn(cx, "file-find-bar", &at);
+                            thresholds.push(format!(
+                                "{at}: {planned:?}, drawn {laid_out:?}, {narrower:?} a device \
+                                 pixel narrower"
+                            ));
+                            // The plan keeps the form wherever the room
+                            // drawn holds it, so the field takes beyond its
+                            // floor, with what the count leaves of its room,
+                            // only what that device pixel gave up.
+                            if (planned - laid_out).abs() > px(0.01)
+                                || field.size.width < widths.floor - px(0.01)
+                                || narrower >= planned - px(0.01)
+                                || close.right() > bar.right() - inset + px(0.01)
+                            {
+                                failures.push(format!(
+                                    "{at}: the plan's line is {planned:?} and layout draws \
+                                     {laid_out:?} with gaps of {gaps:?}; the field \
+                                     {field:?} keeps its {:?} floor; a device pixel \
+                                     narrower the room is {narrower:?}, under the line; and \
+                                     Close {close:?} ends inside the bar {bar:?}'s \
+                                     {inset:?} inset",
+                                    widths.floor
+                                ));
+                            }
+                        }
+                    }
+                    wider = (n, here);
+                    n -= step;
+                }
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        eprintln!("thresholds:\n{}", thresholds.join("\n"));
+        assert!(
+            thresholds.len() >= 8,
+            "the walk meets the one-line forms' changes: {thresholds:?}"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// Pastes `text` into the focused field, as Primary+V does, in one edit.
