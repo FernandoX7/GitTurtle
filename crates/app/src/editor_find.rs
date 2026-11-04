@@ -3965,6 +3965,70 @@ mod bar_tests {
         met
     }
 
+    /// The find bar's rule and Split's accent mark on it stand on whole
+    /// device pixels in every case [`each_drawn_bar`] walks: the bar's box
+    /// and the mark's are whole device pixels from the window's top, the
+    /// mark's box ending at the bar's foot; the rule is painted on whole
+    /// device rows at the bar's foot, at least one; and the mark on the
+    /// rule's rows. Layout rounds each box's edges and each quad it paints
+    /// to device pixels, so this holds by construction: the test is a
+    /// regression pin for a rule or mark painted outside layout, as a canvas
+    /// or an offset prepaint would paint it. QA-94 F1's rule and mark spread
+    /// over two device rows natively at scale 1.2 on Hyprland, about 59 and
+    /// 40 %, were the compositor's offset of the whole surface, which spread
+    /// every other border in the window the same way (under XWayland at
+    /// 1.25, one X pixel to a device pixel, the rule is one row).
+    #[gpui::test]
+    async fn the_find_bar_s_rule_and_mark_stand_on_whole_device_pixels(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let whole = |length: f32| (length - length.round()).abs() < 1e-3;
+        let f = ScaledPixels::as_f32;
+        let mut failures = Vec::new();
+        each_drawn_bar(&app, cx, |cx, at, scale, mode, bar, painted| {
+            let device = |length: Pixels| f32::from(length) * scale;
+            let PaintedRule { rule, marks } = painted;
+            let rule = rule.unwrap_or_else(|| panic!("{at}: the bar {bar:?} draws a rule"));
+            if !(whole(device(bar.top()))
+                && whole(device(bar.bottom()))
+                && whole(f(rule.top()))
+                && whole(f(rule.size.height))
+                && f(rule.size.height) > 1. - 1e-3
+                && (f(rule.bottom()) - device(bar.bottom())).abs() < 1e-3)
+            {
+                failures.push(format!(
+                    "{at}: the bar {bar:?} and its rule {rule:?} stand on whole device \
+                     pixels, the rule at least one at the bar's foot"
+                ));
+            }
+            match (mode, marks.as_slice()) {
+                (TextMode::Split, [mark]) => {
+                    let side = drawn(cx, "file-find-side", at);
+                    if !(whole(device(side.top()))
+                        && whole(device(side.size.height))
+                        && (device(side.bottom()) - device(bar.bottom())).abs() < 1e-3
+                        && mark.drawn.top() == rule.top()
+                        && mark.drawn.bottom() == rule.bottom())
+                    {
+                        failures.push(format!(
+                            "{at}: the mark's box {side:?} stands on whole device pixels at \
+                             the bar {bar:?}'s foot, and the mark {mark:?} on the rule's rows, \
+                             {rule:?}"
+                        ));
+                    }
+                }
+                (TextMode::Split, marks) => {
+                    failures.push(format!("{at}: one mark on the rule {rule:?}: {marks:?}"));
+                }
+                (_, []) => {}
+                (_, marks) => {
+                    failures.push(format!("{at}: a bar of one text marks no side: {marks:?}"));
+                }
+            }
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// The find bar's padding is as deep below its lines as above them in
     /// every case [`each_drawn_bar`] walks: in device pixels, from the bar's
     /// top to its first line and from its last line to its rule. Its lines
