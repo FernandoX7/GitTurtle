@@ -440,38 +440,46 @@ impl GitTurtle {
     }
 
     /// Where focus returns as a modal closes: `previous` while it is still
-    /// drawn, else the shown mode's own list, else the window's root.
-    fn modal_return_target<'a>(
-        &'a self,
-        previous: Option<&'a FocusHandle>,
+    /// drawn, else the shown mode's own list, which the window then names
+    /// as its pane (`Pane::History` or `Pane::Files`, as choosing a commit
+    /// or a file does), else the window's root. The pane once stayed the one
+    /// named before the modal opened, so a modal opened from History's
+    /// changed files that closed onto its commit list left the window
+    /// naming the file list, which a File history or Blame opened next
+    /// keeps and restores as it closes.
+    fn modal_return_target(
+        &mut self,
+        previous: Option<&FocusHandle>,
         window: &Window,
-    ) -> &'a FocusHandle {
+    ) -> FocusHandle {
         // In this window every attached control inherits Root's key context,
         // including sibling popup menus outside app_focus. A missing/detached
         // handle resolves to GPUI's synthetic dispatch root with no contexts.
         // Comparing a handle with itself cannot establish attachment.
-        let fallback = match (self.page, self.mode) {
-            (AppPage::Repository, WorkspaceMode::History) => &self.focus,
-            (AppPage::Repository, _) => &self.file_focus,
-            _ => &self.app_focus,
+        if let Some(previous) = previous.filter(|focus| self.app_focus.contains(focus, window)) {
+            return previous.clone();
+        }
+        let (list, pane) = match (self.page, self.mode) {
+            (AppPage::Repository, WorkspaceMode::History) => (&self.focus, Pane::History),
+            (AppPage::Repository, _) => (&self.file_focus, Pane::Files),
+            _ => return self.app_focus.clone(),
         };
-        previous
-            .filter(|focus| self.app_focus.contains(focus, window))
-            .or_else(|| {
-                self.app_focus
-                    .contains(fallback, window)
-                    .then_some(fallback)
-            })
-            .unwrap_or(&self.app_focus)
+        if !self.app_focus.contains(list, window) {
+            return self.app_focus.clone();
+        }
+        let list = list.clone();
+        self.pane = pane;
+        list
     }
 
     /// Where a modal that set `modal_return_focus` as it opened returns focus
     /// as it closes, so it can do so before the next frame's repair, which
     /// returns it to the same place: no frame leaves focus on the window's
-    /// root, where nothing shows it.
-    pub(super) fn modal_return(&self, window: &Window) -> FocusHandle {
-        self.modal_return_target(self.modal_return_focus.as_ref(), window)
-            .clone()
+    /// root, where nothing shows it, and none names a pane other than the
+    /// list it falls back to.
+    pub(super) fn modal_return(&mut self, window: &Window) -> FocusHandle {
+        let previous = self.modal_return_focus.clone();
+        self.modal_return_target(previous.as_ref(), window)
     }
 
     pub(super) fn back_label(&self) -> &'static str {
@@ -3950,6 +3958,175 @@ mod tests {
         });
         cx.update(|window, cx| window.close_dialog(cx));
         settle(&app, cx).await;
+    }
+
+    /// Opens a bare dialog over the page with focus on `opener` and the
+    /// window naming `pane`, after a frame that draws them, so the window
+    /// records the opener as it records any focused control
+    /// (`update_modal_focus`).
+    fn open_probe_dialog(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        opener: &FocusHandle,
+        pane: Pane,
+    ) {
+        use crate::views::tests::draw;
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = pane);
+            window.focus(opener, cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        draw(cx);
+        assert!(dialog_open(cx), "the dialog opens");
+    }
+
+    /// Closes the dialog as Escape or its Close button does, then lets the
+    /// window's repair run: the frame after the close, and its recheck once
+    /// the toolkit's close animation would have ended.
+    fn close_probe_dialog(cx: &mut VisualTestContext) {
+        use crate::views::tests::draw;
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!dialog_open(cx), "the dialog closed");
+    }
+
+    fn drawn(app: &Entity<GitTurtle>, focus: &FocusHandle, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| app.read(cx).app_focus.contains(focus, window))
+    }
+
+    /// A modal that closes once the control it returns to is gone gives
+    /// focus to the shown mode's own list, and the window names that list's
+    /// pane, as a tab's restore names it (`return_tab_focus`): History's
+    /// commit list is `Pane::History`, the changed-file list of Compare or
+    /// Changes `Pane::Files`. The pane once stayed the one named as the modal
+    /// opened, so a dialog opened from History's changed files whose commit
+    /// left History meanwhile closed onto the commit list with the window
+    /// still naming the file list, which a File history or Blame opened
+    /// next keeps and restores. The GitHub panel's own close returns focus
+    /// before the next frame (`modal_return`), and names the pane as it does.
+    #[gpui::test]
+    async fn a_modal_closing_onto_the_shown_list_names_its_pane(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let pane = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.pane)
+        };
+        let (commits, files) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && app.selected_commit.is_some());
+            assert!(!app.files.is_empty(), "the commit's changed files");
+            (app.focus.clone(), app.file_focus.clone())
+        });
+
+        // History: opened from the changed-file list, whose commit leaves
+        // History while the dialog shows, as a refresh after a reset made
+        // elsewhere takes it away; the inspector then draws no file list.
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.modal_return_focus.clone()),
+            Some(files.clone()),
+            "the window recorded the file list as the dialog opened"
+        );
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.selected_commit = None;
+                app.selected_file = None;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert!(!drawn(&app, &files, cx), "History draws no file list");
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(commits.clone()), "History's commit list");
+        assert!(
+            pane(&app, cx) == Pane::History,
+            "the window names History's pane"
+        );
+
+        // Compare: the window still names History's pane, and the dialog
+        // returns to History's commit list, which it recorded as its opener
+        // as the GitHub panel records it, and which Compare does not draw.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+        assert!(!drawn(&app, &commits, cx), "Compare draws no commit list");
+        open_probe_dialog(&app, cx, &commits, Pane::History);
+        app.update(cx, |app, _| {
+            app.modal_return_focus = Some(app.focus.clone())
+        });
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(files.clone()), "Compare's file list");
+        assert!(
+            pane(&app, cx) == Pane::Files,
+            "the window names the file pane"
+        );
+
+        // Changes, closed as the GitHub panel closes, which returns focus
+        // itself before the next frame's repair.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working));
+        open_probe_dialog(&app, cx, &files, Pane::History);
+        app.update(cx, |app, _| {
+            app.modal_return_focus = Some(app.focus.clone())
+        });
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            let back = app.update(cx, |app, _| app.modal_return(window));
+            window.focus(&back, cx);
+        });
+        assert_eq!(focused(cx), Some(files.clone()), "Changes' file list");
+        assert!(pane(&app, cx) == Pane::Files, "named before any frame");
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert_eq!(focused(cx), Some(files.clone()), "the repair agrees");
+        assert!(pane(&app, cx) == Pane::Files);
+    }
+
+    /// A modal that closes while the control it returns to is still drawn
+    /// gives focus back to it and leaves the pane the window named: a dialog
+    /// opened from History's changed files closes onto that list, still
+    /// naming the file list's pane, rather than taking the commit list's.
+    #[gpui::test]
+    async fn a_modal_closing_onto_its_drawn_opener_keeps_the_pane(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let files = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && !app.files.is_empty());
+            app.file_focus.clone()
+        });
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        // Focus leaves the opener for a detached control as the dialog
+        // closes, so the window's repair runs and decides where it returns.
+        let detached = cx.update(|_, cx| cx.focus_handle());
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            window.focus(&detached, cx);
+        });
+        crate::views::tests::draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        crate::views::tests::draw(cx);
+        assert!(drawn(&app, &files, cx), "History still draws its file list");
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(files),
+            "focus returns to the file list"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.pane == Pane::Files),
+            "the window still names the file pane"
+        );
     }
 
     #[test]

@@ -1925,7 +1925,7 @@ impl Panel {
         }
         window.close_dialog(cx);
         if let Some(owner) = self.owner.upgrade() {
-            let focus = owner.read(cx).modal_return(window);
+            let focus = owner.update(cx, |owner, _| owner.modal_return(window));
             focus.focus(window, cx);
         }
     }
