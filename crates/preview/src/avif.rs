@@ -1604,15 +1604,13 @@ mod tests {
         sources
     }
 
-    /// What Cargo itself reads from the package manifest in `directory` that
-    /// would compile a file the source scan does not read, sorted: a build
-    /// script (a `custom-build` target, from a `build` key or a `build.rs`
-    /// beside the manifest), which could set `--cfg test`, and a library
-    /// rooted anywhere but `src/lib.rs`. `cargo metadata`, offline and without
-    /// dependencies, reads the manifest as the build does, escaped keys and
-    /// multi-line values included, so no reading of the TOML here can differ
-    /// from it. Paths are relative to `directory`.
-    fn compiled_outside_the_scan(directory: &Path) -> Vec<String> {
+    /// The package whose manifest is `Cargo.toml` in `directory` as Cargo
+    /// itself reads it: `cargo metadata`, offline and without dependencies,
+    /// reads the manifest as the build does, escaped keys and strings,
+    /// multi-line values, target-specific tables and inherited workspace
+    /// entries included, so no reading of the TOML here can differ from it.
+    /// It resolves nothing, so it reaches no network and writes no lock file.
+    fn cargo_package(directory: &Path) -> serde_json::Value {
         let directory = directory.canonicalize().unwrap();
         let output = Command::new(env!("CARGO"))
             .args([
@@ -1630,20 +1628,30 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let manifest = directory.join("Cargo.toml");
-        let package = metadata["packages"]
-            .as_array()
-            .unwrap()
+        let packages = metadata["packages"].as_array_mut().unwrap();
+        let at = packages
             .iter()
-            .find(|package| {
+            .position(|package| {
                 package["manifest_path"].as_str().map(Path::new) == Some(manifest.as_path())
             })
             .unwrap();
+        packages.swap_remove(at)
+    }
+
+    /// What Cargo read from `package`'s manifest that would compile a file
+    /// the source scan does not read, sorted: a build script (a
+    /// `custom-build` target, from a `build` key or a `build.rs` beside the
+    /// manifest), which could set `--cfg test`, and a library rooted anywhere
+    /// but `src/lib.rs`. Paths are relative to the manifest's directory.
+    fn compiled_outside_the_scan(package: &serde_json::Value) -> Vec<String> {
+        let manifest = Path::new(package["manifest_path"].as_str().unwrap());
+        let directory = manifest.parent().unwrap();
         let mut found = Vec::new();
         for target in package["targets"].as_array().unwrap() {
             let path = Path::new(target["src_path"].as_str().unwrap());
-            let relative = path.strip_prefix(&directory).unwrap_or(path).display();
+            let relative = path.strip_prefix(directory).unwrap_or(path).display();
             let kinds = target["kind"].as_array().unwrap();
             let kind = |names: &[&str]| {
                 kinds
@@ -1663,18 +1671,181 @@ mod tests {
         found
     }
 
-    /// Whether a manifest renames a dependency to `package`, with the package
-    /// in a basic or a literal string on one line or several (`"moxcms"`,
-    /// `'moxcms'`, `"""moxcms"""` or `'''moxcms'''`) and the key bare or
-    /// quoted, whatever the spacing. Escapes inside a basic string are not
-    /// decoded.
-    fn renames_to(manifest: &str, package: &str) -> bool {
-        let manifest: String = manifest.split_whitespace().collect();
-        ["package", "\"package\"", "'package'"].iter().any(|key| {
-            ["\"", "'", "\"\"\"", "'''"]
+    /// The crates the source scan follows by name, each with the exact
+    /// requirement every declaration of it must have. A dependency on one
+    /// under another name would reach it without the words the scan looks
+    /// for, and another version, or the same one from anywhere but crates.io,
+    /// is not the code that was reviewed: `DAV1D_RS_METHODS` lists dav1d-rs
+    /// 0.11.1's functions, `dav1d-sys` 0.8.3's C layouts are written by hand,
+    /// and `moxcms` 0.8.1 is the version `image` and `hayro-jpeg2000` use.
+    const NAMED_BY_THE_SCAN: [(&str, &str); 3] = [
+        ("moxcms", "=0.8.1"),
+        ("dav1d", DAV1D_RS_REQUIREMENT),
+        ("dav1d-sys", "=0.8.3"),
+    ];
+    /// The requirement every declaration of dav1d-rs must have: exactly the
+    /// version whose functions `DAV1D_RS_METHODS` lists.
+    const DAV1D_RS_REQUIREMENT: &str = "=0.11.1";
+    /// The one source each of them may come from, as Cargo names crates.io.
+    const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+    /// The crate the scan follows that `name` names, with its requirement:
+    /// case and `-` against `_` do not tell crate names apart, since
+    /// crates.io holds one crate for every such spelling (`dav1d_sys` is
+    /// `dav1d-sys`).
+    fn named_by_the_scan(name: &str) -> Option<(&'static str, &'static str)> {
+        let fold = |name: &str| name.to_ascii_lowercase().replace('_', "-");
+        NAMED_BY_THE_SCAN
+            .into_iter()
+            .find(|(scanned, _)| *scanned == fold(name))
+    }
+
+    /// What Cargo read from `package`'s manifest that would reach a crate the
+    /// scan follows past it, sorted: a dependency on `moxcms`, `dav1d` or
+    /// `dav1d-sys`, however spelled (`named_by_the_scan`), under another name
+    /// (`moxcms renamed cms`), from anywhere but crates.io (`dav1d from
+    /// git+https://…`, `dav1d from a path`) or at any requirement but its own
+    /// exact pin (`dav1d ^0.11.1`), each of any kind and for any target. Each
+    /// dependency's `rename`, `source` and `req` are Cargo's, so a key,
+    /// package name, source or requirement is read as the build reads it,
+    /// however it is written. A root `[patch]` or `[replace]` is not a
+    /// dependency's and does not show here: `unreviewed_lock_entries` reads
+    /// what it resolves. The scan follows the names the code uses, so any
+    /// other crate is refused under a name the scan follows (`dav1d-shim
+    /// renamed dav1d`), and any other crate from anywhere but crates.io
+    /// (`shim from a path`), whose library could take such a name (`[lib]
+    /// name = "dav1d"`). A crate published to crates.io under another name
+    /// with such a library is not refused here: it needs a new dependency in
+    /// this manifest, which review reads.
+    fn unreviewed_dependencies(package: &serde_json::Value) -> Vec<String> {
+        let mut found = Vec::new();
+        for dependency in package["dependencies"].as_array().unwrap() {
+            let name = dependency["name"].as_str().unwrap();
+            let rename = dependency["rename"].as_str();
+            // A path dependency has no source.
+            let source = dependency["source"].as_str().unwrap_or("a path");
+            let Some((_, pin)) = named_by_the_scan(name) else {
+                if let Some(rename) = rename.filter(|rename| named_by_the_scan(rename).is_some()) {
+                    found.push(format!("{name} renamed {rename}"));
+                }
+                if source != CRATES_IO {
+                    found.push(format!("{name} from {source}"));
+                }
+                continue;
+            };
+            if let Some(rename) = rename {
+                found.push(format!("{name} renamed {rename}"));
+            }
+            if source != CRATES_IO {
+                found.push(format!("{name} from {source}"));
+            }
+            let requirement = dependency["req"].as_str().unwrap();
+            if requirement != pin {
+                found.push(format!("{name} {requirement}"));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// The `[[package]]` entries of a lock file in the form Cargo writes it,
+    /// each its `key = "value"` lines. This is a small reader of that
+    /// machine-written form, not of TOML (the preview crate has no TOML
+    /// reader): a line holds one key and one quoted value without escapes,
+    /// and a `dependencies` list one quoted entry per line. Any line in
+    /// another form, a key twice in one entry or a list left open fails here
+    /// rather than being read some other way. `[[patch.unused]]` entries, patches
+    /// nothing resolves, are read and left out.
+    fn locked_packages(lock: &str) -> Vec<std::collections::BTreeMap<&str, &str>> {
+        let plain = |value: &str| !value.contains(['"', '\\']);
+        let mut entries: Vec<(&str, std::collections::BTreeMap<&str, &str>)> = Vec::new();
+        let mut lines = lock.lines();
+        while let Some(line) = lines.next() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line == "[[package]]" || line == "[[patch.unused]]" {
+                entries.push((line, Default::default()));
+                continue;
+            }
+            if line == "dependencies = [" && !entries.is_empty() {
+                loop {
+                    let entry = lines
+                        .next()
+                        .expect("not as Cargo writes it: a dependencies list left open");
+                    if entry == "]" {
+                        break;
+                    }
+                    let quoted = entry
+                        .strip_prefix(" \"")
+                        .and_then(|e| e.strip_suffix("\","));
+                    assert!(quoted.is_some_and(plain), "not as Cargo writes it: {entry}");
+                }
+                continue;
+            }
+            let Some((_, package)) = entries.last_mut() else {
+                // The lock file's own format version comes first.
+                let version = line.strip_prefix("version = ");
+                assert!(
+                    version.is_some_and(|v| v.bytes().all(|b| b.is_ascii_digit())),
+                    "not as Cargo writes it: {line}"
+                );
+                continue;
+            };
+            let pair = line
+                .split_once(" = \"")
+                .and_then(|(key, rest)| Some((key, rest.strip_suffix('"')?)))
+                .filter(|(key, value)| {
+                    key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') && plain(value)
+                });
+            let (key, value) = pair.unwrap_or_else(|| panic!("not as Cargo writes it: {line}"));
+            assert!(package.insert(key, value).is_none(), "twice: {line}");
+        }
+        entries
+            .into_iter()
+            .filter(|(table, _)| *table == "[[package]]")
+            .map(|(_, package)| package)
+            .collect()
+    }
+
+    /// What the lock file resolves for `moxcms`, `dav1d` and `dav1d-sys`, read
+    /// by `locked_packages`, that is not what was reviewed, sorted: not
+    /// exactly one entry for each (a `[replace]` adds its replacement beside
+    /// the original), an entry from anywhere but crates.io (`dav1d 0.11.1
+    /// from a path` for a root `[patch]` to a path, which leaves no `source`,
+    /// or `from git+https://…`) or at another version than its pin. A root
+    /// `[patch]` or `[replace]` does not show in `cargo metadata --no-deps`,
+    /// which reads the package's manifest alone, but every locked build
+    /// resolves what this file holds, unless a Cargo configuration's `paths`
+    /// override or source replacement points it elsewhere with the file
+    /// unchanged (`no_cargo_configuration_beside_the_crate`).
+    fn unreviewed_lock_entries(lock: &str) -> Vec<String> {
+        let packages = locked_packages(lock);
+        let mut found = Vec::new();
+        for (name, pin) in NAMED_BY_THE_SCAN {
+            let entries: Vec<_> = packages
                 .iter()
-                .any(|quote| manifest.contains(&format!("{key}={quote}{package}{quote}")))
-        })
+                .filter(|package| {
+                    let named = package.get("name").expect("every entry has a name");
+                    named_by_the_scan(named).is_some_and(|(scanned, _)| scanned == name)
+                })
+                .collect();
+            if entries.len() != 1 {
+                found.push(format!("Cargo.lock {name}: {} entries", entries.len()));
+            }
+            for entry in entries {
+                let version = *entry.get("version").expect("every entry has a version");
+                let source = entry.get("source").copied().unwrap_or("a path");
+                if source != CRATES_IO {
+                    found.push(format!("Cargo.lock {name} {version} from {source}"));
+                }
+                if Some(version) != pin.strip_prefix('=') {
+                    found.push(format!("Cargo.lock {name} {version}"));
+                }
+            }
+        }
+        found.sort();
+        found
     }
 
     /// Whether a line names the `moxcms` crate: the whole word anywhere but in
@@ -1691,8 +1862,9 @@ mod tests {
     }
 
     /// Every public function and method of dav1d-rs 0.11.1, which the
-    /// manifest pins exactly (a new version fails the test below until this
-    /// list is reviewed again). One the crate does not call counts wherever
+    /// manifest pins exactly (`DAV1D_RS_REQUIREMENT`: a new version fails
+    /// `the_manifest_reaches_only_what_the_scan_reads` until this list is
+    /// reviewed again). One the crate does not call counts wherever
     /// its name appears as a word, whatever the receiver or path.
     const DAV1D_RS_METHODS: [&str; 48] = [
         // Settings.
@@ -2213,6 +2385,403 @@ mod tests {
         found
     }
 
+    /// What Cargo reads from the manifest reaches nothing the scans below do
+    /// not read: no build script, which could set `--cfg test`
+    /// (`cargo::rustc-cfg=test`), and no library rooted outside `src/`,
+    /// which could compile what the scan does not read (Cargo sets `OUT_DIR`
+    /// for a crate with a build script, and its own reading of the manifest
+    /// names every target); no other name for a crate the scans follow by
+    /// name, however spelled; and each of those crates from crates.io at
+    /// exactly its pin, dav1d-rs at the version whose functions they list.
+    /// One `cargo metadata` reads all of it, offline, and leaves the lock
+    /// file as it was.
+    #[test]
+    fn the_manifest_reaches_only_what_the_scan_reads() {
+        assert!(option_env!("OUT_DIR").is_none());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lock = root.join("../../Cargo.lock");
+        let locked = std::fs::read(&lock).unwrap();
+        let package = cargo_package(root);
+        assert_eq!(std::fs::read(&lock).unwrap(), locked);
+        assert_eq!(compiled_outside_the_scan(&package), Vec::<String>::new());
+        assert_eq!(unreviewed_dependencies(&package), Vec::<String>::new());
+        let dependencies = package["dependencies"].as_array().unwrap();
+        assert!(dependencies.iter().any(|dependency| {
+            dependency["name"] == "dav1d" && dependency["req"] == DAV1D_RS_REQUIREMENT
+        }));
+        // Manifests that a reading of the TOML as text misses or misreads,
+        // each in a scratch package that is its own workspace: keys and names
+        // with escapes, a table header or a pin inside a string, a
+        // requirement inherited from the workspace, and a second declaration
+        // in another target-specific table. Requirements are Cargo's own
+        // (`0.11.1` is `^0.11.1`).
+        let header = "[workspace]\n\n[package]\nname = \"scratch\"\nversion = \"0.0.0\"\n\
+                      edition = \"2024\"\n";
+        let script = "fn main() { println!(\"cargo::rustc-cfg=test\"); }";
+        let linux = "\n[target.'cfg(target_os = \"linux\")'.dependencies]\n";
+        let dav1d =
+            format!("{linux}dav1d = {{ version = \"=0.11.1\", default-features = false }}\n");
+        let second = format!(
+            "{linux}dav1d = \"=0.11.1\"\n\n[target.'cfg(unix)'.dependencies]\ndav1d = \"0.11\"\n"
+        );
+        let fork = "[package]\nname = \"dav1d\"\nversion = \"0.11.1\"\nedition = \"2021\"\n";
+        let shim = "[package]\nname = \"dav1d-shim\"\nversion = \"0.11.1\"\nedition = \"2021\"\n";
+        let lib_named = "[package]\nname = \"shim\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+                         [lib]\nname = \"dav1d\"\n";
+        for (case, manifest, files, found) in [
+            ("plain", "", &[][..], &[][..]),
+            (
+                "escaped keys",
+                "\"bu\\u0069ld\" = \"gen.rs\"\n\n[\"l\\u0069b\"]\n\"p\\u0061th\" = \"elsewhere/root.rs\"\n",
+                &[("gen.rs", script), ("elsewhere/root.rs", "")][..],
+                &["build script gen.rs", "library elsewhere/root.rs"][..],
+            ),
+            (
+                "a table header inside a string",
+                "description = \"\"\"\n[lib]\n\"\"\"\nbuild = \"gen.rs\"\n",
+                &[("gen.rs", script)][..],
+                &["build script gen.rs"][..],
+            ),
+            (
+                "build.rs beside the manifest",
+                "",
+                &[("build.rs", script)][..],
+                &["build script build.rs"][..],
+            ),
+            (
+                "a library path",
+                "\n[lib]\npath = \"elsewhere/root.rs\"\n",
+                &[("elsewhere/root.rs", "")][..],
+                &["library elsewhere/root.rs"][..],
+            ),
+            (
+                "dav1d pinned",
+                "\n[dependencies]\ndav1d = \"=0.11.1\"\n",
+                &[][..],
+                &[][..],
+            ),
+            (
+                "dav1d pinned in a target-specific table",
+                dav1d.as_str(),
+                &[][..],
+                &[][..],
+            ),
+            (
+                "dav1d pinned in a table of its own",
+                "\n[target.'cfg(unix)'.dependencies.dav1d]\nversion = \"=0.11.1\"\n",
+                &[][..],
+                &[][..],
+            ),
+            (
+                "dav1d unpinned",
+                "\n[dependencies]\ndav1d = \"0.11.1\"\n",
+                &[][..],
+                &["dav1d ^0.11.1"][..],
+            ),
+            (
+                "dav1d pinned to another version",
+                "\n[dependencies]\ndav1d = \"=0.11.2\"\n",
+                &[][..],
+                &["dav1d =0.11.2"][..],
+            ),
+            (
+                "dav1d unpinned in a second target-specific table",
+                second.as_str(),
+                &[][..],
+                &["dav1d ^0.11"][..],
+            ),
+            (
+                "the pin only inside a string",
+                "description = 'dav1d = \"=0.11.1\"'\n\n[dependencies]\ndav1d = \">=0.11.1\"\n",
+                &[][..],
+                &["dav1d >=0.11.1"][..],
+            ),
+            (
+                "an inherited requirement",
+                "\n[workspace.dependencies]\ndav1d = \"0.11\"\n\n[dependencies]\ndav1d.workspace = true\n",
+                &[][..],
+                &["dav1d ^0.11"][..],
+            ),
+            (
+                "a renamed dav1d",
+                "\n[dependencies]\nav1 = { package = \"dav1d\", version = \"=0.11.1\" }\n",
+                &[][..],
+                &["dav1d renamed av1"][..],
+            ),
+            (
+                "a renamed dav1d-sys behind an escaped key",
+                "\n[target.'cfg(unix)'.dependencies]\nsys = { \"p\\u0061ckage\" = \"dav1d-sys\", version = \"=0.8.3\" }\n",
+                &[][..],
+                &["dav1d-sys renamed sys"][..],
+            ),
+            (
+                "moxcms renamed by an escaped name",
+                "\n[build-dependencies]\ncms = { package = \"mox\\u0063ms\", version = \"=0.8.1\" }\n",
+                &[][..],
+                &["moxcms renamed cms"][..],
+            ),
+            (
+                "a renamed moxcms dev-dependency on two lines",
+                "\n[dev-dependencies.cms]\npackage = \"\"\"\nmoxcms\"\"\"\nversion = \"=0.8.1\"\n",
+                &[][..],
+                &["moxcms renamed cms"][..],
+            ),
+            // The pinned version from another source: Cargo names the source
+            // and leaves the requirement as written.
+            (
+                "a git dav1d at the pin",
+                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", git = \"https://fork.invalid/dav1d\" }\n",
+                &[][..],
+                &["dav1d from git+https://fork.invalid/dav1d"][..],
+            ),
+            (
+                "a path dav1d at the pin",
+                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", path = \"fork\" }\n",
+                &[("fork/Cargo.toml", fork), ("fork/src/lib.rs", "")][..],
+                &["dav1d from a path"][..],
+            ),
+            (
+                "a dav1d from another registry at the pin",
+                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", registry-index = \"sparse+https://registry.invalid/\" }\n",
+                &[][..],
+                &["dav1d from sparse+https://registry.invalid/"][..],
+            ),
+            (
+                "dav1d-sys unpinned",
+                "\n[dependencies]\ndav1d-sys = \"0.8.3\"\n",
+                &[][..],
+                &["dav1d-sys ^0.8.3"][..],
+            ),
+            (
+                "moxcms pinned to another version",
+                "\n[dependencies]\nmoxcms = { version = \"=0.8.0\", default-features = false }\n",
+                &[][..],
+                &["moxcms =0.8.0"][..],
+            ),
+            (
+                "dav1d-sys and moxcms at their pins",
+                "\n[dependencies]\ndav1d-sys = \"=0.8.3\"\nmoxcms = { version = \"=0.8.1\", default-features = false }\n",
+                &[][..],
+                &[][..],
+            ),
+            // Cargo reports a name as it is written.
+            (
+                "dav1d-sys spelled with an underscore",
+                "\n[dependencies]\ndav1d_sys = \"0.8\"\n",
+                &[][..],
+                &["dav1d_sys ^0.8"][..],
+            ),
+            (
+                "moxcms spelled with a capital",
+                "\n[dependencies]\nMoxcms = \"0.8\"\n",
+                &[][..],
+                &["Moxcms ^0.8"][..],
+            ),
+            // Another crate where the scan reads a reviewed one: under a
+            // name it follows, or from a path, where its library can be
+            // named `dav1d` with no rename at all.
+            (
+                "another crate renamed dav1d",
+                "\n[dependencies]\ndav1d = { package = \"dav1d-shim\", version = \"=0.11.1\", path = \"shim\" }\n",
+                &[("shim/Cargo.toml", shim), ("shim/src/lib.rs", "")][..],
+                &["dav1d-shim from a path", "dav1d-shim renamed dav1d"][..],
+            ),
+            (
+                "a crates.io crate renamed dav1d_sys",
+                "\n[dev-dependencies]\ndav1d_sys = { package = \"other\", version = \"1\" }\n",
+                &[][..],
+                &["other renamed dav1d_sys"][..],
+            ),
+            (
+                "a path crate whose library is named dav1d",
+                "\n[dependencies]\nshim = { path = \"shim\" }\n",
+                &[("shim/Cargo.toml", lib_named), ("shim/src/lib.rs", "")][..],
+                &["shim from a path"][..],
+            ),
+        ] {
+            let scratch = tempfile::tempdir().unwrap();
+            let manifest = format!("{header}{manifest}");
+            let base = [("Cargo.toml", manifest.as_str()), ("src/lib.rs", "")];
+            for &(path, text) in base.iter().chain(files) {
+                let path = scratch.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+            let package = cargo_package(scratch.path());
+            let mut reads = compiled_outside_the_scan(&package);
+            reads.extend(unreviewed_dependencies(&package));
+            assert_eq!(reads, found, "{case}");
+            assert!(!scratch.path().join("Cargo.lock").exists(), "{case}");
+        }
+    }
+
+    /// A Cargo configuration in the checkout can point a locked build at
+    /// other code under a crate's reviewed name and version, which neither
+    /// the manifest nor the lock file shows (a `paths` override, a source
+    /// replacement): none is read where a build of this crate starts, the
+    /// workspace root, `crates` or the crate itself.
+    #[test]
+    fn no_cargo_configuration_beside_the_crate() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for directory in [root, &root.join(".."), &root.join("../..")] {
+            for name in ["config", "config.toml"] {
+                let path = directory.join(".cargo").join(name);
+                assert!(
+                    !path.exists(),
+                    "a Cargo configuration at {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// The committed lock file resolves `moxcms`, `dav1d` and `dav1d-sys`
+    /// once each, from crates.io at their pins: a root `[patch]` or
+    /// `[replace]` would change that while `cargo metadata --no-deps` shows
+    /// nothing of it. The cases are lock files as Cargo writes them; any
+    /// other form fails the reader.
+    #[test]
+    fn the_lock_resolves_the_scanned_crates_from_crates_io_at_their_pins() {
+        let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+        let lock = std::fs::read_to_string(lock).unwrap();
+        assert!(locked_packages(&lock).len() > 3);
+        assert_eq!(unreviewed_lock_entries(&lock), Vec::<String>::new());
+        let entry = |name: &str, version: &str, source: Option<&str>| {
+            let source = source
+                .map(|source| format!("source = \"{source}\"\nchecksum = \"0123\"\n"))
+                .unwrap_or_default();
+            format!(
+                "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n{source}\
+                 dependencies = [\n \"libc\",\n \"pkg-config 0.3.32\",\n]\n"
+            )
+        };
+        let git = "git+https://fork.invalid/fork#0123456789abcdef";
+        let moxcms = entry("moxcms", "0.8.1", Some(CRATES_IO));
+        let dav1d = entry("dav1d", "0.11.1", Some(CRATES_IO));
+        let sys = entry("dav1d-sys", "0.8.3", Some(CRATES_IO));
+        // A `[replace]` keeps the original, naming its replacement.
+        let replaced = dav1d.replace(
+            "checksum = \"0123\"\n",
+            &format!("replace = \"dav1d 0.11.1 ({git})\"\n"),
+        );
+        let unused = "\n[[patch.unused]]\nname = \"dav1d\"\nversion = \"0.11.1\"\n";
+        for (case, entries, found) in [
+            (
+                "reviewed",
+                [&moxcms, &dav1d, &sys].map(String::as_str).concat(),
+                &[][..],
+            ),
+            (
+                "dav1d patched to a path and moxcms to a git repository",
+                [
+                    entry("moxcms", "0.8.1", Some(git)),
+                    entry("dav1d", "0.11.1", None),
+                    sys.clone(),
+                ]
+                .concat(),
+                &[
+                    "Cargo.lock dav1d 0.11.1 from a path",
+                    "Cargo.lock moxcms 0.8.1 from git+https://fork.invalid/fork#0123456789abcdef",
+                ][..],
+            ),
+            (
+                "dav1d replaced from a git repository",
+                [
+                    &moxcms,
+                    &replaced,
+                    &entry("dav1d", "0.11.1", Some(git)),
+                    &sys,
+                ]
+                .map(String::as_str)
+                .concat(),
+                &[
+                    "Cargo.lock dav1d 0.11.1 from git+https://fork.invalid/fork#0123456789abcdef",
+                    "Cargo.lock dav1d: 2 entries",
+                ][..],
+            ),
+            (
+                "dav1d-sys at another version",
+                [
+                    &moxcms,
+                    &dav1d,
+                    &entry("dav1d-sys", "0.8.4", Some(CRATES_IO)),
+                ]
+                .map(String::as_str)
+                .concat(),
+                &["Cargo.lock dav1d-sys 0.8.4"][..],
+            ),
+            (
+                "dav1d-sys patched to a path under its other spelling",
+                [&moxcms, &dav1d, &sys, &entry("dav1d_sys", "0.8.3", None)]
+                    .map(String::as_str)
+                    .concat(),
+                &[
+                    "Cargo.lock dav1d-sys 0.8.3 from a path",
+                    "Cargo.lock dav1d-sys: 2 entries",
+                ][..],
+            ),
+            (
+                "no moxcms",
+                [&dav1d, &sys].map(String::as_str).concat(),
+                &["Cargo.lock moxcms: 0 entries"][..],
+            ),
+            (
+                "an unused patch",
+                [moxcms.as_str(), dav1d.as_str(), sys.as_str(), unused].concat(),
+                &[][..],
+            ),
+        ] {
+            let lock = format!(
+                "# This file is automatically @generated by Cargo.\n\
+                 # It is not intended for manual editing.\nversion = 4\n{entries}"
+            );
+            assert_eq!(unreviewed_lock_entries(&lock), found, "{case}");
+        }
+        for (case, lock) in [
+            (
+                "a literal string",
+                "version = 4\n\n[[package]]\nname = 'dav1d'\n",
+            ),
+            (
+                "an escape",
+                "version = 4\n\n[[package]]\nname = \"dav\\u0031d\"\n",
+            ),
+            (
+                "a quoted key",
+                "version = 4\n\n[[package]]\n\"name\" = \"dav1d\"\n",
+            ),
+            (
+                "a key twice",
+                "version = 4\n\n[[package]]\nname = \"dav1d\"\nname = \"x\"\n",
+            ),
+            (
+                "an inline list",
+                "version = 4\n\n[[package]]\ndependencies = [\"libc\"]\n",
+            ),
+            (
+                "another table",
+                "version = 4\n\n[[package]]\nname = \"x\"\n\n[metadata]\n",
+            ),
+            (
+                "a spaced header",
+                "version = 4\n\n[[ package ]]\nname = \"dav1d\"\n",
+            ),
+            (
+                "a list entry without its indent",
+                "version = 4\n\n[[package]]\nname = \"x\"\ndependencies = [\n\"libc\",\n]\n",
+            ),
+            (
+                "a list left open",
+                "version = 4\n\n[[package]]\nname = \"x\"\ndependencies = [\n \"libc\",\n",
+            ),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| locked_packages(lock)).is_err(),
+                "{case}"
+            );
+        }
+    }
+
     /// Security review requirement 6: the preview crate calls only the
     /// dav1d-rs functions it needs, listed above; anything else fails here.
     #[test]
@@ -2244,58 +2813,6 @@ mod tests {
             assert!(avif_code.contains(&format!("{path}(")), "{path}");
         }
         assert!(code("src/lib.rs").contains("dav1d_sys::dav1d_version()"));
-        let manifest: String = include_str!("../Cargo.toml").split_whitespace().collect();
-        assert!(manifest.contains("dav1d=\"=0.11.1\""));
-        // A build script could set `--cfg test` (`cargo::rustc-cfg=test`),
-        // and a library rooted outside `src/` could compile what this scan
-        // does not read. Cargo sets `OUT_DIR` for a crate with a build script,
-        // and its own reading of the manifest names every target.
-        assert!(option_env!("OUT_DIR").is_none());
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(compiled_outside_the_scan(root), Vec::<String>::new());
-        // Manifests that a reading of the TOML line by line misses, each in a
-        // scratch package: keys with escapes, and a table header inside a
-        // multi-line string (`[lib]` there leaves `build` in `[package]`).
-        let package = "[workspace]\n\n[package]\nname = \"scratch\"\nversion = \"0.0.0\"\n\
-                       edition = \"2024\"\n";
-        let script = "fn main() { println!(\"cargo::rustc-cfg=test\"); }";
-        for (case, manifest, files, found) in [
-            ("plain", "", &[][..], &[][..]),
-            (
-                "escaped keys",
-                "\"bu\\u0069ld\" = \"gen.rs\"\n\n[\"l\\u0069b\"]\n\"p\\u0061th\" = \"elsewhere/root.rs\"\n",
-                &[("gen.rs", script), ("elsewhere/root.rs", "")][..],
-                &["build script gen.rs", "library elsewhere/root.rs"][..],
-            ),
-            (
-                "a table header inside a string",
-                "description = \"\"\"\n[lib]\n\"\"\"\nbuild = \"gen.rs\"\n",
-                &[("gen.rs", script)][..],
-                &["build script gen.rs"][..],
-            ),
-            (
-                "build.rs beside the manifest",
-                "",
-                &[("build.rs", script)][..],
-                &["build script build.rs"][..],
-            ),
-            (
-                "a library path",
-                "\n[lib]\npath = \"elsewhere/root.rs\"\n",
-                &[("elsewhere/root.rs", "")][..],
-                &["library elsewhere/root.rs"][..],
-            ),
-        ] {
-            let scratch = tempfile::tempdir().unwrap();
-            let manifest = format!("{package}{manifest}");
-            let base = [("Cargo.toml", manifest.as_str()), ("src/lib.rs", "")];
-            for &(path, text) in base.iter().chain(files) {
-                let path = scratch.path().join(path);
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(path, text).unwrap();
-            }
-            assert_eq!(compiled_outside_the_scan(scratch.path()), found, "{case}");
-        }
         // A call, item or rename outside the list fails in each form the scan
         // reads: a word outside comments, a qualified path or a rename.
         let (avif, other, lib) = ("src/avif.rs", "src/image_helper.rs", "src/lib.rs");
@@ -2655,7 +3172,9 @@ mod tests {
         // Every dav1d call is in that module, and so is every use of the
         // moxcms crate (an AVIF's ICC profile; `image` and hayro-jpeg2000 call
         // it themselves): no other line names it, as a path, `use moxcms as`,
-        // `extern crate` or in a macro, and the manifest gives it no other name.
+        // `extern crate` or in a macro, and the manifest, as Cargo reads it,
+        // gives it no other name (`the_manifest_reaches_only_what_the_scan_reads`,
+        // which holds dav1d-rs and dav1d-sys to their names too).
         for line in [
             "use moxcms as cms;",
             "extern crate moxcms;",
@@ -2680,25 +3199,6 @@ mod tests {
                     assert!(!names_moxcms(line), "{path}:{} names moxcms", index + 1);
                 }
             }
-        }
-        for renamed in [
-            "cms = { version = \"=0.8.1\", package = \"moxcms\" }",
-            "cms = { version = \"=0.8.1\", package = 'moxcms' }",
-            "[dependencies.cms]\npackage='moxcms'",
-            "cms = { \"package\" = \"moxcms\" }",
-            "[dependencies.cms]\npackage = \"\"\"moxcms\"\"\"",
-            "[dependencies.cms]\npackage = \"\"\"\nmoxcms\"\"\"",
-            "[dependencies.cms]\npackage = '''moxcms'''",
-            "[dependencies.cms]\npackage = '''\nmoxcms'''",
-        ] {
-            assert!(renames_to(renamed, "moxcms"), "{renamed}");
-        }
-        assert!(!renames_to("moxcms = { version = \"=0.8.1\" }", "moxcms"));
-        // Nor is dav1d-rs or dav1d-sys renamed, which would reach either crate
-        // without the words the dav1d-rs test above looks for.
-        let manifest = include_str!("../Cargo.toml");
-        for package in ["moxcms", "dav1d", "dav1d-sys"] {
-            assert!(!renames_to(manifest, package), "{package}");
         }
         for module in ["avif.rs", "jpeg2000_hayro.rs", "image_helper.rs"] {
             let (path, text) = sources
