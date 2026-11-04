@@ -2514,6 +2514,7 @@ impl GitTurtle {
                                 let name_floor =
                                     insets + tab_label_widths(&label, pin, &line, window).1;
                                 div()
+                                    .debug_selector(move || format!("repository-tab-frame-{index}"))
                                     .flex()
                                     .items_center()
                                     .gap_0()
@@ -2522,6 +2523,15 @@ impl GitTurtle {
                                     .when(selected, |el| el.bg(rgb(colors.selected)))
                                     .child(
                                         button(("repository-tab", index), label, "", selected)
+                                            // The frame's fill and edge are
+                                            // the selected tab's, so under More
+                                            // contrast its Button keeps no
+                                            // fill, nor edge, of its own.
+                                            .with_variant(
+                                                appearance::control_button_variant_on_fill(
+                                                    selected, cx,
+                                                ),
+                                            )
                                             .flex_shrink(1.)
                                             .min_w(name_floor)
                                             .debug_selector(move || {
@@ -2573,6 +2583,12 @@ impl GitTurtle {
                                                 this.close_repository_tab(index, window, cx)
                                             })),
                                     )
+                                    // Under More contrast the selected tab's
+                                    // 1 px edge, over its frame and both of
+                                    // its Buttons, moving nothing.
+                                    .when(selected, |el| {
+                                        el.children(appearance::resting_edge(px(7.), cx))
+                                    })
                             }),
                     )
                     .children(drag_region),
@@ -7766,6 +7782,89 @@ mod tests {
         app.read_with(cx, |app, _| {
             assert_eq!(app.selected_file, Some(1), "Down moves the file selection");
             assert!(app.pane == Pane::Files);
+        });
+    }
+
+    /// Under More contrast the selected repository tab, whose `selected`
+    /// frame joins its Button to its close button, draws one 1 px edge in the
+    /// kit's resting edge over that frame (`appearance::resting_edge`), at
+    /// rest and with the pointer over its Button, and none over either
+    /// Button inside it: its Button rests on the frame's fill with none of
+    /// its own (`appearance::control_button_variant_on_fill`), so the kit
+    /// draws no second edge. Off, the frame draws no edge and its Button
+    /// keeps the shared helper's selected fill, in Midnight and Braden; the
+    /// frame and both Buttons keep their bounds.
+    #[gpui::test]
+    async fn the_selected_tab_draws_one_resting_edge_over_its_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = views::tests::history_window(cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        views::tests::settle(&app, cx).await;
+        let selectors = [
+            "repository-tab-frame-0",
+            "repository-tab-0",
+            "repository-tab-close-0",
+        ];
+        for theme in [
+            appearance::ThemeChoice::Midnight,
+            appearance::ThemeChoice::Daylight,
+        ] {
+            for hovered in [false, true] {
+                let [off, on] = [false, true].map(|more| {
+                    cx.update(|window, cx| {
+                        appearance::set_more_contrast(more, cx);
+                        theme.apply(Some(window), cx);
+                    });
+                    views::tests::draw(cx);
+                    let bounds = selectors.map(|selector| {
+                        cx.debug_bounds(selector)
+                            .unwrap_or_else(|| panic!("{selector} drawn"))
+                    });
+                    let pointer = if hovered {
+                        bounds[1].center()
+                    } else {
+                        point(px(1.), px(1.))
+                    };
+                    cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                    views::tests::draw(cx);
+                    let edges = appearance::painted_edges(cx, bounds[0]);
+                    let tab = appearance::painted_button(cx, bounds[1]).0;
+                    (bounds, edges, tab)
+                });
+                let at = format!("{theme:?} hovered {hovered}");
+                assert_eq!(on.0, off.0, "{at}: the frame and Buttons keep their bounds");
+                assert!(off.1.is_empty(), "{at}: off, no edge: {:?}", off.1);
+                let (edge, selected) = cx.update(|_, cx| {
+                    let palette = appearance::palette(cx);
+                    (palette.resting_edge(), palette.selected)
+                });
+                let [drawn] = on.1[..] else {
+                    panic!("{at}: one edge in the frame: {:?}", on.1);
+                };
+                let over = |a: Bounds<Pixels>, b: Bounds<Pixels>| {
+                    [
+                        (a.left(), b.left()),
+                        (a.top(), b.top()),
+                        (a.right(), b.right()),
+                        (a.bottom(), b.bottom()),
+                    ]
+                    .into_iter()
+                    .all(|(a, b)| (a - b).abs() < px(0.5))
+                };
+                assert!(
+                    drawn.one_px && drawn.color == edge && over(drawn.bounds, on.0[0]),
+                    "{at}: #{edge:06x} over the frame {:?}: {drawn:?}",
+                    on.0[0]
+                );
+                if !hovered {
+                    let fill = gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(selected)));
+                    assert_eq!(off.2, [fill], "{at}: off, the Button fills as the helper");
+                    assert!(on.2.is_empty(), "{at}: on, no fill of its own: {:?}", on.2);
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            appearance::set_more_contrast(false, cx);
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
         });
     }
 }

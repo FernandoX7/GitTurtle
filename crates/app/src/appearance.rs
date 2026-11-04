@@ -306,6 +306,9 @@ struct ControlButton {
     still: ButtonCustomVariant,
     /// Only for a palette whose [`Palette::control_label`] is not `text`.
     selected: Option<ButtonCustomVariant>,
+    /// The selected look on a fill its container paints, with no fill of its
+    /// own ([`control_button_variant_on_fill`]).
+    on_fill: ButtonCustomVariant,
     /// The selected button's fill while hovered, [`Palette::row_hover`] of a
     /// selected row.
     selected_hover: u32,
@@ -570,6 +573,45 @@ pub fn control_button_variant(selected: bool) -> ButtonVariant {
         ) => ButtonVariant::Custom(variant),
         (true, _) => ButtonVariant::Secondary,
     }
+}
+
+/// [`control_button_variant`] for a Button that lies on a selected fill its
+/// container paints and edges with [`resting_edge`], as a selected
+/// repository tab's frame joins its Button to its close button. While More
+/// contrast is on, a selected one takes that look without a fill of its own
+/// (the container's `selected` shows through it, the same colour), so the
+/// kit draws no second resting edge inside the container's; its label and
+/// its hover ([`control_selected_hover`]) are unchanged. Off, or unselected,
+/// it is [`control_button_variant`].
+pub fn control_button_variant_on_fill(selected: bool, cx: &App) -> ButtonVariant {
+    match CONTROL_BUTTON.get() {
+        Some(control) if selected && Theme::global(cx).resting_edge.is_some() => {
+            ButtonVariant::Custom(control.on_fill)
+        }
+        _ => control_button_variant(selected),
+    }
+}
+
+/// The 1 px edge a control the app draws itself lays over its bounds while
+/// More contrast is on, in the colour the kit's `Theme::resting_edge` edges
+/// its own filled controls with, for one that rests on a fill of its own:
+/// the selected repository tab's frame. An absolutely placed layer with
+/// `radius` corners and no role, added after the control's content so it
+/// paints over it, moves nothing and adds no accessibility node. `None`
+/// while More contrast is off.
+pub fn resting_edge(radius: Pixels, cx: &App) -> Option<gpui_kit::Div> {
+    let edge = Theme::global(cx).resting_edge?;
+    Some(
+        gpui_kit::div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .bottom_0()
+            .right_0()
+            .border_1()
+            .border_color(edge)
+            .rounded(radius),
+    )
 }
 
 /// The shared control at rest, as [`control_button_variant`]`(false)`, with
@@ -1473,6 +1515,89 @@ pub(crate) fn painted_row(
     })
 }
 
+/// A bordered quad the last frame painted inside a control's bounds.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PaintedEdge {
+    /// Its border's color, as `0xRRGGBB` composited over `beneath`.
+    pub(crate) color: u32,
+    /// Whether every side is one logical pixel wide, to the device pixel.
+    pub(crate) one_px: bool,
+    pub(crate) bounds: gpui_kit::Bounds<Pixels>,
+    /// The opaque surface painted beneath it: the topmost solid quad
+    /// drawn before it that holds its bounds and is larger than them.
+    pub(crate) beneath: Option<u32>,
+}
+
+/// Each bordered quad the last frame painted inside `bounds` (logical
+/// pixels, within a device pixel), once: GPUI paints a border over a
+/// transparent fill as a copy per side. A focus ring lies outside a
+/// control's bounds, so it is not among them.
+#[cfg(test)]
+pub(crate) fn painted_edges(
+    cx: &mut gpui_kit::VisualTestContext,
+    bounds: gpui_kit::Bounds<Pixels>,
+) -> Vec<PaintedEdge> {
+    use gpui_kit::{Bounds, ScaledPixels, point};
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let logical = |b: Bounds<ScaledPixels>| {
+            Bounds::from_corners(
+                point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                point(
+                    px(b.right().as_f32() / scale),
+                    px(b.bottom().as_f32() / scale),
+                ),
+            )
+        };
+        let device = px(1. / scale);
+        let holds = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+            inner.left() >= outer.left() - device
+                && inner.top() >= outer.top() - device
+                && inner.right() <= outer.right() + device
+                && inner.bottom() <= outer.bottom() + device
+        };
+        let larger = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+            holds(outer, inner) && !holds(inner, outer)
+        };
+        let quads = window.painted_quads();
+        let mut edges = Vec::new();
+        for quad in &quads {
+            let drawn = logical(quad.bounds);
+            let widths = quad.border_widths;
+            let sides = [widths.top, widths.right, widths.bottom, widths.left];
+            if !sides.iter().any(|width| width.as_f32() > 0.) || !holds(bounds, drawn) {
+                continue;
+            }
+            let beneath = quads
+                .iter()
+                .filter(|under| {
+                    under.order < quad.order
+                        && under.background.as_solid().is_some_and(|fill| fill.a >= 1.)
+                        && larger(logical(under.bounds), drawn)
+                })
+                .max_by_key(|under| under.order)
+                .and_then(|under| under.background.as_solid())
+                .map(packed);
+            let border = quad.border_color.to_rgb();
+            let edge = PaintedEdge {
+                color: beneath.map_or(packed(quad.border_color), |surface| {
+                    composite(border, surface)
+                }),
+                one_px: sides
+                    .iter()
+                    .all(|width| (width.as_f32() - scale).abs() < 0.5),
+                bounds: drawn,
+                beneath,
+            };
+            if !edges.contains(&edge) {
+                edges.push(edge);
+            }
+        }
+        edges
+    })
+}
+
 /// How the keyboard's cursor painted at `bounds` misses its contract in
 /// `palette`, named `name`: the `selected` fill, and one leading marker at
 /// least 2 px wide at 3:1 or more against that fill and against the raised
@@ -2281,6 +2406,7 @@ impl Palette {
             idle: palette.control_button(cx),
             still: palette.still_control_button(cx),
             selected: palette.selected_control_button(cx),
+            on_fill: ButtonCustomVariant::new(cx).foreground(rgb(palette.control_label()).into()),
             selected_hover: palette.row_hover(true),
         }));
         cx.set_global(highlights);
@@ -6468,87 +6594,6 @@ mod tests {
                     },
                 ))
         }
-    }
-
-    /// A bordered quad the last frame painted inside a control's bounds.
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    struct PaintedEdge {
-        /// Its border's color, as `0xRRGGBB` composited over `beneath`.
-        color: u32,
-        /// Whether every side is one logical pixel wide, to the device pixel.
-        one_px: bool,
-        bounds: gpui::Bounds<Pixels>,
-        /// The opaque surface painted beneath it: the topmost solid quad
-        /// drawn before it that holds its bounds and is larger than them.
-        beneath: Option<u32>,
-    }
-
-    /// Each bordered quad the last frame painted inside `bounds` (logical
-    /// pixels, within a device pixel), once: GPUI paints a border over a
-    /// transparent fill as a copy per side. A focus ring lies outside a
-    /// control's bounds, so it is not among them.
-    fn painted_edges(
-        cx: &mut gpui::VisualTestContext,
-        bounds: gpui::Bounds<Pixels>,
-    ) -> Vec<PaintedEdge> {
-        use gpui::{Bounds, ScaledPixels, point};
-        cx.update(|window, _| {
-            let scale = window.scale_factor();
-            let logical = |b: Bounds<ScaledPixels>| {
-                Bounds::from_corners(
-                    point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
-                    point(
-                        px(b.right().as_f32() / scale),
-                        px(b.bottom().as_f32() / scale),
-                    ),
-                )
-            };
-            let device = px(1. / scale);
-            let holds = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
-                inner.left() >= outer.left() - device
-                    && inner.top() >= outer.top() - device
-                    && inner.right() <= outer.right() + device
-                    && inner.bottom() <= outer.bottom() + device
-            };
-            let larger = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
-                holds(outer, inner) && !holds(inner, outer)
-            };
-            let quads = window.painted_quads();
-            let mut edges = Vec::new();
-            for quad in &quads {
-                let drawn = logical(quad.bounds);
-                let widths = quad.border_widths;
-                let sides = [widths.top, widths.right, widths.bottom, widths.left];
-                if !sides.iter().any(|width| width.as_f32() > 0.) || !holds(bounds, drawn) {
-                    continue;
-                }
-                let beneath = quads
-                    .iter()
-                    .filter(|under| {
-                        under.order < quad.order
-                            && under.background.as_solid().is_some_and(|fill| fill.a >= 1.)
-                            && larger(logical(under.bounds), drawn)
-                    })
-                    .max_by_key(|under| under.order)
-                    .and_then(|under| under.background.as_solid())
-                    .map(packed);
-                let border = quad.border_color.to_rgb();
-                let edge = PaintedEdge {
-                    color: beneath.map_or(packed(quad.border_color), |surface| {
-                        composite(border, surface)
-                    }),
-                    one_px: sides
-                        .iter()
-                        .all(|width| (width.as_f32() - scale).abs() < 0.5),
-                    bounds: drawn,
-                    beneath,
-                };
-                if !edges.contains(&edge) {
-                    edges.push(edge);
-                }
-            }
-            edges
-        })
     }
 
     /// The pointer and focus states a control's resting edge is read in.
