@@ -11696,7 +11696,7 @@ pub(crate) mod tests {
 
     /// Whether hovering `selector` shows a tooltip; the pointer then leaves.
     #[cfg(target_os = "linux")]
-    fn shows_tooltip(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+    pub(crate) fn shows_tooltip(cx: &mut VisualTestContext, selector: &'static str) -> bool {
         let popover =
             cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
         let popups = move |cx: &mut VisualTestContext| {
@@ -11795,8 +11795,9 @@ pub(crate) mod tests {
     /// Side by side, and across a source image's room, it stands where the
     /// side's image would be, in that side's room of the image's area, inside
     /// the preview, at 13 and 18 pt in 461 × 490 and 640 × 680 windows: whole
-    /// where the room holds it, and otherwise on the whole lines it holds,
-    /// the last ending in an ellipsis with the whole line in its tooltip. It
+    /// where two lines ending between words hold it, and otherwise on two,
+    /// or the one its room holds, the last ending in an ellipsis with the
+    /// whole line in its tooltip. It
     /// is static text read by its whole line, once: the caption neither
     /// draws it nor repeats it in the name's accessible name, and where the
     /// notes have given way the area is named for the images it draws ("After
@@ -11915,24 +11916,76 @@ pub(crate) mod tests {
                     .is_some(),
                 "{at}: the line draws {drawn:?}"
             );
-            let (lines, line) = wraps(drawn, room, cx);
+            let (_, line) = wraps(drawn, room, cx);
             let shown = (said.size.height / line).round() as usize;
             assert!(
                 (said.size.height - line * shown as f32).abs() <= slack && shown >= 1,
                 "{at}: the line {said:?} ends at a whole line of {line:?}"
             );
-            let cut = shown < lines;
+            // On at most two lines ending between words, the last ending in
+            // an ellipsis where they leave words out
+            // (`image_compare::render_tests::a_failure_in_the_images_place_takes_two_lines_of_whole_words`).
+            let lines = crate::image_compare::IN_PLACE
+                .with(|drawn| drawn.borrow()[side].clone())
+                .unwrap_or_else(|| panic!("{at}: the side's lines are drawn"))
+                .lines;
+            assert!(
+                shown == lines.len() && shown <= 2,
+                "{at}: the line {said:?} draws its lines {lines:?}, two at most"
+            );
+            let cut = lines.last().is_some_and(|last| last.ends_with('…'));
+            let words = |text: &str| {
+                text.split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
             if cut {
-                // Cut only where one more line would not fit its room.
+                // Cut only where two lines, or the one its room holds, do
+                // not hold it, or sooner where a word no line holds whole,
+                // alone on the last line, is cut before its ellipsis
+                // ("Unsupported" at 13 pt in a 461 × 490 window), or where
+                // a word the second line would start, left out, does not
+                // fit beside the ellipsis, which then ends the first line.
+                let last = lines.last().map_or("", |last| last.trim_end_matches('…'));
+                let word_cut = !last.contains(' ')
+                    && text
+                        .split_whitespace()
+                        .any(|word| word != last && word.starts_with(last));
+                let kept = words(&lines.join(" ")).len();
+                let moved = shown == 1
+                    && cx.update(|window, _| {
+                        let weight = window.text_style().font_weight;
+                        text.split_whitespace().skip(kept).any(|word| {
+                            shaped_width(
+                                &format!("{word}…"),
+                                appearance::ui_text(11.),
+                                weight,
+                                window,
+                            ) > room - px(1.)
+                        })
+                    });
                 assert!(
-                    said.size.height + line > area.size.height - rem + slack,
-                    "{at}: the line {said:?} shows {shown} of its {lines} lines though {area:?} holds more"
+                    shown == 2
+                        || said.size.height + line > area.size.height - rem + slack
+                        || word_cut
+                        || moved,
+                    "{at}: the line {said:?} is cut on {shown} line though {area:?} holds more"
                 );
             } else {
+                // Uncut, its lines are the words it draws, whole and in
+                // order: an absent side's two sentences a line each.
                 assert_eq!(
-                    shown, lines,
-                    "{at}: the line shows all of its {lines} lines"
+                    words(&lines.join(" ")),
+                    words(drawn),
+                    "{at}: the lines {lines:?} draw {drawn:?} whole, in order"
                 );
+                if brief.is_some() && drawn == text {
+                    assert_eq!(
+                        lines,
+                        text.split('\n').collect::<Vec<_>>(),
+                        "{at}: its two sentences, a line each, in order"
+                    );
+                }
             }
             if brief.is_some() {
                 assert!(!cut, "{at}: {drawn:?} says the cause whole");

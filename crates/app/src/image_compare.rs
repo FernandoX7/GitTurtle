@@ -1097,18 +1097,12 @@ impl GitTurtle {
                     window,
                     cx,
                 );
-                // Where its image would be, an absent side's two sentences'
-                // lines and its short line's, at the band's size.
+                // Where its image would be, what a side without one draws
+                // at the band's size in a room of one line and of two.
                 let empty = [0, 1].map(|i| {
-                    if kinds[i] != Details::InItsPlace {
-                        return [0, 0];
-                    }
-                    [
-                        wrapped_lines(&details[i], band_size, caption_text, window),
-                        shorts[i].map_or(0, |short| {
-                            wrapped_lines(short, band_size, caption_text, window)
-                        }),
-                    ]
+                    (kinds[i] == Details::InItsPlace).then(|| {
+                        InPlace::measured(&details[i], shorts[i], band_size, caption_text, window)
+                    })
                 });
                 let fit = std::rc::Rc::new(CaptionFit {
                     natural,
@@ -1133,7 +1127,7 @@ impl GitTurtle {
                 (guidance, &GUIDANCE_LINE),
             ]
             .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
-            let (kept_lines, empty) = (&measured.kept_lines, measured.empty);
+            let (kept_lines, empty) = (&measured.kept_lines, &measured.empty);
             let captions = Captions {
                 names,
                 details: &details,
@@ -1166,12 +1160,16 @@ impl GitTurtle {
                 note_pad,
                 stage_min,
             );
-            // An image-less side's reason, where its image would be: whole
-            // where the image's room holds it, otherwise on the whole lines
-            // it holds, the last ending in an ellipsis with the whole line in
-            // its tooltip. It is static text read by that whole line, so the
-            // side's name leaves it out; where the room holds no line, the
-            // name keeps it, in its accessible name and tooltip.
+            // An image-less side's reason, where its image would be, on at
+            // most two lines that end at word boundaries: whole where they
+            // hold it, otherwise ending in an ellipsis with the whole reason
+            // in its tooltip, on one line where the image's room holds only
+            // one. It is static text read by its whole reason, so the side's
+            // name leaves it out; where the room holds no line, the name
+            // keeps it, in its accessible name and tooltip. Clamped to the
+            // lines the room held, a sentence took six lines at 13 pt in a
+            // 461 × 490 window, broken inside its words ("JP2-compati /
+            // ble"), and three at 18 pt.
             let area =
                 fit.below - fit.band_height - notes_height(wraps, note_lines, note_line, note_pad);
             let empty_lines = ((area - window.rem_size()) / band_lines.line)
@@ -1180,6 +1178,8 @@ impl GitTurtle {
             let said = [0, 1].map(|i| {
                 fit.image_shown && empty_lines > 0 && drawn(i) && kinds[i] == Details::InItsPlace
             });
+            #[cfg(all(test, target_os = "linux"))]
+            IN_PLACE.set([None, None]);
             let empties = said.contains(&true).then(|| {
                 div()
                     .debug_selector(|| "image-side-empties".into())
@@ -1198,17 +1198,20 @@ impl GitTurtle {
                             // ("No image on / this side / The file was /
                             // added").
                             let text = details[i].clone();
-                            let [whole_lines, short_lines] = empty[i];
-                            let drawn = match shorts[i] {
-                                Some(short) if whole_lines > empty_lines.min(2) => short.to_owned(),
-                                _ => text.clone(),
-                            };
-                            let drawn_lines = if drawn == text {
-                                whole_lines
-                            } else {
-                                short_lines
-                            };
-                            let cut = drawn != text || drawn_lines > empty_lines;
+                            let InPlace { short, lines, cut } = empty[i]
+                                .as_ref()
+                                .map(|room| room[empty_lines.min(2) - 1].clone())
+                                .unwrap_or_default();
+                            let drawn = shorts[i]
+                                .filter(|_| short)
+                                .map_or_else(|| text.clone(), str::to_owned);
+                            #[cfg(all(test, target_os = "linux"))]
+                            IN_PLACE.with(|drawn| {
+                                drawn.borrow_mut()[i] = Some(InPlaceDrawn {
+                                    lines: lines.clone(),
+                                    tooltip: cut.then(|| text.clone()),
+                                })
+                            });
                             let whole = text.clone();
                             native_accessibility::static_text(
                                 div()
@@ -1220,8 +1223,6 @@ impl GitTurtle {
                             .text_center()
                             .text_size(band_size)
                             .text_color(rgb(p.muted))
-                            .line_clamp(empty_lines)
-                            .text_ellipsis()
                             .when(cut, |line| {
                                 line.tooltip(move |window, cx| {
                                     gpui_kit::component::tooltip::Tooltip::new(whole.clone())
@@ -1230,11 +1231,22 @@ impl GitTurtle {
                             })
                             .child(
                                 div()
-                                    .debug_selector({
-                                        let drawn = drawn.clone();
-                                        move || format!("image-side-empty-{i}: {drawn}")
+                                    .debug_selector(move || {
+                                        format!("image-side-empty-{i}: {drawn}")
                                     })
-                                    .child(drawn),
+                                    // Each line laid out on its own, never
+                                    // wrapped again: measured to fit, it
+                                    // would end in an ellipsis rather than
+                                    // break inside a word should layout ever
+                                    // give it less.
+                                    .children(lines.into_iter().enumerate().map(|(n, line)| {
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("image-side-empty-{i}-line-{n}")
+                                            })
+                                            .truncate()
+                                            .child(line)
+                                    })),
                             )
                         });
                         div()
@@ -2439,16 +2451,179 @@ type CaptionCache = std::rc::Rc<std::cell::RefCell<Option<(CaptionKey, std::rc::
 /// What the room beneath an image comparison's toolbar measured for a
 /// [`CaptionKey`]: the lines each side's band line wraps to, the line an
 /// absent side keeps beneath its name and whether it wraps, the captions'
-/// heights without and with their dimensions, and, where an absent side
-/// says why in its image's place, the lines its sentences and its short
-/// line take there.
+/// heights without and with their dimensions, and, where a side without an
+/// image says why in its image's place, what it draws there in a room of
+/// one line and of two.
 struct CaptionFit {
     natural: [usize; 2],
     kept_lines: [Option<String>; 2],
     kept_wraps: [bool; 2],
     names: Pixels,
     dimensions: Pixels,
-    empty: [[usize; 2]; 2],
+    empty: [Option<[InPlace; 2]>; 2],
+}
+
+/// What a side without an image draws where its image would be, in a room
+/// of one line or of two, the most it takes there.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct InPlace {
+    /// Whether its short line stands for its sentences, which do not hold
+    /// that room whole ([`absent_short`]).
+    short: bool,
+    /// The lines drawn ([`clamped_lines`]).
+    lines: Vec<String>,
+    /// Whether they leave out any of its words, which its tooltip keeps.
+    cut: bool,
+}
+
+impl InPlace {
+    /// Side's reason `text` and any `short` line, laid out at `size` for a
+    /// room of one line and of two, `room` wide: its sentences where they
+    /// hold that room whole, otherwise its short line where it has one,
+    /// on lines ending at word boundaries ([`clamped_lines`]). Each line
+    /// is measured as its text element shapes it, a pixel inside `room`,
+    /// which layout can round a side's padding into.
+    fn measured(
+        text: &str,
+        short: Option<&str>,
+        size: Pixels,
+        room: Pixels,
+        window: &Window,
+    ) -> [Self; 2] {
+        let room = room - px(1.);
+        let style = window.text_style();
+        let width = |line: &str| {
+            window
+                .text_system()
+                .layout_line(line, size, &[style.to_run(line.len())], None)
+                .width
+        };
+        let whole = word_lines(text, room, &width);
+        let brief = short.map(|short| word_lines(short, room, &width));
+        [1, 2].map(|most| {
+            let (lines, cut) = clamped_lines(&whole, most, room, &width);
+            match &brief {
+                Some(brief) if cut => Self {
+                    short: true,
+                    lines: clamped_lines(brief, most, room, &width).0,
+                    cut: true,
+                },
+                _ => Self {
+                    short: false,
+                    lines,
+                    cut,
+                },
+            }
+        })
+    }
+}
+
+/// The ellipsis a line that leaves words out ends in.
+const ELLIPSIS: &str = "…";
+
+/// `text` wrapped at its spaces into lines no wider than `room`, as `width`
+/// measures them, each of its own lines (split at `\n`) starting a line: a
+/// line ends only between words, and a word wider than `room` takes a line
+/// of its own. GPUI's wrapper breaks such a word wherever the line runs out
+/// ("JP2-compati / ble").
+fn word_lines(text: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> Vec<String> {
+    let mut lines = Vec::new();
+    for sentence in text.split('\n') {
+        let mut line = String::new();
+        for word in sentence.split_whitespace() {
+            if line.is_empty() {
+                line.push_str(word);
+                continue;
+            }
+            let longer = format!("{line} {word}");
+            if width(&longer) <= room {
+                line = longer;
+            } else {
+                lines.push(std::mem::replace(&mut line, word.to_owned()));
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// `lines` ([`word_lines`]) on at most `most` lines, and whether that leaves
+/// out any of their words: all of them where they are that many and each
+/// fits `room`; otherwise the lines before the last drawn, which is the
+/// `most`th or the first wider than `room`, whole, and that line's most
+/// words that fit whole beside an ellipsis. Words stay whole wherever they
+/// can: where that line's first word fits a line alone but not beside the
+/// ellipsis, the line before ends in it instead, its last words dropped
+/// until it fits, so fewer lines are drawn. A word wider than `room`, which
+/// no line holds whole even alone, is cut at a character boundary after
+/// the whole lines before it and ends the text, since in an error that
+/// word is usually the path or hash that matters; so is the last line's
+/// first word where no line drawn holds a whole word beside the ellipsis.
+fn clamped_lines(
+    lines: &[String],
+    most: usize,
+    room: Pixels,
+    width: &impl Fn(&str) -> Pixels,
+) -> (Vec<String>, bool) {
+    let most = most.max(1);
+    let wide = lines.iter().position(|line| width(line) > room);
+    let last = match wide {
+        Some(wide) if wide < most => wide,
+        _ if lines.len() > most => most - 1,
+        _ => return (lines.to_vec(), false),
+    };
+    // A line's most words that fit whole beside the ellipsis.
+    let beside = |line: &str| {
+        let words: Vec<&str> = line.split(' ').collect();
+        (1..=words.len())
+            .rev()
+            .map(|kept| ended(&words[..kept].join(" ")))
+            .find(|line| width(line) <= room)
+    };
+    // A line wider than the room is one word no line holds whole: it is
+    // cut where it stands rather than left out with its line.
+    let (at, line) = (wide != Some(last))
+        .then(|| {
+            (0..=last)
+                .rev()
+                .find_map(|at| beside(&lines[at]).map(|line| (at, line)))
+        })
+        .flatten()
+        .unwrap_or_else(|| {
+            let word = lines[last].split(' ').next().unwrap_or_default();
+            (last, cut_word(word, room, width))
+        });
+    let mut drawn = lines[..at].to_vec();
+    drawn.push(line);
+    (drawn, true)
+}
+
+/// `word`, which does not fit `room` whole beside an ellipsis, cut at the
+/// longest prefix that does, or the ellipsis alone where none does. A
+/// longer prefix is never narrower, so a binary search of its character
+/// boundaries finds that prefix in a logarithmic number of layouts: a
+/// reason can hold a path, URL or hash hundreds of characters long, which
+/// trying each prefix from the longest laid out once per character.
+fn cut_word(word: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> String {
+    let ends: Vec<usize> = word
+        .char_indices()
+        .map(|(end, _)| end)
+        .filter(|&end| end > 0)
+        .collect();
+    let fitting = ends.partition_point(|&end| width(&ended(&word[..end])) <= room);
+    fitting
+        .checked_sub(1)
+        .map_or_else(|| ELLIPSIS.to_owned(), |kept| ended(&word[..ends[kept]]))
+}
+
+/// `words` ending in the ellipsis, less the spaces and a clause's
+/// punctuation (`.,;:`) they end in, which the ellipsis stands for. Other
+/// punctuation is part of a word, as in "100%" and "C++".
+fn ended(words: &str) -> String {
+    let words = words.trim_end_matches(|c: char| c.is_whitespace() || ".,;:".contains(c));
+    format!("{words}{ELLIPSIS}")
 }
 
 #[cfg(test)]
@@ -2457,6 +2632,23 @@ thread_local! {
     pub(crate) static CAPTION_FITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How often it has made an owned [`CaptionKey`].
     pub(crate) static CAPTION_KEYS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    /// What each side last drew in its image's place, where it drew there,
+    /// for the rendered tests, which run on Linux.
+    pub(crate) static IN_PLACE: std::cell::RefCell<[Option<InPlaceDrawn>; 2]> =
+        const { std::cell::RefCell::new([None, None]) };
+}
+
+/// The lines a side drew in its image's place, and its tooltip's text where
+/// they leave words out.
+#[cfg(all(test, target_os = "linux"))]
+#[derive(Clone, Debug)]
+pub(crate) struct InPlaceDrawn {
+    pub(crate) lines: Vec<String>,
+    pub(crate) tooltip: Option<String>,
 }
 
 /// What the line beneath a side's name says, and where it is drawn.
@@ -2768,9 +2960,220 @@ pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: 
 #[cfg(test)]
 mod tests {
     use super::{
-        BandLines, Beneath, Drag, Pan, State, ToolbarForms, layout, note_lines, source_geometry,
+        BandLines, Beneath, Drag, Pan, State, ToolbarForms, clamped_lines, layout, note_lines,
+        source_geometry, word_lines,
     };
     use gpui_kit::{point, px};
+
+    /// A reason in an image's place wraps only between words and takes at
+    /// most the lines its room holds, two at most: the lines before its last
+    /// whole, and the last ending in an ellipsis after the words that fit
+    /// beside it. Only a word wider than the room, or one no line drawn
+    /// holds whole beside an ellipsis, is cut inside
+    /// (`an_ellipsis_ends_the_line_before_rather_than_cut_a_word`). GPUI's
+    /// wrapper broke "JP2-compatible" and "32-million-pixel" wherever a line
+    /// ran out. Every character here is 6 px wide, a room 11 characters.
+    #[test]
+    fn a_reason_in_the_images_place_keeps_whole_words_on_two_lines() {
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let room = px(66.);
+        let jpx = "This JPX file is not JP2-compatible and is not decoded on Linux";
+        let lines = word_lines(jpx, room, &width);
+        assert_eq!(
+            lines,
+            [
+                "This JPX",
+                "file is not",
+                "JP2-compatible",
+                "and is not",
+                "decoded on",
+                "Linux"
+            ],
+            "lines end between words, the wide word on its own"
+        );
+        assert_eq!(
+            clamped_lines(&lines, 2, room, &width),
+            (vec!["This JPX".to_owned(), "file is…".to_owned()], true),
+            "two lines, the second ending in an ellipsis after whole words"
+        );
+        assert_eq!(
+            clamped_lines(&lines, 1, room, &width),
+            (vec!["This JPX…".to_owned()], true),
+            "a room of one line"
+        );
+        // Whole where its lines are no more than the room's and each fits.
+        let absent = "No image on this side\nThe file was added";
+        let wide = px(6. * 21.);
+        let lines = word_lines(absent, wide, &width);
+        assert_eq!(lines, ["No image on this side", "The file was added"]);
+        assert_eq!(
+            clamped_lines(&lines, 2, wide, &width),
+            (lines.clone(), false)
+        );
+        // A line's last word keeps no punctuation before the ellipsis.
+        assert_eq!(
+            clamped_lines(
+                &word_lines("No image: file added", px(60.), &width),
+                1,
+                px(60.),
+                &width
+            ),
+            (vec!["No image…".to_owned()], true)
+        );
+        // A word wider than the room, first on its line, is the only one cut
+        // inside, and ends the reason there.
+        let tiles = "32-million-pixel limit";
+        let lines = word_lines(tiles, room, &width);
+        assert_eq!(lines, ["32-million-pixel", "limit"]);
+        assert_eq!(
+            clamped_lines(&lines, 2, room, &width),
+            (vec!["32-million…".to_owned()], true)
+        );
+        // Where not even its first character fits beside it, the ellipsis.
+        assert_eq!(
+            clamped_lines(&lines, 2, px(6.), &width),
+            (vec!["…".to_owned()], true)
+        );
+    }
+
+    /// Words stay whole wherever they can. Where the second line's first
+    /// word fits a line whole but not beside the ellipsis, the first line
+    /// ends in it instead, its last words dropped until it fits, so the
+    /// reason takes one line: the ellipsis once followed part of that word
+    /// ("compatibl…"), which the line held whole. A word wider than the
+    /// room, which no line holds whole even alone, is cut after the whole
+    /// lines before it and ends the text ("Error: / /very/long…"), since in
+    /// an error that word is usually the path or hash that matters; so is
+    /// the last line's word where no line drawn holds a whole word beside
+    /// the ellipsis. Every character here is 6 px wide, a room 10
+    /// characters unless said.
+    #[test]
+    fn an_ellipsis_ends_the_line_before_rather_than_cut_a_word() {
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let room = px(60.);
+        let two_lines =
+            |text: &str| clamped_lines(&word_lines(text, room, &width), 2, room, &width);
+        assert_eq!(
+            word_lines("The JPX is compatible but not decoded", room, &width),
+            ["The JPX is", "compatible", "but not", "decoded"]
+        );
+        assert_eq!(
+            two_lines("The JPX is compatible but not decoded"),
+            (vec!["The JPX…".to_owned()], true),
+            "one line, ending after a whole word"
+        );
+        // A word wider than the room on the second line, which no line
+        // holds whole even alone, is cut there after the first line, whole.
+        assert_eq!(
+            two_lines("The JPX is 32-million-pixel"),
+            (vec!["The JPX is".to_owned(), "32-millio…".to_owned()], true)
+        );
+        // In a room of 11 characters.
+        let wider = px(66.);
+        assert_eq!(
+            clamped_lines(
+                &word_lines("Error: /very/long/path/to/image.png", wider, &width),
+                2,
+                wider,
+                &width
+            ),
+            (vec!["Error:".to_owned(), "/very/long…".to_owned()], true),
+            "the path is cut, not left out"
+        );
+        // Where the first line holds no whole word beside the ellipsis
+        // either, the second line's word is cut, the first kept whole.
+        assert_eq!(
+            two_lines("compatible 0123456789 reason"),
+            (vec!["compatible".to_owned(), "012345678…".to_owned()], true)
+        );
+        // Where the second line's words fit beside it, the ellipsis follows
+        // the most of them.
+        assert_eq!(
+            two_lines("The JPX is not in a decodable form"),
+            (vec!["The JPX is".to_owned(), "not in a…".to_owned()], true)
+        );
+    }
+
+    /// A word cut inside is cut at the longest prefix that fits beside the
+    /// ellipsis, found in a logarithmic number of layouts: a reason can hold
+    /// a path, URL or hash hundreds of characters long, and trying each
+    /// prefix from the longest laid a 200-character one out 192 times. Every
+    /// character here is 6 px wide, a room 11 characters.
+    #[test]
+    fn a_long_word_is_cut_in_a_logarithmic_number_of_layouts() {
+        let layouts = std::cell::Cell::new(0_usize);
+        let width = |text: &str| {
+            layouts.set(layouts.get() + 1);
+            px(6. * text.chars().count() as f32)
+        };
+        let room = px(66.);
+        let token = "0123456789abcdef".repeat(13)[..200].to_owned();
+        let lines = word_lines(&token, room, &width);
+        assert_eq!(lines, [token.as_str()]);
+        layouts.set(0);
+        assert_eq!(
+            clamped_lines(&lines, 2, room, &width),
+            (vec![format!("{}…", &token[..10])], true),
+            "the longest prefix that fits beside the ellipsis"
+        );
+        // One layout to find the line wider than the room, which is cut
+        // where it stands, and a binary search of its 199 boundaries.
+        let logarithmic = 1 + (token.len() as f32).log2().ceil() as usize + 2;
+        assert!(
+            layouts.get() <= logarithmic,
+            "{} layouts, more than {logarithmic}",
+            layouts.get()
+        );
+        // The same prefix at every room.
+        for characters in 1_usize..=12 {
+            let room = px(6. * characters as f32);
+            let kept = characters.saturating_sub(1);
+            let cut = if kept == 0 {
+                "…".to_owned()
+            } else {
+                format!("{}…", &token[..kept])
+            };
+            assert_eq!(
+                clamped_lines(&lines, 1, room, &width),
+                (vec![cut], true),
+                "a room of {characters} characters"
+            );
+        }
+    }
+
+    /// Only a clause's punctuation and spaces give way to an ellipsis: a
+    /// word's own, as in "100%" or "C++", is part of the word, which read
+    /// "100…" and "C…" when every ASCII punctuation mark was trimmed. Every
+    /// character here is 6 px wide.
+    #[test]
+    fn an_ellipsis_keeps_a_words_own_punctuation() {
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let one_line = |text: &str, characters: f32| {
+            let room = px(6. * characters);
+            clamped_lines(&word_lines(text, room, &width), 1, room, &width)
+        };
+        assert_eq!(
+            one_line("Shown at 100% of its size", 14.),
+            (vec!["Shown at 100%…".to_owned()], true)
+        );
+        assert_eq!(
+            one_line("Written in C++ and not decoded", 15.),
+            (vec!["Written in C++…".to_owned()], true)
+        );
+        // A clause's punctuation, and the spaces before it, give way.
+        for (text, room) in [
+            ("Not decoded, the file is too large", 12.),
+            ("Not decoded; the file is too large", 12.),
+            ("Not decoded. The file is too large", 12.),
+            ("Not decoded: the file is too large", 12.),
+        ] {
+            assert_eq!(
+                one_line(text, room),
+                (vec!["Not decoded…".to_owned()], true),
+                "{text:?}"
+            );
+        }
+    }
 
     /// As the room beneath the toolbar shrinks, labels give way in one order
     /// before the image gives up its minimum: the dimensions (their words in
@@ -4119,5 +4522,222 @@ mod render_tests {
             }
             cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         }
+    }
+
+    /// A side whose image could not be shown says why in its image's place
+    /// on at most two lines, each ending between words and laid out as one
+    /// line, the second ending in an ellipsis where words are left out, with
+    /// the whole sentence in its tooltip and accessible name, at 11, 13 and
+    /// 18 pt in 461 × 490 and 1480 × 973 windows at scales 2 and 1.25, each
+    /// line's shaped text inside the side's room (each is drawn as one line,
+    /// cut by its box rather than wrapped, so a line measured for a wider
+    /// room kept its height). Side by side at 13 pt in
+    /// 461 × 490, "This JPX file is not JP2-compatible and is not decoded on
+    /// Linux" took six lines broken inside its words ("JP2-compati / ble")
+    /// and showed no tooltip, and at 18 pt three lines ending in an
+    /// ellipsis: the clamp was the lines the image's room held. A word is cut
+    /// inside where it is wider than the room, or where no line drawn holds
+    /// a whole word beside an ellipsis, and it then ends the text, alone on
+    /// the last line: so a word of 200 characters, as an error's path or
+    /// hash can be, takes one.
+    #[gpui::test]
+    async fn a_failure_in_the_images_place_takes_two_lines_of_whole_words(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let png = crate::system_preview::tests::png(Some(b"image"));
+        let (_fixture, app, cx) =
+            history_window_from(&mut *cx, image_commits(&[Some(png.as_slice())])).await;
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let jpx = "This JPX file is not JP2-compatible and is not decoded on Linux";
+        // One word of 200 characters, as a path, URL or hash in an error can
+        // be, wider than any side's room.
+        let token = "0123456789abcdef".repeat(13)[..200].to_owned();
+        let sentences = [
+            jpx,
+            "Image exceeds the 32-million-pixel limit",
+            "Image dimensions exceed the 32768-pixel edge limit",
+            "AVIF image grids are not decoded on Linux yet",
+            "The image took longer than 10 seconds to decode and was stopped.",
+            token.as_str(),
+        ];
+        let windows = [
+            (11, 461., 490.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (11, 1480., 973.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ];
+        let slack = px(0.5);
+        let mut met = std::collections::BTreeSet::new();
+        for sentence in sentences {
+            crate::views::tests::edit_image_sides(&app, cx, |side, image| {
+                if side == 1 {
+                    image.image = None;
+                    image.render = None;
+                    image.message = Some(sentence.to_owned());
+                }
+            });
+            for (scale, (text, width, height)) in [2., 1.25]
+                .into_iter()
+                .flat_map(|scale| windows.map(|window| (scale, window)))
+            {
+                let at =
+                    format!("{sentence:?} at {text} pt in {width} × {height} at scale {scale}");
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                written::forget();
+                draw(cx);
+                let drawn = super::IN_PLACE
+                    .with(|drawn| drawn.borrow()[1].clone())
+                    .unwrap_or_else(|| panic!("{at}: After says why in its image's place"));
+                let lines = &drawn.lines;
+                assert!(
+                    (1..=2).contains(&lines.len()),
+                    "{at}: {lines:?} take one or two lines"
+                );
+                // After's room in the image's area, less its padding, and
+                // one line at the reason's size.
+                let area = cx
+                    .debug_bounds("image-canvas-area")
+                    .expect("the image's area");
+                let (line, band, room, weight) = cx.update(|window, _| {
+                    let band = appearance::ui_text(11.);
+                    (
+                        super::text_line(band, window),
+                        band,
+                        area.size.width / 2. - window.rem_size() * 1.5,
+                        window.text_style().font_weight,
+                    )
+                });
+                let said = cx
+                    .debug_bounds("image-side-empty-1")
+                    .expect("After's reason");
+                assert!(
+                    (said.size.height - line * lines.len() as f32).abs() <= slack
+                        && said.left() >= area.center().x - slack
+                        && said.right() <= area.right() + slack,
+                    "{at}: {said:?} holds its {} lines in After's half of {area:?}",
+                    lines.len()
+                );
+                for (n, drawn_line) in lines.iter().enumerate() {
+                    let laid = cx
+                        .debug_bounds(format!("image-side-empty-1-line-{n}").leak())
+                        .unwrap_or_else(|| panic!("{at}: line {n} is drawn"));
+                    assert!(
+                        (laid.size.height - line).abs() <= slack,
+                        "{at}: line {n}, {drawn_line:?}, is laid out as one line: {laid:?}"
+                    );
+                    // Its text, shaped, fits the side's room: a line drawn
+                    // as one line is cut by its box, never wrapped, so its
+                    // height alone cannot show it wider than the room.
+                    let shaped = cx.update(|window, _| {
+                        crate::views::shaped_width(drawn_line, band, weight, window)
+                    });
+                    assert!(
+                        shaped <= room,
+                        "{at}: line {n}, {drawn_line:?}, is {shaped:?} wide, wider than {room:?}"
+                    );
+                }
+                assert!(
+                    cx.debug_bounds(format!("image-side-empty-1-line-{}", lines.len()).leak())
+                        .is_none(),
+                    "{at}: no more lines than {lines:?}"
+                );
+                // The lines read the sentence's words in order, whole: only
+                // the last ends in an ellipsis, after a whole word less any
+                // clause punctuation it ends in (`.,;:`), or after part of a
+                // word alone on it that does not fit beside one.
+                let words: Vec<&str> = sentence.split_whitespace().collect();
+                let mut next = 0;
+                let last = lines.len() - 1;
+                for (n, drawn_line) in lines.iter().enumerate() {
+                    let ended = drawn_line.strip_suffix('…');
+                    assert!(
+                        ended.is_none() || n == last,
+                        "{at}: only the last line ends in an ellipsis: {lines:?}"
+                    );
+                    let tokens: Vec<&str> = ended.unwrap_or(drawn_line).split(' ').collect();
+                    for (t, token) in tokens.iter().enumerate() {
+                        let word = *words
+                            .get(next)
+                            .unwrap_or_else(|| panic!("{at}: {lines:?} add words"));
+                        next += 1;
+                        let ends = ended.is_some() && t + 1 == tokens.len();
+                        let bare = word.trim_end_matches(|c: char| ".,;:".contains(c));
+                        if *token == word || (ends && *token == bare) {
+                            continue;
+                        }
+                        assert!(
+                            ends && tokens.len() == 1 && word.starts_with(token),
+                            "{at}: line {n}, {drawn_line:?}, ends inside {word:?}: {lines:?}"
+                        );
+                        let wide = cx.update(|window, _| {
+                            crate::views::shaped_width(&format!("{word}…"), band, weight, window)
+                        });
+                        assert!(
+                            wide > room - px(2.),
+                            "{at}: {word:?} is cut though {wide:?} fits beside an ellipsis in {room:?}"
+                        );
+                        met.insert("a word wider than its line");
+                    }
+                }
+                let cut = lines[last].ends_with('…');
+                assert!(
+                    cut || next == words.len(),
+                    "{at}: {lines:?} say the whole sentence or end in an ellipsis"
+                );
+                met.insert(if cut { "cut" } else { "whole" });
+                if sentence == jpx && text == 13 && width < 500. {
+                    assert_eq!(lines.len(), 2, "{at}: QA's frame takes two lines");
+                    assert!(cut, "{at}: QA's frame ends in an ellipsis");
+                    met.insert("QA's frame");
+                }
+                if sentence == token {
+                    assert!(
+                        lines.len() == 1 && cut,
+                        "{at}: a word wider than the room takes one cut line: {lines:?}"
+                    );
+                    met.insert("a 200-character word");
+                }
+                // The whole sentence stays in its tooltip where words are
+                // left out, and always in its accessible name.
+                assert_eq!(
+                    drawn.tooltip.as_deref(),
+                    cut.then_some(sentence),
+                    "{at}: the tooltip holds the whole sentence where words are left out"
+                );
+                let read = written::get("image-side-empty-1")
+                    .unwrap_or_else(|| panic!("{at}: the reason is a node"));
+                assert_eq!(
+                    read.node.value(),
+                    Some(sentence),
+                    "{at}: read by the whole sentence"
+                );
+                assert_eq!(
+                    crate::views::tests::shows_tooltip(cx, "image-side-empty-1"),
+                    cut,
+                    "{at}: hovering shows the tooltip only where words are left out"
+                );
+            }
+        }
+        assert!(
+            [
+                "QA's frame",
+                "cut",
+                "whole",
+                "a word wider than its line",
+                "a 200-character word"
+            ]
+            .iter()
+            .all(|case| met.contains(case)),
+            "the walk meets each case: {met:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }
