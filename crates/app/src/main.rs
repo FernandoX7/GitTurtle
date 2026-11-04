@@ -181,19 +181,41 @@ const RESTORED_PREVIEW_LABEL: &str = "Restoring captured comparison…";
 /// read moves the generation on, and its own reply clears `loading`.
 struct PreviewRead {
     generation: u64,
+    /// What a comparison's read (`Job::Preview`) reads, the whole of its
+    /// input: the repository, the changed file and the revision pair its
+    /// documents resolve against. Text mode, zoom and the review's options
+    /// apply as the reply is shown, not to the read. The other preview
+    /// reads have none.
+    target: Option<PreviewTarget>,
+}
+
+/// A comparison read's input ([`PreviewRead::target`]).
+#[derive(PartialEq)]
+struct PreviewTarget {
+    repository: PathBuf,
+    file: FileChange,
+    origins: markdown_view::Origins,
 }
 
 impl PreviewRead {
     /// The preview read `job` is, if it is one, asked for at `generation`.
     fn of(job: &Job, generation: u64) -> Option<Self> {
-        matches!(
-            job,
-            Job::Preview { .. }
-                | Job::TrackedPreview { .. }
-                | Job::WorkingPreview { .. }
-                | Job::ReviewText { .. }
-        )
-        .then_some(Self { generation })
+        let target = match job {
+            Job::Preview {
+                repo,
+                file,
+                origins,
+            } => Some(PreviewTarget {
+                repository: repo.path().to_owned(),
+                file: file.clone(),
+                origins: origins.clone(),
+            }),
+            Job::TrackedPreview { .. } | Job::WorkingPreview { .. } | Job::ReviewText { .. } => {
+                None
+            }
+            _ => return None,
+        };
+        Some(Self { generation, target })
     }
 }
 struct Assets;
@@ -2009,14 +2031,23 @@ impl GitTurtle {
         if index >= self.files.len() {
             return;
         }
-        self.interaction_started = Some(Instant::now());
+        // The file whose preview is still being read, chosen again, keeps
+        // that read, timed from the choice that started it: the same file of
+        // the same revision pair reads nothing new. Chosen again, it was read
+        // again from the start, a slow image's decode with it.
+        let reading = self.selected_file == Some(index) && self.reads_preview_of(index);
+        if !reading {
+            self.interaction_started = Some(Instant::now());
+        }
         if self.mode == WorkspaceMode::History {
             self.history_sidebar = self.sidebar;
             self.sidebar = false;
             self.mode = WorkspaceMode::Compare;
         }
         self.focus_compare_files(window, cx);
-        if self.selected_file == Some(index) && self.content.is_some() {
+        if reading {
+            cx.notify();
+        } else if self.selected_file == Some(index) && self.content.is_some() {
             self.ensure_editor(window, cx);
             self.trace_frame("file_preview_frame_ms", window, cx);
             cx.notify();
@@ -2042,20 +2073,7 @@ impl GitTurtle {
         self.zoom = 0.;
         self.image_scroll.set_offset(point(px(0.), px(0.)));
         if let Some(repo) = &self.repository {
-            let origins = self
-                .file_history_preview_origins()
-                .or_else(|| self.inspection_preview_origins())
-                .unwrap_or_else(|| {
-                    let commit = self
-                        .selected_commit
-                        .and_then(|index| self.commits.get(index));
-                    markdown_view::Origins::revisions(
-                        commit
-                            .and_then(|commit| commit.parents.get(self.parent))
-                            .cloned(),
-                        commit.map(|commit| commit.oid.clone()),
-                    )
-                });
+            let origins = self.preview_origins();
             self.request(
                 Job::Preview {
                     origins,
@@ -2067,6 +2085,40 @@ impl GitTurtle {
                 cx,
             );
         }
+    }
+    /// The revision pair a changed file's comparison is read against, for
+    /// the documents it shows: File history's or an inspection's, else the
+    /// selected commit and its compared parent.
+    fn preview_origins(&self) -> markdown_view::Origins {
+        self.file_history_preview_origins()
+            .or_else(|| self.inspection_preview_origins())
+            .unwrap_or_else(|| {
+                let commit = self
+                    .selected_commit
+                    .and_then(|index| self.commits.get(index));
+                markdown_view::Origins::revisions(
+                    commit
+                        .and_then(|commit| commit.parents.get(self.parent))
+                        .cloned(),
+                    commit.map(|commit| commit.oid.clone()),
+                )
+            })
+    }
+    /// Whether the preview read in flight reads changed file `index` as
+    /// `load_file` would read it now: the same file of the same repository
+    /// against the same revision pair ([`PreviewTarget`]).
+    fn reads_preview_of(&self, index: usize) -> bool {
+        let (Some(target), Some(repo), Some(file)) = (
+            self.preview_in_flight()
+                .and_then(|read| read.target.as_ref()),
+            &self.repository,
+            self.files.get(index),
+        ) else {
+            return false;
+        };
+        target.repository == repo.path()
+            && target.file == *file
+            && target.origins == self.preview_origins()
     }
     fn change_parent(&mut self, parent: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
@@ -3014,6 +3066,154 @@ mod late_preview_tests {
             });
             cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
         }
+    }
+
+    /// Choosing the file whose preview is still being read keeps that read:
+    /// the same file of the same revision pair reads nothing new, so a
+    /// second click on its row, or Enter on it, adds no preview read and the
+    /// read under way lands. A changed target is read in its place: another
+    /// file chosen while one is read, and the first chosen back while the
+    /// other is read, are two reads, and so is the same file chosen against
+    /// another revision pair while it is read: the first read is cancelled
+    /// and one against that pair starts. A choice made again once restarted
+    /// the read, a slow image's decode from its start.
+    #[gpui::test]
+    async fn choosing_a_file_still_read_keeps_its_read(cx: &mut TestAppContext) {
+        // The newest commit adds notes.txt again as the oldest added it, the
+        // same blob: the same changed file in two revision pairs.
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\nM 100644 inline other.txt\ndata 6\nother\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000100 +0000\ndata 12\nremove notes\nD notes.txt\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000200 +0000\ndata 13\nrestore notes\nM 100644 inline notes.txt\ndata 6\nnotes\nM 100644 inline other.txt\ndata 8\nother 2\n\ndone\n",
+        )
+        .await;
+        let index = |app: &GitTurtle, name: &str| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new(name))
+                .expect("the commit changes it")
+        };
+        // The oldest commit's changed files, as choosing it reads them, and
+        // the newest selected again.
+        let oldest = app.read_with(cx, |app, _| {
+            app.commits
+                .iter()
+                .position(|commit| commit.subject == "fixture notes")
+                .expect("the oldest commit")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(oldest, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let oldest_files = app.read_with(cx, |app, _| app.files.clone());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.commits[0].subject, "restore notes", "the newest commit");
+            assert_eq!(app.selected_commit, Some(0));
+        });
+        let shown = |app: &GitTurtle| match app.content.as_deref() {
+            Some(Content::Text { new, .. }) => Some(new.clone()),
+            _ => None,
+        };
+        // Held, the reader leaves each read queued. Quiet reads are held
+        // too: only the reads the choices ask for are counted.
+        let hold = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            })
+        };
+        let held = hold(cx);
+        let reads = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(true);
+                let notes = index(app, "notes.txt");
+                let reads = app.worker.previews();
+                app.select_file(notes, window, cx);
+                assert!(app.mode == WorkspaceMode::Compare);
+                assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                let generation = app.generation;
+                app.select_file(notes, window, cx);
+                assert_eq!(app.generation, generation, "the read under way goes on");
+                assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                assert_eq!(
+                    app.worker.previews(),
+                    reads + 1,
+                    "chosen again while it is read, it reads nothing new"
+                );
+                reads
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                shown(app).as_deref(),
+                Some("notes\n"),
+                "the kept read lands"
+            );
+            assert_eq!(app.worker.previews(), reads + 1, "one read");
+        });
+        let held = hold(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let (notes, other) = (index(app, "notes.txt"), index(app, "other.txt"));
+                app.select_file(other, window, cx);
+                assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                app.select_file(notes, window, cx);
+                assert_eq!(
+                    app.worker.previews(),
+                    reads + 3,
+                    "each changed target is read: two reads"
+                );
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                shown(app).as_deref(),
+                Some("notes\n"),
+                "the file chosen last shows"
+            );
+            assert_eq!(app.selected_file, Some(index(app, "notes.txt")));
+        });
+        // While the newest commit's notes.txt is read, the window comes to
+        // compare the oldest commit, whose changed files list the same
+        // notes.txt, and that file is chosen: the read under way is for the
+        // newest commit's pair, so it is cancelled and the oldest's starts.
+        let held = hold(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let notes = index(app, "notes.txt");
+                let file = app.files[notes].clone();
+                app.clear_preview();
+                app.select_file(notes, window, cx);
+                assert_eq!(app.worker.previews(), reads + 4, "the newest's read");
+                let (generation, newest) = (app.generation, app.preview_origins());
+                app.selected_commit = Some(oldest);
+                app.files = oldest_files.clone();
+                app.refresh_file_filter(window, cx);
+                let notes = index(app, "notes.txt");
+                assert!(app.files[notes] == file, "the same changed file");
+                assert!(app.preview_origins() != newest, "another revision pair");
+                app.select_file(notes, window, cx);
+                assert_ne!(app.generation, generation, "the first read is cancelled");
+                assert_eq!(app.loading, Some(PREVIEW_LABEL));
+                assert_eq!(app.worker.previews(), reads + 5, "and another starts");
+                assert!(
+                    app.preview_in_flight()
+                        .and_then(|read| read.target.as_ref())
+                        .is_some_and(|target| target.origins == app.preview_origins()),
+                    "against the oldest commit's pair"
+                );
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, None);
+            assert_eq!(shown(app).as_deref(), Some("notes\n"), "its read lands");
+            assert_eq!(app.worker.previews(), reads + 5);
+        });
     }
 
     /// A comparison restored with its tab whose reply lands while Settings
