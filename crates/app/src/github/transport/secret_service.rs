@@ -10,7 +10,8 @@
 //! Each call opens one fresh session (`Backend::connect`), which survives a restarted
 //! keyring daemon, and drives oo7's futures with `block_on` on the caller's thread: the
 //! window's operation executor, never the UI thread. The flows run against a fake
-//! `Backend` in tests, so they need no bus.
+//! `Backend` in tests, so they need no bus; the opt-in `tests::hermetic` tests run them
+//! against a disposable gnome-keyring on a private bus, and time a stored read there.
 use super::*;
 use futures::future::{Either, select};
 use oo7::{Secret, dbus::Error};
@@ -1125,10 +1126,12 @@ mod tests {
         );
     }
 
-    /// The only test that takes the process-wide lock, since a test holding it refuses
-    /// every other caller; the other tests drive the flows beneath it.
+    /// The only fake-keyring test that takes the process-wide lock, since a test holding it
+    /// refuses every other caller; the other tests drive the flows beneath it. It holds
+    /// [`serial`] throughout, as the hermetic tests that call the public functions do.
     #[test]
     fn a_second_keyring_call_is_refused_at_once_without_touching_the_keyring() {
+        let _serial = serial();
         let control = OperationControl::default();
         let fake = Fake::new(true, &[&stored_json()]);
         let held = access().unwrap();
@@ -1438,5 +1441,470 @@ mod tests {
             assert!(!accepts(fixture.as_deref(), session.as_deref(), &temp));
         }
         assert!(!accepts(Some(&bus), Some(&bus), elsewhere.path()));
+    }
+
+    /// Serializes the tests that call the public `load`, `save` and `remove`: their
+    /// process-wide lock (`ACCESS`) refuses a second caller at once, so under plain
+    /// `cargo test`, where tests share one process, one such test would refuse another.
+    /// The flows beneath them need none.
+    static SERIAL: Mutex<()> = Mutex::new(());
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The real client against a disposable gnome-keyring on a private D-Bus, opt in, since
+    /// they need `dbus-daemon` and `gnome-keyring-daemon` (Arch `dbus` and `gnome-keyring`).
+    /// An outer test starts the daemons with nothing of the developer's session (no bus
+    /// address, display or home), then runs an inner test in a fresh process of this test
+    /// binary whose session bus is the private one, which the guard ([`FIXTURE_BUS`]) lets it
+    /// reach; nothing here sets an environment variable in its own process or reaches the
+    /// session bus the developer's shell runs on. Run directly, an inner test refuses at
+    /// the guard before any bus call, so a broad `--ignored` run without `--exact` fails its
+    /// inner tests by design: run the outer tests by name. The functional run:
+    ///
+    /// `cargo test --locked -p gitturtle --bin gitturtle -- --ignored --exact
+    /// github::transport::secret_service::tests::hermetic::a_disposable_gnome_keyring_holds_the_account
+    /// --nocapture`
+    mod hermetic {
+        use super::*;
+        use std::{
+            io::{BufRead as _, BufReader},
+            os::unix::fs::DirBuilderExt as _,
+            path::PathBuf,
+            process::{Child, Command, Stdio},
+            time::Instant,
+        };
+
+        /// This module's tests, as the test binary names them.
+        const HERE: &str = "github::transport::secret_service::tests::hermetic::";
+        /// How long the private bus and the keyring each have to come up.
+        const START_LIMIT: Duration = Duration::from_secs(5);
+        /// How long an inner test may run: its keyring calls end within their own bounds.
+        const INNER_LIMIT: Duration = Duration::from_secs(60);
+        /// Names the measurement's JSON output.
+        const BENCH_OUT: &str = "GITTURTLE_KEYRING_BENCH_OUT";
+        /// The stored reads the measurement times.
+        const READS: usize = 50;
+        const SECRETS: &str = "org.freedesktop.secrets";
+
+        /// A private session bus and, once started, a disposable gnome-keyring on it, both
+        /// kept in one temporary directory with their HOME, data, runtime and control
+        /// directories. Dropping it kills and reaps both daemons, then removes the
+        /// directory, whatever happened.
+        struct PrivateKeyring {
+            bus: Option<Child>,
+            keyring: Option<Child>,
+            address: String,
+            directory: tempfile::TempDir,
+        }
+        impl Drop for PrivateKeyring {
+            fn drop(&mut self) {
+                for mut daemon in [self.keyring.take(), self.bus.take()].into_iter().flatten() {
+                    let _ = daemon.kill();
+                    let _ = daemon.wait();
+                }
+            }
+        }
+        impl PrivateKeyring {
+            /// Starts the bus. Its configuration names no service directories, so nothing,
+            /// the host's gnome-keyring included, is started on it by D-Bus activation, as
+            /// `--session` would let the host's `org.freedesktop.secrets.service` do.
+            fn start_bus() -> Self {
+                let directory = tempfile::Builder::new()
+                    .prefix("gitturtle-keyring-")
+                    .tempdir()
+                    .expect("a temporary directory");
+                for part in ["home", "data", "config", "runtime", "keyring"] {
+                    std::fs::DirBuilder::new()
+                        .mode(0o700)
+                        .create(directory.path().join(part))
+                        .expect("a private directory");
+                }
+                let address = format!("unix:path={}", directory.path().join("bus").display());
+                let configuration = directory.path().join("bus.conf");
+                std::fs::write(
+                    &configuration,
+                    format!(
+                        "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
+                         \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+                         <busconfig><type>session</type><listen>{address}</listen>\
+                         <auth>EXTERNAL</auth><policy context=\"default\">\
+                         <allow send_destination=\"*\" eavesdrop=\"true\"/>\
+                         <allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>\n"
+                    ),
+                )
+                .expect("the bus configuration");
+                let mut keyring = Self {
+                    bus: None,
+                    keyring: None,
+                    address: String::new(),
+                    directory,
+                };
+                let mut bus = keyring
+                    .daemon("dbus-daemon", "bus.log")
+                    .arg(format!("--config-file={}", configuration.display()))
+                    .args([
+                        "--nofork",
+                        &format!("--address={address}"),
+                        "--print-address=1",
+                    ])
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .expect("dbus-daemon starts (install dbus)");
+                let output = bus.stdout.take().expect("the bus's output");
+                keyring.bus = Some(bus);
+                // Its first line is the address with the bus's GUID. A read blocks, so it
+                // runs beside, bounded.
+                let (send, receive) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut line = String::new();
+                    let _ = BufReader::new(output).read_line(&mut line);
+                    let _ = send.send(line);
+                });
+                let printed = receive.recv_timeout(START_LIMIT).unwrap_or_default();
+                assert!(
+                    printed.starts_with(&address),
+                    "the private bus did not start within 5 s: {}",
+                    keyring.log("bus.log")
+                );
+                keyring.address = printed.trim().to_owned();
+                keyring
+            }
+
+            /// Starts gnome-keyring on the bus with a synthetic password, which unlocks the
+            /// login keyring it creates as the default, and waits, bounded, until it owns
+            /// the Secret Service's name.
+            fn start_keyring(&mut self) {
+                let mut keyring = self
+                    .daemon("gnome-keyring-daemon", "keyring.log")
+                    .env("DBUS_SESSION_BUS_ADDRESS", &self.address)
+                    .args(["--foreground", "--components=secrets", "--unlock"])
+                    .arg("--control-directory")
+                    .arg(self.path("keyring"))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .spawn()
+                    .expect("gnome-keyring-daemon starts (install gnome-keyring)");
+                let mut password = keyring.stdin.take().expect("the keyring's input");
+                self.keyring = Some(keyring);
+                password
+                    .write_all(b"synthetic-password-for-a-disposable-keyring")
+                    .expect("the keyring reads its password");
+                drop(password);
+                let started = Instant::now();
+                while !self.owned(SECRETS) {
+                    assert!(
+                        started.elapsed() < START_LIMIT,
+                        "the keyring did not take {SECRETS} within 5 s: {}",
+                        self.log("keyring.log")
+                    );
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+
+            fn path(&self, part: &str) -> PathBuf {
+                self.directory.path().join(part)
+            }
+
+            /// `program` with nothing of the developer's session, its error output in `log`.
+            fn daemon(&self, program: &str, log: &str) -> Command {
+                let log = std::fs::File::create(self.path(log)).expect("a daemon log");
+                let mut command = Command::new(program);
+                command
+                    .env_clear()
+                    .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+                    .stdin(Stdio::null())
+                    .stderr(log);
+                self.private(&mut command);
+                command
+            }
+
+            /// Gives `command` this directory's HOME and XDG directories, and the system
+            /// temporary directory the guard measures the bus's socket against.
+            fn private(&self, command: &mut Command) {
+                command
+                    .env("HOME", self.path("home"))
+                    .env("XDG_DATA_HOME", self.path("data"))
+                    .env("XDG_CONFIG_HOME", self.path("config"))
+                    .env("XDG_RUNTIME_DIR", self.path("runtime"));
+                if let Some(temporary) = std::env::var_os("TMPDIR") {
+                    command.env("TMPDIR", temporary);
+                }
+            }
+
+            fn log(&self, log: &str) -> String {
+                std::fs::read_to_string(self.path(log)).unwrap_or_default()
+            }
+
+            /// Whether `name` has an owner on the private bus, asked through a connection to
+            /// its address, never the session bus.
+            fn owned(&self, name: &str) -> bool {
+                let address = self.address.as_str();
+                let owned = async {
+                    let bus = oo7::zbus::connection::Builder::address(address)?
+                        .build()
+                        .await?;
+                    let proxy = oo7::zbus::fdo::DBusProxy::new(&bus).await?;
+                    Ok::<_, oo7::zbus::Error>(proxy.name_has_owner(name.try_into()?).await?)
+                };
+                futures::executor::block_on(owned).unwrap_or(false)
+            }
+
+            /// Runs `test`, one of this module's inner tests, in a fresh process of this test
+            /// binary whose session bus is the private one, and checks that it ran and passed.
+            fn run(&self, test: &str) {
+                let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+                command
+                    .args(["--ignored", "--exact", &format!("{HERE}{test}")])
+                    .args(["--nocapture", "--test-threads=1"])
+                    .env("DBUS_SESSION_BUS_ADDRESS", &self.address)
+                    .env(FIXTURE_BUS, &self.address)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped());
+                self.private(&mut command);
+                let mut inner = command.spawn().expect("this test binary runs again");
+                let output = inner.stdout.take().expect("its output");
+                let reader = std::thread::spawn(move || {
+                    let mut text = String::new();
+                    let _ = BufReader::new(output).read_to_string(&mut text);
+                    text
+                });
+                let started = Instant::now();
+                let status = loop {
+                    if let Some(status) = inner.try_wait().expect("its status") {
+                        break status;
+                    }
+                    if started.elapsed() > INNER_LIMIT {
+                        let _ = inner.kill();
+                        let _ = inner.wait();
+                        panic!("{test} did not finish within {INNER_LIMIT:?}");
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                };
+                let output = reader.join().unwrap_or_default();
+                print!("{output}");
+                // An exact name that matches no test runs none, and passes.
+                assert!(
+                    status.success() && output.contains("test result: ok. 1 passed"),
+                    "{test} did not pass on the private bus: {status}"
+                );
+            }
+        }
+
+        /// A synthetic account: a token that is clearly no GitHub token.
+        fn synthetic() -> Credential {
+            let mut bytes = [0u8; 16];
+            std::fs::File::open("/dev/urandom")
+                .and_then(|mut random| random.read_exact(&mut bytes))
+                .expect("random bytes");
+            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            Credential {
+                login: "fixture-login".into(),
+                token: format!("not-a-token-{hex}"),
+            }
+        }
+
+        /// The test's own calls to the private keyring's default collection, beside the
+        /// flows', through the guarded connection.
+        fn collection<T>(
+            keyring: &DesktopKeyring,
+            call: impl AsyncFnOnce(&oo7::dbus::Collection) -> Result<T, Error>,
+        ) -> T {
+            futures::executor::block_on(async {
+                let session = keyring.connect().await.expect("the private bus");
+                let collection = keyring
+                    .stored_collection(&session)
+                    .await
+                    .expect("the default alias")
+                    .expect("the disposable login keyring");
+                call(&collection).await.expect("the keyring call")
+            })
+        }
+        fn items(keyring: &DesktopKeyring) -> usize {
+            let attributes: &[(&str, &str)] = &ATTRIBUTES;
+            collection(keyring, async |collection| {
+                Ok(collection.search_items(&attributes).await?.len())
+            })
+        }
+        /// An item with GitTurtle's schema and `text`, beside any already there.
+        fn write(keyring: &DesktopKeyring, text: &str) {
+            let attributes: &[(&str, &str)] = &ATTRIBUTES;
+            collection(keyring, async |collection| {
+                let secret = Secret::text(text);
+                collection
+                    .create_item(LABEL, &attributes, secret, false, None)
+                    .await
+                    .map(drop)
+            })
+        }
+        fn credential_json(credential: &Credential) -> String {
+            serde_json::to_string(credential).expect("the account's JSON")
+        }
+
+        #[test]
+        #[ignore = "starts dbus-daemon and gnome-keyring-daemon; run with --ignored --exact"]
+        fn a_disposable_gnome_keyring_holds_the_account() {
+            let mut keyring = PrivateKeyring::start_bus();
+            // Before the keyring starts, nothing owns the Secret Service and nothing is
+            // activated for it.
+            keyring.run("on_a_private_bus_without_a_keyring");
+            keyring.start_keyring();
+            keyring.run("on_a_private_bus_with_a_keyring");
+        }
+
+        /// Inside the harness only (`a_disposable_gnome_keyring_holds_the_account`).
+        #[test]
+        #[ignore = "run by a_disposable_gnome_keyring_holds_the_account on its private bus"]
+        fn on_a_private_bus_without_a_keyring() {
+            let _serial = serial();
+            let keyring = DesktopKeyring::new().expect("refused off a private test bus");
+            let control = OperationControl::default();
+            assert_eq!(message(load(&keyring)), NO_KEYRING);
+            assert_eq!(message(save(&keyring, &synthetic(), &control)), NO_KEYRING);
+            assert_eq!(message(remove(&keyring, &control)), NO_KEYRING);
+        }
+
+        /// Inside the harness only (`a_disposable_gnome_keyring_holds_the_account`).
+        #[test]
+        #[ignore = "run by a_disposable_gnome_keyring_holds_the_account on its private bus"]
+        fn on_a_private_bus_with_a_keyring() {
+            let _serial = serial();
+            let keyring = DesktopKeyring::new().expect("refused off a private test bus");
+            let control = OperationControl::default();
+            let first = synthetic();
+            save(&keyring, &first, &control).expect("Connect stores the account");
+            let loaded = load(&keyring).unwrap().expect("the stored account");
+            assert_eq!(
+                (loaded.login, loaded.token),
+                (first.login.clone(), first.token.clone())
+            );
+            // Connected again, the item is replaced, not added to.
+            let second = synthetic();
+            save(&keyring, &second, &control).expect("Connect replaces the account");
+            assert_eq!(items(&keyring), 1);
+            assert_eq!(
+                load(&keyring).unwrap().expect("the account").token,
+                second.token
+            );
+            remove(&keyring, &control).expect("Disconnect removes it");
+            assert!(load(&keyring).unwrap().is_none());
+            assert_eq!(items(&keyring), 0);
+
+            // Two entries another client wrote: a stored read refuses them, and Disconnect
+            // removes both.
+            write(&keyring, &credential_json(&first));
+            write(&keyring, &credential_json(&second));
+            assert_eq!(items(&keyring), 2);
+            assert_eq!(message(load(&keyring)), DUPLICATES);
+            remove(&keyring, &control).expect("Disconnect removes both");
+            assert_eq!(items(&keyring), 0);
+
+            // An entry that is not the account's JSON.
+            write(&keyring, "not the account's JSON");
+            assert_eq!(message(load(&keyring)), INVALID);
+            remove(&keyring, &control).expect("Disconnect removes it");
+
+            // A locked keyring: the stored read refuses well within its bound and leaves the
+            // keyring locked, so it awaited no unlock prompt.
+            save(&keyring, &first, &control).expect("Connect stores the account");
+            collection(&keyring, async |collection| collection.lock(None).await);
+            let started = Instant::now();
+            assert_eq!(message(load(&keyring)), LOCKED);
+            assert!(started.elapsed() < READ_LIMIT, "{:?}", started.elapsed());
+            assert!(collection(&keyring, async |collection| collection
+                .is_locked()
+                .await));
+        }
+
+        /// The release measurement of a stored read: 50 sequential reads on a disposable
+        /// gnome-keyring, each a fresh connection, transfer session, search and secret
+        /// (`Service::new()` through `load`), written as JSON (`samples_ms`, `median_ms`,
+        /// `p95_ms`, `max_ms`, the host and oo7's version) to the file
+        /// `GITTURTLE_KEYRING_BENCH_OUT` names. Build with
+        /// `cargo test --locked --release -p gitturtle --bin gitturtle --no-run`, then run
+        /// the executable it names (`target/release/deps/gitturtle-…`) on an idle host:
+        ///
+        /// `GITTURTLE_KEYRING_BENCH_OUT=keyring-reads.json <executable> --ignored --exact
+        /// github::transport::secret_service::tests::hermetic::stored_reads_on_a_disposable_gnome_keyring
+        /// --nocapture`
+        #[test]
+        #[ignore = "the release measurement; run with --ignored --exact"]
+        fn stored_reads_on_a_disposable_gnome_keyring() {
+            assert!(
+                std::env::var_os(BENCH_OUT).is_some(),
+                "{BENCH_OUT} names the measurement's JSON file"
+            );
+            let mut keyring = PrivateKeyring::start_bus();
+            keyring.start_keyring();
+            keyring.run("stored_reads_on_a_private_bus");
+        }
+
+        /// Inside the harness only (`stored_reads_on_a_disposable_gnome_keyring`).
+        #[test]
+        #[ignore = "run by stored_reads_on_a_disposable_gnome_keyring on its private bus"]
+        fn stored_reads_on_a_private_bus() {
+            let _serial = serial();
+            let keyring = DesktopKeyring::new().expect("refused off a private test bus");
+            let out = std::env::var_os(BENCH_OUT).expect("the measurement's JSON file");
+            save(&keyring, &synthetic(), &OperationControl::default()).expect("the account");
+            let samples: Vec<f64> = (0..READS)
+                .map(|_| {
+                    let started = Instant::now();
+                    let read = load(&keyring);
+                    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                    assert!(matches!(read, Ok(Some(_))), "a stored read failed");
+                    elapsed
+                })
+                .collect();
+            let mut sorted = samples.clone();
+            sorted.sort_by(f64::total_cmp);
+            let median = (sorted[READS / 2 - 1] + sorted[READS / 2]) / 2.0;
+            let p95 = sorted[(READS * 95).div_ceil(100) - 1];
+            let max = sorted[READS - 1];
+            let read = |path: &str| {
+                std::fs::read_to_string(path)
+                    .map(|text| text.trim().to_owned())
+                    .unwrap_or_default()
+            };
+            let measurement = serde_json::json!({
+                "measurement": "stored GitHub account reads from a disposable gnome-keyring",
+                "reads": READS,
+                "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+                "samples_ms": samples,
+                "median_ms": median,
+                "p95_ms": p95,
+                "max_ms": max,
+                "bound_ms": READ_LIMIT.as_millis() as u64,
+                "host": {
+                    "hostname": read("/proc/sys/kernel/hostname"),
+                    "kernel": read("/proc/sys/kernel/osrelease"),
+                    "arch": std::env::consts::ARCH,
+                    "cpus": std::thread::available_parallelism().map_or(0, usize::from),
+                },
+                "oo7": oo7_version(),
+            });
+            std::fs::write(
+                &out,
+                serde_json::to_vec_pretty(&measurement).expect("the measurement's JSON"),
+            )
+            .expect("the measurement's file");
+            println!("{measurement}");
+        }
+
+        /// oo7's version as the lockfile pins it.
+        fn oo7_version() -> String {
+            let lock = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"));
+            lock.split("[[package]]")
+                .find(|package| package.contains("\nname = \"oo7\"\n"))
+                .and_then(|package| {
+                    package
+                        .lines()
+                        .find_map(|line| line.strip_prefix("version = "))
+                })
+                .map(|version| version.trim_matches('"').to_owned())
+                .unwrap_or_default()
+        }
     }
 }
