@@ -596,6 +596,66 @@ and embedded Omarchy palette, and the toolbar, composer and palette tests read
 it on the real controls. Remove this part of the patch when upstream lets a
 theme give a disabled filled Button an edge, and those tests pass without it.
 
+The resting-edge patch modifies `src/theme/mod.rs`, `src/button/button.rs`
+and `src/switch.rs`, and shares the disabled-edge patch's layer. Upstream
+gives an enabled control that rests on a fill of its own no edge but a
+border, and a border takes room in its layout: a `border_1` widens an
+auto-width Button by 2 px, and an unchecked Switch track's 2 px border is
+the transparent inset that places its thumb. Where that fill nearly equals
+the surface beneath, a secondary Button or an unchecked Switch shows only its
+label or its thumb, which GitTurtle's More contrast appearance ("a 1 px edge
+on resting controls", `docs/development/omarchy-full-support.md`) must not
+allow. `Theme::resting_edge`, `None` by default, set in code and skipped by
+theme files, is a 1 px edge such a control draws where an application sets
+one, as a layer over its bounds with its corners, absolutely placed and
+without a role, so it moves nothing and adds no accessibility node. An
+enabled Button that is not an outline, has no border its caller gave it, is
+not a default Button (which draws its own border) and rests on a fill of its
+own (`ButtonVariant::keeps_a_resting_fill`: a secondary Button, and a custom
+variant whose resting fill, or selected fill while selected, is not
+transparent, as the app's selected segment is) draws it from the disabled
+edge's layer at rest, hovered, pressed and selected; its fill, label and
+focus ring are unchanged. A primary Button, whose accent fill already stands
+off the surface, ghost, link and text Buttons, a custom variant transparent
+at rest and the danger, warning, success and info variants draw none;
+disabled, a Button keeps the disabled edge and draws no resting edge. An
+enabled, unchecked Switch draws it from a layer under its thumb that reaches
+back across the track's inset to the track's bounds, in every pointer state,
+so the track's hover lift (`switch_hover`) still shows; a checked track, on
+the accent, and a disabled one draw none, and the thumb, the label, the
+focus ring and every bound are unchanged. Unset, nothing changes.
+
+The consuming path is the app's More contrast appearance: it is to set the
+edge from its palette (`crates/app/src/appearance.rs`) only while More
+contrast is on, and to leave it unset otherwise. While it is set, the kit
+draws it on every such control in the window: every enabled, unchecked
+Switch and every enabled secondary, filled custom or selected custom Button
+without a border of its own, the toolbar's selected shared button
+(`button_frame`), Settings' density segments and the Projects mode tabs among
+them. Nothing in the app sets it yet. The kit's own `an_enabled_filled_button_draws_the_themes_resting_edge_in_every_state`
+reads one 1 px edge of the set colour over a secondary, a selected secondary,
+a filled custom and a selected-segment Button, with its fill's corners, at
+rest, hovered and pressed, with the bounds and fills it paints unset;
+`only_an_enabled_button_on_a_fill_of_its_own_draws_the_resting_edge` reads
+none on primary, ghost, default, danger, link, text, transparent custom,
+outline, bordered and disabled Buttons, and the disabled edge alone on the
+disabled filled ones once that is set;
+`without_a_resting_edge_every_button_paints_as_upstream` reads, unset, each
+of them painting the fill its variant's style gives it at rest, hovered,
+pressed, selected or disabled, and no edge but the border a default, outline
+or bordered Button draws itself, in that style's colour;
+`an_unchecked_switch_draws_the_themes_resting_edge_in_every_pointer_state`
+reads the edge over an unchecked track at rest, hovered (with the hover lift)
+and pressed, with its track's corners and the bounds, track and thumb it
+paints unset, and `a_checked_or_disabled_switch_draws_no_resting_edge` reads
+none on checked and disabled Switches
+(`scripts/vendor-crate-test.sh vendor/gpui-component resting_edge`). The
+app's Button and Switch quad tests
+(`cargo test --locked -p gitturtle -- settings::picker_tests:: views::tests::narrow_review_arrows_lift_on_hover appearance::`)
+pass unchanged, since nothing sets the edge. Remove this part of the patch
+when upstream offers a resting-edge or high-contrast style for filled
+controls, and those tests pass without it.
+
 The popup-inset patch modifies `src/menu/context_menu.rs`,
 `src/native_menu/fallback.rs`, `src/popover.rs` and `src/styled.rs`, with the
 base patch's `set_popup_bottom_inset`
