@@ -39,16 +39,24 @@ struct Presentation {
     selection: Selection,
     scale: f32,
     /// The message and metadata's height as last measured
-    /// (`GitTurtle::message_extent`), with the width, the bound and the
-    /// font it was measured for.
+    /// (`GitTurtle::message_extent`), with the width, the bound, the font
+    /// and the display scale it was measured for.
     extent: Option<Extent>,
 }
 
 /// A measured height of a presented message and its metadata.
+///
+/// Layout measures it on the display's device pixels, each line of text
+/// rounded up to one and each padding on its whole one, so it is kept by
+/// the display's scale factor too: kept by the width, the bound, the font
+/// and the details alone, a window moved to a display of another scale at
+/// the same logical width drew its panel from the other display's height.
 struct Extent {
     width: Pixels,
     bound: Pixels,
     key: LineKey,
+    /// The display's scale factor, as bits.
+    scale: u32,
     details: Details,
     height: Pixels,
 }
@@ -287,13 +295,15 @@ impl State {
     }
 
     /// The height the presented message and metadata were last measured at
-    /// for `width`, `bound` and `key`, with `revision`'s details or the
-    /// commit's own (`GitTurtle::message_extent`).
+    /// for `width`, `bound` and `key` on a display of `scale`, with
+    /// `revision`'s details or the commit's own
+    /// (`GitTurtle::message_extent`).
     fn extent(
         &self,
         width: Pixels,
         bound: Pixels,
         key: &LineKey,
+        scale: f32,
         revision: Option<&FileHistoryEntry>,
     ) -> Option<Pixels> {
         let state = self.0.borrow();
@@ -301,6 +311,7 @@ impl State {
         (extent.width == width
             && extent.bound == bound
             && extent.key == *key
+            && extent.scale == scale.to_bits()
             && extent.details.describe(revision))
         .then_some(extent.height)
     }
@@ -310,6 +321,7 @@ impl State {
         width: Pixels,
         bound: Pixels,
         key: LineKey,
+        scale: f32,
         revision: Option<&FileHistoryEntry>,
         height: Pixels,
     ) {
@@ -318,6 +330,7 @@ impl State {
                 width,
                 bound,
                 key,
+                scale: scale.to_bits(),
                 details: Details::of(revision),
                 height,
             });
@@ -598,12 +611,12 @@ impl GitTurtle {
     /// left about 60 px blank under P1 at 13 pt. File History's panel, which
     /// holds `revision`'s details after the message rather than the commit's,
     /// shrinks to them alike, so its revisions follow their paths at that
-    /// rhythm. Measured once for each commit, details, width and font, and
-    /// only as far as the panel's cap, past which nothing more shows, so a
-    /// long message shapes only what can be drawn: in File History, whose
-    /// panel takes its share of the room between the header and the footer,
-    /// as far as the inspector's share, which holds it. `None` where no
-    /// window lays the inspector out.
+    /// rhythm. Measured once for each commit, details, width, font and
+    /// display scale (`Extent`), and only as far as the panel's cap, past
+    /// which nothing more shows, so a long message shapes only what can be
+    /// drawn: in File History, whose panel takes its share of the room
+    /// between the header and the footer, as far as the inspector's share,
+    /// which holds it. `None` where no window lays the inspector out.
     pub(super) fn message_extent(
         &self,
         commit: &Commit,
@@ -613,9 +626,12 @@ impl GitTurtle {
     ) -> Option<Pixels> {
         let toolbar = self.inspector_message.1.get()?;
         let (width, bound) = (toolbar.viewport, toolbar.cap);
-        let key = LineKey::current(window);
+        let (key, scale) = (LineKey::current(window), window.scale_factor());
         let (pieces, _, _, selection) = self.inspector_message.presentation(commit, cx);
-        if let Some(height) = self.inspector_message.extent(width, bound, &key, revision) {
+        if let Some(height) = self
+            .inspector_message
+            .extent(width, bound, &key, scale, revision)
+        {
             return Some(height);
         }
         let mut height = px(0.);
@@ -635,7 +651,7 @@ impl GitTurtle {
         }
         let height = height + window.rem_size() * 0.75;
         self.inspector_message
-            .remember_extent(width, bound, key, revision, height);
+            .remember_extent(width, bound, key, scale, revision, height);
         Some(height)
     }
 
@@ -897,9 +913,20 @@ pub(crate) mod tests {
         height: f32,
         /// Also render the History list, left of the inspector.
         history: bool,
+        /// Lay the message toolbar out for the inspector, pinned, as the
+        /// window does before it draws one, so the panel shrinks to its
+        /// measured message (`GitTurtle::message_extent`).
+        toolbar: bool,
     }
     impl Render for Probe {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self.toolbar {
+                let (width, height) = (px(self.width), px(self.height));
+                self.app.update(cx, |app, _| {
+                    app.inspector_message
+                        .lay_out_toolbar(Some(Toolbar::within(width, height, true, window)));
+                });
+            }
             let inspector = div()
                 .id("inspector-test")
                 .debug_selector(|| "inspector-test".into())
@@ -961,6 +988,7 @@ pub(crate) mod tests {
                 width: 280.,
                 height: 520.,
                 history: false,
+                toolbar: false,
             });
             *captured_app.borrow_mut() = Some(app);
             *captured_probe.borrow_mut() = Some(probe.clone());
@@ -1250,28 +1278,112 @@ pub(crate) mod tests {
                 state.presentation(&app.commits[0], cx);
                 let key = LineKey::current(window);
                 let (width, bound, height) = (px(300.), px(400.), px(120.));
-                state.remember_extent(width, bound, key.clone(), None, height);
-                assert_eq!(state.extent(width, bound, &key, None), Some(height));
+                state.remember_extent(width, bound, key.clone(), 2., None, height);
+                assert_eq!(state.extent(width, bound, &key, 2., None), Some(height));
                 assert_eq!(
-                    state.extent(width, bound, &key, Some(&notes)),
+                    state.extent(width, bound, &key, 2., Some(&notes)),
                     None,
                     "the commit's own details stand for no revision of it"
                 );
-                state.remember_extent(width, bound, key.clone(), Some(&notes), height);
-                assert_eq!(state.extent(width, bound, &key, Some(&notes)), Some(height));
+                state.remember_extent(width, bound, key.clone(), 2., Some(&notes), height);
+                assert_eq!(
+                    state.extent(width, bound, &key, 2., Some(&notes)),
+                    Some(height)
+                );
                 for (other, what) in [
                     (None, "the commit's own details"),
                     (Some(&other_path), "another path"),
                     (Some(&other_parent), "another parent"),
                 ] {
                     assert_eq!(
-                        state.extent(width, bound, &key, other),
+                        state.extent(width, bound, &key, 2., other),
                         None,
                         "a revision's details stand not for {what}"
                     );
                 }
             })
         });
+    }
+
+    /// A kept measurement of a message's height stands only for the display
+    /// scale it was measured at, which layout measures it on: the pinned
+    /// inspector's panel, 280 × 600 px, drawn at scale 2 and then at 1.2
+    /// after a resize, its width, cap, font and details as they were, is as
+    /// tall as a panel first drawn at 1.2, and so is its viewport, which is
+    /// the height measured at 1.2 on that display's device pixels. Kept
+    /// without the scale, a window moved to a display of another scale at
+    /// the same logical width drew its panel from the other display's
+    /// height. History's own window cannot hold the cap across those two
+    /// scales: its chrome, each part on its device pixels, leaves the
+    /// inspector a third of a pixel taller at 1.2.
+    #[gpui::test]
+    fn a_kept_measurement_stands_only_for_the_scale_it_was_measured_at(cx: &mut TestAppContext) {
+        let body = "First paragraph of the body.\n\nSecond paragraph.";
+        let (probe, app, cx) = fixture(cx, vec![commit("a", "Selected title", body)]);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            probe.update(cx, |probe, cx| {
+                probe.height = 600.;
+                probe.toolbar = true;
+                cx.notify();
+            });
+        });
+        // The toolbar laid out for the inspector, the panel's and its
+        // viewport's drawn heights and the height measured, as drawn now.
+        let read = |cx: &mut VisualTestContext| {
+            draw(cx);
+            let toolbar = cx
+                .read(|cx| app.read(cx).inspector_message.1.get())
+                .expect("the window lays the inspector out");
+            let panel = cx.debug_bounds("commit-message-panel").unwrap();
+            let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+            let measured = cx
+                .read(|cx| app.read(cx).inspector_message.measured())
+                .expect("the message measured");
+            (
+                (toolbar.viewport, toolbar.cap),
+                panel.size.height,
+                viewport.size.height,
+                measured,
+            )
+        };
+        // A resize takes the test display's own scale, 2, and draws there.
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let at_two = read(cx);
+        // Moved to a display of scale 1.2, set after the resize.
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        cx.update(|window, _| window.set_scale_factor(1.2));
+        let moved = read(cx);
+        // A panel first drawn at 1.2: the presentation dropped there, as
+        // another commit's selection drops it, with no resize to draw it at
+        // 2 first, is measured anew at 1.2.
+        cx.update(|_, cx| app.update(cx, |app, cx| app.inspector_message.select("", cx)));
+        let fresh = read(cx);
+        cx.update(|window, _| window.set_scale_factor(2.));
+        assert_eq!(
+            at_two.0, fresh.0,
+            "the inspector is as wide and as tall at both scales"
+        );
+        assert_ne!(
+            at_two.3, fresh.3,
+            "the message measures another height at each scale"
+        );
+        assert_eq!(
+            moved.3, fresh.3,
+            "moved from scale 2 to 1.2, the panel is measured at 1.2: {at_two:?}"
+        );
+        assert_eq!(
+            (moved.1, moved.2),
+            (fresh.1, fresh.2),
+            "moved from scale 2 to 1.2, the panel and its viewport are drawn as a panel \
+             first drawn at 1.2"
+        );
+        assert!(
+            (fresh.2 - fresh.3).abs() < px(1. / 1.2),
+            "the viewport {:?} is drawn as tall as the message measured, {:?}",
+            fresh.2,
+            fresh.3
+        );
     }
 
     pub(crate) fn message_selection(
