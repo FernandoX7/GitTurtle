@@ -159,13 +159,14 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
 /// What `accesskit_unix` does on the bus for one window: the objects it
 /// keeps there, each node's interfaces as the adapter registers and
 /// unregisters them (a path with none answers every AT-SPI call with
-/// "Unknown object"), the announcements it makes and the objects it reports
-/// newly selected (`object:state-changed:selected`), which Orca speaks.
+/// "Unknown object"), the announcements it makes and the containers it
+/// reports a change of selection in (`object:selection-changed`), whose
+/// selected item Orca speaks.
 #[derive(Clone, Default)]
 struct Registry {
     objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
     announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    selected: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
+    selection: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
 }
 
 impl AdapterCallback for Registry {
@@ -193,8 +194,8 @@ impl AdapterCallback for Registry {
             } => self.announced.lock().unwrap().push(text),
             Event::Object {
                 target: NodeIdOrRoot::Node(id),
-                event: ObjectEvent::StateChanged(State::Selected, true),
-            } => self.selected.lock().unwrap().push(id),
+                event: ObjectEvent::SelectionChanged,
+            } => self.selection.lock().unwrap().push(id),
             _ => {}
         }
     }
@@ -262,14 +263,23 @@ impl Bus {
         std::mem::take(&mut *self.registry.announced.lock().unwrap())
     }
 
-    /// The names of the objects reported newly selected since the last
-    /// call, each as it reads now. An object added to the bus already
-    /// selected is not among them: the adapter reports no change of state
-    /// for it.
-    pub(crate) fn selected(&self) -> Vec<String> {
-        let ids = std::mem::take(&mut *self.registry.selected.lock().unwrap());
+    /// The names of the items selected now in each container that reported
+    /// a change of selection since the last call, which Orca speaks on that
+    /// event: QA-92 heard Down, Page Down, End and Home in Keyboard
+    /// Shortcuts' list spoken from it, End's and Home's for a row added to
+    /// the bus already selected, which the adapter reports as no change of
+    /// the item's own state but as one of its list's selection.
+    pub(crate) fn selection_changed(&self) -> Vec<String> {
+        let ids = std::mem::take(&mut *self.registry.selection.lock().unwrap());
         ids.into_iter()
-            .map(|id| self.adapter.platform_node(id).name().unwrap())
+            .flat_map(|id| {
+                let list = self.adapter.platform_node(id);
+                let count = list.n_selected_children().unwrap() as usize;
+                (0..count)
+                    .filter_map(|index| list.selected_child(index).unwrap())
+                    .map(|item| self.adapter.platform_node(item).name().unwrap())
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 }

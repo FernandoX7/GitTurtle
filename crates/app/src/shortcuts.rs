@@ -1331,11 +1331,6 @@ struct ShortcutHelpView {
     /// again: kept at the rest's entry on Linux, where the list spoke the
     /// move, a rest after Down, a key and Backspace said nothing.
     announced_entry: SharedString,
-    /// The rows the list drew in its last frame, which the window's
-    /// accessibility tree holds: a move to one of them is spoken by the list
-    /// where it speaks a moved selection ([`LIST_SPEAKS_SELECTION`]), and a
-    /// move to any other by the status ([`Self::announce_entry`]).
-    drawn: std::ops::Range<usize>,
     /// The rest the search's next count waits for ([`Self::settle_count`]):
     /// replaced by each change to the search, so only the last one runs,
     /// and dropped as the dialog closes.
@@ -1355,19 +1350,24 @@ pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_mil
 
 /// Whether the platform's screen reader speaks, on its own, the entry a key
 /// or a click selects in Keyboard Shortcuts' list while focus stays in the
-/// search. On Linux Orca speaks the list item the AT-SPI adapter reports
-/// newly selected (`object:state-changed:selected`), so Down spoke each entry
-/// twice while the status announced it too (QA-90): there a move to a row the
-/// list drew announces nothing of the app's own. The list is virtual, and a
-/// row it had not drawn, which End, a page key or Down past its edge reach,
-/// enters the tree already selected, which the adapter reports as no change
-/// of the item's (`accesskit_atspi_common`'s `add_node`): the status
-/// announces that entry (decided by the coordinator after QA-90's review).
-/// macOS's adapter reports the change on the list
-/// (`NSAccessibilitySelectedRowsChangedNotification`), not on the item, and
-/// VoiceOver's cursor follows focus into the search field, so nothing shows
-/// that VoiceOver speaks it (not yet checked natively): there the status
-/// announces the entry a move selects.
+/// search. On Linux it does for every move: the AT-SPI adapter reports each
+/// change of the list's selection (`object:selection-changed`), and Orca
+/// speaks the list's selected item on it. A row the virtual list had not
+/// drawn, which End, Home, a page key or Down past its edge reach, enters
+/// the tree already selected, which the adapter reports as no change of the
+/// item's own state (`accesskit_atspi_common`'s `add_node`) but as a change
+/// of its list's selection all the same. So the status announces no move
+/// there. It once announced the entry of a row the list had not drawn, on
+/// the premise that the list would not speak it, and Orca 51.1 spoke End's
+/// and Home's entry twice, the status's announcement and, 10 to 30 ms later,
+/// the list's `selection-changed`, in the whole list and in a search's;
+/// Down and Page Down, which the status left to the list, once each (QA-92,
+/// 2026-11-03). Before that the status announced every move and Orca spoke
+/// Down's entry twice (QA-90). macOS's adapter reports the change on the
+/// list (`NSAccessibilitySelectedRowsChangedNotification`), not on the item,
+/// and VoiceOver's cursor follows focus into the search field, so nothing
+/// shows that VoiceOver speaks it (not yet checked natively): there the
+/// status announces the entry a move selects.
 pub(crate) const LIST_SPEAKS_SELECTION: bool = cfg!(target_os = "linux");
 
 #[cfg(test)]
@@ -1445,7 +1445,6 @@ impl ShortcutHelpView {
             quiet: false,
             announced_count: count,
             announced_entry: entry,
-            drawn: 0..0,
             settling: None,
             rows,
             selected: 1,
@@ -1484,14 +1483,12 @@ impl ShortcutHelpView {
 
     /// Keeps the entry a person's key or click moved the selection to as the
     /// one last spoken, and announces it, alone and at once, unless the list
-    /// speaks it itself: where it speaks a moved selection
-    /// ([`LIST_SPEAKS_SELECTION`]), it does so for a row it drew in its last
-    /// frame ([`Self::drawn`]), and the status takes the entry quietly
-    /// ([`Self::quiet`]). Called before the move brings its entry into view.
+    /// speaks it itself ([`LIST_SPEAKS_SELECTION`]), as it does every move on
+    /// Linux: there the status takes the entry quietly ([`Self::quiet`]).
     fn announce_entry(&mut self) {
         self.announced_entry = entry_reading(&self.rows, self.selected);
         self.status = self.announced_entry.clone();
-        self.quiet = LIST_SPEAKS_SELECTION && self.drawn.contains(&self.selected);
+        self.quiet = LIST_SPEAKS_SELECTION;
     }
 
     /// Lists `rows`, with their heights at the interface size.
@@ -1619,9 +1616,6 @@ impl Render for ShortcutHelpView {
             "shortcut-help-list",
             self.layout.sizes.clone(),
             |this, range: std::ops::Range<usize>, _, cx| {
-                // The list asks for one row to measure as it lays out, and
-                // for the rows it draws as it prepaints, last.
-                this.drawn = range.clone();
                 let p = palette(cx);
                 // Fitted once for the rows drawn, not for each row.
                 let (edge, selected_edge) = (p.raised_edge(), p.selected_edge());
@@ -3562,8 +3556,8 @@ mod list_tests {
     /// announces a live node whose name changes, and none it takes quietly;
     /// on Linux every announcement the window's AT-SPI adapter itself made,
     /// fed each frame's tree, so a second live node announcing beside the
-    /// status is heard too, and the list items it reported newly selected,
-    /// which Orca speaks.
+    /// status is heard too, and the item a list holds selected each time it
+    /// reported a change of its selection, which Orca speaks.
     struct Heard {
         named: Option<String>,
         heard: Vec<String>,
@@ -3638,7 +3632,7 @@ mod list_tests {
             {
                 self.bus.update(tree);
                 self.adapter.extend(self.bus.announced());
-                self.listed.extend(self.bus.selected());
+                self.listed.extend(self.bus.selection_changed());
             }
         }
 
@@ -3664,8 +3658,9 @@ mod list_tests {
             heard
         }
 
-        /// The entries the AT-SPI adapter reported newly selected since the
-        /// last call, each of which Orca speaks.
+        /// The entries the list held selected each time the AT-SPI adapter
+        /// reported a change of its selection since the last call, each of
+        /// which Orca speaks.
         #[cfg(target_os = "linux")]
         fn take_listed(&mut self) -> Vec<String> {
             std::mem::take(&mut self.listed)
@@ -3788,14 +3783,14 @@ mod list_tests {
 
     /// A search that rests announces its count and the entry it selected in
     /// one reading, 500 ms after its last key and not at 499. A move the
-    /// person makes after it to a row the list drew, by Down, Up, End, Home or
-    /// a click on an entry, announces nothing of the app's own where the list
-    /// speaks the entry it
+    /// person makes after it, by Down, Up, End, Home or a click on an entry,
+    /// announces nothing of the app's own where the list speaks the entry it
     /// selects itself ([`LIST_SPEAKS_SELECTION`], Linux, where the AT-SPI
-    /// adapter hears nothing from the dialog), and elsewhere the entry it
-    /// reaches, alone and at once; nothing follows. The status announced
-    /// each move's entry on Linux too, so Orca spoke Down's entry twice, from
-    /// the status and from the list item reported selected (QA-90).
+    /// adapter hears nothing from the dialog and the list reports each
+    /// move's entry), and elsewhere the entry it reaches, alone and at once;
+    /// nothing follows. The status announced each move's entry on Linux too,
+    /// so Orca spoke Down's entry twice, from the status and from the list
+    /// (QA-90).
     #[gpui::test]
     async fn a_move_after_the_rest_is_left_to_the_list_where_it_speaks_it(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -3845,29 +3840,29 @@ mod list_tests {
             )],
             "the count and the entry the search rests on, in one announcement"
         );
-        // Whether the list drew row `to` in its last frame, before the move.
-        let shown = |cx: &mut VisualTestContext, to: usize| {
-            cx.update(|_, cx| view.read(cx).drawn.contains(&to))
-        };
-        let moved =
-            |cx: &mut VisualTestContext, heard: &mut Heard, how: &str, to: usize, shown: bool| {
-                heard.frame(cx);
-                assert_eq!(
-                    cx.update(|_, cx| view.read(cx).selected),
-                    to,
-                    "{how} selects row {to}"
-                );
-                let own = if LIST_SPEAKS_SELECTION && shown {
-                    Vec::new()
-                } else {
-                    vec![entry_reading(&rows, to).to_string()]
-                };
-                assert_eq!(
-                    heard.take(),
-                    own,
-                    "{how}: the app announces the entry only where the list does not"
-                );
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+        let moved = |cx: &mut VisualTestContext, heard: &mut Heard, how: &str, to: usize| {
+            heard.frame(cx);
+            assert_eq!(
+                cx.update(|_, cx| view.read(cx).selected),
+                to,
+                "{how} selects row {to}"
+            );
+            let entry = entry_reading(&rows, to).to_string();
+            let own = if LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![entry.clone()]
             };
+            assert_eq!(
+                heard.take(),
+                own,
+                "{how}: the app announces the entry only where the list does not"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(heard.take_listed(), [entry], "{how}: the list speaks it");
+        };
         let last = *found.last().unwrap();
         for (keys, to) in [
             ("down", found[1]),
@@ -3875,29 +3870,28 @@ mod list_tests {
             ("end", last),
             ("home", found[0]),
         ] {
-            let was = shown(cx, to);
             cx.simulate_keystrokes(keys);
-            moved(cx, &mut heard, keys, to, was);
+            moved(cx, &mut heard, keys, to);
         }
         let row = format!("shortcut-help-row-{}", found[1]).leak();
         let click = cx.debug_bounds(row).expect("the entry is drawn").center();
-        assert!(shown(cx, found[1]), "a click lands on a row the list drew");
         cx.simulate_click(click, Modifiers::default());
-        moved(cx, &mut heard, "a click", found[1], true);
+        moved(cx, &mut heard, "a click", found[1]);
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
         close(cx);
     }
 
-    /// In a list longer than its view, each move is spoken once. A move to a
-    /// row the list drew is spoken by the list where it speaks a moved
-    /// selection ([`LIST_SPEAKS_SELECTION`], Linux: the AT-SPI adapter
-    /// reports the item newly selected and the app announces nothing); a move
-    /// to a row it had not drawn, End's, or Home's from the list's foot, is
-    /// spoken by the status, as that row enters the tree already selected,
-    /// which the adapter reports as no change of the item's: End went
-    /// unspoken on Linux (QA-90's review). Elsewhere the status announces
-    /// every move.
+    /// In a list longer than its view, each move is spoken once, also to a
+    /// row the list had not drawn, which enters the window's tree already
+    /// selected: End's, Home's from the list's foot and a second Page
+    /// Down's, past the rows drawn. Where the list speaks a moved selection
+    /// ([`LIST_SPEAKS_SELECTION`], Linux) the AT-SPI adapter reports a change
+    /// of the list's selection for every move, that row's too, and the app
+    /// announces nothing: the status announced End's and Home's entry, which
+    /// Orca then spoke twice, from the status and from the list's
+    /// `selection-changed` 10 to 30 ms later (QA-92). Elsewhere the status
+    /// announces every move.
     #[gpui::test]
     async fn a_move_in_a_long_list_is_spoken_once(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -3913,17 +3907,21 @@ mod list_tests {
             .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
             .collect();
         let last = *entries.last().unwrap();
+        let page = cx.update(|_, cx| view.read(cx).page());
         for (keys, to, shown) in [
             ("down", entries[1], true),
             ("end", last, false),
             ("up", entries[entries.len() - 2], true),
             ("home", entries[0], false),
+            // The first page's entry is the one the list's foot cuts.
+            ("pagedown", entries[page], true),
+            ("pagedown", entries[2 * page], false),
         ] {
-            let drawn = cx.update(|_, cx| view.read(cx).drawn.clone());
+            let row = format!("shortcut-help-row-{to}").leak();
             assert_eq!(
-                drawn.contains(&to),
+                cx.debug_bounds(row).is_some(),
                 shown,
-                "{keys}: row {to} of {} is drawn before it: {drawn:?}",
+                "{keys}: whether row {to} of {} is drawn before it",
                 rows.len()
             );
             cx.simulate_keystrokes(keys);
@@ -3934,7 +3932,7 @@ mod list_tests {
                 "{keys} selects row {to}"
             );
             let entry = entry_reading(&rows, to).to_string();
-            let own = if LIST_SPEAKS_SELECTION && shown {
+            let own = if LIST_SPEAKS_SELECTION {
                 Vec::new()
             } else {
                 vec![entry.clone()]
@@ -3942,13 +3940,13 @@ mod list_tests {
             assert_eq!(
                 heard.take(),
                 own,
-                "{keys}: the app announces the entry once, where the list does not"
+                "{keys}: the app announces the entry only where the list does not"
             );
             #[cfg(target_os = "linux")]
             assert_eq!(
                 heard.take_listed(),
-                if shown { vec![entry] } else { Vec::new() },
-                "{keys}: the list speaks the entry where it drew its row, and only there"
+                [entry],
+                "{keys}: the list reports its selection changed, and Orca speaks the entry"
             );
         }
         heard.wait(cx, 2000);
