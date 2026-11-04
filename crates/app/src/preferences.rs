@@ -118,6 +118,9 @@ pub enum DisplayChoice {
 }
 
 impl DisplayChoice {
+    /// The order Settings offers them in.
+    pub const ALL: [Self; 3] = [Self::Follow, Self::On, Self::Off];
+
     /// Whether the preference is on with the desktop's answer, `desktop`:
     /// `None` while following a desktop that has not answered, when the
     /// caller leaves the preference as it is.

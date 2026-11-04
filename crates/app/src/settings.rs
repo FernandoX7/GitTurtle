@@ -6,6 +6,7 @@ use gitturtle_core::WriteCommand;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
 use gpui_kit::prelude::FluentBuilder;
+use preferences::DisplayChoice;
 use std::path::Path;
 
 /// Fixed list rows are snapped by GPUI before layout. Preserve row positions
@@ -625,6 +626,106 @@ impl GitTurtle {
         self.repository_tabs
             .rescale_text_viewports(lists, code_ratio, cx);
         cx.notify();
+    }
+
+    /// Settings' Reduce motion or Increase contrast: the title and the
+    /// description of the current choice at the row's left edge, the three
+    /// choices at its trailing edge, built as List density's segments and
+    /// stacked below the title in a `narrow` page. The description says what
+    /// the desktop asks while following it, and the row keeps the height of
+    /// its tallest description, so a choice moves nothing.
+    fn render_display_setting(
+        &self,
+        setting: DisplaySetting,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = palette(cx);
+        let choice = setting.choice(&self.settings);
+        let asks = setting.asks(native_accessibility::display_preferences(cx));
+        let reserve = setting.descriptions().map(SharedString::from);
+        let key = setting.key();
+        let focus: Vec<_> = (0..DisplayChoice::ALL.len())
+            .map(|index| self.page_focus((key, index), cx))
+            .collect();
+        div()
+            .debug_selector(move || format!("{key}-row"))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .when(narrow, |row| row.flex_col().items_start())
+            .pt_4()
+            .border_t_1()
+            .border_color(rgb(p.border))
+            // Stacked, the text takes the row's width, so its longest
+            // description wraps inside the card rather than widening it.
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .map(|text| if narrow { text.w_full() } else { text.flex_1() })
+                    .child(read_setting_text(
+                        setting.title(),
+                        &setting.description(choice, asks).into(),
+                        &reserve,
+                        cx,
+                    )),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("{key}-segments"))
+                    .on_children_prepainted(
+                        self.keep_in_view(focus.iter().cloned().map(Some).collect(), cx),
+                    )
+                    .flex()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .p_1()
+                    .rounded(px(8.))
+                    .bg(rgb(p.canvas))
+                    .children(
+                        DisplayChoice::ALL
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, option)| {
+                                display_segment(setting, index, option == choice, &focus[index])
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.choose_display(setting, option, window, cx)
+                                    }))
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// A Reduce motion or Increase contrast segment pressed: the choice is
+    /// kept, resolved with the desktop's answer and shown at once (a change
+    /// of More contrast applies the theme again, traced as
+    /// `gitturtle.contrast_apply_frame_ms` from here to the next frame), and
+    /// saved.
+    fn choose_display(
+        &mut self,
+        setting: DisplaySetting,
+        choice: DisplayChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let started = trace_enabled().then(std::time::Instant::now);
+        let current = match setting {
+            DisplaySetting::ReduceMotion => &mut self.settings.reduce_motion,
+            DisplaySetting::IncreaseContrast => &mut self.settings.increase_contrast,
+        };
+        if *current == choice {
+            return;
+        }
+        *current = choice;
+        native_accessibility::set_display_choices(&self.settings, cx);
+        native_accessibility::sync_preferences(cx);
+        self.show_display_preferences(started, window, cx);
+        self.notify_settings_page(cx);
+        cx.notify();
+        self.save_preferences(window, cx);
     }
 
     /// Linux: code in the desktop's fontconfig `monospace` family, used only
@@ -2333,6 +2434,8 @@ impl GitTurtle {
                             )),
                     ),
             )
+            .child(self.render_display_setting(DisplaySetting::ReduceMotion, narrow, cx))
+            .child(self.render_display_setting(DisplaySetting::IncreaseContrast, narrow, cx))
             .into_any_element();
 
         let save_editor = self.page_focus("save-external-editor", cx);
@@ -4301,8 +4404,161 @@ fn setting_description(
     description: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    let description = description.into();
-    read_setting_text(title, &description, format!("{title}. {description}"), cx)
+    read_setting_text(title, &description.into(), &[], cx)
+}
+
+/// Settings' two display preferences, each a row of three choices
+/// ([`GitTurtle::render_display_setting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DisplaySetting {
+    ReduceMotion,
+    IncreaseContrast,
+}
+
+impl DisplaySetting {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 2] = [Self::ReduceMotion, Self::IncreaseContrast];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::ReduceMotion => "Reduce motion",
+            Self::IncreaseContrast => "Increase contrast",
+        }
+    }
+
+    /// The ID its segments and their focus handles are built from.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::ReduceMotion => "settings-reduce-motion",
+            Self::IncreaseContrast => "settings-increase-contrast",
+        }
+    }
+
+    pub(crate) fn choice(self, settings: &AppSettings) -> DisplayChoice {
+        match self {
+            Self::ReduceMotion => settings.reduce_motion,
+            Self::IncreaseContrast => settings.increase_contrast,
+        }
+    }
+
+    /// Whether the desktop's answer asks for this preference; a desktop
+    /// that has not answered asks for nothing.
+    fn asks(self, desktop: Option<native_accessibility::DisplayPreferences>) -> bool {
+        desktop.is_some_and(|desktop| match self {
+            Self::ReduceMotion => desktop.reduce_motion,
+            Self::IncreaseContrast => desktop.increase_contrast,
+        })
+    }
+
+    /// What `choice` does, following a desktop that `asks` or does not.
+    /// macOS is named as the system that asks there.
+    pub(crate) fn description(self, choice: DisplayChoice, asks: bool) -> &'static str {
+        #[cfg(target_os = "macos")]
+        let (motion_asks, motion_does_not, contrast_asks, contrast_does_not) = (
+            "macOS asks for reduced motion.",
+            "macOS does not ask for reduced motion.",
+            "macOS asks for more contrast.",
+            "macOS does not ask for more contrast.",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (motion_asks, motion_does_not, contrast_asks, contrast_does_not) = (
+            "Your desktop asks for reduced motion.",
+            "Your desktop does not ask for reduced motion.",
+            "Your desktop asks for more contrast.",
+            "Your desktop does not ask for more contrast.",
+        );
+        match (self, choice) {
+            (Self::ReduceMotion, DisplayChoice::Follow) if asks => motion_asks,
+            (Self::ReduceMotion, DisplayChoice::Follow) => motion_does_not,
+            (Self::ReduceMotion, DisplayChoice::On) => {
+                "Transitions finish at once and GIFs and model clips stay paused, whatever the desktop asks."
+            }
+            (Self::ReduceMotion, DisplayChoice::Off) => {
+                "GitTurtle's short transitions play, whatever the desktop asks."
+            }
+            (Self::IncreaseContrast, DisplayChoice::Follow) if asks => contrast_asks,
+            (Self::IncreaseContrast, DisplayChoice::Follow) => contrast_does_not,
+            (Self::IncreaseContrast, DisplayChoice::On) => {
+                "Secondary text, dividers and control edges are drawn with more contrast, in every theme."
+            }
+            (Self::IncreaseContrast, DisplayChoice::Off) => {
+                "Each theme's own contrast, whatever the desktop asks."
+            }
+        }
+    }
+
+    /// Every description the row can show, which it reserves the height of.
+    pub(crate) fn descriptions(self) -> [&'static str; 4] {
+        [
+            self.description(DisplayChoice::Follow, true),
+            self.description(DisplayChoice::Follow, false),
+            self.description(DisplayChoice::On, false),
+            self.description(DisplayChoice::Off, false),
+        ]
+    }
+}
+
+/// A display choice's segment label: the first follows the desktop, which
+/// on macOS is the system.
+pub(crate) fn display_choice_label(choice: DisplayChoice) -> &'static str {
+    match choice {
+        #[cfg(target_os = "macos")]
+        DisplayChoice::Follow => "Follow the system",
+        #[cfg(not(target_os = "macos"))]
+        DisplayChoice::Follow => "Follow the desktop",
+        DisplayChoice::On => "On",
+        DisplayChoice::Off => "Off",
+    }
+}
+
+/// `setting`'s segment `index`, the choice [`DisplayChoice::ALL`] holds
+/// there, built as List density's segments: the shared helper's look, its
+/// toggled state the selection, tracking `focus`, and named by the setting
+/// and the choice ("Reduce motion: Off").
+pub(crate) fn display_segment(
+    setting: DisplaySetting,
+    index: usize,
+    selected: bool,
+    focus: &FocusHandle,
+) -> Button {
+    let key = setting.key();
+    let label = display_choice_label(DisplayChoice::ALL[index]);
+    let name = format!("{}: {label}", setting.title());
+    #[cfg(test)]
+    SEGMENTS.with(|segments| {
+        segments
+            .borrow_mut()
+            .insert(format!("{key}-{index}"), (name.clone(), selected))
+    });
+    Button::new((key, index))
+        .track_focus(focus)
+        .small()
+        .with_variant(appearance::control_button_variant(selected))
+        .label(label)
+        .accessibility_label(name)
+        .selected(selected)
+        .toggled(selected)
+        .debug_selector(move || format!("{key}-{index}"))
+        .when(selected, |button| {
+            button.hover(appearance::control_selected_hover)
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The accessible name and toggled state each display segment was last
+    /// built with, by its selector: the test platform builds no
+    /// accessibility tree.
+    static SEGMENTS: std::cell::RefCell<
+        std::collections::BTreeMap<String, (String, bool)>,
+    > = std::cell::RefCell::default();
+}
+
+/// The accessible name and toggled state the display segment `selector`
+/// was last built with.
+#[cfg(test)]
+pub(crate) fn segment_built(selector: &str) -> Option<(String, bool)> {
+    SEGMENTS.with(|segments| segments.borrow().get(selector).cloned())
 }
 
 /// A field's title and description, the title the field's name, so the
@@ -4315,14 +4571,29 @@ fn field_description(
     cx: &App,
 ) -> AnyElement {
     let description = description.into();
-    read_setting_text(title, &description, description.to_string(), cx)
+    let label = description.to_string();
+    setting_text_read_as(title, &description, label, &[], cx)
 }
 
-/// A setting's title and description, read as `label`.
+/// A setting's title and description, read together, the description as
+/// tall as the tallest of it and `reserve`.
 fn read_setting_text(
     title: &'static str,
     description: &SharedString,
+    reserve: &[SharedString],
+    cx: &App,
+) -> AnyElement {
+    let label = format!("{title}. {description}");
+    setting_text_read_as(title, description, label, reserve, cx)
+}
+
+/// A setting's title and description, read as `label`, the description as
+/// tall as the tallest of it and `reserve`.
+fn setting_text_read_as(
+    title: &'static str,
+    description: &SharedString,
     label: String,
+    reserve: &[SharedString],
     cx: &App,
 ) -> AnyElement {
     let selector = label.clone();
@@ -4336,7 +4607,7 @@ fn read_setting_text(
         ),
         title,
         description,
-        &[],
+        reserve,
         cx,
     )
     .into_any_element()
@@ -7478,5 +7749,494 @@ mod omarchy_contrast_tests {
             "a new palette applies once"
         );
         assert_eq!(cx.read(palette), changed.with_more_contrast());
+    }
+}
+
+/// Settings' Reduce motion and Increase contrast rows as a real window
+/// draws them.
+#[cfg(test)]
+mod display_row_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// The focus handle of `setting`'s segment `index`, as the page tracks it.
+    fn segment_focus(
+        app: &Entity<GitTurtle>,
+        setting: DisplaySetting,
+        index: usize,
+        cx: &mut VisualTestContext,
+    ) -> FocusHandle {
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        cx.update(|_, cx| page.focus((setting.key(), index), cx))
+    }
+
+    /// Where `selector` is drawn, for a test that expects it.
+    fn drawn(cx: &mut VisualTestContext, selector: String) -> Bounds<Pixels> {
+        let leaked: &'static str = selector.clone().leak();
+        shown(cx, leaked).unwrap_or_else(|| panic!("{selector} is drawn"))
+    }
+
+    /// Interface text at `size` points.
+    fn text_size(app: &Entity<GitTurtle>, size: u8, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = size;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(size, code, window, cx);
+                cx.notify();
+            })
+        });
+    }
+
+    /// Both rows draw whole at 11, 13 and 18 pt in 1480 × 973 and
+    /// 461 × 490 windows, each scrolled to the top of the page's view: its
+    /// three segments share one height (no label wraps), are as wide at
+    /// 461 px as at 1480 px (no label is cut to fit) and lie inside their
+    /// group, and the group and the title lie inside the row and the row
+    /// inside the Appearance card, within the page's view. At 1480 px the
+    /// group ends the row beside the title; at 461 px it stacks below it.
+    #[gpui::test]
+    fn the_display_rows_draw_whole_at_every_size(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() + slack >= outer.left()
+                && inner.right() <= outer.right() + slack
+                && inner.top() + slack >= outer.top()
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        let mut wide_widths = std::collections::HashMap::new();
+        let mut failures = Vec::new();
+        for (width, height) in [(1480., 973.), (461., 490.)] {
+            for text in [11, 13, 18] {
+                text_size(&app, text, cx);
+                cx.simulate_resize(size(px(width), px(height)));
+                settle(cx);
+                for setting in DisplaySetting::ALL {
+                    let at = format!("{} at {text} pt in {width} × {height}", setting.title());
+                    let key = setting.key();
+                    // Scrolled so the row starts 8 px below the view's top.
+                    let row = drawn(cx, format!("{key}-row"));
+                    let view = page.scroll().bounds();
+                    let offset = page.scroll().offset();
+                    page.scroll().set_offset(point(
+                        offset.x,
+                        offset.y - (row.top() - view.top() - px(8.)),
+                    ));
+                    settle(cx);
+                    let row = drawn(cx, format!("{key}-row"));
+                    let group = drawn(cx, format!("{key}-segments"));
+                    let title = drawn(cx, format!("setting-title: {}", setting.title()));
+                    let card = drawn(cx, "settings-section: Appearance".into());
+                    let view = page.scroll().bounds();
+                    let segments: Vec<_> = (0..DisplayChoice::ALL.len())
+                        .map(|index| drawn(cx, format!("{key}-{index}")))
+                        .collect();
+                    if !(inside(group, row) && inside(title, row) && inside(row, card)) {
+                        failures.push(format!(
+                            "{at}: the group {group:?} or title {title:?} leaves the row \
+                             {row:?}, or the row the card {card:?}"
+                        ));
+                    }
+                    if !(row.left() + slack >= view.left() && row.right() <= view.right() + slack)
+                        || !inside(group, view)
+                    {
+                        failures.push(format!(
+                            "{at}: the row {row:?} or group {group:?} is cut by the view {view:?}"
+                        ));
+                    }
+                    // Stacked, the group starts the row's next line at its
+                    // left edge; centred beside a tall description, it could
+                    // also lie below the title's line.
+                    let stacked = title.bottom() <= group.top() + slack
+                        && (group.left() - row.left()).abs() <= slack;
+                    let beside = title.right() <= group.left() + slack
+                        && (group.right() - row.right()).abs() <= slack;
+                    if (width < 1000. && !stacked) || (width > 1000. && !beside) {
+                        failures.push(format!(
+                            "{at}: the group {group:?} is not {} the title {title:?}",
+                            if width < 1000. { "below" } else { "beside" }
+                        ));
+                    }
+                    for (index, segment) in segments.iter().enumerate() {
+                        if !inside(*segment, group) {
+                            failures.push(format!(
+                                "{at}: segment {index} {segment:?} leaves its group {group:?}"
+                            ));
+                        }
+                        if (segment.size.height - segments[1].size.height).abs() > slack {
+                            failures.push(format!(
+                                "{at}: segment {index} is {:?} tall, \"On\" {:?}: a label wraps",
+                                segment.size.height, segments[1].size.height
+                            ));
+                        }
+                        let widths = (key, text, index);
+                        if width > 1000. {
+                            wide_widths.insert(widths, segment.size.width);
+                        } else if let Some(wide) = wide_widths.get(&widths)
+                            && (segment.size.width - *wide).abs() > slack
+                        {
+                            failures.push(format!(
+                                "{at}: segment {index} is {:?} wide, {wide:?} in the wide \
+                                 window: its label is cut",
+                                segment.size.width
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(wide_widths.len(), 2 * 3 * 3, "every wide segment measured");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Each choice, and following a desktop that asks and one that does
+    /// not, keeps each row's height and leaves the rows below where they
+    /// were, at 13 and 18 pt in a 461 px and a 1480 px window: every row
+    /// reserves its tallest description.
+    #[gpui::test]
+    fn each_choice_keeps_the_rows_height(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let mut failures = Vec::new();
+        let mut descriptions = std::collections::BTreeSet::new();
+        for width in [461., 1480.] {
+            for text in [13, 18] {
+                text_size(&app, text, cx);
+                // Tall enough to draw the whole page without scrolling.
+                cx.simulate_resize(size(px(width), px(9000.)));
+                settle(cx);
+                let rows = |cx: &mut VisualTestContext| {
+                    DisplaySetting::ALL.map(|setting| drawn(cx, format!("{}-row", setting.key())))
+                };
+                let at_rest = rows(cx);
+                for setting in DisplaySetting::ALL {
+                    for (choice, asks) in [
+                        (DisplayChoice::On, false),
+                        (DisplayChoice::Off, false),
+                        (DisplayChoice::Follow, true),
+                        (DisplayChoice::Follow, false),
+                    ] {
+                        // On macOS, following shows the Mac's own answer, which a test cannot set.
+                        if cfg!(target_os = "macos") && choice == DisplayChoice::Follow {
+                            continue;
+                        }
+                        let at = format!(
+                            "{} {choice:?} (asks {asks}) at {text} pt in {width} px",
+                            setting.title()
+                        );
+                        cx.update(|window, cx| {
+                            app.update(cx, |app, cx| {
+                                match setting {
+                                    DisplaySetting::ReduceMotion => {
+                                        app.settings.reduce_motion = choice
+                                    }
+                                    DisplaySetting::IncreaseContrast => {
+                                        app.settings.increase_contrast = choice
+                                    }
+                                }
+                                #[cfg(target_os = "linux")]
+                                native_accessibility::store_desktop_preferences(
+                                    native_accessibility::DisplayPreferences {
+                                        reduce_motion: asks,
+                                        increase_contrast: asks,
+                                        reduce_transparency: false,
+                                    },
+                                    cx,
+                                );
+                                app.notify_settings_page(cx);
+                                window.refresh();
+                            })
+                        });
+                        settle(cx);
+                        let drawn_rows = rows(cx);
+                        if drawn_rows != at_rest {
+                            failures.push(format!("{at}: {at_rest:?} -> {drawn_rows:?}"));
+                        }
+                        let shown = setting.description(choice, asks);
+                        let read = format!("setting-description: {}. {shown}", setting.title());
+                        if !page_shows(cx, read.clone().leak()) {
+                            failures.push(format!("{at}: does not read {read:?}"));
+                        }
+                        descriptions.insert(shown);
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            descriptions.len(),
+            8,
+            "every description drawn: {descriptions:?}"
+        );
+    }
+
+    /// From List density's last segment, Tab reaches Reduce motion's three
+    /// segments and then Increase contrast's, in order, in a 461 × 490 window
+    /// at 18 pt, and every frame painted after each key shows the focused
+    /// segment with its focus ring's room inside the page's view.
+    #[gpui::test]
+    fn tab_reaches_the_six_segments_in_order_and_keeps_each_in_view(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        text_size(&app, 18, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        // List density's first segment, then Tab to its second, which the
+        // keyboard's focus scrolls into view.
+        let density = |index: usize, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| page.focus(("settings-density", index), cx))
+        };
+        let first = density(0, cx);
+        cx.update(|window, cx| window.focus(&first, cx));
+        settle(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let second = density(1, cx);
+        assert!(cx.update(|window, _| second.is_focused(window)));
+        let slack = px(0.01);
+        for setting in DisplaySetting::ALL {
+            for index in 0..DisplayChoice::ALL.len() {
+                let at = format!("{}'s segment {index}", setting.title());
+                let expected = segment_focus(&app, setting, index, cx);
+                page.take_painted();
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                assert!(
+                    cx.update(|window, _| expected.is_focused(window)),
+                    "Tab reaches {at}"
+                );
+                let frames = page.take_painted();
+                assert!(!frames.is_empty(), "{at}: Tab paints the page");
+                for (frame, painted) in frames.iter().enumerate() {
+                    let ring = painted
+                        .control
+                        .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused segment"))
+                        .dilate(room);
+                    assert!(
+                        ring.top() + slack >= painted.viewport.top()
+                            && ring.bottom() <= painted.viewport.bottom() + slack,
+                        "{at}: frame {frame} paints the segment with its ring, {ring:?}, \
+                         outside the page, {:?}",
+                        painted.viewport
+                    );
+                }
+            }
+        }
+    }
+
+    /// What the settings file on disk holds for `setting`, once its save
+    /// has landed.
+    fn stored(setting: DisplaySetting) -> serde_json::Value {
+        let path = preferences::settings_path().expect("the test settings path");
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("a saved store")).expect("a store");
+        let field = match setting {
+            DisplaySetting::ReduceMotion => "reduce_motion",
+            DisplaySetting::IncreaseContrast => "increase_contrast",
+        };
+        stored["settings"][field].clone()
+    }
+
+    /// A click on a segment, or Space on the focused one, selects its
+    /// choice, saves it and applies it at once: Reduce motion On reduces
+    /// the toolkit's motion, Off plays it; Increase contrast On applies the
+    /// adjusted palette, once, and Off the theme's own, once. A press on the
+    /// selected segment does nothing.
+    #[gpui::test]
+    fn a_click_or_space_selects_saves_and_applies(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1480.), px(9000.)));
+        settle(cx);
+        let own = cx.read(|cx| app.read(cx).effective_theme(cx).palette);
+        let click = |cx: &mut VisualTestContext, setting: DisplaySetting, index: usize| {
+            let segment = drawn(cx, format!("{}-{index}", setting.key()));
+            cx.simulate_click(segment.center(), Modifiers::default());
+            settle(cx);
+        };
+        let space = |cx: &mut VisualTestContext, setting: DisplaySetting, index: usize| {
+            let focus = segment_focus(&app, setting, index, cx);
+            cx.update(|window, cx| window.focus(&focus, cx));
+            settle(cx);
+            let space = Keystroke::parse("space").expect("a keystroke");
+            cx.simulate_event(KeyDownEvent {
+                keystroke: space.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(KeyUpEvent { keystroke: space });
+            settle(cx);
+        };
+        let state = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let app = app.read(cx);
+                (
+                    app.settings.reduce_motion,
+                    app.settings.increase_contrast,
+                    cx.reduce_motion(),
+                    appearance::more_contrast(cx),
+                    palette(cx),
+                )
+            })
+        };
+        let motion = DisplaySetting::ReduceMotion;
+        let contrast = DisplaySetting::IncreaseContrast;
+        let index = |choice: DisplayChoice| {
+            DisplayChoice::ALL
+                .iter()
+                .position(|option| *option == choice)
+                .unwrap()
+        };
+        // On macOS, following takes the Mac's own Increase Contrast: Off
+        // there keeps the test independent of it.
+        let unchosen = if cfg!(target_os = "macos") {
+            DisplayChoice::Off
+        } else {
+            DisplayChoice::Follow
+        };
+        #[cfg(target_os = "macos")]
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.increase_contrast = unchosen;
+                native_accessibility::set_display_choices(&app.settings, cx);
+            })
+        });
+
+        click(cx, motion, index(DisplayChoice::On));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::On, unchosen, true, false, own),
+            "a click on Reduce motion: On"
+        );
+        assert_eq!(stored(motion), "on");
+        space(cx, motion, index(DisplayChoice::Off));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::Off, unchosen, false, false, own),
+            "Space on Reduce motion: Off"
+        );
+        assert_eq!(stored(motion), "off");
+
+        let applied = platform_polish::appearance_applications();
+        space(cx, contrast, index(DisplayChoice::On));
+        assert_eq!(
+            state(cx),
+            (
+                DisplayChoice::Off,
+                DisplayChoice::On,
+                false,
+                true,
+                own.with_more_contrast()
+            ),
+            "Space on Increase contrast: On"
+        );
+        assert_eq!(stored(contrast), "on");
+        assert_eq!(platform_polish::appearance_applications() - applied, 1);
+        click(cx, contrast, index(DisplayChoice::On));
+        assert_eq!(
+            platform_polish::appearance_applications() - applied,
+            1,
+            "the selected segment again applies nothing"
+        );
+        click(cx, contrast, index(DisplayChoice::Off));
+        assert_eq!(
+            state(cx),
+            (DisplayChoice::Off, DisplayChoice::Off, false, false, own),
+            "a click on Increase contrast: Off"
+        );
+        assert_eq!(stored(contrast), "off");
+        assert_eq!(platform_polish::appearance_applications() - applied, 2);
+        click(cx, contrast, index(DisplayChoice::Follow));
+        assert_eq!(stored(contrast), "follow");
+    }
+
+    /// The accessibility node `segment` writes as it is drawn: its base
+    /// Button, laid out inside the kit's, writes it, as `reflog`'s entry
+    /// nodes are read.
+    fn segment_node(segment: Button, window: &mut Window, cx: &mut App) -> gpui::accesskit::Node {
+        use gpui::Element as _;
+        fn of_type<'a, E: gpui::Element>(
+            _witness: &E,
+            element: &'a mut AnyElement,
+        ) -> Option<&'a mut E> {
+            element.downcast_mut()
+        }
+        let mut outer = RenderOnce::render(segment, window, cx).into_element();
+        let (_, mut layout) = outer.request_layout(None, None, window, cx);
+        let mut base = (&mut layout as &mut dyn std::any::Any)
+            .downcast_mut::<Option<AnyElement>>()
+            .and_then(Option::take)
+            .expect("the kit's Button renders a base Button");
+        let witness = RenderOnce::render(
+            gpui_kit::base::Button::new("segment-node-witness"),
+            window,
+            cx,
+        )
+        .into_element();
+        let element = of_type(&witness, &mut base).expect("the base Button writes the node");
+        let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+        element.write_a11y_info(&mut node);
+        node
+    }
+
+    /// Each segment is named by its setting and its choice, and only the
+    /// selected one is toggled: as the page builds them for each choice,
+    /// and in the node such a segment writes.
+    #[gpui::test]
+    fn each_segment_names_its_setting_and_choice_and_toggles_the_selected(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1480.), px(9000.)));
+        settle(cx);
+        let follow = if cfg!(target_os = "macos") {
+            "Follow the system"
+        } else {
+            "Follow the desktop"
+        };
+        for setting in DisplaySetting::ALL {
+            let names = [follow, "On", "Off"].map(|label| format!("{}: {label}", setting.title()));
+            for (selected, choice) in DisplayChoice::ALL.into_iter().enumerate() {
+                let segment = drawn(cx, format!("{}-{selected}", setting.key()));
+                cx.simulate_click(segment.center(), Modifiers::default());
+                settle(cx);
+                assert_eq!(cx.read(|cx| setting.choice(&app.read(cx).settings)), choice);
+                page_shows(cx, "settings-section: Appearance");
+                for (index, name) in names.iter().enumerate() {
+                    let selector = format!("{}-{index}", setting.key());
+                    assert_eq!(
+                        segment_built(&selector),
+                        Some((name.clone(), index == selected)),
+                        "{selector} with {choice:?} chosen"
+                    );
+                    let focus = segment_focus(&app, setting, index, cx);
+                    let node = crate::views::tests::view_node(cx, move |window, cx| {
+                        segment_node(
+                            display_segment(setting, index, index == selected, &focus),
+                            window,
+                            cx,
+                        )
+                    });
+                    assert_eq!(
+                        (node.role(), node.label(), node.toggled()),
+                        (
+                            gpui::accesskit::Role::Button,
+                            Some(name.as_str()),
+                            Some(if index == selected {
+                                gpui::accesskit::Toggled::True
+                            } else {
+                                gpui::accesskit::Toggled::False
+                            })
+                        ),
+                        "{selector}'s node with {choice:?} chosen"
+                    );
+                }
+            }
+        }
     }
 }

@@ -3982,6 +3982,8 @@ impl GitTurtle {
     /// this window's theme was last applied with, applies the theme again,
     /// once, and traces `gitturtle.contrast_apply_frame_ms` from `started`
     /// to the next frame; while motion is reduced, pauses GIF playback.
+    /// Settings, where it shows, draws again, since its Reduce motion and
+    /// Increase contrast rows say what the desktop asks.
     pub(super) fn show_display_preferences(
         &mut self,
         started: Option<std::time::Instant>,
@@ -3995,6 +3997,9 @@ impl GitTurtle {
             }
         }
         self.apply_motion_preferences(cx);
+        if self.page == AppPage::Settings {
+            self.notify_settings_page(cx);
+        }
     }
 }
 
