@@ -201,7 +201,7 @@ pub struct Theme {
     /// draws none: a Button that keeps a resting fill and has no border of
     /// its own (a secondary one, or a custom variant whose resting fill, or
     /// selected fill while selected, is not transparent) at rest, hovered,
-    /// pressed and selected.
+    /// pressed and selected, and the track of an enabled, unchecked Switch.
     ///
     /// Set in code, not read from theme files, so an application can give
     /// such a control an edge against the surfaces it lies on, as a

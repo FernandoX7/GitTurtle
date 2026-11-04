@@ -267,6 +267,13 @@ impl Switch {
             .theme()
             .switch_hover
             .filter(|_| !checked && !self.disabled);
+        // GitTurtle patch: an enabled, unchecked track draws the theme's
+        // resting edge from a layer over its bounds, which moves nothing; a
+        // checked track, on the accent, and a disabled one draw none.
+        let resting_edge = cx
+            .theme()
+            .resting_edge
+            .filter(|_| !checked && !self.disabled);
 
         BaseSwitch::new(self.id.clone())
             .track_focus(&focus_handle)
@@ -331,6 +338,21 @@ impl Switch {
                             .border_color(cx.theme().transparent)
                     })
                     .map(|this| self.tooltip.apply(this))
+                    // Under the thumb, and reaching back across the inset that
+                    // places the track's children, so its edge is the track's.
+                    .when_some(resting_edge, |this, edge| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(-inset)
+                                .left(-inset)
+                                .right(-inset)
+                                .bottom(-inset)
+                                .border_1()
+                                .border_color(edge)
+                                .rounded(radius),
+                        )
+                    })
                     .child(
                         // Switch Toggle
                         SwitchThumb::new(checked)
@@ -510,5 +532,215 @@ mod tests {
             .debug_bounds("switch-label")
             .expect("the Switch label must participate in prepaint");
         assert_eq!(bar.origin.y, label.origin.y);
+    }
+
+    /// Switches in each state, each alone in a box that takes its track's
+    /// bounds.
+    struct RestingEdgeHarness;
+
+    impl Render for RestingEdgeHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let switch = |id: &'static str, checked: bool, disabled: bool| {
+                div()
+                    .flex()
+                    .debug_selector(move || id.into())
+                    .child(Switch::new(id).checked(checked).disabled(disabled))
+            };
+            div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .p_2()
+                .child(switch("unchecked", false, false))
+                .child(switch("checked", true, false))
+                .child(switch("disabled", false, true))
+                .child(switch("disabled-checked", true, true))
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Pointer {
+        Away,
+        Over,
+        Pressing,
+    }
+
+    type Fill = (
+        gpui::Bounds<gpui::ScaledPixels>,
+        Background,
+        gpui::Corners<gpui::ScaledPixels>,
+    );
+    type Edge = (
+        Hsla,
+        gpui::Edges<gpui::ScaledPixels>,
+        gpui::Corners<gpui::ScaledPixels>,
+    );
+
+    /// What one frame painted for a Switch.
+    #[derive(Debug)]
+    struct PaintedSwitch {
+        /// Its box's bounds, its track's.
+        bounds: gpui::Bounds<gpui::Pixels>,
+        /// Each filled quad inside them, the track's and the thumb's.
+        fills: Vec<Fill>,
+        /// The fill over the whole track.
+        track: Option<Fill>,
+        /// Each bordered quad over the whole track, once: GPUI paints a
+        /// border over a transparent fill as up to four strips of one quad.
+        edges: Vec<Edge>,
+    }
+
+    /// Draws the Switch at `selector` with the pointer away from it, over it
+    /// or pressing it, and reads what the frame painted for it.
+    fn painted_switch(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+        pointer: Pointer,
+    ) -> PaintedSwitch {
+        use gpui::MouseButton;
+
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(cx);
+        let center = cx.debug_bounds(selector).expect(selector).center();
+        let away = point(px(1.), px(1.));
+        match pointer {
+            Pointer::Away => cx.simulate_mouse_move(away, None, Modifiers::default()),
+            Pointer::Over => cx.simulate_mouse_move(center, None, Modifiers::default()),
+            Pointer::Pressing => {
+                cx.simulate_mouse_move(center, None, Modifiers::default());
+                cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            }
+        }
+        draw(cx);
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        let painted = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let device = |logical: gpui::Pixels| logical.as_f32() * scale;
+            let mut painted = PaintedSwitch {
+                bounds,
+                fills: Vec::new(),
+                track: None,
+                edges: Vec::new(),
+            };
+            for quad in window.painted_quads() {
+                let drawn = quad.bounds;
+                let sides = [
+                    (drawn.left().as_f32(), device(bounds.left())),
+                    (drawn.top().as_f32(), device(bounds.top())),
+                    (drawn.right().as_f32(), device(bounds.right())),
+                    (drawn.bottom().as_f32(), device(bounds.bottom())),
+                ];
+                let whole = sides.iter().all(|(drawn, own)| (drawn - own).abs() < 0.5);
+                let [left, top, right, bottom] = sides;
+                let inside = left.0 > left.1 - 0.5
+                    && top.0 > top.1 - 0.5
+                    && right.0 < right.1 + 0.5
+                    && bottom.0 < bottom.1 + 0.5;
+                let widths = quad.border_widths;
+                if [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .any(|width| width.as_f32() > 0.)
+                {
+                    let edge = (quad.border_color, widths, quad.corner_radii);
+                    if whole && !painted.edges.contains(&edge) {
+                        painted.edges.push(edge);
+                    }
+                } else if inside && !quad.background.is_transparent() {
+                    let fill = (drawn, quad.background, quad.corner_radii);
+                    painted.fills.push(fill);
+                    if whole {
+                        painted.track = Some(fill);
+                    }
+                }
+            }
+            painted
+        });
+        if let Pointer::Pressing = pointer {
+            cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+        }
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        painted
+    }
+
+    fn resting_edge_harness(cx: &mut TestAppContext) -> &mut VisualTestContext {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| RestingEdgeHarness);
+        cx
+    }
+
+    fn set_resting_edge(cx: &mut VisualTestContext, edge: Option<Hsla>) {
+        cx.update(|_, cx| crate::Theme::global_mut(cx).resting_edge = edge);
+    }
+
+    /// GitTurtle patch: with the theme's `resting_edge` set, an enabled,
+    /// unchecked Switch paints one 1 px edge of that colour over its track,
+    /// with the track's corners, at rest, hovered and pressed, while its
+    /// track still lifts to `switch_hover` under the pointer; its bounds, its
+    /// track and its thumb are those it paints with the edge unset, when it
+    /// paints none.
+    #[gpui::test]
+    fn an_unchecked_switch_draws_the_themes_resting_edge_in_every_pointer_state(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = resting_edge_harness(cx);
+        let edge = gpui::hsla(0.75, 0.4, 0.4, 1.);
+        let hover = gpui::hsla(0.6, 0.3, 0.5, 1.);
+        cx.update(|_, cx| crate::Theme::global_mut(cx).switch_hover = Some(hover));
+        let scale = cx.update(|window, _| window.scale_factor());
+        for pointer in [Pointer::Away, Pointer::Over, Pointer::Pressing] {
+            let unset = painted_switch(cx, "unchecked", pointer);
+            set_resting_edge(cx, Some(edge));
+            let set = painted_switch(cx, "unchecked", pointer);
+            set_resting_edge(cx, None);
+
+            assert!(unset.edges.is_empty(), "{pointer:?} unset: {unset:?}");
+            let Some((_, track, corners)) = unset.track else {
+                panic!("{pointer:?}: the track's fill: {unset:?}");
+            };
+            if !matches!(pointer, Pointer::Away) {
+                assert_eq!(track, hover.into(), "{pointer:?}: the hover lift");
+            }
+            let [(color, widths, drawn)] = set.edges[..] else {
+                panic!("{pointer:?} set: one edge: {set:?}");
+            };
+            assert_eq!(color, edge, "{pointer:?}");
+            assert!(
+                [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .all(|width| (width.as_f32() - scale).abs() < 0.5),
+                "{pointer:?}: 1 px on every side, {widths:?}"
+            );
+            assert_eq!(drawn, corners, "{pointer:?}: the track's corners");
+            assert_eq!(set.bounds, unset.bounds, "{pointer:?}: it moves nothing");
+            assert_eq!(set.fills, unset.fills, "{pointer:?}: track and thumb");
+        }
+    }
+
+    /// GitTurtle patch: a checked Switch, on the accent, and a disabled one,
+    /// checked or not, draw no resting edge, the theme's set or not, and
+    /// paint the same bounds and fills either way.
+    #[gpui::test]
+    fn a_checked_or_disabled_switch_draws_no_resting_edge(cx: &mut TestAppContext) {
+        let cx = resting_edge_harness(cx);
+        let edge = gpui::hsla(0.75, 0.4, 0.4, 1.);
+        for id in ["checked", "disabled", "disabled-checked"] {
+            for pointer in [Pointer::Away, Pointer::Over, Pointer::Pressing] {
+                let unset = painted_switch(cx, id, pointer);
+                set_resting_edge(cx, Some(edge));
+                let set = painted_switch(cx, id, pointer);
+                set_resting_edge(cx, None);
+
+                assert!(
+                    unset.track.is_some(),
+                    "{id} {pointer:?}: its track: {unset:?}"
+                );
+                assert!(unset.edges.is_empty(), "{id} {pointer:?} unset: {unset:?}");
+                assert!(set.edges.is_empty(), "{id} {pointer:?} set: {set:?}");
+                assert_eq!(set.bounds, unset.bounds, "{id} {pointer:?}");
+                assert_eq!(set.fills, unset.fills, "{id} {pointer:?}");
+            }
+        }
     }
 }
