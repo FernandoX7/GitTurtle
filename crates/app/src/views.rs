@@ -3836,6 +3836,14 @@ const CODE_PADDING: Pixels = px(8.);
 /// beneath an open Find bar before it gives way.
 const SPLIT_FIND_ROWS: f32 = 3.;
 
+#[cfg(test)]
+thread_local! {
+    /// The open Find bar's height [`split_room`] last reckoned with, for a
+    /// test.
+    pub(crate) static SPLIT_FIND_BAR: std::cell::Cell<Option<Pixels>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// Split's text, `view`, with the reason its lines cannot be staged and
 /// Compare's footer beneath it, laid out for the room they share in the
 /// frame it is drawn, `bounds`. While Split's Find is open its bar stands
@@ -3860,18 +3868,22 @@ fn split_room(
 ) -> AnyElement {
     let width = bounds.size.width;
     let editors = view.read(cx).editors().clone();
-    let gives_way = footer.is_some()
-        && crate::editor_find::shared_bar_height(&editors, width, window, cx).is_some_and(|bar| {
-            let footer = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
-            let reason = reason.clone().map_or(px(0.), |reason| {
-                crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
-            });
-            let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
-            // A device pixel short of the rows, as layout may draw the
-            // text's edges, takes the footer away.
-            let text = bounds.size.height - reason - footer - bar - CODE_PADDING * 2.;
-            text < line * SPLIT_FIND_ROWS + px(1. / window.scale_factor())
+    let bar = footer
+        .as_ref()
+        .and_then(|_| crate::editor_find::shared_bar_height(&editors, width, window, cx));
+    #[cfg(test)]
+    SPLIT_FIND_BAR.set(bar);
+    let gives_way = bar.is_some_and(|bar| {
+        let footer = window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT));
+        let reason = reason.clone().map_or(px(0.), |reason| {
+            crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
         });
+        let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
+        // A device pixel short of the rows, as layout may draw the
+        // text's edges, takes the footer away.
+        let text = bounds.size.height - reason - footer - bar - CODE_PADDING * 2.;
+        text < line * SPLIT_FIND_ROWS + px(1. / window.scale_factor())
+    });
     let (footer, described) = match footer {
         Some(footer) if gives_way => (None, Some(footer.line)),
         footer => (footer.map(|footer| footer.element), None),

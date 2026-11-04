@@ -948,26 +948,36 @@ impl FindBar {
         div().child("Find is limited to 4 KiB; shorten this query.")
     }
 
-    /// The height the bar takes `width` across, as layout gives it
-    /// ([`Self::frame`], [`Fitted`]): its controls' lines inside its pane
-    /// insets, its padding and its 1 px rule, and the limit's notice where
-    /// it states it, which never wraps at a width the bar is drawn.
+    /// The height the bar takes `width` across, as layout draws it on this
+    /// display's device pixels ([`Self::frame`], [`Fitted`]): its controls'
+    /// lines inside its pane insets, measured and rounded up to a device
+    /// pixel as layout sizes a measured element; its padding, and the gap
+    /// before the limit's notice where it states it, each a quarter rem on
+    /// its whole device pixel, halves toward zero; its 1 px rule on at
+    /// least one device pixel; and the notice's line rounded up to one, the
+    /// notice never wrapping at a width the bar is drawn. Summed from the
+    /// raw quarter rem and 1 px, the bar reckoned at 66.75 px for two lines
+    /// at 13 pt was drawn 67.5 px at scale 1.2 and 66.5 at scale 2.
     fn height_at(&self, width: Pixels, window: &Window, cx: &App) -> Pixels {
         let fit = Self::fit(self.reading(cx).1, window);
         let widths = Widths::measure(&fit.count, fit.gap, window);
-        let inset = crate::appearance::ui_size(crate::appearance::PANE_INSET);
-        let controls = planned_width((width - inset * 2.).max(px(0.)), window.scale_factor());
+        let scale = window.scale_factor();
+        // GPUI's `ceil_to_device_pixel`, as it sizes a measured element.
+        let measured = |length: Pixels| px((f32::from(length) * scale).ceil() / scale);
+        let inset = window.pixel_snap(crate::appearance::ui_size(crate::appearance::PANE_INSET));
+        let controls = planned_width((width - inset * 2.).max(px(0.)), scale);
         // `py_1` above and below, and `gap_1` before the notice.
-        let padding = window.rem_size() * 0.25;
-        let lines = widths.plan(controls).height(fit.row, fit.gap);
+        let padding = window.pixel_snap(window.rem_size() * 0.25);
+        let rule = window.pixel_snap(px(1.)).max(px(1. / scale));
+        let lines = measured(widths.plan(controls).height(fit.row, fit.gap));
         let notice = if self.too_long(cx) {
             let mut style = window.text_style();
             style.font_size = crate::appearance::ui_text(11.).into();
-            padding + style.line_height_in_pixels(window.rem_size())
+            padding + measured(style.line_height_in_pixels(window.rem_size()))
         } else {
             px(0.)
         };
-        lines + padding * 2. + px(1.) + notice
+        lines + padding * 2. + rule + notice
     }
 }
 
@@ -3555,6 +3565,103 @@ mod bar_tests {
             window.set_scale_factor(2.);
             appearance::apply_text_sizes(13, 12, window, cx);
         });
+    }
+
+    /// Split's footer rule reckons the open Find bar as tall as layout draws
+    /// it (`views::split_room`, through [`super::shared_bar_height`]): at 13
+    /// and 18 pt and display scales 1.2 and 2, Find open over Before, in
+    /// windows from 461 to 1,480 px wide and in the windows a device pixel
+    /// either side of each width where the bar's lines change, which the
+    /// walk finds by bisection as
+    /// `the_find_bar_is_as_tall_as_the_lines_it_draws` does, the height the
+    /// rule reckoned with in the frame is the drawn bar's: its lines planned
+    /// from the room inside its insets as layout draws them, and its lines,
+    /// padding and rule each on the device pixels layout draws them on.
+    /// Summed from the raw quarter rem and 1 px, the bar's two lines at
+    /// 13 pt in a 461 × 490 window were reckoned at 66.75 px and drawn
+    /// 67.5 px at 1.2 and 66.5 at 2.
+    #[gpui::test]
+    async fn split_s_footer_rule_reckons_the_find_bar_as_layout_draws_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let mut failures = Vec::new();
+        let mut changes = Vec::new();
+        for scale in [1.2f32, 2.] {
+            // Windows are counted in device pixels.
+            let width = |n: i32| n as f32 / scale;
+            let (narrow, wide) = ((461. * scale).ceil() as i32, (1480. * scale) as i32);
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                open_find(&app, cx, TextMode::Split, width(narrow));
+                // The lines the bar draws in a window `n` device pixels
+                // wide, where the rule must reckon it as tall as drawn.
+                let mut lines = |n: i32, cx: &mut VisualTestContext| {
+                    let at = format!("scale {scale}, {text} pt, Split in {} × 490", width(n));
+                    cx.simulate_resize(size(px(width(n)), px(490.)));
+                    crate::views::SPLIT_FIND_BAR.set(None);
+                    at_scale(cx, scale);
+                    let bar = drawn(cx, "file-find-bar", &at);
+                    let lines = DRAWN_FORMS
+                        .with_borrow(|drawn| *drawn)
+                        .unwrap_or_else(|| panic!("{at}: the controls are laid out"))
+                        .2;
+                    let reckoned = crate::views::SPLIT_FIND_BAR
+                        .get()
+                        .unwrap_or_else(|| panic!("{at}: the footer's rule reckons the bar"));
+                    if (reckoned - bar.size.height).abs() > px(0.01) {
+                        failures.push(format!(
+                            "{at}: the rule reckons the bar's {lines} lines {reckoned:?} tall, \
+                             drawn {:?}",
+                            bar.size.height
+                        ));
+                    }
+                    lines
+                };
+                // Walked 16 px at a time, then bisected where the lines
+                // change, and read on both sides of the change.
+                let step = (16. * scale) as i32;
+                let mut wider = (narrow, lines(narrow, cx));
+                let mut n = narrow + step;
+                while n <= wide {
+                    let here = lines(n, cx);
+                    if here != wider.1 {
+                        let (mut lo, mut hi) = (wider.0, n);
+                        while hi - lo > 1 {
+                            let middle = lo + (hi - lo) / 2;
+                            if lines(middle, cx) == here {
+                                hi = middle;
+                            } else {
+                                lo = middle;
+                            }
+                        }
+                        let sides = (lines(lo, cx), lines(hi, cx));
+                        changes.push((scale, text, width(hi), sides));
+                    }
+                    wider = (n, here);
+                    n += step;
+                }
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        eprintln!("scale, size, the wider window and the lines either side: {changes:?}");
+        for scale in [1.2, 2.] {
+            for text in [13, 18] {
+                assert!(
+                    changes
+                        .iter()
+                        .any(|change| change.0 == scale && change.1 == text),
+                    "the walk meets the bar's lines changing at scale {scale} and {text} pt: \
+                     {changes:?}"
+                );
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// The accessibility node `control`, a kit component, writes as it is
