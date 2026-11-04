@@ -37,6 +37,12 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 # portal; the version matches the toolkit's own portal client, which already
 # enables `open_uri`.
 ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings", "open_uri"] }
+# Keeps the GitHub account in the desktop keyring through the Secret Service.
+# The version and features match the toolkit's own oo7 client, so the shipped
+# binary already holds it and the lock gains no package.
+oo7 = { version = "=0.6.0", default-features = false, features = ["async-std", "native_crypto"] }
+# Times the keyring calls' bounds; the reactor oo7 and the toolkit already run.
+async-io = "=2.6.0"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.0", features = ["test-support"] }
