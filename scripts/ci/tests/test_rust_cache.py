@@ -177,8 +177,8 @@ class CacheFixture(unittest.TestCase):
                     [step for step in steps if "phase: finish" in step])
 
         quality_setup, quality_finish = setup_steps("quality.yml")
-        # The Ubuntu and macOS debug, their release builds and Arch.
-        self.assertEqual(len(quality_setup), 3)
+        # The Ubuntu and macOS tests, their Clippy, their release builds and Arch.
+        self.assertEqual(len(quality_setup), 4)
         self.assertTrue(all("vendor-reuse: true" in step for step in quality_setup))
         self.assertFalse(any("vendor-reuse" in step for step in quality_finish))
         release_setup, _ = setup_steps("release.yml")

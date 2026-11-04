@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tarfile
@@ -31,8 +32,9 @@ MAC, LINUX = release.MAC, release.LINUX
 SHA = "a" * 40
 TAG = "b" * 40
 LOCK = "c" * 64
-REQUIRED = ["Quality gate", "Rust formatting", "Rust tests and Clippy · macos-15",
-            "Rust tests and Clippy · ubuntu-24.04", "Rust release · macos-26", "Rust release · ubuntu-24.04"]
+REQUIRED = ["Quality gate", "Rust formatting", "Rust tests · macos-15", "Rust tests · ubuntu-24.04",
+            "Rust Clippy · macos-15", "Rust Clippy · ubuntu-24.04",
+            "Rust release · macos-26", "Rust release · ubuntu-24.04"]
 
 
 def context(platforms=(LINUX,), signed=False):
@@ -534,6 +536,26 @@ class Trust(unittest.TestCase):
                 api = FakeGitHub()
                 mutate(api)
                 github.quality_evidence(api, SHA, 45)
+
+    def test_required_jobs_are_names_the_quality_workflow_produces(self):
+        # A renamed Quality job would otherwise leave every release preflight
+        # requiring a job that no longer runs.
+        body = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+        produced = set()
+        for block in re.split(r"^  [a-z][a-z0-9-]*:\n", body, flags=re.M)[1:]:
+            name = re.search(r"^    name: (.+)$", block, re.M)
+            if not name:
+                continue
+            listed = re.search(r"^        os: \[(.*)\]$", block, re.M)
+            runners = ([runner.strip() for runner in listed.group(1).split(",")] if listed
+                       else re.findall(r"^          - os: (\S+)$", block, re.M))
+            if "${{ matrix.os }}" in name.group(1):
+                self.assertTrue(runners, name.group(1))
+                produced.update(name.group(1).replace("${{ matrix.os }}", runner) for runner in runners)
+            else:
+                produced.add(name.group(1))
+        required = set(github.quality_evidence(FakeGitHub(), SHA, 45)["required_jobs"])
+        self.assertLessEqual(required, produced)
 
     def test_macos26_package_job_cannot_be_replaced_by_old_or_unsuccessful_checks(self):
         for variant in ("old-runner", "missing", "duplicate", "skipped", "failure", "cancelled"):

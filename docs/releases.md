@@ -29,15 +29,15 @@ trusted-ref policy. It never creates or moves a tag.
    bytes. It also checks the remote tag and current main revision. The declared
    Quality run must be a successful `push` or `workflow_dispatch` run from this
    repository at that source. Actual successful jobs must include formatting,
-   both platform test/Clippy jobs, both platform release jobs and the Quality
-   gate. Skipped product validation is insufficient. A changed Quality attempt
+   both platform test jobs, both platform Clippy jobs, both platform release jobs
+   and the Quality gate. Skipped product validation is insufficient. A changed Quality attempt
    requires a newly reviewed context.
 2. **Read-only build jobs** compile the selected explicit targets from clean
    source. They use the pinned compiler and existing dependency cache, with cache
    finish after package consumers. macOS package compilation uses the standard
    ARM64 macOS 26 runner and verifies installed Xcode 26.3 build 17C529 before cache
    identity. Quality uses the same selector and its release validator requires
-   `Rust release · macos-26` alongside the retained macOS 15 tests/Clippy job.
+   `Rust release · macos-26` alongside the retained macOS 15 test and Clippy jobs.
    Missing or changed tools fail without fallback. The deferred signing job stays
    on macOS 15 with the same Xcode selector; actual signing remains a C4 requirement.
    This [packaging-environment workaround](benchmarks/2026-09-15-ci.md#icon-compiler-environment)

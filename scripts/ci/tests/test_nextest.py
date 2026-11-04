@@ -35,16 +35,19 @@ def archive(members):
     return buffer.getvalue()
 
 
-def rust_debug_steps():
-    text = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
-    job = text.split("\n  rust-debug:\n", 1)[1].split("\n  rust-release:\n", 1)[0]
-    return job, job.split("\n      - ")[1:]
-
-
 def quality_job_steps(name):
     text = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
     job = re.split(r"\n  [a-z][a-z0-9-]*:\n", text.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
     return job, job.split("\n      - ")[1:]
+
+
+def rust_debug_steps():
+    return quality_job_steps("rust-debug")
+
+
+def job_header(job, key):
+    """A job-level block (`if`, `env`, `strategy`) up to the next job-level key."""
+    return re.search(rf"^    {key}:.*\n(?:      .*\n)*", job, re.M).group(0)
 
 
 def step_index(steps, markers):
@@ -132,7 +135,7 @@ class InstallerTests(unittest.TestCase):
 
 
 class WorkflowPolicyTests(unittest.TestCase):
-    def test_tests_run_with_pinned_nextest_then_doctests_before_clippy_and_finish(self):
+    def test_tests_run_with_pinned_nextest_then_doctests_before_finish(self):
         job, steps = rust_debug_steps()
         index = {name: next(i for i, step in enumerate(steps) if marker in step) for name, marker in {
             "refs": "git pack-refs --all --no-prune",
@@ -140,10 +143,11 @@ class WorkflowPolicyTests(unittest.TestCase):
             "install": "scripts/ci/tools.py install-nextest",
             "tests": "cargo nextest run",
             "doctests": "--name doctests ",
-            "clippy": "cargo clippy",
             "finish": "phase: finish",
         }.items()}
-        self.assertEqual(sorted(index, key=index.get), ["refs", "setup", "install", "tests", "doctests", "clippy", "finish"])
+        self.assertEqual(sorted(index, key=index.get), ["refs", "setup", "install", "tests", "doctests", "finish"])
+        # Clippy has its own job, so the test job's path is the build and the tests.
+        self.assertNotIn("cargo clippy", job)
         self.assertTrue(steps[index["tests"]].rstrip().endswith(
             '--name tests --directory "$RUNNER_TEMP/ci-metrics" -- cargo nextest run --locked --workspace -P ci --no-fail-fast --timings'))
         # Default selection reuses the nextest build; the filter matches only
@@ -156,6 +160,39 @@ class WorkflowPolicyTests(unittest.TestCase):
         for name in ("install", "tests", "doctests"):
             self.assertNotIn("\n        if:", steps[index[name]])
         self.assertNotIn("permissions:", job)
+
+    def test_clippy_runs_beside_the_tests_and_only_restores_their_debug_cache(self):
+        job, steps = quality_job_steps("rust-clippy")
+        debug, _ = rust_debug_steps()
+        # Every product change, on the test job's platforms, with its environment:
+        # the cache key reads build flags from the environment, so a different
+        # one would restore nothing.
+        for key in ("if", "strategy", "env"):
+            self.assertEqual(job_header(job, key), job_header(debug, key), key)
+        self.assertEqual({use.split("@")[0] for use in re.findall(r"\buses: (\S+)", job)},
+                         {"actions/checkout", "actions/upload-artifact", "./.github/actions/setup-rust"})
+        setup = [step for step in steps if "uses: ./.github/actions/setup-rust" in step]
+        self.assertEqual(len(setup), 1)
+        self.assertEqual({line.strip() for line in setup[0].split("\n        with:\n", 1)[1].splitlines()},
+                         {"profile: debug", "vendor-reuse: true"})
+        # No finish phase, so no save: the test job alone writes the debug entry
+        # it restores, and this job's checked dependencies never replace its build.
+        self.assertNotIn("phase: finish", job)
+        self.assertNotIn("Swatinem/rust-cache", job)
+        index = step_index(steps, {
+            "checkout": "uses: actions/checkout@",
+            "setup": "uses: ./.github/actions/setup-rust",
+            "clippy": "cargo clippy",
+            "summary": "metrics.py summary",
+        })
+        self.assertEqual(sorted(index, key=index.get), list(index))
+        self.assertTrue(steps[index["clippy"]].rstrip().endswith(
+            '--name clippy --directory "$RUNNER_TEMP/ci-metrics" -- '
+            'cargo clippy --locked --workspace --all-targets --timings -- -D warnings'))
+        self.assertNotIn("\n        if:", steps[index["clippy"]])
+        self.assertEqual(job.count("cargo "), 1)
+        self.assertNotIn("permissions:", job)
+        self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
 
     def test_arch_job_runs_the_debug_test_phases_unprivileged_in_a_pinned_image_with_the_shared_cache(self):
         job, steps = quality_job_steps("rust-arch")
