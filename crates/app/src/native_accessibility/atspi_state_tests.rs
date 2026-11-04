@@ -10,7 +10,7 @@
 //! frames and keeps the objects it puts on the bus.
 
 use accesskit_atspi_common::{
-    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, NodeIdOrRoot, ObjectEvent,
+    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, NodeIdOrRoot, ObjectEvent, Property,
 };
 use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
@@ -159,14 +159,16 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
 /// What `accesskit_unix` does on the bus for one window: the objects it
 /// keeps there, each node's interfaces as the adapter registers and
 /// unregisters them (a path with none answers every AT-SPI call with
-/// "Unknown object"), the announcements it makes and the containers it
-/// reports a change of selection in (`object:selection-changed`), whose
-/// selected item Orca speaks.
+/// "Unknown object"), the announcements it makes, the containers it reports
+/// a change of selection in (`object:selection-changed`), whose selected
+/// item Orca speaks, and the objects it reports renamed
+/// (`object:property-change:accessible-name`).
 #[derive(Clone, Default)]
 struct Registry {
     objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
     announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     selection: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
+    renamed: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
 }
 
 impl AdapterCallback for Registry {
@@ -196,6 +198,10 @@ impl AdapterCallback for Registry {
                 target: NodeIdOrRoot::Node(id),
                 event: ObjectEvent::SelectionChanged,
             } => self.selection.lock().unwrap().push(id),
+            Event::Object {
+                target: NodeIdOrRoot::Node(id),
+                event: ObjectEvent::PropertyChanged(Property::Name(_)),
+            } => self.renamed.lock().unwrap().push(id),
             _ => {}
         }
     }
@@ -279,6 +285,19 @@ impl Bus {
                     .filter_map(|index| list.selected_child(index).unwrap())
                     .map(|item| self.adapter.platform_node(item).name().unwrap())
                     .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The objects reported renamed since the last call, each by its role
+    /// and the name it reads now, which Orca speaks for the object it
+    /// presents: QA-92 heard a list item that a search's change renamed.
+    pub(crate) fn renamed(&self) -> Vec<(AtspiRole, String)> {
+        let ids = std::mem::take(&mut *self.registry.renamed.lock().unwrap());
+        ids.into_iter()
+            .map(|id| {
+                let node = self.adapter.platform_node(id);
+                (node.role().unwrap(), node.name().unwrap())
             })
             .collect()
     }

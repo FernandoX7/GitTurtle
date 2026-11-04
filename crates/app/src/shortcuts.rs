@@ -560,6 +560,9 @@ pub(super) fn tab_label(index: usize) -> String {
 
 #[derive(Clone)]
 struct HelpEntry {
+    /// The entry's place in the whole list, which no search changes: the
+    /// identity of its row ([`HelpRow::id`]).
+    place: usize,
     group: &'static str,
     label: &'static str,
     key: String,
@@ -568,11 +571,7 @@ struct HelpEntry {
 fn help_entries() -> Vec<HelpEntry> {
     let mut entries: Vec<_> = SHORTCUTS
         .iter()
-        .map(|spec| HelpEntry {
-            group: spec.group,
-            label: spec.label,
-            key: label(spec.id),
-        })
+        .map(|spec| (spec.group, spec.label, label(spec.id)))
         .collect();
     // These belong to GPUI's focused inputs, not the application key context.
     // In particular, the toolkit uses Ctrl+Y for Redo on Linux.
@@ -592,11 +591,7 @@ fn help_entries() -> Vec<HelpEntry> {
         ("Select All Text", "primary-a"),
         ("Find in Editor", "primary-f"),
     ] {
-        entries.push(HelpEntry {
-            group: "Text Editing",
-            label,
-            key: key_label(key),
-        });
+        entries.push(("Text Editing", label, key_label(key)));
     }
     for (label, key) in [
         ("Next Control", "tab"),
@@ -616,19 +611,44 @@ fn help_entries() -> Vec<HelpEntry> {
         #[cfg(not(target_os = "macos"))]
         ("File Actions in a File List", "menu"),
     ] {
-        entries.push(HelpEntry {
-            group: "Keyboard Navigation",
-            label,
-            key: key_label(key),
-        });
+        entries.push(("Keyboard Navigation", label, key_label(key)));
     }
     entries
+        .into_iter()
+        .enumerate()
+        .map(|(place, (group, label, key))| HelpEntry {
+            place,
+            group,
+            label,
+            key,
+        })
+        .collect()
 }
 
 #[derive(Clone)]
 enum HelpRow {
-    Group(&'static str),
+    /// A group's heading, with the place in the whole list of the group's
+    /// first entry ([`HelpEntry::place`]), its identity.
+    Group(&'static str, usize),
     Entry(HelpEntry),
+}
+
+impl HelpRow {
+    /// The row's element ID, by the group or entry it shows rather than its
+    /// place in the list a search left, so the window's accessibility tree
+    /// keeps one node for each entry across searches and a search that
+    /// changes the list takes nodes away and adds others rather than
+    /// renaming them. Each row was its place in the list: after Down, a
+    /// key or Backspace renamed the node that had held the entry moved to,
+    /// and Orca spoke the entry that now took its place, "not selected",
+    /// before the entry the search selected (QA-92). Its debug selector is
+    /// still its place, which tests read.
+    fn id(&self) -> ElementId {
+        match self {
+            Self::Group(_, first) => ElementId::named_usize("shortcut-help-group", *first),
+            Self::Entry(entry) => ElementId::named_usize("shortcut-help-entry", entry.place),
+        }
+    }
 }
 
 /// How many shortcuts the help lists before a search narrows it.
@@ -648,7 +668,12 @@ fn help_matches(query: &str) -> Vec<HelpRow> {
     let terms: Vec<_> = query.split_whitespace().collect();
     let mut rows = Vec::new();
     let mut group = None;
+    // The whole list's group, by name and its first entry's place.
+    let mut run = (None, 0);
     for entry in help_entries() {
+        if run.0 != Some(entry.group) {
+            run = (Some(entry.group), entry.place);
+        }
         let key_words = entry
             .key
             .replace('⌃', "ctrl control ")
@@ -662,7 +687,7 @@ fn help_matches(query: &str) -> Vec<HelpRow> {
         }
         if group != Some(entry.group) {
             group = Some(entry.group);
-            rows.push(HelpRow::Group(entry.group));
+            rows.push(HelpRow::Group(entry.group, run.1));
         }
         rows.push(HelpRow::Entry(entry));
     }
@@ -1061,7 +1086,7 @@ pub(crate) fn list_floor() -> Pixels {
 /// The height of `row` in the shortcut list, at the interface size.
 fn row_height(row: &HelpRow) -> Pixels {
     appearance::ui_size(match row {
-        HelpRow::Group(_) => SHORTCUT_HEADING,
+        HelpRow::Group(..) => SHORTCUT_HEADING,
         HelpRow::Entry(_) => SHORTCUT_ROW,
     })
 }
@@ -1107,7 +1132,7 @@ impl RowLayout {
         let bottom = *self.tops.get(index + 1)?;
         let heading = index
             .checked_sub(1)
-            .filter(|&above| matches!(rows[above], HelpRow::Group(_)))
+            .filter(|&above| matches!(rows[above], HelpRow::Group(..)))
             .map(|above| self.tops[above]);
         Some(Span {
             heading,
@@ -1622,7 +1647,7 @@ impl Render for ShortcutHelpView {
                 range
                     .map(|index| {
                         let row = div()
-                            .id(("shortcut-help-row", index))
+                            .id(this.rows[index].id())
                             .h(row_height(&this.rows[index]))
                             .w_full()
                             .px_3()
@@ -1633,7 +1658,7 @@ impl Render for ShortcutHelpView {
                         native_accessibility::recorded(match &this.rows[index] {
                             // The group gap above the name, which sits on its
                             // rule.
-                            HelpRow::Group(group) => row
+                            HelpRow::Group(group, _) => row
                                 .debug_selector(move || format!("shortcut-help-heading-{index}"))
                                 .items_end()
                                 .pb(appearance::ui_size(SHORTCUT_HEADING_BELOW))
@@ -1933,7 +1958,7 @@ mod tests {
         let rows = help_matches("tabs ctrl");
         assert!(matches!(
             rows.first(),
-            Some(HelpRow::Group("Tabs and Windows"))
+            Some(HelpRow::Group("Tabs and Windows", _))
         ));
         assert!(rows.iter().any(
             |row| matches!(row, HelpRow::Entry(entry) if entry.label == "Next Repository Tab")
@@ -2052,7 +2077,7 @@ mod list_tests {
     /// The selector of the row at `index` among `rows`.
     fn row_selector(rows: &[HelpRow], index: usize) -> &'static str {
         match rows[index] {
-            HelpRow::Group(_) => format!("shortcut-help-heading-{index}"),
+            HelpRow::Group(..) => format!("shortcut-help-heading-{index}"),
             HelpRow::Entry(_) => format!("shortcut-help-row-{index}"),
         }
         .leak()
@@ -2216,7 +2241,7 @@ mod list_tests {
         /// The rows that are group headings, in the list's order.
         fn headings(&self) -> Vec<usize> {
             (0..self.rows.len())
-                .filter(|&row| matches!(self.rows[row], HelpRow::Group(_)))
+                .filter(|&row| matches!(self.rows[row], HelpRow::Group(..)))
                 .collect()
         }
 
@@ -2253,7 +2278,7 @@ mod list_tests {
         /// The heading that comes into view with `entry`: its group's, where
         /// it is the group's first entry and the list holds both.
         fn heading(&self, entry: usize) -> Option<usize> {
-            (matches!(self.rows[entry - 1], HelpRow::Group(_))
+            (matches!(self.rows[entry - 1], HelpRow::Group(..))
                 && self.heading + self.entry <= self.view() + EDGE)
                 .then_some(entry - 1)
         }
@@ -3996,6 +4021,111 @@ mod list_tests {
             heard.take(),
             [resting_for("p")],
             "the rest announces the count with the entry it comes back to, which Down's had followed"
+        );
+        close(cx);
+    }
+
+    /// A search changed after a move takes rows away and adds others,
+    /// renaming none: after "tab" rests and Down, Backspace ("ta") leaves
+    /// each row node the window's tree holds before and after it with the
+    /// name it had. On Linux the AT-SPI adapter then reports no list item
+    /// or heading renamed, the list's change of selection reports the entry
+    /// the search selects, once, the app says nothing at the key, and the
+    /// rest announces the count with that entry. Each row was its place in
+    /// the list, so Backspace renamed the node that had held Down's entry,
+    /// and Orca spoke the entry now in its place, "not selected", before the
+    /// one the search selected (QA-92).
+    #[gpui::test]
+    async fn a_search_changed_after_a_move_renames_no_row(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        // The rows the window's tree holds as last drawn, by node, with
+        // their names.
+        let rows = || -> std::collections::HashMap<String, Option<String>> {
+            written::inside("shortcut-help-results")
+                .into_iter()
+                .filter_map(|id| {
+                    let row = written::get(&id)?;
+                    matches!(row.node.role(), Role::ListBoxOption | Role::Heading)
+                        .then(|| (id, row.node.label().map(str::to_owned)))
+                })
+                .collect()
+        };
+        cx.simulate_input("tab");
+        heard.frame(cx);
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(heard.take(), [resting_for("tab")], "\"tab\" rests");
+        let found = help_matches("tab");
+        let next = (2..found.len())
+            .find(|&row| matches!(found[row], HelpRow::Entry(_)))
+            .expect("\"tab\" finds a second entry");
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let own = if LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            vec![entry_reading(&found, next).to_string()]
+        };
+        assert_eq!(heard.take(), own, "Down is spoken once");
+        let before = rows();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.bus.renamed();
+        }
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        assert_eq!(drawn_count(), count_for("ta"), "Backspace leaves \"ta\"");
+        let after = rows();
+        let kept: Vec<_> = after
+            .iter()
+            .filter(|(id, _)| before.contains_key(*id))
+            .collect();
+        assert!(
+            !kept.is_empty(),
+            "rows of \"tab\" stay in the tree for \"ta\": {after:?}"
+        );
+        let renamed: Vec<_> = kept
+            .iter()
+            .filter(|(id, name)| before[*id] != **name)
+            .map(|(id, name)| format!("{id}: {:?} → {name:?}", before[*id]))
+            .collect();
+        assert_eq!(
+            renamed,
+            Vec::<String>::new(),
+            "a row node keeps its name across the search's change"
+        );
+        let selects = entry_reading(&help_matches("ta"), 1).to_string();
+        #[cfg(target_os = "linux")]
+        {
+            use accesskit_atspi_common::Role as AtspiRole;
+            let renamed: Vec<_> = heard
+                .bus
+                .renamed()
+                .into_iter()
+                .filter(|(role, _)| matches!(role, AtspiRole::ListItem | AtspiRole::Heading))
+                .collect();
+            assert_eq!(renamed, [], "the adapter reports no row renamed");
+            assert_eq!(
+                heard.take_listed(),
+                std::slice::from_ref(&selects),
+                "the list's change of selection reports the entry the search selects, once"
+            );
+        }
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing of the app's own at the key"
+        );
+        heard.wait(cx, COUNT_REST.as_millis() as u64);
+        assert_eq!(
+            heard.take(),
+            [format!("{} · {selects}", count_for("ta"))],
+            "the rest announces the count with the entry the search selects"
         );
         close(cx);
     }
