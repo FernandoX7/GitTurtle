@@ -609,6 +609,10 @@ struct GitTurtle {
     nav_search: Entity<InputState>,
     subscriptions: Vec<Subscription>,
     _display_preferences_task: Option<Task<()>>,
+    /// Whether More contrast was on when this window last applied its theme
+    /// (`apply_appearance`), so a change of it, from any path, applies the
+    /// theme again once (`GitTurtle::show_display_preferences`).
+    applied_contrast: bool,
     app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
@@ -986,6 +990,7 @@ impl GitTurtle {
             nav_search: nav_search.clone(),
             subscriptions: vec![],
             _display_preferences_task: None,
+            applied_contrast: appearance::more_contrast(cx),
             app_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
@@ -1124,20 +1129,29 @@ impl GitTurtle {
             );
             // What launch already read, applied once the window is assembled.
             cx.defer_in(window, |this, window, cx| this.omarchy_changed(window, cx));
-            // The desktop's reduced motion, which its settings-portal observer
-            // has already applied to the toolkit (`desktop_text`), pauses this
-            // window's playback, as the macOS display-change notification does.
+            // The desktop's answer, which its settings-portal observer has
+            // already resolved with the person's choices (`desktop_text`,
+            // `native_accessibility::sync_preferences`), applies this window's
+            // theme again when More contrast changed and pauses its playback
+            // while motion is reduced, as the macOS display-change
+            // notification does.
             this.subscriptions.push(
                 cx.observe_global_in::<native_accessibility::DesktopDisplay>(
                     window,
-                    |this, _, cx| {
-                        this.apply_motion_preferences(cx);
+                    |this, window, cx| {
+                        let arrived = native_accessibility::desktop_arrived(cx);
+                        this.show_display_preferences(
+                            arrived.filter(|_| trace_enabled()),
+                            window,
+                            cx,
+                        );
                         cx.notify();
                     },
                 ),
             );
         }
-        this._display_preferences_task = native_accessibility::observe_display_preferences(cx);
+        this._display_preferences_task =
+            native_accessibility::observe_display_preferences(window, cx);
         this.subscriptions
             .push(cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
@@ -1145,7 +1159,7 @@ impl GitTurtle {
                     desktop_text::refresh(cx);
                     #[cfg(target_os = "linux")]
                     appearance::omarchy::refresh(cx);
-                    this.apply_motion_preferences(cx);
+                    this.show_display_preferences(None, window, cx);
                 }
                 if window.is_window_active() && this.repository.is_some() {
                     this.ensure_local_watcher(true, window, cx);
@@ -2790,6 +2804,9 @@ fn main() {
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
         desktop_text::register_bundled_fonts(cx);
+        // The person's Reduce motion and Increase contrast, before the first
+        // resolution, so the first frame already has them.
+        native_accessibility::set_display_choices(&preferences.settings, cx);
         native_accessibility::sync_preferences(cx);
         let desktop_text = desktop_text::start(system_code_font, cx);
         #[cfg(target_os = "linux")]
@@ -2807,6 +2824,7 @@ fn main() {
             .settings
             .effective_theme(cx, &preferences.custom_themes)
             .apply(None, cx);
+        let applied_contrast = appearance::more_contrast(cx);
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &HideApplication, cx| cx.hide());
@@ -2827,6 +2845,17 @@ fn main() {
             // read finishes in time (`GitTurtle::new` applies it).
             #[cfg(target_os = "linux")]
             appearance::omarchy::ready(omarchy, cx).await;
+            // The desktop's first answer, when it arrived during that wait and
+            // changed More contrast, before any window could apply it: the
+            // theme applies again, so the first frame has it.
+            cx.update(|cx| {
+                if appearance::more_contrast(cx) != applied_contrast {
+                    preferences
+                        .settings
+                        .effective_theme(cx, &preferences.custom_themes)
+                        .apply(None, cx);
+                }
+            });
             let opened = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),

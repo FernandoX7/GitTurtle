@@ -936,11 +936,14 @@ impl GitTurtle {
             return;
         };
         // A choice of the card waiting for its read applies what it finds
-        // (`choose_omarchy`), so nothing applies here meanwhile.
+        // (`choose_omarchy`), so nothing applies here meanwhile. The palette
+        // is compared as it would be applied: with More contrast on, the
+        // applied global is the adjusted one, so the raw palette always
+        // differed and every revision applied it again.
         if self.settings.theme == ThemeSelection::Omarchy
             && self.omarchy_choice.waiting.is_none()
             && self.theme_editor.preview().is_none()
-            && self.effective_theme(cx).palette != palette(cx)
+            && self.effective_theme(cx).palette.as_applied(cx) != palette(cx)
         {
             self.apply_appearance(window, cx);
             if let (true, false, Some(arrived)) = (trace_enabled(), first, card.arrived) {
@@ -7398,5 +7401,82 @@ mod segment_tests {
                 appearance::SelectedState::FocusedAndHovered,
             );
         }
+    }
+}
+
+/// Linux: the Omarchy theme followed while More contrast is on.
+#[cfg(all(test, target_os = "linux"))]
+mod omarchy_contrast_tests {
+    use super::picker_tests::{open_app, settle};
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// With More contrast on and the Omarchy theme selected, a reread that
+    /// changes what the card shows but not its palette (`colors.toml` gone,
+    /// so the card keeps Tokyo Night) applies nothing and the applied palette
+    /// stays the adjusted mapping; a reread that changes the palette applies
+    /// it once, adjusted. Compared raw with the adjusted global, every
+    /// revision applied the theme again.
+    #[gpui::test]
+    fn an_omarchy_revision_under_more_contrast_applies_only_a_new_palette(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let card = shown(cx, "settings-theme-omarchy").expect("the Omarchy card");
+        cx.simulate_click(card.center(), Modifiers::default());
+        settle(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.increase_contrast = crate::preferences::DisplayChoice::On;
+                native_accessibility::set_display_choices(&app.settings, cx);
+                native_accessibility::sync_preferences(cx);
+                app.show_display_preferences(None, window, cx);
+            })
+        });
+        settle(cx);
+        let shown_palette = |cx: &mut VisualTestContext| {
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().palette)
+        };
+        let mapped = shown_palette(cx);
+        assert_eq!(
+            cx.read(|cx| app.read(cx).settings.theme),
+            ThemeSelection::Omarchy
+        );
+        assert_eq!(cx.read(palette), mapped.with_more_contrast());
+        let revision = |cx: &mut VisualTestContext| {
+            cx.read(|cx| appearance::omarchy::card(cx).unwrap().revision)
+        };
+        let (before, applied) = (revision(cx), platform_polish::appearance_applications());
+
+        std::fs::remove_file(root.join("theme/colors.toml")).unwrap();
+        cx.update(|_, cx| appearance::omarchy::refresh(cx));
+        settle(cx);
+        assert!(revision(cx) > before, "the card takes a new revision");
+        assert_eq!(shown_palette(cx), mapped, "the card keeps its palette");
+        assert_eq!(
+            platform_polish::appearance_applications(),
+            applied,
+            "an unchanged palette applies nothing"
+        );
+        assert_eq!(cx.read(palette), mapped.with_more_contrast());
+
+        let latte = include_bytes!("../tests/fixtures/omarchy/catppuccin-latte.toml");
+        std::fs::write(root.join("theme/colors.toml"), latte).unwrap();
+        cx.update(|_, cx| appearance::omarchy::refresh(cx));
+        settle(cx);
+        let changed = shown_palette(cx);
+        assert_ne!(changed, mapped, "the card shows the new palette");
+        assert_eq!(
+            platform_polish::appearance_applications() - applied,
+            1,
+            "a new palette applies once"
+        );
+        assert_eq!(cx.read(palette), changed.with_more_contrast());
     }
 }

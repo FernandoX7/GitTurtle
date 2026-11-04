@@ -2,22 +2,26 @@
 //! No setting is changed here: macOS display preferences are read on startup
 //! and on workspace display-change notifications, Linux ones arrive with the
 //! desktop observer's settings-portal snapshots (`desktop_text`), and either is
-//! applied to the toolkit's motion policy. Foreground activation remains a
-//! fallback read.
+//! resolved with the person's Reduce motion and Increase contrast choices
+//! into the toolkit's motion policy and More contrast. Foreground activation
+//! remains a fallback read.
 use crate::*;
 use gpui_kit::component::menu::{CursorRests, PopupMenu, PopupMenuItem};
 
 #[cfg(any(target_os = "macos", test))]
 mod display_changes;
 
-pub(super) fn observe_display_preferences(cx: &mut Context<GitTurtle>) -> Option<Task<()>> {
+pub(super) fn observe_display_preferences(
+    window: &Window,
+    cx: &mut Context<GitTurtle>,
+) -> Option<Task<()>> {
     #[cfg(target_os = "macos")]
     {
-        Some(display_changes::subscribe(cx))
+        Some(display_changes::subscribe(window, cx))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = cx;
+        let _ = (window, cx);
         None
     }
 }
@@ -3866,12 +3870,14 @@ pub(super) struct DisplayPreferences {
 }
 
 /// Linux: the desktop's display preferences from the latest settings-portal
-/// snapshot (`desktop_text`). Absent until the first snapshot is applied, so
-/// until then a window's activation leaves the toolkit's motion policy as it
-/// is. Each `GitTurtle` window observes it to pause playback when it changes,
-/// as the macOS display-change notification does.
+/// snapshot (`desktop_text`), and when that snapshot arrived. Absent until
+/// the first snapshot is applied, so until then a window's activation leaves
+/// the toolkit's motion policy and More contrast as they are. Each
+/// `GitTurtle` window observes it to apply its theme again when More
+/// contrast changed and to pause playback, as the macOS display-change
+/// notification does.
 #[cfg(target_os = "linux")]
-pub(super) struct DesktopDisplay(DisplayPreferences);
+pub(super) struct DesktopDisplay(DisplayPreferences, std::time::Instant);
 #[cfg(target_os = "linux")]
 impl gpui_kit::Global for DesktopDisplay {}
 
@@ -3886,8 +3892,15 @@ pub(super) fn store_desktop_preferences(preferences: DisplayPreferences, cx: &mu
     {
         return false;
     }
-    cx.set_global(DesktopDisplay(preferences));
+    cx.set_global(DesktopDisplay(preferences, std::time::Instant::now()));
     true
+}
+
+/// Linux: when the snapshot that changed the desktop's display preferences
+/// last arrived, where `gitturtle.contrast_apply_frame_ms` starts for it.
+#[cfg(target_os = "linux")]
+pub(super) fn desktop_arrived(cx: &App) -> Option<std::time::Instant> {
+    cx.try_global::<DesktopDisplay>().map(|desktop| desktop.1)
 }
 
 #[cfg(target_os = "macos")]
@@ -3909,10 +3922,79 @@ pub(super) fn display_preferences(_cx: &App) -> Option<DisplayPreferences> {
     None
 }
 
-/// The one place that sets the toolkit's motion policy, on both platforms.
-pub(super) fn sync_preferences(cx: &mut App) {
-    if let Some(preferences) = display_preferences(cx) {
-        cx.set_reduce_motion(preferences.reduce_motion);
+/// The person's Reduce motion and Increase contrast from Settings: set at
+/// launch from the loaded settings, before the first [`sync_preferences`],
+/// and again by each choice in Settings. Absent, both follow the desktop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct DisplayChoices {
+    pub reduce_motion: preferences::DisplayChoice,
+    pub increase_contrast: preferences::DisplayChoice,
+}
+impl gpui_kit::Global for DisplayChoices {}
+
+/// Keeps `settings`' display choices for [`sync_preferences`], which the
+/// caller runs next.
+pub(super) fn set_display_choices(settings: &AppSettings, cx: &mut App) {
+    cx.set_global(DisplayChoices {
+        reduce_motion: settings.reduce_motion,
+        increase_contrast: settings.increase_contrast,
+    });
+}
+
+/// Reduced motion and More contrast for `choices` with the desktop's answer,
+/// `desktop`: On is on and Off off whatever the desktop asks, and Follow is
+/// what the desktop asks. `None` follows a desktop that has not answered,
+/// and leaves that preference as it is.
+pub(super) fn resolve(
+    choices: DisplayChoices,
+    desktop: Option<DisplayPreferences>,
+) -> (Option<bool>, Option<bool>) {
+    (
+        choices
+            .reduce_motion
+            .resolve(desktop.map(|desktop| desktop.reduce_motion)),
+        choices
+            .increase_contrast
+            .resolve(desktop.map(|desktop| desktop.increase_contrast)),
+    )
+}
+
+/// The one place that sets the toolkit's motion policy and More contrast,
+/// on both platforms, from the person's choices ([`DisplayChoices`]) and the
+/// desktop's answer ([`display_preferences`]). Returns whether More contrast
+/// changed: it applies no palette, so a window then applies its theme again
+/// ([`GitTurtle::show_display_preferences`]).
+pub(super) fn sync_preferences(cx: &mut App) -> bool {
+    let choices = cx
+        .try_global::<DisplayChoices>()
+        .copied()
+        .unwrap_or_default();
+    let (motion, contrast) = resolve(choices, display_preferences(cx));
+    if let Some(reduce) = motion {
+        cx.set_reduce_motion(reduce);
+    }
+    contrast.is_some_and(|on| appearance::set_more_contrast(on, cx))
+}
+
+impl GitTurtle {
+    /// Shows the toolkit's motion policy and More contrast as
+    /// [`sync_preferences`] left them: when More contrast differs from what
+    /// this window's theme was last applied with, applies the theme again,
+    /// once, and traces `gitturtle.contrast_apply_frame_ms` from `started`
+    /// to the next frame; while motion is reduced, pauses GIF playback.
+    pub(super) fn show_display_preferences(
+        &mut self,
+        started: Option<std::time::Instant>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if appearance::more_contrast(cx) != self.applied_contrast {
+            self.apply_appearance(window, cx);
+            if let Some(start) = started {
+                Self::trace_next_frame("contrast_apply_frame_ms", start, window);
+            }
+        }
+        self.apply_motion_preferences(cx);
     }
 }
 
@@ -4910,5 +4992,360 @@ mod tests {
             (node.label(), node.value()),
             (Some("Could not save"), Some("Could not save"))
         );
+    }
+}
+
+/// The person's display choices resolved with the desktop's answer
+/// ([`sync_preferences`]) and shown by a window
+/// ([`GitTurtle::show_display_preferences`]).
+#[cfg(test)]
+mod display_choice_tests {
+    use super::*;
+    use crate::preferences::DisplayChoice::{self, Follow, Off, On};
+    use core::prelude::v1::test;
+
+    /// Each choice with each desktop answer (asks, does not ask, has not
+    /// answered) and what it resolves to; `None` leaves the preference as
+    /// it is.
+    const TABLE: [(DisplayChoice, Option<bool>, Option<bool>); 9] = [
+        (Follow, Some(true), Some(true)),
+        (Follow, Some(false), Some(false)),
+        (Follow, None, None),
+        (On, Some(true), Some(true)),
+        (On, Some(false), Some(true)),
+        (On, None, Some(true)),
+        (Off, Some(true), Some(false)),
+        (Off, Some(false), Some(false)),
+        (Off, None, Some(false)),
+    ];
+
+    /// The desktop's answer: reduced motion as `motion` asks and more
+    /// contrast as `contrast` asks, or no answer when both are `None`.
+    fn desktop(motion: Option<bool>, contrast: Option<bool>) -> Option<DisplayPreferences> {
+        motion
+            .zip(contrast)
+            .map(|(motion, contrast)| DisplayPreferences {
+                reduce_motion: motion,
+                increase_contrast: contrast,
+                reduce_transparency: motion,
+            })
+    }
+
+    /// Every row of the table for each preference, beside every row for the
+    /// other one, so each reads only its own choice and its own answer.
+    #[test]
+    fn each_choice_resolves_with_each_desktop_answer() {
+        for (motion, motion_desktop, motion_resolved) in TABLE {
+            for (contrast, contrast_desktop, contrast_resolved) in TABLE {
+                if motion_desktop.is_some() != contrast_desktop.is_some() {
+                    continue;
+                }
+                let choices = DisplayChoices {
+                    reduce_motion: motion,
+                    increase_contrast: contrast,
+                };
+                assert_eq!(
+                    resolve(choices, desktop(motion_desktop, contrast_desktop)),
+                    (motion_resolved, contrast_resolved),
+                    "{motion:?} motion with {motion_desktop:?}, {contrast:?} contrast with \
+                     {contrast_desktop:?}"
+                );
+            }
+        }
+    }
+
+    /// Linux: the same table through `sync_preferences`, with the desktop's
+    /// answer from a snapshot or none yet, from reduced motion and More
+    /// contrast both off and both on: the toolkit's motion policy and More
+    /// contrast take the resolved values, a desktop without an answer leaves
+    /// a followed preference as it was (a test's reduced motion set by hand
+    /// stays), and it reports a change of More contrast exactly when there
+    /// was one.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn sync_applies_each_choice_with_each_desktop_answer(cx: &mut TestAppContext) {
+        for (motion, motion_desktop, motion_resolved) in TABLE {
+            for (contrast, contrast_desktop, contrast_resolved) in TABLE {
+                if motion_desktop.is_some() != contrast_desktop.is_some() {
+                    continue;
+                }
+                for before in [false, true] {
+                    let at = format!(
+                        "{motion:?} motion with {motion_desktop:?}, {contrast:?} contrast with \
+                         {contrast_desktop:?}, from {before}"
+                    );
+                    cx.update(|cx| {
+                        match desktop(motion_desktop, contrast_desktop) {
+                            Some(answer) => {
+                                store_desktop_preferences(answer, cx);
+                            }
+                            None if cx.has_global::<DesktopDisplay>() => {
+                                cx.remove_global::<DesktopDisplay>();
+                            }
+                            None => {}
+                        }
+                        cx.set_reduce_motion(before);
+                        appearance::set_more_contrast(before, cx);
+                        cx.set_global(DisplayChoices {
+                            reduce_motion: motion,
+                            increase_contrast: contrast,
+                        });
+                        let changed = sync_preferences(cx);
+                        assert_eq!(
+                            cx.reduce_motion(),
+                            motion_resolved.unwrap_or(before),
+                            "{at}: reduced motion"
+                        );
+                        let more = contrast_resolved.unwrap_or(before);
+                        assert_eq!(appearance::more_contrast(cx), more, "{at}: More contrast");
+                        assert_eq!(changed, more != before, "{at}: the reported change");
+                    });
+                }
+            }
+        }
+    }
+
+    /// The person's choice applied as Settings applies it: kept for
+    /// `sync_preferences`, resolved, and shown in the window.
+    fn choose(
+        app: &Entity<GitTurtle>,
+        motion: DisplayChoice,
+        contrast: DisplayChoice,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.reduce_motion = motion;
+                app.settings.increase_contrast = contrast;
+                set_display_choices(&app.settings, cx);
+                sync_preferences(cx);
+                app.show_display_preferences(None, window, cx);
+                cx.notify();
+            })
+        });
+    }
+
+    /// Linux: a desktop snapshot's display preferences, applied as the
+    /// desktop observer applies them (`desktop_text::apply`).
+    #[cfg(target_os = "linux")]
+    fn snapshot(answer: DisplayPreferences, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            if store_desktop_preferences(answer, cx) {
+                sync_preferences(cx);
+            }
+        });
+    }
+
+    fn reactivate(cx: &mut VisualTestContext) {
+        cx.deactivate_window();
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+    }
+
+    /// A change of More contrast applies the window's theme again exactly
+    /// once from each path that can make it (a choice, as Settings makes
+    /// one; a window's activation; on Linux, a desktop snapshot), and the
+    /// applied palette is then the adjusted one, or the theme's own once it
+    /// is off; a resolution that changes nothing applies nothing. The macOS
+    /// display-change notification runs the activation's resolution.
+    #[gpui::test]
+    async fn a_contrast_change_from_each_path_applies_the_theme_once(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // On macOS, following takes the Mac's own settings: Off there keeps
+        // the test independent of them. Linux has no answer until a snapshot.
+        let motion = if cfg!(target_os = "macos") {
+            Off
+        } else {
+            Follow
+        };
+        #[cfg(target_os = "macos")]
+        cx.update(|_, cx| {
+            cx.set_global(DisplayChoices {
+                reduce_motion: Off,
+                increase_contrast: Off,
+            })
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            app.update(cx, |app, cx| app.apply_appearance(window, cx));
+        });
+        cx.run_until_parked();
+        let own = cx.read(|cx| app.read(cx).effective_theme(cx).palette);
+        let adjusted = own.with_more_contrast();
+        assert_ne!(own, adjusted, "the theme has something to adjust");
+        let mut applied = platform_polish::appearance_applications();
+        let mut expect = |cx: &mut VisualTestContext, applications: usize, more: bool, at: &str| {
+            let now = platform_polish::appearance_applications();
+            assert_eq!(now - applied, applications, "{at}: theme applications");
+            applied = now;
+            assert_eq!(
+                cx.read(appearance::more_contrast),
+                more,
+                "{at}: More contrast"
+            );
+            assert_eq!(
+                cx.read(palette),
+                if more { adjusted } else { own },
+                "{at}: the applied palette"
+            );
+        };
+
+        choose(&app, motion, On, cx);
+        expect(cx, 1, true, "choosing On");
+        choose(&app, motion, On, cx);
+        expect(cx, 0, true, "choosing On again");
+        choose(&app, motion, Off, cx);
+        expect(cx, 1, false, "choosing Off");
+
+        // A choice kept while nothing resolved it yet, as a missed
+        // notification leaves the desktop's answer, applies on activation.
+        cx.update(|_, cx| {
+            cx.set_global(DisplayChoices {
+                reduce_motion: motion,
+                increase_contrast: On,
+            })
+        });
+        expect(cx, 0, false, "a choice not yet resolved");
+        reactivate(cx);
+        expect(cx, 1, true, "activation");
+        reactivate(cx);
+        expect(cx, 0, true, "activation again");
+
+        #[cfg(target_os = "linux")]
+        {
+            let asks = |contrast: bool| DisplayPreferences {
+                increase_contrast: contrast,
+                ..DisplayPreferences::default()
+            };
+            // Following a desktop that has not answered keeps it as it is.
+            choose(&app, Follow, Follow, cx);
+            expect(cx, 0, true, "following before the desktop answered");
+            snapshot(asks(false), cx);
+            expect(cx, 1, false, "a snapshot that does not ask");
+            snapshot(asks(true), cx);
+            expect(cx, 1, true, "a snapshot that asks");
+            snapshot(
+                DisplayPreferences {
+                    reduce_motion: true,
+                    ..asks(true)
+                },
+                cx,
+            );
+            expect(cx, 0, true, "a snapshot that changes only motion");
+            choose(&app, Follow, Off, cx);
+            expect(cx, 1, false, "Off whatever the desktop asks");
+            reactivate(cx);
+            expect(cx, 0, false, "Off stays through activation");
+        }
+    }
+
+    /// A fast-import stream of one commit adding `animation.gif`: two
+    /// 4 × 4 frames of 10 s each.
+    #[cfg(target_os = "linux")]
+    fn gif_commit() -> Vec<u8> {
+        use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
+        let mut gif = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut gif);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(Frame::from_parts(
+                        RgbaImage::from_pixel(4, 4, Rgba(color)),
+                        0,
+                        0,
+                        Delay::from_numer_denom_ms(10_000, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let mut input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 9\nanimation\nM 100644 inline animation.gif\ndata {}\n",
+            gif.len()
+        )
+        .into_bytes();
+        input.extend_from_slice(&gif);
+        input.extend_from_slice(b"\ndone\n");
+        input
+    }
+
+    /// Linux: with the desktop asking for reduced motion, Play GIF does
+    /// nothing; once the person chooses Off, motion is not reduced, a later
+    /// snapshot still asking and the window's activation keep it so, and
+    /// Play GIF plays. Whether the GIF plays is read from the fill painted
+    /// under Play GIF, as `desktop_text`'s reduced-motion test reads it.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn off_lets_a_gif_play_whatever_the_desktop_asks(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, gif_commit()).await;
+        cx.update(|window, cx| {
+            window.activate_window();
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // Play GIF's middle: 14 px into its 28 px row, which ends 4 px above
+        // the note, and 6 px in from the left edge they share.
+        let note = cx
+            .debug_bounds("gif-playback-note")
+            .expect("the GIF's controls");
+        let toggle = point(note.left() + px(6.), note.top() - px(18.));
+        let filled = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let (x, y) = (toggle.x.as_f32() * scale, toggle.y.as_f32() * scale);
+                window.painted_quads().into_iter().any(|quad| {
+                    let bounds = quad.bounds;
+                    !quad.background.is_transparent()
+                        && bounds.size.height.as_f32() < 40. * scale
+                        && (bounds.left().as_f32()..=bounds.right().as_f32()).contains(&x)
+                        && (bounds.top().as_f32()..=bounds.bottom().as_f32()).contains(&y)
+                })
+            })
+        };
+        // The pointer rests on the image, so the toggle draws its state's
+        // fill rather than its hover's.
+        let rest = |cx: &mut VisualTestContext| {
+            let image = cx.debug_bounds("image-canvas-area").expect("the image");
+            cx.simulate_mouse_move(image.center(), None, Modifiers::default());
+            draw(cx);
+        };
+        let press = |cx: &mut VisualTestContext| {
+            cx.simulate_click(toggle, Modifiers::default());
+            rest(cx);
+        };
+        let reducing = DisplayPreferences {
+            reduce_motion: true,
+            ..DisplayPreferences::default()
+        };
+
+        snapshot(reducing, cx);
+        rest(cx);
+        assert!(cx.read(|cx| cx.reduce_motion()), "the desktop asks");
+        press(cx);
+        assert!(!filled(cx), "Play GIF does nothing while motion is reduced");
+
+        choose(&app, Off, Follow, cx);
+        rest(cx);
+        assert!(
+            !cx.read(|cx| cx.reduce_motion()),
+            "Off wins over the desktop"
+        );
+        snapshot(
+            DisplayPreferences {
+                increase_contrast: true,
+                ..reducing
+            },
+            cx,
+        );
+        reactivate(cx);
+        assert!(
+            !cx.read(|cx| cx.reduce_motion()),
+            "a later snapshot and activation keep Off"
+        );
+        rest(cx);
+        assert!(!filled(cx), "the GIF waits for Play");
+        press(cx);
+        assert!(filled(cx), "Play GIF plays");
     }
 }

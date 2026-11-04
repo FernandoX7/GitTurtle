@@ -524,6 +524,20 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
     ]);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`GitTurtle::apply_appearance`] has run on this
+    /// thread, for tests that count theme applications.
+    static APPEARANCE_APPLIED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Theme applications through [`GitTurtle::apply_appearance`] so far on
+/// this thread.
+#[cfg(test)]
+pub(crate) fn appearance_applications() -> usize {
+    APPEARANCE_APPLIED.with(std::cell::Cell::get)
+}
+
 impl GitTurtle {
     /// Builds the native menus again where what they read
     /// ([`MenuState`]) has changed since this window last built them,
@@ -610,6 +624,10 @@ impl GitTurtle {
             Some(draft) => draft.apply(draft.is_light(), None, cx),
             None => self.effective_theme(cx).apply(None, cx),
         }
+        // Either palette takes More contrast while it is on.
+        self.applied_contrast = appearance::more_contrast(cx);
+        #[cfg(test)]
+        APPEARANCE_APPLIED.with(|applied| applied.set(applied.get() + 1));
         appearance::sync_text_sizes(
             self.settings.interface_text_size,
             self.settings.code_text_size,

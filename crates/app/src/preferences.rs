@@ -117,6 +117,19 @@ pub enum DisplayChoice {
     Follow,
 }
 
+impl DisplayChoice {
+    /// Whether the preference is on with the desktop's answer, `desktop`:
+    /// `None` while following a desktop that has not answered, when the
+    /// caller leaves the preference as it is.
+    pub fn resolve(self, desktop: Option<bool>) -> Option<bool> {
+        match self {
+            Self::Follow => desktop,
+            Self::On => Some(true),
+            Self::Off => Some(false),
+        }
+    }
+}
+
 impl AppSettings {
     /// The settings a first launch starts with on this desktop. On a Linux desktop running
     /// Omarchy they follow it ([`Self::omarchy_first_launch`]); elsewhere they are the

@@ -1530,7 +1530,6 @@ pub fn more_contrast(cx: &App) -> bool {
 /// Stores whether More contrast is on and returns whether that changed. It
 /// applies nothing: a caller that sees a change applies the theme again, as
 /// callers of `set_desktop_text_scale` redraw, so one application shows it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_more_contrast(on: bool, cx: &mut App) -> bool {
     if more_contrast(cx) == on {
         return false;
