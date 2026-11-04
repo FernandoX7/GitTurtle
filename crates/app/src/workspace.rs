@@ -68,6 +68,8 @@ struct WorkingBodyParts {
     /// The Description section's own rows
     /// (`GitTurtle::description_section`).
     section: Pixels,
+    /// The commit title's committed length (`GitTurtle::title_length`).
+    title_length: usize,
     /// The file list's least height.
     floor: f32,
     /// Whether the composer is drawn, not an operation's banner.
@@ -964,11 +966,35 @@ const SECTION_FORMS: [(bool, bool, bool); 5] = [
 ];
 
 impl GitTurtle {
+    /// The commit title's length in characters as committed, which its
+    /// counter reads and its long-title note follows: its text without the
+    /// part an input method is still composing, its marked range, which is
+    /// not yet text (Pinyin's letters become one character as they are
+    /// committed). The counter counted it: while fcitx5 composed "U+4e2d" in
+    /// an empty title it read "6/72 suggested", for what was committed as
+    /// "中", one character (QA-92). Read once a frame, as the inspector
+    /// renders.
+    fn title_length(&self, window: &mut Window, cx: &mut App) -> usize {
+        use gpui::EntityInputHandler as _;
+        self.commit_title.update(cx, |title, cx| {
+            let marked = title.marked_text_range(window, cx);
+            committed_length(&title.value(), marked)
+        })
+    }
+
     /// `WorkingForms` for an inspector `width` wide. Each text is laid out
     /// again only when it, the font or the sizes change, so a steady render
     /// asks the text system nothing. `short` is the composer's short form,
-    /// whose heading names the branch.
-    fn working_forms(&self, width: Pixels, short: bool, window: &Window, cx: &App) -> WorkingForms {
+    /// whose heading names the branch, and `title_length` the title's
+    /// committed length (`title_length`).
+    fn working_forms(
+        &self,
+        width: Pixels,
+        short: bool,
+        title_length: usize,
+        window: &Window,
+        cx: &App,
+    ) -> WorkingForms {
         use crate::appearance::{ui_size, ui_text};
         use crate::views::{LineKey, cached_text_width, cached_width, shaped_width};
         let key = LineKey::current(window);
@@ -1174,7 +1200,7 @@ impl GitTurtle {
         let title = cached_width(&TITLE_NAME, &key, || {
             measure("Title", ui_text(11.), FontWeight::MEDIUM)
         });
-        let counter = title_counter(self.commit_title.read(cx).value().chars().count());
+        let counter = title_counter(title_length);
         let counter = cached_text_width(&TITLE_COUNTER, &counter, window, || {
             measure(&counter, ui_text(11.), regular)
         });
@@ -1339,15 +1365,16 @@ impl GitTurtle {
     /// field (`description_section`), the guidance after it, and the gap
     /// above the commit action, wrapped texts laid out once per text, size
     /// and width (`wrapped_lines`). `shown`: the list shows a status's rows,
-    /// its own or those kept while a newer one's are prepared.
+    /// its own or those kept while a newer one's are prepared. `title_length`:
+    /// the title's committed length (`title_length`).
     fn composer_rows(
         &self,
         metrics: &ComposerMetrics,
         width: Pixels,
         identity_ready: bool,
         shown: bool,
+        title_length: usize,
         window: &Window,
-        cx: &App,
     ) -> Pixels {
         use crate::appearance::{ui_size, ui_text};
         let rem = window.rem_size();
@@ -1357,7 +1384,7 @@ impl GitTurtle {
         let lines =
             |text: &str, size: Pixels, room: Pixels| wrapped_lines(text, size, room, window) as f32;
         let mut rows = metrics.title_rows();
-        if self.commit_title.read(cx).value().chars().count() > 72 {
+        if title_length > 72 {
             rows += gap + metrics.small * lines(LONG_TITLE_NOTE, ui_text(10.), room);
         }
         rows += self.description_section(metrics, width, window);
@@ -1559,6 +1586,22 @@ fn working_toolbar_height(window: &Window) -> f32 {
 /// The title counter's whole text, for a title `length` characters long.
 fn title_counter(length: usize) -> String {
     format!("{length}/72 suggested")
+}
+
+/// How many characters of `text` lie outside `marked`, the UTF-16 range an
+/// input method is composing in it, if any: the text as committed.
+fn committed_length(text: &str, marked: Option<std::ops::Range<usize>>) -> usize {
+    let Some(marked) = marked else {
+        return text.chars().count();
+    };
+    let mut at = 0;
+    text.chars()
+        .filter(|character| {
+            let start = at;
+            at += character.len_utf16();
+            !marked.contains(&start)
+        })
+        .count()
 }
 
 /// `full`, or where it is wider than `room` at `size`, the most of it that
@@ -3243,7 +3286,8 @@ impl GitTurtle {
         // it is prepainted (`WorkingBody`).
         let short = short_body(layout.read(cx).height);
         let fitted_width = if pinned { width } else { layout.read(cx).width };
-        let forms = self.working_forms(fitted_width, short, window, cx);
+        let title_length = self.title_length(window, cx);
+        let forms = self.working_forms(fitted_width, short, title_length, window, cx);
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
         let header_height = WORKING_HEADER;
@@ -3397,7 +3441,14 @@ impl GitTurtle {
         let minimum = f32::from(metrics.minimum());
         // The fields' rows but the description's field, at the interface
         // size: the composer prefers room for them whole with that field.
-        let rows = self.composer_rows(&metrics, fitted_width, identity_ready, shown, window, cx);
+        let rows = self.composer_rows(
+            &metrics,
+            fitted_width,
+            identity_ready,
+            shown,
+            title_length,
+            window,
+        );
         // The Description section's own rows, which leave with it.
         let section = self.description_section(&metrics, fitted_width, window);
         // A row that its Stage or Unstage moved travels to its slot above
@@ -3737,6 +3788,7 @@ impl GitTurtle {
                     metrics,
                     rows,
                     section,
+                    title_length,
                     floor,
                     composer,
                     listed,
@@ -3773,6 +3825,7 @@ impl GitTurtle {
             metrics,
             rows,
             section,
+            title_length,
             floor,
             composer,
             listed,
@@ -3892,7 +3945,7 @@ impl GitTurtle {
             .as_ref()
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("detached HEAD");
-        let summary_length = self.commit_title.read(cx).value().chars().count();
+        let summary_length = title_length;
         #[cfg(test)]
         let composer_probe = self.working_probe.recorder(true);
         #[cfg(not(test))]

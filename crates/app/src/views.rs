@@ -24686,6 +24686,105 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The title counter counts the title as committed, without what an
+    /// input method is still composing in it, which is not yet text: with
+    /// "Fixed: " typed and "nihaoshijie" composing after it, as Pinyin
+    /// composes, the counter reads "7/72 suggested" at 13 pt in a 1480 × 980
+    /// window, not "18/72"; with "你好世界" committed in its place it reads
+    /// "11/72 suggested"; and at 18 pt in a 461 × 490 one, with "nihao"
+    /// composing after it, it draws "11/72", named "11/72 suggested", not
+    /// "16/72 suggested". It counted the composition: while fcitx5 composed
+    /// "U+4e2d" in an empty title the counter read "6/72 suggested" (QA-92).
+    #[gpui::test]
+    async fn the_title_counter_counts_committed_text_only(cx: &mut TestAppContext) {
+        use gpui::EntityInputHandler as _;
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let title = app.read_with(cx, |app, _| app.commit_title.clone());
+        let value = |cx: &mut VisualTestContext| title.read_with(cx, |title, _| title.value());
+        let compose = |cx: &mut VisualTestContext, text: &str| {
+            cx.update(|window, cx| {
+                title.update(cx, |title, cx| {
+                    title.replace_and_mark_text_in_range(None, text, None, window, cx)
+                })
+            });
+            draw(cx);
+        };
+        let width = |cx: &mut VisualTestContext, text: &str| {
+            cx.update(|window, _| {
+                shaped_width(
+                    text,
+                    appearance::ui_text(11.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            })
+            .ceil()
+        };
+        // Digits share one width, so each reading is told from the one it is
+        // not by a count of other digits.
+        let reads = |cx: &mut VisualTestContext, at: &str, shown: &str, not: Option<&str>| {
+            if let Some(not) = not {
+                assert_ne!(
+                    width(cx, shown),
+                    width(cx, not),
+                    "{at}: {shown:?} and {not:?} differ in width"
+                );
+            }
+            let counter = cx
+                .debug_bounds("commit-title-counter")
+                .expect("the counter is drawn");
+            assert_eq!(
+                counter.size.width,
+                width(cx, shown),
+                "{at}: the counter reads {shown:?}, not {not:?}"
+            );
+        };
+
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|window, cx| {
+            title.update(cx, |title, cx| title.set_value("Fixed: ", window, cx))
+        });
+        compose(cx, "nihaoshijie");
+        assert_eq!(
+            value(cx),
+            "Fixed: nihaoshijie",
+            "the composition is in the field"
+        );
+        reads(cx, "composing", "7/72 suggested", Some("18/72 suggested"));
+        cx.update(|window, cx| {
+            title.update(cx, |title, cx| {
+                title.replace_text_in_range(None, "你好世界", window, cx)
+            })
+        });
+        draw(cx);
+        assert_eq!(value(cx), "Fixed: 你好世界", "the composition is committed");
+        reads(cx, "committed", "11/72 suggested", Some("7/72 suggested"));
+
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        compose(cx, "nihao");
+        assert_eq!(
+            value(cx),
+            "Fixed: 你好世界nihao",
+            "the field composes again"
+        );
+        // Only the names the settled layout gives.
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        reads(cx, "18 pt composing", "11/72", None);
+        assert_eq!(
+            COMPACT_LABELS
+                .with(|names| names.borrow().get("commit-title-counter").cloned())
+                .as_deref(),
+            Some("11/72 suggested"),
+            "18 pt composing: the counter is named by its committed count"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The accessible name the last frame gave `field`: what AccessKit reads
     /// from its editing element, which the kit names after the field's
     /// `aria_label`, or without one after the placeholder it shows.
