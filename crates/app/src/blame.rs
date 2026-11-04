@@ -183,19 +183,23 @@ impl GitTurtle {
             self.mode = mode;
             self.pane = pane;
             self.sidebar = sidebar;
-            if let Some(focus) = focus {
-                if self.page == AppPage::Repository {
-                    window.focus(&focus, cx);
-                } else if self.page_return_focus.is_some()
-                    && self.page_return_focus == self.blame.focus
-                {
-                    // Closed behind Settings or Projects, as a status read
-                    // landing there closes it, focus stays on that page, and
-                    // Back returns it where the attribution would have.
-                    // Returned to the attribution's own focus, which is no
-                    // longer drawn, keys went nowhere.
-                    self.page_return_focus = Some(focus);
-                }
+            // Opened with nothing focused, or with the window's root focused
+            // by a click on an empty spot (`saved_focus`), attribution
+            // returns focus to the shown mode's own list and names its pane:
+            // given back, the root showed no focus and Down moved nothing.
+            let focus = self.saved_focus(focus);
+            if self.page == AppPage::Repository {
+                let focus = focus.unwrap_or_else(|| self.take_mode_list());
+                window.focus(&focus, cx);
+            } else if self.page_return_focus.is_some() && self.page_return_focus == self.blame.focus
+            {
+                // Closed behind Settings or Projects, as a status read
+                // landing there closes it, focus stays on that page, and
+                // Back returns it where the attribution would have, or to
+                // the list where it had nothing to return to. Returned to
+                // the attribution's own focus, which is no longer drawn,
+                // keys went nowhere.
+                self.page_return_focus = focus;
             }
         }
         self.blame = self

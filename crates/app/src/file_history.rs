@@ -397,8 +397,18 @@ impl GitTurtle {
         self.history_sidebar = retained.history_sidebar;
         self.status = retained.status;
         self.error = retained.error;
-        if let Some(focus) = retained.focus {
-            window.focus(&focus, cx);
+        // The window's root, which a click on an empty spot focuses, counts
+        // as nothing to give back (`saved_focus`): on the repository page
+        // focus goes to the shown mode's own list, which the window names as
+        // its pane. Given back, the root left File history's close on
+        // nothing a person could see, where Down moved nothing.
+        match self.saved_focus(retained.focus) {
+            Some(focus) => window.focus(&focus, cx),
+            None if self.page == AppPage::Repository => {
+                let list = self.take_mode_list();
+                window.focus(&list, cx);
+            }
+            None => {}
         }
     }
 

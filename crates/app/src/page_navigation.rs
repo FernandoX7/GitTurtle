@@ -421,6 +421,9 @@ impl GitTurtle {
         self.modal_was_open = modal_open;
     }
 
+    /// Repairs focus a closing modal left on nothing drawn, or on the
+    /// window's root, which the toolkit gives back to a modal opened after
+    /// a click on an empty spot of the window and which shows no focus.
     fn restore_detached_modal_focus(
         &mut self,
         generation: u64,
@@ -431,12 +434,23 @@ impl GitTurtle {
         if self.modal_focus_generation != generation
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
-            || !window.context_stack().is_empty()
+            || (!window.context_stack().is_empty() && !self.app_focus.is_focused(window))
         {
             return;
         }
         self.modal_return_target(previous, window).focus(window, cx);
         window.refresh();
+    }
+
+    /// `focus` as a place to give focus back to: none where it is the
+    /// window's root, which shows no focus and acts on nothing. A press on
+    /// an empty spot of the window focuses the root, since GPUI focuses an
+    /// element that tracks focus on any press inside it that no child
+    /// claims, so whoever clicked there left nothing focused. Given back,
+    /// the root left Back, a closing modal, File history and Blame on
+    /// nothing a person could see, where Down moved nothing.
+    pub(super) fn saved_focus(&self, focus: Option<FocusHandle>) -> Option<FocusHandle> {
+        focus.filter(|focus| *focus != self.app_focus)
     }
 
     /// Where focus returns as a modal closes: `previous` while it is still
@@ -446,7 +460,8 @@ impl GitTurtle {
     /// named before the modal opened, so a modal opened from History's
     /// changed files that closed onto its commit list left the window
     /// naming the file list, which a File history or Blame opened next
-    /// keeps and restores as it closes.
+    /// keeps and restores as it closes. A `previous` that is the window's
+    /// root counts as none (`saved_focus`).
     fn modal_return_target(
         &mut self,
         previous: Option<&FocusHandle>,
@@ -456,8 +471,11 @@ impl GitTurtle {
         // including sibling popup menus outside app_focus. A missing/detached
         // handle resolves to GPUI's synthetic dispatch root with no contexts.
         // Comparing a handle with itself cannot establish attachment.
-        if let Some(previous) = previous.filter(|focus| self.app_focus.contains(focus, window)) {
-            return previous.clone();
+        if let Some(previous) = self
+            .saved_focus(previous.cloned())
+            .filter(|focus| self.app_focus.contains(focus, window))
+        {
+            return previous;
         }
         if self.page != AppPage::Repository || !self.app_focus.contains(self.mode_list().0, window)
         {
@@ -478,7 +496,7 @@ impl GitTurtle {
 
     /// The shown mode's own list, for focus to land on, with the window
     /// naming the pane it is, as choosing a commit or a file names it.
-    fn take_mode_list(&mut self) -> FocusHandle {
+    pub(super) fn take_mode_list(&mut self) -> FocusHandle {
         let (list, pane) = self.mode_list();
         let list = list.clone();
         self.pane = pane;
@@ -557,10 +575,19 @@ impl GitTurtle {
         // which names a pane only for a control the page no longer draws:
         // Back from Settings opened with nothing focused once put focus on
         // History's commit list with the window still naming the file list.
-        let focus = match self.page_return_focus.take() {
+        // The window's root, which a click on an empty spot focuses, counts
+        // as nothing (`saved_focus`): given back, it left the page with no
+        // ring and Down moving nothing.
+        let saved = self.page_return_focus.take();
+        let focus = match self.saved_focus(saved) {
             Some(focus) => focus,
             None => self.take_mode_list(),
         };
+        // The page draws the focus it returns to with its ring, as Settings
+        // marks the control it opens on, whether a key or a click went
+        // back: "Back to repository" pressed with the pointer ended the
+        // ring, so the list it landed on showed none.
+        self.focus_ring.mark(window);
         let path = self.path.clone();
         let owner = cx.entity().downgrade();
         // Focus goes back as the next frame starts, before it draws the page;
@@ -4208,6 +4235,254 @@ mod tests {
         assert!(
             pane(&app, cx) == Pane::Files,
             "the window names the file pane"
+        );
+    }
+
+    /// A window whose newest commit changes two files, so Down moves
+    /// Compare's file selection, with both edited again in the working
+    /// tree, so Changes lists two rows, at 1000 × 680 in History with the
+    /// newest commit selected.
+    async fn two_files_checked_out(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        use crate::views::tests::{fixture_git, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(
+            cx,
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfirst\nM 100644 inline notes.txt\ndata 6\nnotes\nM 100644 inline other.txt\ndata 6\nother\n\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000001 +0000\ndata 6\nsecond\nM 100644 inline notes.txt\ndata 7\nnotes2\nM 100644 inline other.txt\ndata 7\nother2\n\ndone\n",
+        )
+        .await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("notes.txt"), "edited notes\n").unwrap();
+        std::fs::write(root.join("other.txt"), "edited other\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        (fixture, app, cx)
+    }
+
+    /// Clicks an empty spot of the window, the status bar's leading
+    /// padding, as a person clicks where nothing acts. GPUI gives such a
+    /// press to the window's root, which tracks focus, so the root takes
+    /// focus and nothing shows it: AT-SPI reads only the window's frame
+    /// focused.
+    fn click_an_empty_spot(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let bar = cx.debug_bounds("status-bar").expect("the status bar");
+        cx.simulate_click(
+            point(bar.left() + px(4.), bar.center().y),
+            Modifiers::default(),
+        );
+        crate::views::tests::draw(cx);
+        let root = app.read_with(cx, |app, _| app.app_focus.clone());
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(root),
+            "the click leaves the window's root focused"
+        );
+    }
+
+    /// Asserts focus rests on `list` drawn with its ring, with the window
+    /// naming `pane`.
+    fn assert_lands_on(
+        app: &Entity<GitTurtle>,
+        list: &FocusHandle,
+        pane: Pane,
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) {
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(list.clone()),
+            "{at}: focus"
+        );
+        app.read_with(cx, |app, _| {
+            assert!(app.pane == pane, "{at}: the window names its pane");
+            assert!(app.focus_ring.shows(list), "{at}: its ring");
+        });
+    }
+
+    /// Opens Settings by its shortcut and leaves it by `back`.
+    fn settings_and_back(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        back: impl Fn(&mut VisualTestContext),
+    ) {
+        use crate::views::tests::draw;
+        cx.simulate_keystrokes(&primary(","));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Settings));
+        back(cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+    }
+
+    /// After a click on an empty spot of the window, which leaves the
+    /// window's root focused, Settings and Back put focus on the shown
+    /// mode's own list, drawn with its ring and named as the window's pane,
+    /// so Down moves the selection: History's commit list by the Back
+    /// shortcut, Compare's changed-file list by Escape, and Changes' file
+    /// list by "Back to repository" pressed with the pointer, whose press
+    /// ends the ring a key draws. Back gave the root back, which shows no
+    /// focus, and Down moved nothing. A control focused as Settings opened
+    /// still gets focus back, with its ring.
+    #[gpui::test]
+    async fn back_after_a_click_on_an_empty_spot_lands_on_the_shown_list(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let (commits, files) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && app.selected_commit == Some(0));
+            assert_eq!(app.files.len(), 2, "the newest commit's two files");
+            (app.focus.clone(), app.file_focus.clone())
+        });
+        let shortcut = |cx: &mut VisualTestContext| cx.simulate_keystrokes(&primary("["));
+
+        // The control route: History's file list focused, its pane named.
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        settings_and_back(&app, cx, shortcut);
+        assert_lands_on(&app, &files, Pane::Files, cx, "the file list it left");
+
+        // History, the file list's pane still named as the click lands.
+        click_an_empty_spot(&app, cx);
+        settings_and_back(&app, cx, shortcut);
+        assert_lands_on(&app, &commits, Pane::History, cx, "History");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_commit),
+            Some(1),
+            "Down moves the commit selection"
+        );
+
+        // Compare, left by Escape.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+        click_an_empty_spot(&app, cx);
+        settings_and_back(&app, cx, |cx| cx.simulate_keystrokes("escape"));
+        assert_lands_on(&app, &files, Pane::Files, cx, "Compare");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_file),
+            Some(1),
+            "Down moves the file selection"
+        );
+
+        // Changes, left by "Back to repository" pressed with the pointer,
+        // which ends the ring a key would draw.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        select_unstaged(&app, "notes.txt", cx).await;
+        let first = app.read_with(cx, |app, _| app.working_selected);
+        click_an_empty_spot(&app, cx);
+        settings_and_back(&app, cx, |cx| {
+            // A pointer press, then what the button's click runs.
+            click_an_empty_spot(&app, cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        });
+        assert_lands_on(&app, &files, Pane::Files, cx, "Changes");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        let moved = app.read_with(cx, |app, _| app.working_selected);
+        assert!(
+            moved.is_some() && moved != first,
+            "Down moves the working selection"
+        );
+    }
+
+    /// File history and Blame opened after a click on an empty spot of the
+    /// window, which leaves the window's root focused, return focus to the
+    /// shown mode's own list as they close, drawn with its ring and named
+    /// as the window's pane, so Down moves the selection: File history
+    /// closed onto History's commit list, Blame onto Changes' file list,
+    /// each opened as the palette opens it, from the root it gives focus
+    /// back to. Both gave the root back, which shows no focus.
+    #[gpui::test]
+    async fn file_history_and_blame_closed_after_a_click_on_an_empty_spot_land_on_the_shown_list(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::settle;
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let (commits, files) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+
+        // File history from History, the file list's pane named.
+        app.update(cx, |app, _| app.pane = Pane::Files);
+        click_an_empty_spot(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.file_history.is_active()
+            && app.mode == WorkspaceMode::History));
+        assert_lands_on(&app, &commits, Pane::History, cx, "File history closed");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selected_commit),
+            Some(1),
+            "Down moves the commit selection"
+        );
+
+        // Blame from Changes, History's pane named.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        select_unstaged(&app, "notes.txt", cx).await;
+        let first = app.read_with(cx, |app, _| app.working_selected);
+        app.update(cx, |app, _| app.pane = Pane::History);
+        click_an_empty_spot(&app, cx);
+        let row = first.unwrap().0;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(row, window, cx)));
+        crate::blame::lands(&app, cx);
+        assert!(app.read_with(cx, |app, _| app.blame.is_visible()));
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.blame.is_visible()
+            && app.mode == WorkspaceMode::Working));
+        assert_lands_on(&app, &files, Pane::Files, cx, "Blame closed");
+        cx.simulate_keystrokes("down");
+        settle(&app, cx).await;
+        let moved = app.read_with(cx, |app, _| app.working_selected);
+        assert!(
+            moved.is_some() && moved != first,
+            "Down moves the working selection"
+        );
+    }
+
+    /// A dialog opened after a click on an empty spot of the window, which
+    /// leaves the window's root focused, gives focus to the shown mode's own
+    /// list as it closes, named as the window's pane, rather than to the
+    /// root the toolkit gives it back to, which shows no focus.
+    #[gpui::test]
+    async fn a_modal_opened_after_a_click_on_an_empty_spot_closes_onto_the_shown_list(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let commits = app.read_with(cx, |app, _| app.focus.clone());
+        app.update(cx, |app, _| app.pane = Pane::Files);
+        click_an_empty_spot(&app, cx);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        draw(cx);
+        assert!(dialog_open(cx), "the dialog opens");
+        close_probe_dialog(cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            Some(commits),
+            "History's commit list"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.pane == Pane::History),
+            "the window names History's pane"
         );
     }
 
