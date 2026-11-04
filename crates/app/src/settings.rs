@@ -648,52 +648,54 @@ impl GitTurtle {
         let focus: Vec<_> = (0..DisplayChoice::ALL.len())
             .map(|index| self.page_focus((key, index), cx))
             .collect();
+        // A focused segment shows its whole row, the description a choice
+        // changes with it.
+        let (row_in_view, segments_drawn) = self.keep_row_in_view(&focus, cx);
         div()
-            .debug_selector(move || format!("{key}-row"))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .when(narrow, |row| row.flex_col().items_start())
-            .pt_4()
-            .border_t_1()
-            .border_color(rgb(p.border))
-            // Stacked, the text takes the row's width, so its longest
-            // description wraps inside the card rather than widening it.
+            .on_children_prepainted(row_in_view)
             .child(
                 div()
+                    .debug_selector(move || format!("{key}-row"))
                     .flex()
-                    .min_w_0()
-                    .map(|text| if narrow { text.w_full() } else { text.flex_1() })
-                    .child(read_setting_text(
-                        setting.title(),
-                        &setting.description(choice, asks).into(),
-                        &reserve,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .debug_selector(move || format!("{key}-segments"))
-                    .on_children_prepainted(
-                        self.keep_in_view(focus.iter().cloned().map(Some).collect(), cx),
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .when(narrow, |row| row.flex_col().items_start())
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(rgb(p.border))
+                    // Stacked, the text takes the row's width, so its longest
+                    // description wraps inside the card rather than widening it.
+                    .child(
+                        div()
+                            .flex()
+                            .min_w_0()
+                            .map(|text| if narrow { text.w_full() } else { text.flex_1() })
+                            .child(read_setting_text(
+                                setting.title(),
+                                &setting.description(choice, asks).into(),
+                                &reserve,
+                                cx,
+                            )),
                     )
-                    .flex()
-                    .flex_shrink_0()
-                    .gap_1()
-                    .p_1()
-                    .rounded(px(8.))
-                    .bg(rgb(p.canvas))
-                    .children(
-                        DisplayChoice::ALL
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, option)| {
-                                display_segment(setting, index, option == choice, &focus[index])
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.choose_display(setting, option, window, cx)
-                                    }))
-                            }),
+                    .child(
+                        div()
+                            .debug_selector(move || format!("{key}-segments"))
+                            .on_children_prepainted(segments_drawn)
+                            .flex()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .p_1()
+                            .rounded(px(8.))
+                            .bg(rgb(p.canvas))
+                            .children(DisplayChoice::ALL.into_iter().enumerate().map(
+                                |(index, option)| {
+                                    display_segment(setting, index, option == choice, &focus[index])
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.choose_display(setting, option, window, cx)
+                                        }))
+                                },
+                            )),
                     ),
             )
             .into_any_element()
@@ -2281,6 +2283,53 @@ impl GitTurtle {
             .controls(focus, appearance::button_ring_room(cx))
     }
 
+    /// [`Self::keep_in_view`] for a row of segments, as List density's,
+    /// Reduce motion's and Increase contrast's, `focus` holding the
+    /// segments' handles in order: the first listener is for the
+    /// `on_children_prepainted` of the row's wrapper, whose one child is the
+    /// row, the second for the segments' group. The keyboard focusing a
+    /// segment scrolls the page by the least that shows the whole row, its
+    /// title, the description a choice changes and its segments, with the
+    /// focus ring's room, so a press's feedback is in view beside it. A row
+    /// taller than the page's view shows the focused segment with its ring.
+    /// Where the row fits, the row is also the control a resize judges
+    /// (`FocusReveal::finish`): a resize reveals it again only after a frame
+    /// that showed it whole, so a row the person has scrolled partly out of
+    /// view is left where it is, as any control is. Revealed alone, the
+    /// group left Increase contrast's description below the fold of a
+    /// 1,480 × 973 window.
+    fn keep_row_in_view<'a>(
+        &'a self,
+        focus: &[FocusHandle],
+        cx: &App,
+    ) -> (impl Prepainted + use<'a>, impl Prepainted + use<'a>) {
+        let page = self.theme_editor.page();
+        let room = appearance::button_ring_room(cx);
+        let row = page.group(focus.to_vec(), room);
+        let segment = page.controls(focus.iter().cloned().map(Some).collect(), room);
+        let view = page.scroll().clone();
+        // The group is prepainted before the row's wrapper, whose listener
+        // then finds where the segments lie in the same frame.
+        let segments = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let drawn = segments.clone();
+        (
+            move |bounds: Vec<Bounds<Pixels>>, window: &mut Window, cx: &mut App| {
+                let segments = drawn.take();
+                let Some(bounds) = bounds.into_iter().next() else {
+                    return;
+                };
+                if bounds.size.height + room * 2. <= view.bounds().size.height {
+                    row(vec![bounds], window, cx);
+                } else {
+                    segment(segments, window, cx);
+                }
+            },
+            move |bounds: Vec<Bounds<Pixels>>, _: &mut Window, _: &mut App| {
+                *segments.borrow_mut() = bounds;
+            },
+        )
+    }
+
     /// The Settings page, laid out `width` wide: the width it is drawn at in
     /// this frame ([`SettingsPage`]), which beside the project list is less
     /// than the window's.
@@ -2340,6 +2389,8 @@ impl GitTurtle {
         let density_focus: Vec<_> = (0..Density::ALL.len())
             .map(|index| self.page_focus(("settings-density", index), cx))
             .collect();
+        let (density_row_in_view, density_segments_drawn) =
+            self.keep_row_in_view(&density_focus, cx);
         let appearance = div()
             .flex()
             .flex_col()
@@ -2379,60 +2430,64 @@ impl GitTurtle {
             .child(self.render_text_size_setting(true, cx))
             .children(self.render_code_font_setting(cx))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .when(narrow, |row| row.flex_col().items_start())
-                    .pt_4()
-                    .border_t_1()
-                    .border_color(rgb(p.border))
-                    .child(setting_description(
-                        "List density",
-                        "A little breathing room, or more at a glance.",
-                        cx,
-                    ))
-                    .child(
-                        div()
-                            .on_children_prepainted(self.keep_in_view(
-                                density_focus.iter().cloned().map(Some).collect(),
-                                cx,
-                            ))
-                            .flex()
-                            .gap_1()
-                            .p_1()
-                            .rounded(px(8.))
-                            .bg(rgb(p.canvas))
-                            .children(Density::ALL.into_iter().enumerate().map(
-                                |(index, density)| {
-                                    let selected = self.settings.density == density;
-                                    // The shared helper's look, as History's segments:
-                                    // unselected, transparent at rest with the palette's
-                                    // hover and pressed fills, so a press steps to
-                                    // almost the selected fill; selected, the `selected`
-                                    // surface, tinted on hover rather than faded, which
-                                    // would fade the focus ring with it.
-                                    Button::new(("settings-density", index))
-                                        .track_focus(&density_focus[index])
-                                        .small()
-                                        .with_variant(appearance::control_button_variant(selected))
-                                        .label(density.label())
-                                        .selected(selected)
-                                        .toggled(selected)
-                                        .debug_selector(move || format!("settings-density-{index}"))
-                                        .when(selected, |button| {
-                                            button.hover(appearance::control_selected_hover)
-                                        })
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if this.settings.density != density {
-                                                this.settings.density = density;
-                                                this.save_preferences(window, cx);
-                                            }
-                                        }))
-                                },
-                            )),
-                    ),
+                div().on_children_prepainted(density_row_in_view).child(
+                    div()
+                        .debug_selector(|| "settings-density-row".into())
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .when(narrow, |row| row.flex_col().items_start())
+                        .pt_4()
+                        .border_t_1()
+                        .border_color(rgb(p.border))
+                        .child(setting_description(
+                            "List density",
+                            "A little breathing room, or more at a glance.",
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .on_children_prepainted(density_segments_drawn)
+                                .flex()
+                                .gap_1()
+                                .p_1()
+                                .rounded(px(8.))
+                                .bg(rgb(p.canvas))
+                                .children(Density::ALL.into_iter().enumerate().map(
+                                    |(index, density)| {
+                                        let selected = self.settings.density == density;
+                                        // The shared helper's look, as History's segments:
+                                        // unselected, transparent at rest with the palette's
+                                        // hover and pressed fills, so a press steps to
+                                        // almost the selected fill; selected, the `selected`
+                                        // surface, tinted on hover rather than faded, which
+                                        // would fade the focus ring with it.
+                                        Button::new(("settings-density", index))
+                                            .track_focus(&density_focus[index])
+                                            .small()
+                                            .with_variant(appearance::control_button_variant(
+                                                selected,
+                                            ))
+                                            .label(density.label())
+                                            .selected(selected)
+                                            .toggled(selected)
+                                            .debug_selector(move || {
+                                                format!("settings-density-{index}")
+                                            })
+                                            .when(selected, |button| {
+                                                button.hover(appearance::control_selected_hover)
+                                            })
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if this.settings.density != density {
+                                                    this.settings.density = density;
+                                                    this.save_preferences(window, cx);
+                                                }
+                                            }))
+                                    },
+                                )),
+                        ),
+                ),
             )
             .child(self.render_display_setting(DisplaySetting::ReduceMotion, narrow, cx))
             .child(self.render_display_setting(DisplaySetting::IncreaseContrast, narrow, cx))
@@ -4397,6 +4452,12 @@ fn swatch_run<const N: usize>(
     .flex_shrink_0()
     .into_any_element()
 }
+
+/// An element's `on_children_prepainted` listener, as
+/// [`GitTurtle::keep_row_in_view`] returns two of.
+trait Prepainted: Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {}
+
+impl<F: Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static> Prepainted for F {}
 
 /// A setting's title and description, read together.
 fn setting_description(
@@ -7978,7 +8039,8 @@ mod display_row_tests {
     /// From List density's last segment, Tab reaches Reduce motion's three
     /// segments and then Increase contrast's, in order, in a 461 × 490 window
     /// at 18 pt, and every frame painted after each key shows the focused
-    /// segment with its focus ring's room inside the page's view.
+    /// segment's row, which fits the page's view, with the focus ring's room
+    /// inside that view.
     #[gpui::test]
     fn tab_reaches_the_six_segments_in_order_and_keeps_each_in_view(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -8018,18 +8080,251 @@ mod display_row_tests {
                 for (frame, painted) in frames.iter().enumerate() {
                     let ring = painted
                         .control
-                        .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused segment"))
+                        .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused row"))
                         .dilate(room);
                     assert!(
                         ring.top() + slack >= painted.viewport.top()
                             && ring.bottom() <= painted.viewport.bottom() + slack,
-                        "{at}: frame {frame} paints the segment with its ring, {ring:?}, \
-                         outside the page, {:?}",
+                        "{at}: frame {frame} paints the segment's row with its ring's room, \
+                         {ring:?}, outside the page, {:?}",
                         painted.viewport
                     );
                 }
             }
         }
+    }
+
+    /// List density's, Reduce motion's and Increase contrast's rows: each
+    /// row's drawn name with its segments' focus handles and drawn names.
+    fn segment_rows(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<(String, Vec<(FocusHandle, String)>)> {
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let density = (0..Density::ALL.len())
+            .map(|index| {
+                let focus = cx.update(|_, cx| page.focus(("settings-density", index), cx));
+                (focus, format!("settings-density-{index}"))
+            })
+            .collect();
+        let mut rows = vec![("settings-density-row".to_owned(), density)];
+        for setting in DisplaySetting::ALL {
+            let key = setting.key();
+            let segments = (0..DisplayChoice::ALL.len())
+                .map(|index| {
+                    let focus = segment_focus(app, setting, index, cx);
+                    (focus, format!("{key}-{index}"))
+                })
+                .collect();
+            rows.push((format!("{key}-row"), segments));
+        }
+        rows
+    }
+
+    /// Focuses the control before `segment` in the Tab order, then scrolls
+    /// the page so that `row` starts 8 px below its view (`below`) or ends
+    /// 8 px above it, for a Tab onto the segment.
+    fn ready_tab_onto(
+        cx: &mut VisualTestContext,
+        page: &ScrollHandle,
+        row: &str,
+        segment: &FocusHandle,
+        below: bool,
+    ) {
+        cx.update(|window, cx| {
+            window.focus(segment, cx);
+            window.focus_prev(cx);
+        });
+        settle(cx);
+        let at = drawn(cx, row.to_owned());
+        let view = page.bounds();
+        let shift = if below {
+            view.bottom() + px(8.) - at.top()
+        } else {
+            view.top() - px(8.) - at.bottom()
+        };
+        let offset = page.offset();
+        page.set_offset(point(offset.x, offset.y + shift));
+        settle(cx);
+        let at = drawn(cx, row.to_owned());
+        assert!(
+            if below {
+                at.top() > view.bottom()
+            } else {
+                at.bottom() < view.top()
+            },
+            "{row} at {at:?} lies {} the page's view {view:?}",
+            if below { "below" } else { "above" }
+        );
+    }
+
+    /// Whether `bounds` lies inside `view`'s height.
+    fn within(bounds: Bounds<Pixels>, view: Bounds<Pixels>) -> bool {
+        let slack = px(0.01);
+        bounds.top() + slack >= view.top() && bounds.bottom() <= view.bottom() + slack
+    }
+
+    /// Tab onto each segment of List density, Reduce motion and Increase
+    /// contrast, from a page scrolled so that the segment's row starts below
+    /// its view, at 13 and 18 pt in 1480 × 973 and 461 × 490 windows: every
+    /// frame painted after the key, and the page once settled, show the whole
+    /// row, its title, its description at its reserved height and its
+    /// segments, with the focus ring's room, and focus stays on the segment
+    /// with its ring's room in view. Revealed alone, the segments left
+    /// Increase contrast's description below the fold of the wide window.
+    #[gpui::test]
+    fn tab_onto_a_segment_shows_its_whole_row(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let rows = segment_rows(&app, cx);
+        let mut failures = Vec::new();
+        let mut steps = 0;
+        for (width, height) in [(1480., 973.), (461., 490.)] {
+            for text in [13, 18] {
+                text_size(&app, text, cx);
+                cx.simulate_resize(size(px(width), px(height)));
+                settle(cx);
+                for (row, segments) in &rows {
+                    for (focus, segment) in segments {
+                        let at = format!("{segment} at {text} pt in {width} × {height}");
+                        ready_tab_onto(cx, page.scroll(), row, focus, true);
+                        page.take_painted();
+                        cx.simulate_keystrokes("tab");
+                        draw(cx);
+                        steps += 1;
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: Tab does not focus the segment"));
+                            continue;
+                        }
+                        let frames = page.take_painted();
+                        if frames.is_empty() {
+                            failures.push(format!("{at}: Tab paints nothing"));
+                        }
+                        for (frame, painted) in frames.iter().enumerate() {
+                            match painted.control {
+                                Some(shown) if within(shown.dilate(room), painted.viewport) => {}
+                                shown => failures.push(format!(
+                                    "{at}: frame {frame} paints the focused row {shown:?} \
+                                     outside the page {:?}",
+                                    painted.viewport
+                                )),
+                            }
+                        }
+                        let view = page.scroll().bounds();
+                        let shown_row = drawn(cx, row.clone());
+                        if !within(shown_row.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the row {shown_row:?}, with the ring's room, \
+                                 leaves the page {view:?}"
+                            ));
+                        }
+                        let shown_segment = drawn(cx, segment.clone());
+                        if !within(shown_segment.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the segment {shown_segment:?} with its ring \
+                                 leaves the page {view:?}"
+                            ));
+                        }
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: the reveal moves focus"));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(steps, 4 * 8, "every segment reached at every size");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// In a window cut so that the page's view is shorter than each row but
+    /// holds a segment with its focus ring, at 18 pt and 461 and 1480 px
+    /// wide, Tab onto each segment from a page scrolled so that its row lies
+    /// below the view and so that it lies above: from the frame that first
+    /// draws the focus, the page shows the focused segment with its ring's
+    /// room rather than the row's top or foot.
+    #[gpui::test]
+    fn a_row_taller_than_the_page_shows_its_focused_segment(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let rows = segment_rows(&app, cx);
+        text_size(&app, 18, cx);
+        // A key before the walk, so every step's Tab comes from the
+        // keyboard. As the test's first key, the first step's Tab painted
+        // one frame that still held focus on the control before the segment,
+        // at the page's offset before the key, which says nothing of the
+        // segment.
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let mut failures = Vec::new();
+        let mut steps = 0;
+        for width in [461., 1480.] {
+            let height = px(490.);
+            cx.simulate_resize(size(px(width), height));
+            settle(cx);
+            let one = drawn(cx, rows[0].1[0].1.clone()).size.height;
+            let chrome = height - page.scroll().bounds().size.height;
+            cx.simulate_resize(size(px(width), chrome + one + room * 2. + px(12.)));
+            settle(cx);
+            let view = page.scroll().bounds().size.height;
+            for (row, _) in &rows {
+                let tall = drawn(cx, row.clone()).size.height;
+                assert!(
+                    tall + room * 2. > view && one + room * 2. <= view,
+                    "{row}, {tall:?} tall, does not fit the page's view, {view:?}, \
+                     which holds a segment, {one:?}"
+                );
+            }
+            for (row, segments) in &rows {
+                for (focus, segment) in segments {
+                    for below in [true, false] {
+                        let at = format!(
+                            "{segment} at {width} px from {}",
+                            if below { "below" } else { "above" }
+                        );
+                        ready_tab_onto(cx, page.scroll(), row, focus, below);
+                        page.take_painted();
+                        cx.simulate_keystrokes("tab");
+                        draw(cx);
+                        steps += 1;
+                        if !cx.update(|window, _| focus.is_focused(window)) {
+                            failures.push(format!("{at}: Tab does not focus the segment"));
+                            continue;
+                        }
+                        // From the frame that first draws the focus.
+                        let frames = page.take_painted();
+                        if frames.is_empty() {
+                            failures.push(format!("{at}: Tab paints nothing"));
+                        }
+                        for (frame, painted) in frames.iter().enumerate() {
+                            match painted.control {
+                                Some(shown) if within(shown.dilate(room), painted.viewport) => {}
+                                shown => failures.push(format!(
+                                    "{at}: frame {frame} paints the focused segment {shown:?} \
+                                     with its ring outside the page {:?}",
+                                    painted.viewport
+                                )),
+                            }
+                        }
+                        let view = page.scroll().bounds();
+                        let shown = drawn(cx, segment.clone());
+                        if !within(shown.dilate(room), view) {
+                            failures.push(format!(
+                                "{at}: the segment {shown:?} with its ring leaves the \
+                                 page {view:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(steps, 2 * 8 * 2, "every segment reached from both sides");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// What the settings file on disk holds for `setting`, once its save
