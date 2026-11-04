@@ -444,9 +444,8 @@ pub(crate) enum RequestKind {
     Templates,
 }
 /// `$lead`, then what a Connect stopped part-way may have left, from whether the platform's
-/// store holds GitTurtle's authorization ([`SecureStore::HOLDS`]): on a Mac it may already be
-/// stored, which Disconnect removes; elsewhere nothing is stored. Linux once said it may
-/// already be stored, where nothing can be.
+/// store holds GitTurtle's authorization ([`SecureStore::HOLDS`]): on macOS and Linux it may
+/// already be stored, which Disconnect removes; elsewhere nothing is stored.
 macro_rules! after_stopped_connect {
     ($lead:literal) => {
         if SecureStore::HOLDS {
@@ -464,9 +463,9 @@ macro_rules! after_stopped_connect {
 }
 /// The connection pane's help: what Connect does, from whether the platform's store holds
 /// GitTurtle's authorization ([`SecureStore::HOLDS`]), as a stopped Connect is worded
-/// (`after_stopped_connect`): on a Mac it saves the authorization in the store
-/// [`SecureStore::NAME`] names; elsewhere the store saves none, so Connect cannot finish
-/// there. Linux once said Connect saved it in secure storage, where nothing can be stored.
+/// (`after_stopped_connect`): on macOS and Linux it saves the authorization in the store
+/// [`SecureStore::NAME`] names (macOS Keychain, or your desktop keyring); elsewhere the store
+/// saves none, so Connect cannot finish there.
 fn connection_help() -> String {
     let connect = if SecureStore::HOLDS {
         format!(
@@ -645,24 +644,33 @@ mod account {
     pub(super) fn connect(control: &OperationControl) -> anyhow::Result<String> {
         GhTransport::connect_existing(control)
     }
-    pub(super) fn remove() -> anyhow::Result<()> {
-        SecureStore.remove()
+    /// `control` is the request's own, so its Cancel stops a keyring prompt on Linux.
+    pub(super) fn remove(control: &OperationControl) -> anyhow::Result<()> {
+        SecureStore.remove(control)
     }
 }
 /// A test build's stand-in for the account, which answers as a signed-in GitHub CLI and an
 /// emptied store would, so no test starts the CLI, reads a developer's token or removes their
-/// stored authorization (on macOS a Keychain item), even where a cancellation guard
-/// regressed: a Disconnect test once reached the real store's removal with nothing but the
-/// guard in its way.
+/// stored authorization (a Keychain item on macOS, a desktop keyring item on Linux), even
+/// where a cancellation guard regressed: a Disconnect test once reached the real store's
+/// removal with nothing but the guard in its way.
 #[cfg(test)]
 mod account {
     use gitturtle_core::OperationControl;
+    use std::sync::Mutex;
     /// The account the stand-in connects.
     pub(super) const LOGIN: &str = "stand-in-reviewer";
+    /// Every control a removal got, so a test can tell it was the request's own, whose
+    /// Cancel stops the keyring's prompt.
+    pub(super) static REMOVED_WITH: Mutex<Vec<OperationControl>> = Mutex::new(Vec::new());
     pub(super) fn connect(_: &OperationControl) -> anyhow::Result<String> {
         Ok(LOGIN.into())
     }
-    pub(super) fn remove() -> anyhow::Result<()> {
+    pub(super) fn remove(control: &OperationControl) -> anyhow::Result<()> {
+        REMOVED_WITH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(control.clone());
         Ok(())
     }
 }
@@ -1422,7 +1430,7 @@ impl Panel {
             RequestKind::Disconnect,
             |control| {
                 not_cancelled(&control)?;
-                account::remove()
+                account::remove(&control)
             },
             |result, this, _, _| match result {
                 Ok(()) => {
@@ -3368,9 +3376,10 @@ mod tests {
             assert_eq!(notice.as_deref(), Some(kind.requested()), "{kind:?}");
             if kind == RequestKind::Connect {
                 // What a stopped Connect may have left, in this notice and the operation
-                // bar's tooltip: only a Mac's store can hold the authorization.
+                // bar's tooltip: macOS Keychain and the desktop keyring on Linux can hold the
+                // authorization.
                 for line in [notice.as_deref().unwrap_or_default(), kind.cancel().1] {
-                    if cfg!(target_os = "macos") {
+                    if cfg!(any(target_os = "macos", target_os = "linux")) {
                         assert!(
                             line.ends_with(
                                 "Authorization may already be stored; Disconnect removes it."
@@ -3416,10 +3425,85 @@ mod tests {
                 SecureStore::NAME
             )
         );
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                notice,
+                format!(
+                    "Connected as {}; authorization is stored in your desktop keyring.",
+                    account::LOGIN
+                )
+            );
+            assert!(!misnames_the_linux_store(&notice), "{notice}");
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         assert!(
             !notice.contains("Keychain"),
             "no Keychain outside macOS: {notice}"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// Whether `text` names a store Linux does not have, or says the desktop keyring encrypts
+    /// what it holds, which a keyring without a password does not.
+    #[cfg(target_os = "linux")]
+    fn misnames_the_linux_store(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        ["keychain", "encrypt", "secure storage"]
+            .iter()
+            .any(|word| lower.contains(word))
+    }
+
+    /// Disconnect reaches the account with its request's own control (`account::remove`), so
+    /// the panel's Cancel reaches the keyring's prompt on Linux, where a fresh control would
+    /// leave the prompt waiting for its two-minute bound. The stand-in records the control it
+    /// got; cancelling the request's control then shows there.
+    #[gpui::test]
+    async fn disconnect_reaches_the_account_with_its_own_cancel(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.review.fixture = false);
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        // Held, so the request's control can be read before the removal runs.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        click(cx, "github-disconnect");
+        draw(cx);
+        let control = panel
+            .read_with(cx, |panel, _| panel.control.clone())
+            .expect("Disconnect runs with its own control");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(
+                (panel.account.as_deref(), panel.error.as_deref()),
+                (None, None),
+                "the stand-in emptied the store"
+            );
+        });
+        let got: Vec<OperationControl> = account::REMOVED_WITH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|got| !got.is_cancelled())
+            .cloned()
+            .collect();
+        assert!(!got.is_empty(), "Disconnect reached the stand-in");
+        control.cancel();
+        assert!(
+            got.iter().any(OperationControl::is_cancelled),
+            "the removal got the request's own control, which its Cancel reaches"
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
@@ -4943,8 +5027,10 @@ mod tests {
 
     /// The connection pane's help says what Connect does on this platform, from whether its
     /// store holds GitTurtle's authorization (`SecureStore::HOLDS`): on a Mac it saves it in
-    /// macOS Keychain; elsewhere, where the store saves none, it names no storage and says
-    /// Connect cannot finish there. Linux once said Connect saved it in secure storage.
+    /// macOS Keychain, and on Linux in your desktop keyring, which it never calls Keychain,
+    /// encrypted or secure storage; elsewhere, where the store saves none, it names no storage
+    /// and says Connect cannot finish there. Linux once said Connect saved it in secure
+    /// storage, then that GitTurtle stored no authorization there.
     #[gpui::test]
     async fn the_connection_help_says_what_connect_keeps(cx: &mut TestAppContext) {
         use crate::copy_feedback::tests::click;
@@ -4968,7 +5054,15 @@ mod tests {
             help.contains("saves GitTurtle authorization in macOS Keychain."),
             "Connect saves the authorization where it says: {help}"
         );
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            assert!(
+                help.contains("saves GitTurtle authorization in your desktop keyring."),
+                "Connect saves the authorization where it says: {help}"
+            );
+            assert!(!misnames_the_linux_store(&help), "{help}");
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             for storage in ["saves", "storage", "Keychain"] {
                 assert!(

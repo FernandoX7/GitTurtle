@@ -11,8 +11,6 @@
 //! keyring daemon, and drives oo7's futures with `block_on` on the caller's thread: the
 //! window's operation executor, never the UI thread. The flows run against a fake
 //! `Backend` in tests, so they need no bus.
-// LP3-K2 wires these into `SecureStore`; until then only this module's tests call them.
-#![allow(dead_code)]
 use super::*;
 use futures::future::{Either, select};
 use oo7::{Secret, dbus::Error};
