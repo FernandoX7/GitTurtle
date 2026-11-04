@@ -413,9 +413,33 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
 
 ## Platform limits
 
-- GitHub account connection cannot persist credentials on Linux yet; it refuses
-  storage instead of writing plaintext credentials. Git's own configured
-  authentication for explicit fetch/pull/push is separate.
+- **The GitHub account lives in your desktop keyring.** **Connect GitHub CLI
+  account** stores GitTurtle's GitHub authorization in your default desktop
+  keyring (gnome-keyring on Omarchy) through the Secret Service, and nowhere
+  else: GitTurtle writes no credential file and has no fallback, so with no
+  keyring installed or able to start (D-Bus starts an installed gnome-keyring
+  when it is asked for), Connect fails and says so. Refresh PRs and opening a
+  pull request read it without any prompt; a locked keyring is never unlocked
+  by them, and GitTurtle says it is locked. Only Connect and **Disconnect
+  GitTurtle** may show the keyring's own prompt. Disconnect removes it from
+  your default keyring; if you changed which keyring is the default since you
+  connected, the item stays in the old one, where Seahorse shows it.
+  [GitHub collaboration](github-collaboration.md#linux-desktop-keyring) has
+  the item's attributes and the bounds.
+- **A keyring without a password is not protected on disk.** Omarchy creates
+  its Default keyring with no password, and gnome-keyring keeps such a keyring
+  unencrypted in `~/.local/share/keyrings`, readable by anything that runs as
+  you. To protect it, install Seahorse (`sudo pacman -S seahorse`), open
+  **Passwords and Keys**, choose **Change Password** on the Default keyring and
+  set one. A keyring with a password that your login does not unlock stays
+  locked until you unlock it.
+- **GitHub CLI comes from the system package.** GitTurtle runs GitHub CLI only
+  from `/usr/local/bin/gh` or `/usr/bin/gh` (`sudo pacman -S github-cli` on
+  Arch and Omarchy), and `/usr/local/bin/gh` wins when both exist; a CLI
+  installed elsewhere, such as through mise or in `~/.local/bin`, is not used.
+- Pull-request review on Linux is covered by tests and the offline fixture; a
+  live sign-in with a real account is still to be checked. Git's own
+  configured authentication for explicit fetch/pull/push is separate.
 - PDF pages and their text, AVIF images and JPEG 2000 images (JP2 files and
   raw J2K codestreams) render on x86-64 and AArch64 in GitTurtle's own helper
   process: the app starts its own executable once per page or image, the
