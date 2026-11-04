@@ -312,21 +312,21 @@ fn own_filters() -> u64 {
 /// `child`'s `/proc` status once it is confined: named as the helper and
 /// with more seccomp filters than `inherited`. The helper confines itself
 /// before it reads its request. `None` where it has already ended, as a
-/// refused image's helper can before it is seen: an ended process reports
-/// no filters.
+/// refused image's helper can before it is seen. Its state is read first: an
+/// ended process keeps its name and filters until it is reaped.
 fn confined(child: &Child, inherited: u64) -> Option<String> {
     let path = format!("/proc/{}/status", child.id());
     let started = Instant::now();
     loop {
         let status = fs::read_to_string(&path).unwrap_or_default();
+        if status.contains("State:\tZ") {
+            return None;
+        }
         // One helper process serves PDF pages and images alike.
         if status.contains("Name:\tgitturtle-pdf")
             && status_value(&status, "Seccomp_filters:").unwrap_or(0) > inherited
         {
             return Some(status);
-        }
-        if status.contains("State:\tZ") {
-            return None;
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
@@ -364,8 +364,9 @@ fn start_and_kill() -> Value {
 /// still starts, as a request the pipe holds whole would otherwise let it be.
 /// Its reply's pipe holds one page, as `peak_kib`'s does, so a helper whose
 /// work is done waits in its reply's write rather than ending first: the kill
-/// finds it decoding or in that write, or, where it refused the image, ended.
-fn kill_at_work(bytes: &[u8], format: ConfinedFormat) -> u64 {
+/// finds it decoding or in that write (`timed_kill`). `None` where it ended
+/// before it was seen confined, as a refused image's helper can.
+fn kill_at_work(bytes: &[u8], format: ConfinedFormat) -> Option<u64> {
     let header = encode_image_request(format, EDGE, bytes).expect("a request");
     let inherited = own_filters();
     let mut child = spawn();
@@ -378,12 +379,24 @@ fn kill_at_work(bytes: &[u8], format: ConfinedFormat) -> u64 {
     let _ = input
         .write_all(&header)
         .and_then(|()| input.write_all(bytes));
-    let _ = confined(&child, inherited);
+    timed_kill(child, inherited, (input, output))
+}
+
+/// The time from a kill to the reap of `child` once it is seen confined
+/// (`confined`), with `pipes`, this process's ends of its pipes, open until
+/// it is reaped. `None`, the helper reaped and no kill timed, where it ended
+/// before it was seen confined, as the PDF bench records it: a kill there
+/// would time the reap of a process that had already exited.
+fn timed_kill(mut child: Child, inherited: u64, pipes: impl Sized) -> Option<u64> {
+    if confined(&child, inherited).is_none() {
+        let _ = reap(child);
+        return None;
+    }
     let killed = Instant::now();
     child.kill().expect("the kill");
     let _ = reap(child);
-    drop((input, output));
-    micros(killed.elapsed())
+    drop(pipes);
+    Some(micros(killed.elapsed()))
 }
 
 /// Requests per image whose helper's peak is read.
@@ -523,6 +536,7 @@ fn through_helper(
         "app_first": app[0],
         "app_warm": summary(&app[1..], &["request_us"]),
         "errors": errors(&measured, &app),
+        // `null` where the helper ended before it was seen confined.
         "kill_to_reap_at_work_us": kill_at_work(bytes, format),
         // `n` counts the requests whose peak was read.
         "helper_peak": summary(&peaks, &["vm_hwm_kib"]),
@@ -952,6 +966,47 @@ fn the_helpers_peak_is_its_own() {
         "the helper peaked at {peak} KiB"
     );
     drop(ballast);
+}
+
+/// Waits until `child` has exited, leaving it unreaped (`WNOWAIT`), so its
+/// `/proc` status is still there to read.
+fn exited_unreaped(child: &Child) {
+    // SAFETY: an all-zero `siginfo_t` is valid, and `waitid` writes only it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: waits on a child of this process, writing only `info`.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if waited == 0 {
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
+    }
+}
+
+/// A kill at work is timed only for a helper seen confined: one that has
+/// already ended, as a refused image's helper can before it is seen, records
+/// none (`null` in the JSON), and one waiting for its request records one.
+#[test]
+fn a_kill_at_work_is_timed_only_for_a_confined_helper() {
+    let inherited = own_filters();
+    let mut ended = spawn();
+    // Its request's pipe closes before a byte, so it ends at the header.
+    drop(ended.stdin.take());
+    let output = ended.stdout.take().expect("stdout");
+    exited_unreaped(&ended);
+    assert_eq!(timed_kill(ended, inherited, output), None);
+    // It waits for its request, so it never ends first.
+    let mut waiting = spawn();
+    let pipes = (waiting.stdin.take(), waiting.stdout.take());
+    assert!(timed_kill(waiting, inherited, pipes).is_some());
 }
 
 /// The helper's whole reply to `bytes` at History's edge.

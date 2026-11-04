@@ -13,8 +13,10 @@
 //! resident memory, its `VmHWM`, is read from `/proc` in untimed requests of
 //! their own, while the helper waits in its reply's write (`wait4`'s
 //! `ru_maxrss` is no measure: the helper carries this process's high-water
-//! mark across its `exec`). The helper's start, its `VmSize` once it is
-//! confined, and the time from a kill to the reap are measured apart. The
+//! mark across its `exec`), and only for a page the client accepts. The
+//! helper's start, its `VmSize` once it is confined, and the time from a
+//! kill to the reap, idle and at work, are measured apart, the kill at work
+//! only once the helper is confined and its request written. The
 //! JSON goes to the file named by `GITTURTLE_PDF_BENCH_OUT`. It names each
 //! fixture by its file name in that directory and the executable by its file
 //! name, the commit built into it (looked for in its first 256 MiB) and
@@ -39,7 +41,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use gitturtle_preview::MAX_INPUT_BYTES;
@@ -119,6 +121,27 @@ fn reap(mut child: Child) -> bool {
     child.wait().expect("the helper is reaped").success()
 }
 
+/// A reply read no further than one byte past `limit`, with when its first
+/// bytes arrived and when it ended.
+fn read_timed(source: impl Read, limit: usize) -> (Vec<u8>, Option<Instant>, Instant) {
+    let mut source = source.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1));
+    let mut bytes = Vec::new();
+    let mut first = None;
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                first.get_or_insert_with(Instant::now);
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (bytes, first, Instant::now())
+}
+
 /// One request through an instrumented exchange: blocking pipes, each phase
 /// timed from this side, and the helper's own phase timings.
 fn instrumented(pdf: &[u8], page: usize) -> Value {
@@ -127,31 +150,34 @@ fn instrumented(pdf: &[u8], page: usize) -> Value {
     let mut child = spawn();
     let spawned = started.elapsed();
     let mut input = child.stdin.take().expect("stdin");
-    let mut output = child.stdout.take().expect("stdout");
+    let output = child.stdout.take().expect("stdout");
     // Reading on a thread of its own keeps a reply larger than the pipe from
-    // blocking the write.
-    // No further than one byte past the largest reply the client accepts.
-    let reader = std::thread::spawn(move || {
-        let reply = read_bounded(&mut output, MAX_REPLY_BYTES).unwrap_or_default();
-        (reply, Instant::now())
-    });
+    // blocking the write; no further than one byte past the largest reply
+    // the client accepts.
+    let reader = std::thread::spawn(move || read_timed(output, MAX_REPLY_BYTES));
     let written = input
         .write_all(&header)
         .and_then(|()| input.write_all(pdf))
         .map(|()| started.elapsed());
     drop(input);
-    let (reply, read) = reader.join().expect("the reader");
+    let (reply, first, last) = reader.join().expect("the reader");
     let exited = reap(child);
     let request = started.elapsed();
-    let read = read - started;
+    let first = first.map(|first| first - started);
+    let last = last - started;
     // Each phase on its own: the spawn; writing the request, which a request
     // larger than the pipe makes wait for the helper to start and read it;
-    // the reply's last byte after the request's; and reaping after the reply.
+    // from the request's last byte to the reply's first (the helper's parse,
+    // render and text, and the start of its write, and for a request the
+    // pipe holds whole, which the write leaves there before the helper has
+    // started, its start and confinement as well); the rest of the reply;
+    // and reaping after it.
     let mut run = json!({
         "spawn_us": micros(spawned),
         "write_us": written.as_ref().ok().map(|written| micros(written.saturating_sub(spawned))),
-        "reply_us": written.as_ref().ok().map(|written| micros(read.saturating_sub(*written))),
-        "reap_us": micros(request.saturating_sub(read)),
+        "render_and_reply_us": written.as_ref().ok().zip(first).map(|(written, first)| micros(first.saturating_sub(*written))),
+        "reply_read_us": first.map(|first| micros(last.saturating_sub(first))),
+        "reap_us": micros(request.saturating_sub(last)),
         "request_us": micros(request),
         "reply_bytes": reply.len(),
         "exited_0": exited,
@@ -209,30 +235,57 @@ fn status_value(status: &str, key: &str) -> Option<u64> {
         .and_then(|value| value.parse().ok())
 }
 
-/// A new helper's start: from the spawn until it is confined (named, with
-/// more seccomp filters than this process) and waiting for its request, its
-/// `VmSize` and `VmRSS` then, and the time from a kill to the reap.
-fn start_and_kill() -> Value {
+/// The seccomp filters this process runs under, which a helper inherits
+/// and then adds its own to.
+fn own_filters() -> u64 {
     let own = fs::read_to_string("/proc/self/status").expect("own status");
-    let own_filters = status_value(&own, "Seccomp_filters:").unwrap_or(0);
-    let started = Instant::now();
-    let mut child = spawn();
+    status_value(&own, "Seccomp_filters:").unwrap_or(0)
+}
+
+/// Whether a `/proc` status is a confined helper's: named as the helper and
+/// with more seccomp filters than `inherited`. A helper that has exited but
+/// is not yet reaped keeps both, so a caller reads its state first
+/// (`confined`).
+fn is_confined(status: &str, inherited: u64) -> bool {
+    status.contains("Name:\tgitturtle-pdf")
+        && status_value(status, "Seccomp_filters:").unwrap_or(0) > inherited
+}
+
+/// `child`'s `/proc` status once it is confined (`is_confined`). The helper
+/// confines itself before it reads its request. `None` where it has already
+/// ended, as a refused request's helper can before it is seen: its state is
+/// read first, since an exited helper not yet reaped keeps its name and
+/// filters.
+fn confined(child: &Child, inherited: u64) -> Option<String> {
     let path = format!("/proc/{}/status", child.id());
-    let status = loop {
+    let started = Instant::now();
+    loop {
         let status = fs::read_to_string(&path).unwrap_or_default();
-        if status.contains("Name:\tgitturtle-pdf")
-            && status_value(&status, "Seccomp_filters:").unwrap_or(0) > own_filters
-        {
-            break status;
+        if status.contains("State:\tZ") {
+            return None;
+        }
+        if is_confined(&status, inherited) {
+            return Some(status);
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the helper confines itself"
         );
         // Polled every 100 µs, so the probe takes no core from the helper
-        // it times on a busy host; the start reads up to 100 µs late.
+        // it times on a busy host; confinement reads up to 100 µs late.
         std::thread::sleep(Duration::from_micros(100));
-    };
+    }
+}
+
+/// A new helper's start: from the spawn until it is confined (named, with
+/// more seccomp filters than this process) and waiting for its request, its
+/// `VmSize` and `VmRSS` then, and the time from a kill to the reap.
+fn start_and_kill() -> Value {
+    let inherited = own_filters();
+    let started = Instant::now();
+    let mut child = spawn();
+    // It waits for its request, so it never ends first.
+    let status = confined(&child, inherited).expect("the helper confines itself");
     let confined = started.elapsed();
     let killed = Instant::now();
     child.kill().expect("the kill");
@@ -245,19 +298,42 @@ fn start_and_kill() -> Value {
     })
 }
 
-/// The time from a kill to the reap of a helper at work on `page`, killed
-/// once its whole request is written.
-fn kill_at_work(pdf: &[u8], page: usize) -> u64 {
+/// A helper at work on `page`, with the pipes to it, which stay open until
+/// it is reaped: its whole request written and it confined, never while it
+/// still starts, as a request the pipe holds whole would otherwise let it
+/// be. Its reply's pipe holds one page, as `peak_kib`'s does, so a helper
+/// whose work is done waits in its reply's write rather than ending first:
+/// a page's pixels are always larger than that page. `None`, the helper
+/// reaped, where it ended before it was seen confined.
+fn at_work(pdf: &[u8], page: usize) -> Option<(Child, ChildStdin, ChildStdout)> {
     let header = encode_request(page, pdf).expect("a request");
+    let inherited = own_filters();
     let mut child = spawn();
     let mut input = child.stdin.take().expect("stdin");
     let output = child.stdout.take().expect("stdout");
+    // SAFETY: resizes a pipe this process holds, still empty, to the least
+    // the kernel allows, one page.
+    let resized = unsafe { libc::fcntl(output.as_raw_fd(), libc::F_SETPIPE_SZ, 1) };
+    assert!(resized > 0, "the reply pipe holds one page");
     let _ = input.write_all(&header).and_then(|()| input.write_all(pdf));
+    if confined(&child, inherited).is_none() {
+        let _ = reap(child);
+        return None;
+    }
+    Some((child, input, output))
+}
+
+/// The time from a kill to the reap of a helper at work on `page`
+/// (`at_work`): the kill finds it rendering the page or in its reply's
+/// write. `None` where the helper ended before it was seen confined, so no
+/// kill at work was timed.
+fn kill_at_work(pdf: &[u8], page: usize) -> Option<u64> {
+    let (mut child, input, output) = at_work(pdf, page)?;
     let killed = Instant::now();
     child.kill().expect("the kill");
     let _ = reap(child);
     drop((input, output));
-    micros(killed.elapsed())
+    Some(micros(killed.elapsed()))
 }
 
 /// Requests per page whose helper's peak is read.
@@ -271,7 +347,8 @@ const PEAK_WAIT: Duration = Duration::from_secs(20);
 /// is read, so a helper whose reply has begun, its work and every allocation
 /// for it done, waits in its write for as long as the reply is larger than
 /// that page: a page's pixels always are. `None` where the helper ends
-/// first, as a failure's short reply lets it.
+/// first, as a failure's short reply lets it, and wherever the reply is not
+/// a page the client accepts (`accepted_peak`).
 fn peak_kib(pdf: &[u8], page: usize) -> Option<u64> {
     let header = encode_request(page, pdf).expect("a request");
     let mut child = spawn();
@@ -305,9 +382,17 @@ fn peak_kib(pdf: &[u8], page: usize) -> Option<u64> {
         std::thread::sleep(Duration::from_millis(1));
     };
     // No further than one byte past the largest reply the client accepts.
-    let _ = read_bounded(&mut output, MAX_REPLY_BYTES);
+    let reply = read_bounded(&mut output, MAX_REPLY_BYTES).unwrap_or_default();
     let _ = reap(child);
-    peak
+    accepted_peak(peak, &reply)
+}
+
+/// `peak` where `reply` is a page the client accepts, else `None`: a
+/// helper that failed the page can still be alive, its peak readable, while
+/// its short error reply waits in the pipe, and that peak is no rendered
+/// page's.
+fn accepted_peak(peak: Option<u64>, reply: &[u8]) -> Option<u64> {
+    peak.filter(|_| matches!(read_reply(reply), Ok(Ok(_))))
 }
 
 /// p50, p95 and max of each numeric `metric` over `runs`.
@@ -336,7 +421,8 @@ fn summary(runs: &[Value], metrics: &[&str]) -> Value {
 const RUN_METRICS: &[&str] = &[
     "spawn_us",
     "write_us",
-    "reply_us",
+    "render_and_reply_us",
+    "reply_read_us",
     "reap_us",
     "parse_us",
     "render_us",
@@ -713,6 +799,9 @@ fn fixtures_and_replies_are_read_within_their_limits() {
             .len(),
         MAX_REPLY_BYTES + 1
     );
+    let (timed, first, _) = read_timed(std::io::repeat(0), MAX_REPLY_BYTES);
+    assert_eq!(timed.len(), MAX_REPLY_BYTES + 1);
+    assert!(first.is_some());
 }
 
 /// The executable is read for its commit no further than the limit: one past
@@ -744,14 +833,109 @@ fn the_executable_is_read_within_its_limit() {
 fn the_helpers_peak_is_its_own() {
     // Written, so every page of it is resident.
     let ballast = std::hint::black_box(vec![1_u8; 256 << 20]);
-    let pdf = document(
-        vec![b"BT /F1 12 Tf 30 800 Td (One page) Tj ET".to_vec()],
-        vec![None],
-    );
+    let pdf = one_page();
     let peak = peak_kib(&pdf, 0).expect("the helper's peak, read in its reply's write");
     assert!(
         (1..128 << 10).contains(&peak),
         "the helper peaked at {peak} KiB"
     );
     drop(ballast);
+}
+
+/// A one-page document of a single line of text.
+fn one_page() -> Vec<u8> {
+    document(
+        vec![b"BT /F1 12 Tf 30 800 Td (One page) Tj ET".to_vec()],
+        vec![None],
+    )
+}
+
+/// The helper's whole reply to a request for `page` of `pdf`.
+fn reply_to(pdf: &[u8], page: usize) -> Vec<u8> {
+    let header = encode_request(page, pdf).expect("a request");
+    let mut child = spawn();
+    let mut input = child.stdin.take().expect("stdin");
+    let output = child.stdout.take().expect("stdout");
+    let reader = std::thread::spawn(move || read_bounded(output, MAX_REPLY_BYTES));
+    let _ = input.write_all(&header).and_then(|()| input.write_all(pdf));
+    drop(input);
+    let reply = reader.join().expect("the reader").expect("the reply");
+    let _ = reap(child);
+    reply
+}
+
+/// A peak counts only for a page the client accepts: it is kept for the
+/// helper's reply to a one-page document's page, and not for its reply to a
+/// request for a second page, which the helper refuses, nor for a reply cut
+/// short.
+#[test]
+fn peaks_belong_to_rendered_pages() {
+    let pdf = one_page();
+    let rendered = reply_to(&pdf, 0);
+    assert_eq!(accepted_peak(Some(1), &rendered), Some(1));
+    assert_eq!(
+        accepted_peak(Some(1), &rendered[..rendered.len() - 1]),
+        None
+    );
+    let refused = reply_to(&pdf, 1);
+    assert!(
+        matches!(read_reply(refused.as_slice()), Ok(Err(_))),
+        "the helper refuses the second page"
+    );
+    assert_eq!(accepted_peak(Some(1), &refused), None);
+    assert_eq!(peak_kib(&pdf, 1), None);
+}
+
+/// Waits until `child` has exited, leaving it unreaped (`WNOWAIT`), so its
+/// `/proc` status is still there to read.
+fn exited_unreaped(child: &Child) {
+    // SAFETY: an all-zero `siginfo_t` is valid, and `waitid` writes only it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: waits on a child of this process, writing only `info`.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if waited == 0 {
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
+    }
+}
+
+/// A helper that has exited but is not yet reaped is not taken for a
+/// confined one, though its `/proc` status keeps its name and filters.
+#[test]
+fn an_exited_unreaped_helper_is_not_confined() {
+    let inherited = own_filters();
+    let mut ended = spawn();
+    // Its request's pipe closes before a byte, so it ends at the header.
+    drop(ended.stdin.take());
+    let output = ended.stdout.take().expect("stdout");
+    exited_unreaped(&ended);
+    assert_eq!(confined(&ended, inherited), None);
+    let _ = reap(ended);
+    drop(output);
+}
+
+/// A kill at work is timed only once the helper is confined, never while it
+/// still starts: a one-page request, which the pipe holds whole, is written
+/// before the helper has started, and the helper it leaves is named and
+/// filtered when it is killed.
+#[test]
+fn a_kill_at_work_finds_the_helper_confined() {
+    let inherited = own_filters();
+    let (mut child, input, output) = at_work(&one_page(), 0).expect("a helper at work");
+    let status = fs::read_to_string(format!("/proc/{}/status", child.id())).expect("its status");
+    assert!(is_confined(&status, inherited), "{status}");
+    child.kill().expect("the kill");
+    let _ = reap(child);
+    drop((input, output));
+    assert!(kill_at_work(&one_page(), 0).is_some());
 }
