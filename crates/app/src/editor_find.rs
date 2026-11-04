@@ -915,7 +915,6 @@ impl FindBar {
         div()
             .w_full()
             .flex_none()
-            .relative()
             .flex()
             .flex_col()
             .gap_1()
@@ -973,7 +972,7 @@ impl Render for FindBar {
         let enter = cx.weak_entity();
         let escape = cx.weak_entity();
         let again = cx.weak_entity();
-        Self::frame()
+        let bar = Self::frame()
             .id("accessible-editor-find")
             .debug_selector(|| "file-find-bar".into())
             .track_focus(&self.focus)
@@ -1029,19 +1028,6 @@ impl Render for FindBar {
                 self.too_long(cx)
                     .then(|| Self::limit_notice().text_color(rgb(colors.warning))),
             )
-            // A shared bar marks the side it searches: that side's half of
-            // its 1 px rule, over the rule, in the accent colour, which says
-            // which side it searches whatever its field holds.
-            .children(self.side.map(|side| {
-                div()
-                    .debug_selector(|| "file-find-side".into())
-                    .absolute()
-                    .bottom(px(-1.))
-                    .h(px(1.))
-                    .w(relative(0.5))
-                    .left(relative(if side == Side::Before { 0. } else { 0.5 }))
-                    .bg(rgb(colors.accent))
-            }))
             .on_prepaint(move |bounds, _, cx| {
                 let _ = panel.update(cx, |bar, cx| {
                     if bar.open && bar.height != bounds.size.height {
@@ -1049,7 +1035,32 @@ impl Render for FindBar {
                         App::notify(cx, bar.owner);
                     }
                 });
-            })
+            });
+        // A shared bar marks the side it searches: that side's half of its
+        // 1 px rule in the accent colour, which says which side it searches
+        // whatever its field holds. A box paints its border after its
+        // children, so the mark stands after the bar, over the bar's box,
+        // and is drawn as the rule is, a bottom border of that box, on the
+        // same device pixel rows at every scale: a child of the bar, it was
+        // painted under the bar's own rule and never showed.
+        div()
+            .w_full()
+            .flex_none()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(bar)
+            .children(self.side.map(|side| {
+                div()
+                    .debug_selector(|| "file-find-side".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w(relative(0.5))
+                    .left(relative(if side == Side::Before { 0. } else { 0.5 }))
+                    .border_b_1()
+                    .border_color(rgb(colors.accent))
+            }))
     }
 }
 
@@ -2754,10 +2765,99 @@ mod bar_tests {
         })
     }
 
+    /// What a frame painted on a find bar's rule, in device pixels.
+    struct PaintedRule {
+        /// Where the border colour runs across the bar's foot.
+        rule: Option<Bounds<ScaledPixels>>,
+        /// What the accent colour paints on the bar's foot.
+        marks: Vec<Mark>,
+    }
+
+    /// The accent on a bar's rule: where it is drawn, and what the frame
+    /// painted over it after it.
+    #[derive(Debug)]
+    struct Mark {
+        drawn: Bounds<ScaledPixels>,
+        covered: Vec<Bounds<ScaledPixels>>,
+    }
+
+    /// The rule the bar drawn at `bar` paints across its foot in `border`,
+    /// and what `accent` paints there, as `window`'s last frame painted them
+    /// in its order: a quad paints its bounds within its mask, which narrows
+    /// a border's quads to their strips, over every quad before it.
+    fn painted_rule(
+        window: &Window,
+        bar: Bounds<Pixels>,
+        [accent, border]: [gpui_kit::Hsla; 2],
+    ) -> PaintedRule {
+        let scale = window.scale_factor();
+        let quads = window.painted_quads();
+        // What a quad may paint: its bounds within its mask, which narrows a
+        // border's quads to their strips and a device pixel inside them.
+        let area = |quad: &gpui_kit::Quad| quad.bounds.intersect(&quad.content_mask.bounds);
+        // The rows it paints at its foot: a fill's whole area, a border's
+        // bottom edge.
+        let foot = |quad: &gpui_kit::Quad| {
+            let bounds = quad.bounds;
+            let edge = point(bounds.left(), bounds.bottom() - quad.border_widths.bottom);
+            let drawn = if quad.background.is_transparent() {
+                Bounds::from_corners(edge, bounds.bottom_right())
+            } else {
+                bounds
+            };
+            drawn.intersect(&quad.content_mask.bounds)
+        };
+        // A fill's colour, or a border's where the quad has no fill.
+        let colour = |quad: &gpui_kit::Quad| {
+            if quad.background.is_transparent() {
+                Some(quad.border_color)
+            } else {
+                quad.background.as_solid()
+            }
+        };
+        let bar = bar.scale(scale);
+        // Within a logical pixel of the bar's foot, no taller than two.
+        let at_foot = |drawn: &Bounds<ScaledPixels>| {
+            !drawn.is_empty()
+                && (drawn.bottom().as_f32() - bar.bottom().as_f32()).abs() <= scale
+                && drawn.size.height.as_f32() <= scale * 2.
+                && drawn.left().as_f32() >= bar.left().as_f32() - scale
+                && drawn.right().as_f32() <= bar.right().as_f32() + scale
+        };
+        let rule = quads
+            .iter()
+            .map(|quad| (colour(quad), foot(quad)))
+            .find(|(colour, drawn)| {
+                *colour == Some(border)
+                    && at_foot(drawn)
+                    && drawn.size.width.as_f32() >= bar.size.width.as_f32() - scale
+            })
+            .map(|(_, drawn)| drawn);
+        let marks = quads
+            .iter()
+            .enumerate()
+            .filter(|(_, quad)| colour(quad) == Some(accent) && at_foot(&foot(quad)))
+            .map(|(at, quad)| {
+                let drawn = foot(quad);
+                let covered = quads[at + 1..]
+                    .iter()
+                    .map(area)
+                    .filter(|over| over.intersects(&drawn))
+                    .collect();
+                Mark { drawn, covered }
+            })
+            .collect();
+        PaintedRule { rule, marks }
+    }
+
     /// The shared bar marks the side it searches in every state: that
     /// side's half of its 1 px rule is painted in the accent colour, the
     /// other half not, opened over Before and over After, with a query that
-    /// matches nothing, in 461 and 1,480 px windows; and its empty field
+    /// matches nothing, in 461 and 1,480 px windows at display scales 2 and
+    /// 1.2, on the rule's own device pixel rows inside the bar with nothing
+    /// painted over it (a child of the bar, it lay under the bar's rule,
+    /// which a box paints after its children, and never showed natively);
+    /// and its empty field
     /// names that side whole, "Find in Before" or, where that does not fit
     /// the field, "Before", as at the width where the bar has just become
     /// one line, its field near its floor, reporting the whole form to
@@ -2769,64 +2869,62 @@ mod bar_tests {
         let (_fixture, app, cx, _) =
             crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
         cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
-        let accent = cx.update(|_, cx| {
-            gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(appearance::palette(cx).accent)))
+        let colours = cx.update(|_, cx| {
+            let palette = appearance::palette(cx);
+            [palette.accent, palette.border].map(|colour| gpui_kit::Hsla::from(rgb(colour)))
         });
         open_find_on(&app, cx, TextMode::Split, 0, 1480.);
         let editors = split_editors(&app, cx);
         cx.simulate_keystrokes("escape");
         crate::width_walk::frame(cx);
-        for (side, name) in [(0, "Before"), (1, "After")] {
-            for width in [461., 1480.] {
-                let at = format!("Find over {name} in {width} × 490");
-                open_find_on(&app, cx, TextMode::Split, side, width);
-                paste(cx, "no such text");
-                crate::views::tests::draw(cx);
-                let bar = drawn(cx, "file-find-bar", &at);
-                let sides = ["split-text-0", "split-text-1"].map(|text| drawn(cx, text, &at));
-                let empty = cx.update(|_, cx| {
-                    let bar = super::panel(&editors[side], cx).expect("the bar");
-                    bar.read(cx).reading(cx).2
-                });
-                assert!(empty, "{at}: the query matches nothing");
-                // The accent quads one device pixel tall on the bar's rule.
-                let marks: Vec<_> = cx.update(|window, _| {
-                    let scale = window.scale_factor();
-                    window
-                        .painted_quads()
-                        .into_iter()
-                        .filter(|quad| quad.background == accent)
-                        .map(|quad| {
-                            let b = quad.bounds;
-                            Bounds::new(
-                                point(
-                                    px(b.origin.x.as_f32() / scale),
-                                    px(b.origin.y.as_f32() / scale),
-                                ),
-                                size(
-                                    px(b.size.width.as_f32() / scale),
-                                    px(b.size.height.as_f32() / scale),
-                                ),
-                            )
-                        })
-                        .filter(|mark| {
-                            (mark.bottom() - bar.bottom()).abs() <= EDGE
-                                && mark.size.height <= px(1.) + EDGE
-                        })
-                        .collect()
-                });
-                let searched = sides[side];
-                assert!(
-                    marks.len() == 1
-                        && (marks[0].left() - searched.left()).abs() <= EDGE
-                        && (marks[0].right() - (searched.right())).abs() <= px(1.) + EDGE,
-                    "{at}: the rule's accent half {marks:?} lies under {name}'s side {searched:?} \
-                     alone, in the bar {bar:?}"
-                );
-                cx.simulate_keystrokes("escape");
-                crate::width_walk::frame(cx);
+        for scale in [2., 1.2] {
+            for (side, name) in [(0, "Before"), (1, "After")] {
+                for width in [461., 1480.] {
+                    let at = format!("scale {scale}, Find over {name} in {width} × 490");
+                    open_find_on(&app, cx, TextMode::Split, side, width);
+                    // A resize takes the test display's scale, 2.
+                    cx.update(|window, _| window.set_scale_factor(scale));
+                    paste(cx, "no such text");
+                    crate::views::tests::draw(cx);
+                    let bar = drawn(cx, "file-find-bar", &at);
+                    let sides = ["split-text-0", "split-text-1"].map(|text| drawn(cx, text, &at));
+                    let empty = cx.update(|_, cx| {
+                        let bar = super::panel(&editors[side], cx).expect("the bar");
+                        bar.read(cx).reading(cx).2
+                    });
+                    assert!(empty, "{at}: the query matches nothing");
+                    let PaintedRule { rule, marks } =
+                        cx.update(|window, _| painted_rule(window, bar, colours));
+                    let rule = rule.unwrap_or_else(|| panic!("{at}: the bar {bar:?} draws a rule"));
+                    let [mark] = marks.as_slice() else {
+                        panic!("{at}: one accent mark on the rule {rule:?}: {marks:?}");
+                    };
+                    // In device pixels, as painted.
+                    let (searched, bar) = (sides[side].scale(scale), bar.scale(scale));
+                    let edge = EDGE.as_f32() * scale;
+                    let f = ScaledPixels::as_f32;
+                    assert!(
+                        mark.drawn.top() == rule.top() && mark.drawn.bottom() == rule.bottom(),
+                        "{at}: the mark {mark:?} is drawn on the rule's rows, {rule:?}"
+                    );
+                    assert!(
+                        f(mark.drawn.top()) >= f(bar.top()) - edge
+                            && f(mark.drawn.bottom()) <= f(bar.bottom()) + edge
+                            && (f(mark.drawn.left()) - f(searched.left())).abs() <= edge
+                            && (f(mark.drawn.right()) - f(searched.right())).abs() <= scale + edge,
+                        "{at}: the mark {mark:?} lies inside the bar {bar:?}, under {name}'s \
+                         side {searched:?} alone"
+                    );
+                    assert!(
+                        mark.covered.is_empty(),
+                        "{at}: nothing is painted over the mark {mark:?}"
+                    );
+                    cx.simulate_keystrokes("escape");
+                    crate::width_walk::frame(cx);
+                }
             }
         }
+        cx.update(|window, _| window.set_scale_factor(2.));
         // The width where the bar has just become one line, a device pixel
         // past the widest of two, found by bisection.
         // Reopened, the field selects its query, which a key clears.
