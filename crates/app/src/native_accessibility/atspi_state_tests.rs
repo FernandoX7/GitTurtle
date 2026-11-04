@@ -162,14 +162,29 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
 /// "Unknown object"), the announcements it makes, the containers it reports
 /// a change of selection in (`object:selection-changed`), whose selected
 /// item Orca speaks, and the objects it reports renamed
-/// (`object:property-change:accessible-name`).
+/// (`object:property-change:accessible-name`), and the announcements and
+/// changes of selection together in the order it made them, for what Orca
+/// hears of them ([`Bus::heard_by_orca`]).
 #[derive(Clone, Default)]
 struct Registry {
     objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
     announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     selection: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
     renamed: std::sync::Arc<std::sync::Mutex<Vec<NodeId>>>,
+    emitted: std::sync::Arc<std::sync::Mutex<Vec<Emitted>>>,
 }
+
+/// An event the adapter emitted that Orca speaks: an announcement's text,
+/// or a change of selection in a container, whose selected item it speaks.
+enum Emitted {
+    Announced(String),
+    Selection(NodeId),
+}
+
+/// How long Orca 51.1's spam filter (`event_manager.py`,
+/// `_ignore_by_spam_filter`) drops an event of a type the same application
+/// sent before it.
+const ORCA_SPAM_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl AdapterCallback for Registry {
     fn register_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
@@ -193,11 +208,18 @@ impl AdapterCallback for Registry {
             Event::Object {
                 event: ObjectEvent::Announcement(text, _),
                 ..
-            } => self.announced.lock().unwrap().push(text),
+            } => {
+                let announced = Emitted::Announced(text.clone());
+                self.emitted.lock().unwrap().push(announced);
+                self.announced.lock().unwrap().push(text);
+            }
             Event::Object {
                 target: NodeIdOrRoot::Node(id),
                 event: ObjectEvent::SelectionChanged,
-            } => self.selection.lock().unwrap().push(id),
+            } => {
+                self.emitted.lock().unwrap().push(Emitted::Selection(id));
+                self.selection.lock().unwrap().push(id);
+            }
             Event::Object {
                 target: NodeIdOrRoot::Node(id),
                 event: ObjectEvent::PropertyChanged(Property::Name(_)),
@@ -213,6 +235,8 @@ impl AdapterCallback for Registry {
 pub(crate) struct Bus {
     adapter: Adapter,
     registry: Registry,
+    /// When Orca last saw an event of each type ([`Self::heard_by_orca`]).
+    orca: std::collections::HashMap<&'static str, std::time::Instant>,
 }
 
 impl Bus {
@@ -227,7 +251,11 @@ impl Bus {
             WindowBounds::default(),
             IgnoreCallbacks,
         );
-        Self { adapter, registry }
+        Self {
+            adapter,
+            registry,
+            orca: std::collections::HashMap::new(),
+        }
     }
 
     /// The next frame's tree.
@@ -277,16 +305,44 @@ impl Bus {
     /// the item's own state but as one of its list's selection.
     pub(crate) fn selection_changed(&self) -> Vec<String> {
         let ids = std::mem::take(&mut *self.registry.selection.lock().unwrap());
-        ids.into_iter()
-            .flat_map(|id| {
-                let list = self.adapter.platform_node(id);
-                let count = list.n_selected_children().unwrap() as usize;
-                (0..count)
-                    .filter_map(|index| list.selected_child(index).unwrap())
-                    .map(|item| self.adapter.platform_node(item).name().unwrap())
-                    .collect::<Vec<_>>()
-            })
+        ids.into_iter().flat_map(|id| self.selected(id)).collect()
+    }
+
+    /// The names of the items `container` holds selected now.
+    fn selected(&self, container: NodeId) -> Vec<String> {
+        let list = self.adapter.platform_node(container);
+        let count = list.n_selected_children().unwrap() as usize;
+        (0..count)
+            .filter_map(|index| list.selected_child(index).unwrap())
+            .map(|item| self.adapter.platform_node(item).name().unwrap())
             .collect()
+    }
+
+    /// What Orca 51.1 speaks of the announcements and changes of selection
+    /// the adapter made since the last call, in order, each seen `at` the
+    /// time of the frame that made it: an announcement's text, and the item
+    /// a container holds selected as it reports its selection changed. Its
+    /// spam filter drops an event of a type the application sent less than
+    /// [`ORCA_SPAM_WINDOW`] before, and times each one it sees, dropped or
+    /// not, so of keys typed 60 ms apart it hears only the first key's:
+    /// typing "go" into the command palette, it spoke the status's reading
+    /// for "g" and dropped the one for "go", sent 51 ms after it ("Ignoring
+    /// object:announcement due to multiple instances in short time", QA-94).
+    pub(crate) fn heard_by_orca(&mut self, at: std::time::Instant) -> Vec<String> {
+        let emitted = std::mem::take(&mut *self.registry.emitted.lock().unwrap());
+        let mut heard = Vec::new();
+        for event in emitted {
+            let (kind, said) = match event {
+                Emitted::Announced(text) => ("object:announcement", vec![text]),
+                Emitted::Selection(id) => ("object:selection-changed", self.selected(id)),
+            };
+            let last = self.orca.insert(kind, at);
+            if last.is_some_and(|last| at.duration_since(last) < ORCA_SPAM_WINDOW) {
+                continue;
+            }
+            heard.extend(said.into_iter().take(1));
+        }
+        heard
     }
 
     /// The objects reported renamed since the last call, each by its role

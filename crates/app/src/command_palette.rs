@@ -630,6 +630,8 @@ impl GitTurtle {
         let context = self.palette_context(window, cx);
         let form =
             cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
+        #[cfg(test)]
+        OPENED_PALETTE.with_borrow_mut(|opened| *opened = Some(form.downgrade()));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         self.dialog_hints
             .register(&query_focus, shortcuts::DialogKeys::Palette);
@@ -767,6 +769,13 @@ impl GitTurtle {
         window.refresh();
     }
 }
+#[cfg(test)]
+thread_local! {
+    /// The command palette last opened, for a test to read its state.
+    static OPENED_PALETTE: std::cell::RefCell<Option<WeakEntity<Palette>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct Palette {
     owner: WeakEntity<GitTurtle>,
     path: Option<PathBuf>,
@@ -777,11 +786,20 @@ struct Palette {
     query: Entity<InputState>,
     results: Vec<usize>,
     selection: Selection,
+    /// The status's reading, its accessible name: what it last announced,
+    /// or took quietly. A move sets it at once and the query's change once
+    /// the query has rested ([`Self::settle`]); a change of context sets it
+    /// at once, and announces it, unless a rest is pending.
+    status: SharedString,
     /// Whether the status last changed quietly, for a move the list speaks
     /// itself ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux): it is no live
-    /// region until the query next changes, so the screen reader does not
-    /// say the command a second time.
+    /// region until it next announces, so the screen reader does not say
+    /// the command a second time.
     quiet: bool,
+    /// The rest the query's next reading waits for ([`Self::settle`]):
+    /// replaced by each change to the query, so only the last one runs, and
+    /// dropped as the palette closes.
+    settling: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     error: Option<String>,
     _subscription: Subscription,
@@ -805,8 +823,8 @@ impl Palette {
                 InputEvent::Change => {
                     this.results = matches(&this.query.read(cx).value());
                     this.highlight_first_available();
-                    this.quiet = false;
                     this.error = None;
+                    this.settle(cx);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.activate(window, cx),
@@ -819,6 +837,17 @@ impl Palette {
             cx.observe_in(&owner, window, |this, owner, window, cx| {
                 if !this.selection.closed {
                     this.context = owner.read(cx).palette_context(window, cx);
+                    if this.settling.is_none() {
+                        let reading = this.reading();
+                        if reading != this.status {
+                            this.status = reading;
+                            // Only a move is quiet: a reading the context
+                            // changes, as a write starts or ends, is
+                            // announced, as it was before moves were left
+                            // to the list.
+                            this.quiet = false;
+                        }
+                    }
                     cx.notify();
                 }
             })
@@ -833,12 +862,15 @@ impl Palette {
             query,
             results: matches(""),
             selection: Selection::default(),
+            status: SharedString::default(),
             quiet: false,
+            settling: None,
             scroll: UniformListScrollHandle::new(),
             error: None,
             _subscription: subscription,
         };
         palette.highlight_first_available();
+        palette.status = palette.reading();
         palette
     }
     /// Highlights the first result the current context can run, or the first
@@ -875,6 +907,32 @@ impl Palette {
             })
             .unwrap_or_else(|| "No matching commands".into())
     }
+    /// Announces the selected command's reading once the query has rested
+    /// for [`shortcuts::COUNT_REST`] since this change, unless it is what
+    /// the status last said: each change drops the rest the one before it
+    /// began, so a burst of keys announces only the reading it ends on,
+    /// once, after the echo of its last key, as Keyboard Shortcuts' search
+    /// does. Announced at each key, typing "go" 60 ms a key, Orca 51.1 spoke
+    /// "GitHub pull requests… · 1 of 24" and dropped "Go to Projects · 1 of
+    /// 3", sent 51 ms after it: its spam filter drops an event of a type the
+    /// application sent less than 100 ms before ("Ignoring
+    /// object:announcement due to multiple instances in short time"), so the
+    /// last reading heard was stale (QA-94).
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        let rest = cx.background_executor().timer(shortcuts::COUNT_REST);
+        self.settling = Some(cx.spawn(async move |this, cx| {
+            rest.await;
+            let _ = this.update(cx, |this, cx| {
+                this.settling = None;
+                let reading = this.reading();
+                if reading != this.status {
+                    this.status = reading;
+                    this.quiet = false;
+                    cx.notify();
+                }
+            });
+        }));
+    }
     fn can_activate(&self) -> bool {
         !self.selection.closed
             && self
@@ -886,6 +944,8 @@ impl Palette {
         if !self.selection.claim(true) {
             return;
         }
+        // A reading still resting is never announced.
+        self.settling = None;
         window.close_dialog(cx);
         window.refresh();
         if let Some(focus) = &self.return_focus {
@@ -917,6 +977,7 @@ impl Palette {
             if !self.selection.claim(true) {
                 return;
             }
+            self.settling = None;
             window.close_dialog(cx);
             window.refresh();
             if let Some(focus) = &self.return_focus {
@@ -1133,6 +1194,7 @@ impl Render for Palette {
                 let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
                 if this.selection.index != was {
+                    this.status = this.reading();
                     this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
                 }
                 this.scroll
@@ -1141,7 +1203,9 @@ impl Render for Palette {
                 cx.notify();
             }))
             // The status draws nothing and reads the selected command, its
-            // place and why it cannot run. Where the list speaks a moved
+            // place and why it cannot run, as a move or the context left it
+            // at once and as the query left it once the query has rested
+            // (`settle`). Where the list speaks a moved
             // selection itself (`shortcuts::LIST_SPEAKS_SELECTION`, Linux), a
             // move changes it quietly, as no live region (`quiet`): Orca 51.1
             // spoke each Down twice, 41 ms apart, the status's "Go to History
@@ -1150,7 +1214,7 @@ impl Render for Palette {
             // alone, so both carry the reading, as Keyboard Shortcuts'
             // status's do: named alone, it was announced on Linux only.
             .child({
-                let reading = self.reading();
+                let reading = self.status.clone();
                 native_accessibility::static_text(
                     div()
                         .id("command-palette-current-result")
@@ -2887,7 +2951,8 @@ mod render_tests {
     /// fed each frame's tree, so a second live node announcing beside the
     /// status is heard too, and the command the list holds selected each
     /// time the adapter reported a change of its selection, which Orca
-    /// speaks.
+    /// speaks; and of both, what Orca 51.1's spam filter lets it speak
+    /// (`atspi_state_tests::Bus::heard_by_orca`).
     struct Heard {
         named: Option<String>,
         heard: Vec<String>,
@@ -2897,6 +2962,8 @@ mod render_tests {
         adapter: Vec<String>,
         #[cfg(target_os = "linux")]
         listed: Vec<String>,
+        #[cfg(target_os = "linux")]
+        orca: Vec<String>,
     }
 
     impl Heard {
@@ -2918,6 +2985,8 @@ mod render_tests {
                 adapter: Vec::new(),
                 #[cfg(target_os = "linux")]
                 listed: Vec::new(),
+                #[cfg(target_os = "linux")]
+                orca: Vec::new(),
             };
             heard.frame(cx);
             heard.heard.clear();
@@ -2925,6 +2994,7 @@ mod render_tests {
             {
                 heard.adapter.clear();
                 heard.listed.clear();
+                heard.orca.clear();
             }
             heard
         }
@@ -2968,6 +3038,8 @@ mod render_tests {
                 self.bus.update(tree);
                 self.adapter.extend(self.bus.announced());
                 self.listed.extend(self.bus.selection_changed());
+                let now = cx.executor().now();
+                self.orca.extend(self.bus.heard_by_orca(now));
             }
         }
 
@@ -2999,6 +3071,12 @@ mod render_tests {
         #[cfg(target_os = "linux")]
         fn take_listed(&mut self) -> Vec<String> {
             std::mem::take(&mut self.listed)
+        }
+
+        /// What Orca spoke of those since the last call, in order.
+        #[cfg(target_os = "linux")]
+        fn take_orca(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.orca)
         }
     }
 
@@ -3116,6 +3194,153 @@ mod render_tests {
         );
         moved(cx, &mut heard, "down", "go", first + 1);
         moved(cx, &mut heard, "up", "go", first);
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+    }
+
+    /// Typing "go" into the palette's query 60 ms a key, as steady typing
+    /// does, makes one announcement, 500 ms after the last key
+    /// ([`shortcuts::COUNT_REST`]) and not at 499 ms, of the reading the
+    /// query rests on, its first available command with its place, and
+    /// nothing after it; on Linux Orca speaks that reading last. Each key's
+    /// reading was announced at once, and Orca 51.1, whose spam filter drops
+    /// an event of a type the application sent less than 100 ms before,
+    /// spoke the reading for "g" and dropped the one for "go", sent 51 ms
+    /// after it, so the last reading heard was stale (QA-94). Closing the
+    /// palette while its query rests drops the rest, and nothing is said.
+    #[gpui::test]
+    fn a_burst_of_keys_announces_once_the_command_it_rests_on(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        let reading = |query: &str| {
+            let first = first_available(&matches(query), &availability);
+            reading_and_row(query, first, &availability).0
+        };
+        let settled = reading("go");
+        assert_ne!(reading("g"), settled, "\"g\" selects another command");
+        cx.simulate_input("g");
+        heard.frame(cx);
+        heard.wait(cx, 60);
+        cx.simulate_input("o");
+        heard.frame(cx);
+        heard.wait(cx, 499);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing is announced while the query has rested under 500 ms"
+        );
+        heard.wait(cx, 1);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&settled),
+            "one announcement: the reading the query rests on"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&settled),
+                "Orca speaks the reading the query rests on, last: {orca:?}"
+            );
+            assert!(
+                !orca.contains(&reading("g")),
+                "and no reading of a query the person typed past: {orca:?}"
+            );
+        }
+
+        let palette = OPENED_PALETTE
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open palette");
+        cx.simulate_input("x");
+        heard.wait(cx, 100);
+        assert!(
+            cx.update(|_, cx| palette.read(cx).settling.is_some()),
+            "the query rests"
+        );
+        cx.simulate_keystrokes("escape");
+        heard.frame(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the palette"
+        );
+        // Held here past its close, the palette no longer waits for the rest.
+        assert!(
+            cx.update(|_, cx| palette.read(cx).settling.is_none()),
+            "closing drops the query's rest"
+        );
+        drop(palette);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "a query whose rest the closing cut short says nothing"
+        );
+    }
+
+    /// Only a move is quiet. After Down reaches a command that a running
+    /// write makes wait, the write's start changes the command's reading,
+    /// which the status announces once, politely, even where the list spoke
+    /// the move, and the write's end changes it back, announced once too.
+    /// The status stayed quiet after a move where the list speaks it
+    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), so a reason appearing
+    /// or going as a Fetch ran went unheard.
+    #[gpui::test]
+    fn a_context_change_after_a_move_is_announced(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).palette_availability(window, cx))
+        };
+        let fetching = |cx: &mut VisualTestContext, busy: Option<&'static str>| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = busy;
+                cx.notify();
+            });
+        };
+        let idle = availability(cx);
+        let mut busy = idle.clone();
+        busy.busy = Some("Fetching…");
+        let results = matches("");
+        let at = (1..results.len())
+            .find(|&at| {
+                COMMANDS[results[at]].id.reason(&idle) != COMMANDS[results[at]].id.reason(&busy)
+            })
+            .expect("a running write makes a command wait");
+        for _ in 0..at {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+        }
+        let quiet = reading_and_row("", at, &idle).0;
+        assert_eq!(
+            heard.named.as_deref(),
+            Some(quiet.as_str()),
+            "Down reaches it"
+        );
+        if shortcuts::LIST_SPEAKS_SELECTION {
+            assert_eq!(
+                heard.take(),
+                Vec::<String>::new(),
+                "the moves are the list's"
+            );
+        } else {
+            heard.take();
+        }
+        fetching(cx, Some("Fetching…"));
+        heard.frame(cx);
+        let waiting = reading_and_row("", at, &availability(cx)).0;
+        assert_ne!(waiting, quiet, "the write changes the command's reading");
+        assert_eq!(
+            heard.take(),
+            [waiting],
+            "the write's start is announced once"
+        );
+        fetching(cx, None);
+        heard.frame(cx);
+        assert_eq!(heard.take(), [quiet], "and its end");
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }

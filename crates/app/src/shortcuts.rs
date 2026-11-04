@@ -1370,7 +1370,9 @@ struct ShortcutHelpView {
 /// count is announced once per pause, after the screen reader has echoed the
 /// last key (decision, 2026-11-02: typing "palette" at 60 ms a key, Orca
 /// spoke "34 shortcuts" and never the settled "1 shortcut", each status cut
-/// off by the echo of the next key).
+/// off by the echo of the next key). The command palette's status announces
+/// its query's reading after the same rest: announced at each key, Orca
+/// 51.1 dropped the reading for "go" typed 60 ms after "g" (QA-94).
 pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Whether the platform's screen reader speaks, on its own, the entry a key
