@@ -459,14 +459,27 @@ impl GitTurtle {
         if let Some(previous) = previous.filter(|focus| self.app_focus.contains(focus, window)) {
             return previous.clone();
         }
-        let (list, pane) = match (self.page, self.mode) {
-            (AppPage::Repository, WorkspaceMode::History) => (&self.focus, Pane::History),
-            (AppPage::Repository, _) => (&self.file_focus, Pane::Files),
-            _ => return self.app_focus.clone(),
-        };
-        if !self.app_focus.contains(list, window) {
+        if self.page != AppPage::Repository || !self.app_focus.contains(self.mode_list().0, window)
+        {
             return self.app_focus.clone();
         }
+        self.take_mode_list()
+    }
+
+    /// The shown mode's own list and the pane it is: History's commit list,
+    /// else the changed-file list of Compare or Changes.
+    fn mode_list(&self) -> (&FocusHandle, Pane) {
+        if self.mode == WorkspaceMode::History {
+            (&self.focus, Pane::History)
+        } else {
+            (&self.file_focus, Pane::Files)
+        }
+    }
+
+    /// The shown mode's own list, for focus to land on, with the window
+    /// naming the pane it is, as choosing a commit or a file names it.
+    fn take_mode_list(&mut self) -> FocusHandle {
+        let (list, pane) = self.mode_list();
         let list = list.clone();
         self.pane = pane;
         list
@@ -478,8 +491,7 @@ impl GitTurtle {
     /// root, where nothing shows it, and none names a pane other than the
     /// list it falls back to.
     pub(super) fn modal_return(&mut self, window: &Window) -> FocusHandle {
-        let previous = self.modal_return_focus.clone();
-        self.modal_return_target(previous.as_ref(), window)
+        self.modal_return_target(self.modal_return_focus.clone().as_ref(), window)
     }
 
     pub(super) fn back_label(&self) -> &'static str {
@@ -539,13 +551,16 @@ impl GitTurtle {
                 self.restore_tab_documents(cx);
             }
         }
-        let focus = self.page_return_focus.take().unwrap_or_else(|| {
-            if self.mode == WorkspaceMode::History {
-                self.focus.clone()
-            } else {
-                self.file_focus.clone()
-            }
-        });
+        // With nothing focused as the window left, focus lands on the shown
+        // mode's own list, which the window names as its pane. Picked here,
+        // the list reaches `return_tab_focus` as the control to return to,
+        // which names a pane only for a control the page no longer draws:
+        // Back from Settings opened with nothing focused once put focus on
+        // History's commit list with the window still naming the file list.
+        let focus = match self.page_return_focus.take() {
+            Some(focus) => focus,
+            None => self.take_mode_list(),
+        };
         let path = self.path.clone();
         let owner = cx.entity().downgrade();
         // Focus goes back as the next frame starts, before it draws the page;
@@ -4126,6 +4141,73 @@ mod tests {
         assert!(
             app.read_with(cx, |app, _| app.pane == Pane::Files),
             "the window still names the file pane"
+        );
+    }
+
+    /// Opens Settings with nothing focused and the window naming `pane`,
+    /// then goes Back, and lets the frames that give focus back run.
+    fn back_from_settings_with_nothing_focused(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        pane: Pane,
+    ) {
+        use crate::views::tests::draw;
+        cx.update(|window, cx| {
+            window.blur(cx);
+            app.update(cx, |app, cx| {
+                app.pane = pane;
+                app.show_settings(window, cx);
+            })
+        });
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings shows");
+            assert!(app.page_return_focus.is_none(), "nothing was focused");
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+    }
+
+    /// Back from Settings opened with nothing focused puts focus on the
+    /// shown mode's own list, and the window names that list's pane, as
+    /// choosing a commit or a file names it: History's commit list is
+    /// `Pane::History`, Changes' file list `Pane::Files`. Back once focused
+    /// the list alone, which then reached the frame-end check
+    /// (`return_tab_focus`) as the control to return to, and that check
+    /// names a pane only for a control the page no longer draws: from
+    /// History with the file list's pane named, focus came back to the
+    /// commit list with the window still naming the file list.
+    #[gpui::test]
+    async fn back_with_nothing_focused_names_the_lists_pane(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let pane = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.pane)
+        };
+        let (commits, files) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History);
+            (app.focus.clone(), app.file_focus.clone())
+        });
+
+        back_from_settings_with_nothing_focused(&app, cx, Pane::Files);
+        assert_eq!(focused(cx), Some(commits), "History's commit list");
+        assert!(
+            pane(&app, cx) == Pane::History,
+            "the window names History's pane"
+        );
+
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working));
+        back_from_settings_with_nothing_focused(&app, cx, Pane::History);
+        assert_eq!(focused(cx), Some(files), "Changes' file list");
+        assert!(
+            pane(&app, cx) == Pane::Files,
+            "the window names the file pane"
         );
     }
 
