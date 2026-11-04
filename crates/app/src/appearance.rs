@@ -961,6 +961,28 @@ impl Palette {
     /// the three-quarter bound keeps it fainter than enabled secondary text
     /// even where `muted` itself is weak.
     pub fn disabled_label(self) -> Rgba {
+        self.fit_disabled_label(DISABLED_LABEL, DISABLED_SHARE, 16)
+    }
+
+    /// [`Self::disabled_label`] under More contrast, fitted on the adjusted
+    /// palette ([`Self::with_more_contrast`]): the same layer of `muted`,
+    /// from half strength in up to 28 steps of 1/64 to fifteen sixteenths,
+    /// that reads [`MORE_CONTRAST_DISABLED`] on the same surfaces with the
+    /// same margin while keeping at most [`MORE_CONTRAST_DISABLED_SHARE`] of
+    /// secondary text's contrast, so it stays fainter than the secondary
+    /// text beside it. Half of a 7:1 `muted` reads about 3:1 on a dark
+    /// surface, and the three quarters [`Self::disabled_label`] stops at
+    /// about 4:1.
+    fn more_contrast_disabled_label(self) -> Rgba {
+        self.fit_disabled_label(MORE_CONTRAST_DISABLED, MORE_CONTRAST_DISABLED_SHARE, 28)
+    }
+
+    /// The disabled label's fit: the first layer of `muted`, from half
+    /// strength in up to `steps` steps of 1/64, that reads `floor` with
+    /// [`DISABLED_LABEL_MARGIN`] on every surface a disabled label rests on
+    /// while keeping at most `share` of secondary text's contrast there and
+    /// on `selected`; else the first that reads `floor`; else the last step.
+    fn fit_disabled_label(self, floor: f64, share: f64, steps: u8) -> Rgba {
         let page = [self.canvas, self.panel, self.subtle, self.raised()];
         let fill = self.default_disabled_fill();
         let surfaces = page
@@ -974,18 +996,18 @@ impl Palette {
         };
         let fainter = |label| {
             surfaces.clone().chain([self.selected]).all(|surface| {
-                reading(label, surface) <= custom::contrast(self.muted, surface) * DISABLED_SHARE
+                reading(label, surface) <= custom::contrast(self.muted, surface) * share
             })
         };
         let layer = |step: u8| Rgba {
             a: 0.5 + f32::from(step) / 64.,
             ..rgb(self.muted)
         };
-        let steps = || (0..=16).map(layer);
-        steps()
-            .find(|&label| reads(label, DISABLED_LABEL + DISABLED_LABEL_MARGIN) && fainter(label))
-            .or_else(|| steps().find(|&label| reads(label, DISABLED_LABEL)))
-            .unwrap_or(layer(16))
+        let layers = || (0..=steps).map(layer);
+        layers()
+            .find(|&label| reads(label, floor + DISABLED_LABEL_MARGIN) && fainter(label))
+            .or_else(|| layers().find(|&label| reads(label, floor)))
+            .unwrap_or(layer(steps))
     }
 
     /// The fill the kit's default Button (no variant: Settings' Save)
@@ -1008,9 +1030,10 @@ impl Palette {
         }
     }
 
-    /// This palette as More contrast draws it, derived on the fly and never
-    /// saved. Secondary text (`muted`) and gutter numbers
-    /// (`line_number`) move toward `text` until each reads
+    /// This palette as More contrast draws it, the one adjustment
+    /// [`Self::apply`] makes while [`MoreContrast`] is on, before it derives
+    /// anything else, derived on the fly and never saved. Secondary text
+    /// (`muted`) and gutter numbers (`line_number`) move toward `text` until each reads
     /// [`MORE_CONTRAST_TEXT`] on the six surfaces the readability rules
     /// judge, measured as they rest: on canvas, panel, subtle and the
     /// selected row, and on the raised surface and the added and removed
@@ -1026,7 +1049,6 @@ impl Palette {
     /// pressed fills, the selection, the status and diff colours. A token
     /// already past its floor keeps its value, and nothing the floors are
     /// measured on changes, so a second adjustment changes nothing.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_more_contrast(self) -> Self {
         let resting = [
             self.canvas,
@@ -1191,9 +1213,10 @@ const SCROLL_THUMB: f64 = 2.0;
 /// one that cannot act.
 const DISABLED_EDGE: f64 = 1.5;
 
-/// The contrast secondary text and gutter numbers reach under More contrast
-/// ([`Palette::with_more_contrast`]): WCAG's enhanced contrast for text
-/// (1.4.6), up from the text rule's 4.5:1.
+/// The contrast secondary text, gutter numbers and syntax reach under More
+/// contrast ([`Palette::with_more_contrast`], [`Palette::apply`]): WCAG's
+/// enhanced contrast for text (1.4.6), up from the text rule's 4.5:1 and
+/// syntax's 4.75:1.
 const MORE_CONTRAST_TEXT: f64 = 7.0;
 
 /// The contrast dividers, fields' outlines and the popup, dialog, bordered
@@ -1201,6 +1224,15 @@ const MORE_CONTRAST_TEXT: f64 = 7.0;
 /// non-text contrast (1.4.11), up from the border rule's 1.3:1, the popup
 /// edge's 1.4:1 and the disabled edge's 1.5:1.
 const MORE_CONTRAST_EDGE: f64 = 3.0;
+
+/// The contrast a disabled label reaches under More contrast
+/// ([`Palette::more_contrast_disabled_label`]): the text rule, up from
+/// [`DISABLED_LABEL`].
+const MORE_CONTRAST_DISABLED: f64 = 4.5;
+/// The most of the adjusted secondary text's contrast that label keeps on a
+/// surface. Secondary text reads 7:1 there, so 4.5:1 is nearly two thirds of
+/// it: the [`DISABLED_SHARE`] kept beside 4.5:1 secondary text cannot hold.
+const MORE_CONTRAST_DISABLED_SHARE: f64 = 0.75;
 
 /// The keyboard's cursor on a picker's highlighted row (the command palette,
 /// Quick Open and Keyboard Shortcuts), marked as the kit's menus mark theirs
@@ -1479,6 +1511,32 @@ pub fn palette(cx: &App) -> Palette {
     cx.try_global::<Palette>()
         .copied()
         .unwrap_or_else(|| ThemeChoice::default().palette())
+}
+
+/// Whether the applied palette takes More contrast
+/// ([`Palette::with_more_contrast`]): application state, set from the
+/// desktop's or Settings' answer through [`set_more_contrast`] and never
+/// saved. Absent, it is off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MoreContrast(pub bool);
+
+impl Global for MoreContrast {}
+
+/// Whether More contrast is on.
+pub fn more_contrast(cx: &App) -> bool {
+    cx.try_global::<MoreContrast>().is_some_and(|more| more.0)
+}
+
+/// Stores whether More contrast is on and returns whether that changed. It
+/// applies nothing: a caller that sees a change applies the theme again, as
+/// callers of `set_desktop_text_scale` redraw, so one application shows it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn set_more_contrast(on: bool, cx: &mut App) -> bool {
+    if more_contrast(cx) == on {
+        return false;
+    }
+    cx.set_global(MoreContrast(on));
+    true
 }
 
 impl ThemeChoice {
@@ -2192,7 +2250,16 @@ impl Palette {
     /// notifies its root instead, so the frame that shows the new palette
     /// keeps the subtrees the palette does not change (see
     /// [`sync_text_sizes`]).
+    ///
+    /// While [`MoreContrast`] is on, the palette is adjusted first
+    /// ([`Self::as_applied`]), so the `Palette` global, its [`Labels`], the
+    /// shared button's colors and the kit theme are all built from the
+    /// adjusted one, and the floors derived here rise with it: syntax is
+    /// fitted at [`MORE_CONTRAST_TEXT`] and the disabled label at
+    /// [`MORE_CONTRAST_DISABLED`]. Off, the palette is applied as it is.
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
+        let more_contrast = more_contrast(cx);
+        let palette = self.as_applied(cx);
         Theme::change(
             if is_light {
                 ThemeMode::Light
@@ -2202,27 +2269,46 @@ impl Palette {
             None,
             cx,
         );
-        let roles = self.syntax_roles();
-        let highlights = EditorHighlights::fit(self, roles);
-        self.configure(is_light, roles, highlights, Theme::global_mut(cx));
+        let roles = palette.syntax_roles(more_contrast);
+        let highlights = EditorHighlights::fit(palette, roles);
+        palette.configure(
+            is_light,
+            more_contrast,
+            roles,
+            highlights,
+            Theme::global_mut(cx),
+        );
         CONTROL_BUTTON.set(Some(ControlButton {
-            idle: self.control_button(cx),
-            still: self.still_control_button(cx),
-            selected: self.selected_control_button(cx),
-            selected_hover: self.row_hover(true),
+            idle: palette.control_button(cx),
+            still: palette.still_control_button(cx),
+            selected: palette.selected_control_button(cx),
+            selected_hover: palette.row_hover(true),
         }));
         cx.set_global(highlights);
-        cx.set_global(Labels::fit(self));
-        cx.set_global(self);
+        cx.set_global(Labels::fit(palette));
+        cx.set_global(palette);
         Theme::sync_base(cx);
         if let Some(window) = window {
             window.refresh();
         }
     }
 
+    /// The palette [`Self::apply`] stores for this one as the `Palette`
+    /// global: adjusted by [`Self::with_more_contrast`] while
+    /// [`MoreContrast`] is on, and itself otherwise. A caller that compares a
+    /// resolved theme with the applied global compares through it.
+    pub fn as_applied(self, cx: &App) -> Self {
+        if more_contrast(cx) {
+            self.with_more_contrast()
+        } else {
+            self
+        }
+    }
+
     fn configure(
         self,
         is_light: bool,
+        more_contrast: bool,
         roles: SyntaxRoles,
         highlights: EditorHighlights,
         theme: &mut Theme,
@@ -2288,7 +2374,14 @@ impl Palette {
         // The only bordered secondary Button is a dialog's Cancel, on the
         // dialog's surface, so it draws the dialog's edge in every state.
         theme.secondary_edge = Some(dialog_edge);
-        theme.disabled_label = Some(palette.disabled_label().into());
+        theme.disabled_label = Some(
+            if more_contrast {
+                palette.more_contrast_disabled_label()
+            } else {
+                palette.disabled_label()
+            }
+            .into(),
+        );
         theme.disabled_edge = Some(rgb(palette.disabled_edge()).into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
@@ -2360,9 +2453,15 @@ impl Palette {
     }
 
     /// Each syntax role's palette color fitted by [`SyntaxTargets::fit`], measured once per
-    /// application.
-    fn syntax_roles(self) -> SyntaxRoles {
-        let targets = SyntaxTargets::new(self);
+    /// application: at the text rule with the rasterization margin, or at
+    /// [`MORE_CONTRAST_TEXT`] under More contrast.
+    fn syntax_roles(self, more_contrast: bool) -> SyntaxRoles {
+        let rule = if more_contrast {
+            MORE_CONTRAST_TEXT
+        } else {
+            LABEL_RULE + LABEL_MARGIN
+        };
+        let targets = SyntaxTargets::new(self, rule);
         SyntaxRoles {
             keyword: targets.fit(self.renamed),
             string: targets.fit(self.added),
@@ -2391,9 +2490,10 @@ impl Palette {
             },
             ..Theme::default()
         };
-        let roles = self.syntax_roles();
+        let roles = self.syntax_roles(false);
         self.configure(
             is_light,
+            false,
             roles,
             EditorHighlights::fit(self, roles),
             &mut theme,
@@ -2404,7 +2504,7 @@ impl Palette {
     /// The editor highlights [`Self::apply`] fits for this palette, without an application.
     #[cfg(test)]
     pub(crate) fn editor_highlights(self) -> EditorHighlights {
-        EditorHighlights::fit(self, self.syntax_roles())
+        EditorHighlights::fit(self, self.syntax_roles(false))
     }
 }
 
@@ -2562,13 +2662,14 @@ struct SyntaxTargets {
     text: u32,
     /// Whether `text` reads at the text rule on every background.
     text_reads: bool,
-    /// Each background's luminance and the contrast a syntax color must reach on it: the text
-    /// rule plus the rasterization margin, or `text`'s own contrast where that is lower.
+    /// Each background's luminance and the contrast a syntax color must reach on it: the
+    /// fitting's rule (the text rule plus the rasterization margin, or More contrast's 7:1), or
+    /// `text`'s own contrast where that is lower.
     backgrounds: [(f64, f64); 4],
 }
 
 impl SyntaxTargets {
-    fn new(palette: Palette) -> Self {
+    fn new(palette: Palette, rule: f64) -> Self {
         let text = custom::luminance(palette.text);
         let mut text_reads = true;
         let backgrounds = [
@@ -2581,7 +2682,7 @@ impl SyntaxTargets {
             let background = custom::luminance(background);
             let text_contrast = custom::luminance_contrast(text, background);
             text_reads &= text_contrast >= LABEL_RULE;
-            (background, (LABEL_RULE + LABEL_MARGIN).min(text_contrast))
+            (background, rule.min(text_contrast))
         });
         Self {
             text: palette.text,
@@ -2655,7 +2756,7 @@ pub fn editor_highlights(cx: &App) -> EditorHighlights {
         .copied()
         .unwrap_or_else(|| {
             let palette = palette(cx);
-            EditorHighlights::fit(palette, palette.syntax_roles())
+            EditorHighlights::fit(palette, palette.syntax_roles(more_contrast(cx)))
         })
 }
 
@@ -3857,7 +3958,7 @@ mod tests {
         };
         for (name, palette) in test_palettes() {
             let theme = palette.configured_theme(palette.is_light()).highlight_theme;
-            let roles = palette.syntax_roles();
+            let roles = palette.syntax_roles(false);
             let drawn = styles(&document, &theme);
             let mut start = document.find("```diff\n").unwrap() + "```diff\n".len();
             for line in fence.split_inclusive('\n') {
@@ -4198,9 +4299,10 @@ mod tests {
             .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
         let mut theme = Theme::default();
         for (choice, palette, is_light) in cases {
-            let roles = palette.syntax_roles();
+            let roles = palette.syntax_roles(false);
             palette.configure(
                 is_light,
+                false,
                 roles,
                 EditorHighlights::fit(palette, roles),
                 &mut theme,
@@ -5754,5 +5856,306 @@ mod tests {
             ..faint
         };
         assert_eq!(strong.with_more_contrast(), strong);
+    }
+
+    /// With More contrast on, what `Palette::apply` installs meets the
+    /// raised floors in every palette. The `Palette` global is the adjusted
+    /// palette, and `as_applied` returns it; the kit draws secondary text and
+    /// gutter numbers from it. Every syntax color and the editor foreground
+    /// read 7:1, or as `text` reads where that is lower, on the editor
+    /// background, the active line and both line tints. The kit's disabled
+    /// label reads 4.5:1 on every surface a disabled label rests on and on
+    /// the default Button's disabled fill over each, fainter than the
+    /// adjusted secondary text there and on the selected row, and at most 75%
+    /// of its contrast wherever a layer reading 4.5:1 can be. The dividers,
+    /// the fields' outlines and the popup, dialog, bordered secondary and
+    /// disabled edges hold 3:1 on the surfaces each is fitted for, as the
+    /// resting edge does.
+    #[gpui::test]
+    fn more_contrast_applies_its_raised_floors_in_every_palette(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, chosen) in more_contrast_palettes() {
+            let (applied, as_applied, theme) = cx.update(|cx| {
+                set_more_contrast(true, cx);
+                chosen.apply(chosen.is_light(), None, cx);
+                (
+                    palette(cx),
+                    chosen.as_applied(cx),
+                    Theme::global(cx).clone(),
+                )
+            });
+            assert_eq!(applied, chosen.with_more_contrast(), "{name} applied");
+            assert_eq!(as_applied, applied, "{name} as applied");
+            let hsla = |color: u32| Hsla::from(rgb(color));
+            assert_eq!(theme.colors.muted_foreground, hsla(applied.muted), "{name}");
+            assert_eq!(theme.colors.border, hsla(applied.border), "{name}");
+            assert_eq!(theme.colors.input, hsla(applied.border), "{name}");
+            let style = &theme.highlight_theme.style;
+            assert_eq!(
+                style.editor_line_number,
+                Some(hsla(applied.line_number)),
+                "{name}"
+            );
+            let line = |color: Option<Hsla>| packed(color.expect("a configured line"));
+            let lines = [
+                ("editor background", line(style.editor_background)),
+                ("active line", line(style.editor_active_line)),
+                ("added lines", applied.added_background),
+                ("removed lines", applied.removed_background),
+            ];
+            for (field, color) in editor_text_colors(&theme) {
+                let Some(color) = color else { continue };
+                for (surface, background) in lines {
+                    let floor = MORE_CONTRAST_TEXT.min(contrast(applied.text, background));
+                    let ratio = contrast(color, background);
+                    if ratio < floor {
+                        failures.push(format!(
+                            "{name} {field} #{color:06x} on {surface} {ratio:.3}:1, needs {floor:.3}"
+                        ));
+                    }
+                }
+            }
+            let dim = theme.disabled_foreground().to_rgb();
+            let page = disabled_label_surfaces(applied);
+            let fill = applied.default_disabled_fill();
+            let beneath = page
+                .iter()
+                .map(|&(surface, color)| (surface.to_owned(), color))
+                .chain(page.iter().map(|&(surface, color)| {
+                    (
+                        format!("disabled fill on {surface}"),
+                        composite(fill, color),
+                    )
+                }));
+            for (surface, color) in beneath {
+                let (disabled, secondary) = (
+                    contrast(composite(dim, color), color),
+                    contrast(applied.muted, color),
+                );
+                if disabled < MORE_CONTRAST_DISABLED || disabled >= secondary {
+                    failures.push(format!(
+                        "{name} disabled label on {surface} {disabled:.3}:1, secondary text {secondary:.3}:1"
+                    ));
+                }
+            }
+            let on_selected = contrast(composite(dim, applied.selected), applied.selected);
+            if on_selected >= contrast(applied.muted, applied.selected) {
+                failures.push(format!(
+                    "{name} disabled label on the selected row {on_selected:.3}:1"
+                ));
+            }
+            // The 75% ceiling: wherever a layer of `muted` reads 4.5:1 with
+            // the margin and keeps at most 75% of secondary text's contrast,
+            // the label keeps it; where none does, no fainter layer reads
+            // 4.5:1, so the label passes the ceiling no further than the
+            // floor takes it.
+            let rests: Vec<u32> = page
+                .iter()
+                .map(|&(_, color)| color)
+                .chain(page.iter().map(|&(_, color)| composite(fill, color)))
+                .collect();
+            let layer = |a: f32| Rgba {
+                a,
+                ..rgb(applied.muted)
+            };
+            let reading = |label: Rgba, surface: u32| contrast(composite(label, surface), surface);
+            let reads = |label: Rgba, floor: f64| {
+                rests
+                    .iter()
+                    .all(|&surface| reading(label, surface) >= floor)
+            };
+            let under_ceiling = |label: Rgba| {
+                rests.iter().chain([&applied.selected]).all(|&surface| {
+                    reading(label, surface)
+                        <= contrast(applied.muted, surface) * MORE_CONTRAST_DISABLED_SHARE + 1e-9
+                })
+            };
+            let layers = (0..=28u8).map(|step| layer(0.5 + f32::from(step) / 64.));
+            let label = layer(dim.a);
+            if layers.clone().any(|candidate| {
+                reads(candidate, MORE_CONTRAST_DISABLED + DISABLED_LABEL_MARGIN)
+                    && under_ceiling(candidate)
+            }) {
+                if !under_ceiling(label) {
+                    failures.push(format!(
+                        "{name} disabled label at {} passes 75% of secondary text",
+                        dim.a
+                    ));
+                }
+            } else if let Some(fainter) = layers
+                .clone()
+                .find(|candidate| candidate.a < dim.a && reads(*candidate, MORE_CONTRAST_DISABLED))
+            {
+                failures.push(format!(
+                    "{name} disabled label at {} where {} reads 4.5:1 nearer the ceiling",
+                    dim.a, fainter.a
+                ));
+            }
+            let backdrop = applied.dialog_backdrop();
+            let dialog = [
+                ("dialog", applied.canvas),
+                ("dimmed canvas", backdrop_over(applied.canvas, backdrop)),
+                ("dimmed panel", backdrop_over(applied.panel, backdrop)),
+                ("dimmed subtle", backdrop_over(applied.subtle, backdrop)),
+            ];
+            let page = more_contrast_edge_surfaces(applied);
+            let edges = [
+                ("divider", Some(theme.colors.border), &page[..]),
+                ("field outline", Some(theme.colors.input), &page[..]),
+                ("popup edge", theme.popover_edge, &page[..]),
+                ("dialog edge", theme.dialog_edge, &dialog[..]),
+                (
+                    "bordered secondary edge",
+                    theme.secondary_edge,
+                    &dialog[..1],
+                ),
+                ("disabled edge", theme.disabled_edge, &page[..]),
+                (
+                    "resting edge",
+                    Some(hsla(applied.resting_edge())),
+                    &page[..],
+                ),
+            ];
+            for (edge, color, surfaces) in edges {
+                let Some(color) = color.map(packed) else {
+                    failures.push(format!("{name} {edge} unset"));
+                    continue;
+                };
+                for &(surface, beneath) in surfaces {
+                    let ratio = contrast(color, beneath);
+                    if ratio < MORE_CONTRAST_EDGE {
+                        failures.push(format!(
+                            "{name} {edge} #{color:06x} on {surface} {ratio:.3}:1"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// What an application left installed: the `Palette` global, its editor
+    /// highlights and labels, the kit's colors and editor style as its theme
+    /// format writes them, and the kit fields the palette sets beside them.
+    fn installed(cx: &App) -> (Palette, EditorHighlights, Labels, String, [Option<Hsla>; 8]) {
+        let theme = Theme::global(cx);
+        let kit = serde_json::to_string(&(theme.colors, &theme.highlight_theme.style)).unwrap();
+        let fields = [
+            theme.popover_edge,
+            theme.dialog_edge,
+            theme.secondary_edge,
+            theme.disabled_label,
+            theme.disabled_edge,
+            theme.switch_hover,
+            theme.ghost_hover,
+            theme.ghost_active,
+        ];
+        let labels = *cx.global::<Labels>();
+        (palette(cx), editor_highlights(cx), labels, kit, fields)
+    }
+
+    /// A palette's label, syntax colors by field and disabled label strength.
+    type Fingerprint = (&'static str, &'static [(&'static str, u32)], f32);
+
+    /// What the off path drew before More contrast existed (51a32680), in two
+    /// palettes whose syntax the fitting moves, a dark and a light one: the
+    /// fitted syntax colors by field and the disabled label's strength.
+    const OFF_PATH_FINGERPRINT: [Fingerprint; 2] = [
+        (
+            "Solarized Dark",
+            &[
+                ("keyword", 0x949acd),
+                ("constant", 0xbc9a29),
+                ("function", 0x33aea6),
+                ("tag", 0x5ca5d4),
+                ("diff.minus", 0xda8785),
+            ],
+            0.625,
+        ),
+        (
+            "Kanagawa Lotus",
+            &[
+                ("string", 0x4b5e45),
+                ("constant", 0x7f4e15),
+                ("type", 0x63574d),
+                ("function", 0x48597e),
+                ("tag", 0x535870),
+            ],
+            0.71875,
+        ),
+    ];
+
+    /// With More contrast off, `Palette::apply` installs the palette as it
+    /// is, in every palette: the palette, the editor highlights and small
+    /// labels fitted from it, and the kit fields `configure` sets from it;
+    /// and after More contrast was on, turning it off installs exactly that
+    /// again. `as_applied` is the palette, and `set_more_contrast` reports
+    /// only a change. Those comparisons run the same helpers `apply` does,
+    /// so they check that the off path is the palette's own path, not that
+    /// it draws what it drew before More contrast existed; for that,
+    /// [`OFF_PATH_FINGERPRINT`] pins two palettes' fitted syntax and
+    /// disabled label as the off path drew them then.
+    #[gpui::test]
+    fn without_more_contrast_every_palette_applies_as_it_is(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        assert!(
+            !cx.update(|cx| set_more_contrast(false, cx)),
+            "off by default"
+        );
+        let mut pinned = 0;
+        for (name, chosen) in more_contrast_palettes() {
+            let (before, drawn, dim) = cx.update(|cx| {
+                chosen.apply(chosen.is_light(), None, cx);
+                assert_eq!(chosen.as_applied(cx), chosen, "{name} as applied");
+                let theme = Theme::global(cx);
+                let dim = theme.disabled_label.map(|label| label.a);
+                (installed(cx), editor_text_colors(theme), dim)
+            });
+            for (palette, fields, strength) in OFF_PATH_FINGERPRINT {
+                if palette != name {
+                    continue;
+                }
+                pinned += 1;
+                for &(field, color) in fields {
+                    let found = drawn.iter().find(|(drawn, _)| drawn.as_str() == field);
+                    assert_eq!(
+                        found.and_then(|(_, color)| *color),
+                        Some(color),
+                        "{name} {field}"
+                    );
+                }
+                assert_eq!(dim, Some(strength), "{name} disabled label");
+            }
+            let expected = chosen.configured_theme(chosen.is_light());
+            assert_eq!(before.0, chosen, "{name} palette");
+            assert_eq!(before.1, chosen.editor_highlights(), "{name} highlights");
+            assert_eq!(before.2, Labels::fit(chosen), "{name} labels");
+            assert_eq!(
+                before.4,
+                [
+                    expected.popover_edge,
+                    expected.dialog_edge,
+                    expected.secondary_edge,
+                    expected.disabled_label,
+                    expected.disabled_edge,
+                    expected.switch_hover,
+                    expected.ghost_hover,
+                    expected.ghost_active,
+                ],
+                "{name} kit edges and fills"
+            );
+            let after = cx.update(|cx| {
+                assert!(set_more_contrast(true, cx), "{name} turns it on");
+                assert!(!set_more_contrast(true, cx), "{name} on again");
+                chosen.apply(chosen.is_light(), None, cx);
+                assert_ne!(installed(cx), before, "{name} adjusted");
+                assert!(set_more_contrast(false, cx), "{name} turns it off");
+                chosen.apply(chosen.is_light(), None, cx);
+                installed(cx)
+            });
+            assert_eq!(after, before, "{name} after More contrast");
+        }
+        assert_eq!(pinned, OFF_PATH_FINGERPRINT.len(), "every pinned palette");
     }
 }
