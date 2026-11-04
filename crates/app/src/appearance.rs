@@ -1008,6 +1008,97 @@ impl Palette {
         }
     }
 
+    /// This palette as More contrast draws it, derived on the fly and never
+    /// saved. Secondary text (`muted`) and gutter numbers
+    /// (`line_number`) move toward `text` until each reads
+    /// [`MORE_CONTRAST_TEXT`] on the six surfaces the readability rules
+    /// judge, measured as they rest: on canvas, panel, subtle and the
+    /// selected row, and on the raised surface and the added and removed
+    /// line tints. On the momentary surfaces, hover and the hovered selected
+    /// row, each needs only the text rule ([`LABEL_RULE`]), so a hover alone
+    /// never flattens secondary text into body text. On a surface where
+    /// `text` itself reads below the floor, the floor is `text`'s own
+    /// contrast, which in practice makes the token `text` where such a
+    /// surface rests. `border` takes [`Self::resting_edge`], so dividers,
+    /// fields' outlines and the edges fitted from it ([`Self::raised_edge`],
+    /// [`Self::disabled_edge`]) hold [`MORE_CONTRAST_EDGE`]. Every other
+    /// token stays: the hues, the accent with its foreground, hover and
+    /// pressed fills, the selection, the status and diff colours. A token
+    /// already past its floor keeps its value, and nothing the floors are
+    /// measured on changes, so a second adjustment changes nothing.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_more_contrast(self) -> Self {
+        let resting = [
+            self.canvas,
+            self.panel,
+            self.subtle,
+            self.raised(),
+            self.selected,
+            self.added_background,
+            self.removed_background,
+        ];
+        let momentary = [self.hover, self.row_hover(true)];
+        let floors: Vec<(u32, f64)> = resting
+            .map(|surface| (surface, MORE_CONTRAST_TEXT))
+            .into_iter()
+            .chain(momentary.map(|surface| (surface, LABEL_RULE)))
+            .collect();
+        Self {
+            muted: self.toward_text(self.muted, &floors),
+            line_number: self.toward_text(self.line_number, &floors),
+            border: self.resting_edge(),
+            ..self
+        }
+    }
+
+    /// `color` moved toward `text` in 256ths of each sRGB channel ([`mix`]),
+    /// to the first step that reads its floor on every surface of `floors`,
+    /// or `text`'s own contrast on one where that is lower. `text` reaches
+    /// every floor, so the walk ends there at the latest.
+    fn toward_text(self, color: u32, floors: &[(u32, f64)]) -> u32 {
+        let text = custom::luminance(self.text);
+        let floors: Vec<(f64, f64)> = floors
+            .iter()
+            .map(|&(surface, floor)| {
+                let surface = custom::luminance(surface);
+                let reachable = custom::luminance_contrast(text, surface);
+                (surface, floor.min(reachable))
+            })
+            .collect();
+        let reads = |color: u32| {
+            let color = custom::luminance(color);
+            floors
+                .iter()
+                .all(|&(surface, floor)| custom::luminance_contrast(color, surface) >= floor)
+        };
+        (0..=256)
+            .map(|step| mix(color, self.text, step))
+            .find(|&step| reads(step))
+            .unwrap_or(self.text)
+    }
+
+    /// The 1 px edge an enabled control that rests on a fill of its own
+    /// draws over its bounds while More contrast is on, and the `border`
+    /// [`Self::with_more_contrast`] gives: `border`, unless it misses
+    /// [`MORE_CONTRAST_EDGE`] against the canvas, the panel, `subtle` or the
+    /// raised surface. Then it takes the first of 256 even steps toward black
+    /// in a light palette or white in a dark one, the text's side as for the
+    /// popup edge, that clears it on all of them. On an adjusted palette it
+    /// is that palette's `border`.
+    pub fn resting_edge(self) -> u32 {
+        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let clears = |edge| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(edge, surface) >= MORE_CONTRAST_EDGE)
+        };
+        if clears(self.border) {
+            return self.border;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, self.border, extreme, clears)
+    }
+
     /// A sidebar row's label and icon colors. The label stays `text`, which
     /// reads at the text rule on every row state, and selection marks the icon
     /// in `accent`, a graphic at 3:1, beside the selected surface: `accent` is
@@ -1099,6 +1190,17 @@ const SCROLL_THUMB: f64 = 2.0;
 /// beside a dialog's default action, so with its dim label it still reads as
 /// one that cannot act.
 const DISABLED_EDGE: f64 = 1.5;
+
+/// The contrast secondary text and gutter numbers reach under More contrast
+/// ([`Palette::with_more_contrast`]): WCAG's enhanced contrast for text
+/// (1.4.6), up from the text rule's 4.5:1.
+const MORE_CONTRAST_TEXT: f64 = 7.0;
+
+/// The contrast dividers, fields' outlines and the popup, dialog, bordered
+/// secondary, disabled and resting edges keep under More contrast: WCAG's
+/// non-text contrast (1.4.11), up from the border rule's 1.3:1, the popup
+/// edge's 1.4:1 and the disabled edge's 1.5:1.
+const MORE_CONTRAST_EDGE: f64 = 3.0;
 
 /// The keyboard's cursor on a picker's highlighted row (the command palette,
 /// Quick Open and Keyboard Shortcuts), marked as the kit's menus mark theirs
@@ -5460,5 +5562,197 @@ mod tests {
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         assert!(moved > 0, "some palette's edge moves off its border");
+    }
+
+    /// A custom theme on Midnight whose secondary text, gutter numbers and
+    /// dividers sit close to its surfaces: 2.33:1, 1.81:1 and 1.15:1 off its
+    /// canvas.
+    fn faint_custom_palette() -> Palette {
+        let mut custom = CustomTheme::from_base(1, "Faint", ThemeChoice::Midnight);
+        custom.palette.set(TokenKind::Muted, 0x4a5262);
+        custom.palette.set(TokenKind::LineNumber, 0x3a4252);
+        custom.palette.set(TokenKind::Border, 0x1b2230);
+        custom.palette
+    }
+
+    /// Every palette the More contrast tests judge: `test_palettes` and
+    /// [`faint_custom_palette`].
+    fn more_contrast_palettes() -> Vec<(String, Palette)> {
+        let mut palettes = test_palettes();
+        palettes.push(("custom Faint".into(), faint_custom_palette()));
+        palettes
+    }
+
+    /// The surfaces More contrast reads secondary text and gutter numbers
+    /// on, by name, each with whether it is momentary: the six surfaces of
+    /// the readability rules, the raised surface and the added and removed
+    /// line tints, of which hover and the hovered selected row are momentary.
+    fn more_contrast_text_surfaces(palette: Palette) -> [(&'static str, u32, bool); 9] {
+        [
+            ("canvas", palette.canvas, false),
+            ("panel", palette.panel, false),
+            ("subtle", palette.subtle, false),
+            ("raised", palette.raised(), false),
+            ("selected", palette.selected, false),
+            ("added lines", palette.added_background, false),
+            ("removed lines", palette.removed_background, false),
+            ("hover", palette.hover, true),
+            ("hovered selected row", palette.row_hover(true), true),
+        ]
+    }
+
+    /// What More contrast holds secondary text and gutter numbers to on
+    /// `surface`: 7:1 where it rests and the text rule's 4.5:1 where it is
+    /// `momentary`, or as far as `text` itself reads there where that is
+    /// lower.
+    fn more_contrast_text_floor(palette: Palette, surface: u32, momentary: bool) -> f64 {
+        let floor = if momentary {
+            LABEL_RULE
+        } else {
+            MORE_CONTRAST_TEXT
+        };
+        floor.min(contrast(palette.text, surface))
+    }
+
+    /// The surfaces dividers and the edges fitted from them rest on, by name.
+    fn more_contrast_edge_surfaces(palette: Palette) -> [(&'static str, u32); 4] {
+        [
+            ("canvas", palette.canvas),
+            ("panel", palette.panel),
+            ("subtle", palette.subtle),
+            ("raised", palette.raised()),
+        ]
+    }
+
+    /// More contrast on every palette, Omarchy's on Linux and a custom one
+    /// with faint tokens among them: secondary text and gutter numbers move
+    /// toward `text` by the least step of `mix` that reads 7:1 on the
+    /// resting surfaces and both line tints and 4.5:1 on hover and the
+    /// hovered selected row, or as `text` reads where that is lower, so they
+    /// stay apart from `text` wherever `text` reads 7:1 on every resting
+    /// surface, a hover falling short included; dividers hold 3:1 on the
+    /// canvas, panel, subtle and raised surfaces, and so do the popup,
+    /// disabled and resting edges fitted from them. No other token moves, a
+    /// token already past its floor keeps its value, and adjusting twice is
+    /// adjusting once.
+    #[test]
+    fn more_contrast_raises_secondary_text_gutters_and_dividers_alone() {
+        let mut failures = Vec::new();
+        let mut moved = std::collections::BTreeMap::<&str, usize>::new();
+        // Palettes whose `text` misses 7:1 only on a momentary surface.
+        let mut hover_short = Vec::new();
+        for (name, palette) in more_contrast_palettes() {
+            let adjusted = palette.with_more_contrast();
+            let surfaces = more_contrast_text_surfaces(palette);
+            let reads = |color: u32| {
+                surfaces.iter().all(|&(_, surface, momentary)| {
+                    contrast(color, surface)
+                        >= more_contrast_text_floor(palette, surface, momentary)
+                })
+            };
+            let text_short = |momentary: bool| {
+                surfaces.iter().any(|&(_, surface, on_hover)| {
+                    on_hover == momentary && contrast(palette.text, surface) < MORE_CONTRAST_TEXT
+                })
+            };
+            if text_short(true) && !text_short(false) {
+                hover_short.push(name.clone());
+            }
+            for (token, before, after) in [
+                ("muted", palette.muted, adjusted.muted),
+                ("line_number", palette.line_number, adjusted.line_number),
+            ] {
+                // Where `text` reads 7:1 on every resting surface, the token
+                // reads below it on one of them: it stays secondary.
+                let apart = surfaces.iter().any(|&(_, surface, momentary)| {
+                    !momentary && contrast(after, surface) < contrast(palette.text, surface)
+                });
+                if !text_short(false) && !apart {
+                    failures.push(format!(
+                        "{name} {token} #{after:06x} reads as text #{:06x} does",
+                        palette.text
+                    ));
+                }
+                for (surface, color, momentary) in surfaces {
+                    let (ratio, floor) = (
+                        contrast(after, color),
+                        more_contrast_text_floor(palette, color, momentary),
+                    );
+                    if ratio < floor {
+                        failures.push(format!(
+                            "{name} {token} #{after:06x} on {surface} {ratio:.3}:1, needs {floor:.3}"
+                        ));
+                    }
+                }
+                // The least step toward `text` that reads.
+                match (0..=256).find(|&step| mix(before, palette.text, step) == after) {
+                    Some(step) if step == 0 || !reads(mix(before, palette.text, step - 1)) => {}
+                    step => failures.push(format!(
+                        "{name} {token} #{before:06x} -> #{after:06x} is not the least reading \
+                         step toward text: {step:?}"
+                    )),
+                }
+                if after != before {
+                    *moved.entry(token).or_default() += 1;
+                }
+            }
+            for (surface, color) in more_contrast_edge_surfaces(palette) {
+                for (edge, value) in [
+                    ("border", adjusted.border),
+                    ("popup edge", adjusted.raised_edge()),
+                    ("disabled edge", adjusted.disabled_edge()),
+                    ("resting edge", adjusted.resting_edge()),
+                ] {
+                    let ratio = contrast(value, color);
+                    if ratio < MORE_CONTRAST_EDGE {
+                        failures.push(format!(
+                            "{name} {edge} #{value:06x} on {surface} {ratio:.3}:1"
+                        ));
+                    }
+                }
+            }
+            let edge_holds = more_contrast_edge_surfaces(palette)
+                .iter()
+                .all(|&(_, surface)| contrast(palette.border, surface) >= MORE_CONTRAST_EDGE);
+            if edge_holds && adjusted.border != palette.border {
+                failures.push(format!("{name} border past its floor moved"));
+            }
+            if adjusted.border != palette.border {
+                *moved.entry("border").or_default() += 1;
+            }
+            let untouched = Palette {
+                muted: palette.muted,
+                line_number: palette.line_number,
+                border: palette.border,
+                ..adjusted
+            };
+            if untouched != palette {
+                failures.push(format!("{name} moved another token: {untouched:x?}"));
+            }
+            if adjusted.with_more_contrast() != adjusted {
+                failures.push(format!("{name} moves again when adjusted twice"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(
+            hover_short.iter().any(|name| name == "Tokyo Night"),
+            "a palette whose text misses 7:1 only on a hover keeps its secondary text apart: \
+             {hover_short:?}"
+        );
+        // Each adjustment does something somewhere, the faint palette's all three.
+        let faint = faint_custom_palette();
+        let adjusted = faint.with_more_contrast();
+        assert_ne!(adjusted.muted, faint.muted);
+        assert_ne!(adjusted.line_number, faint.line_number);
+        assert_ne!(adjusted.border, faint.border);
+        assert!(moved.values().all(|&count| count > 1), "{moved:?}");
+        // Already past every floor, a palette is its own adjustment.
+        let strong = Palette {
+            muted: faint.text,
+            line_number: faint.text,
+            border: adjusted.border,
+            ..faint
+        };
+        assert_eq!(strong.with_more_contrast(), strong);
     }
 }
