@@ -3198,7 +3198,11 @@ mod render_tests {
         }
 
         /// The names the selected row's node took while it stayed selected,
-        /// since the last call.
+        /// since the last call. Where that name does not carry a change of
+        /// context (macOS), it follows the live context at once, and the
+        /// tests assert those renames behind `cfg(not(target_os = "linux"))`
+        /// rather than behind [`ROW_CARRIES_CONTEXT`], so that a hold there
+        /// fails them.
         fn take_renamed(&mut self) -> Vec<String> {
             std::mem::take(&mut self.renamed)
         }
@@ -3472,8 +3476,9 @@ mod render_tests {
     /// name carries a change of context ([`ROW_CARRIES_CONTEXT`], Linux),
     /// the row is renamed once at each rest, which the AT-SPI adapter
     /// reports and Orca speaks of the list's selected item, and the status
-    /// announces neither (QA-96); elsewhere the status announces each once,
-    /// politely, even after a move it took quietly. The status stayed quiet
+    /// announces neither (QA-96); elsewhere the row takes each reading as the
+    /// context changes, and the status announces each once, politely, even
+    /// after a move it took quietly. The status stayed quiet
     /// after a move where the list speaks it, so a reason appearing or
     /// going as a Fetch ran went unheard; announced at once, a change of
     /// context followed by another lost the second to Orca 51.1's spam
@@ -3540,6 +3545,14 @@ mod render_tests {
         let rests_on =
             |cx: &mut VisualTestContext, heard: &mut Heard, had: &str, ends: (&str, &str)| {
                 let (reading, row) = ends;
+                // Where the row does not carry the change (macOS), its name
+                // took the live reading as the context changed.
+                #[cfg(not(target_os = "linux"))]
+                assert_eq!(
+                    heard.take_renamed(),
+                    [row],
+                    "the change renames the row at once, to {row:?}"
+                );
                 heard.wait(cx, 499);
                 assert_eq!(
                     heard.take(),
@@ -3571,7 +3584,11 @@ mod render_tests {
                         [reading],
                         "the status announces {reading:?} once it rests, once"
                     );
-                    heard.take_renamed();
+                    assert_eq!(
+                        heard.take_renamed(),
+                        Vec::<String>::new(),
+                        "and the rest renames the row no more"
+                    );
                 }
                 #[cfg(target_os = "linux")]
                 {
@@ -3628,8 +3645,9 @@ mod render_tests {
     /// announces nothing: renamed at each change, Orca 51.1 spoke both
     /// renames of the selected row, 57 ms apart, the transient "Wait for
     /// the file list to refresh" first, and then the status's announcement
-    /// of the final reading a third time (QA-96). Elsewhere the status
-    /// announces the command available with its place, once: announced at
+    /// of the final reading a third time (QA-96). Elsewhere the row's name
+    /// follows each change at once, and the status announces the command
+    /// available with its place, once: announced at
     /// each change of context, Orca 51.1's spam filter, which drops an event
     /// of a type the application sent less than 100 ms before, dropped the
     /// second, so the command becoming available was never heard (QA-95).
@@ -3705,6 +3723,14 @@ mod render_tests {
             reloading.ends_with(crate::workspace::REFRESHING_ROWS_REASON),
             "through the reload, Browse stashes… waits for it: {reloading:?}"
         );
+        // Where the row does not carry the change (macOS), its name follows
+        // the live context at once.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&reloading_row),
+            "the Fetch's end renames the row at once, to wait for the reload"
+        );
         // The reload ends 40 ms later.
         heard.wait(cx, 40);
         app.update(cx, |app, cx| {
@@ -3718,6 +3744,12 @@ mod render_tests {
             available,
             format!("Browse stashes… · {} of {}", at + 1, matches(query).len()),
             "the reload's end makes Browse stashes… available"
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&available_row),
+            "and the reload's end renames it at once, to the command available"
         );
         heard.wait(cx, 499);
         assert_eq!(
@@ -3800,8 +3832,9 @@ mod render_tests {
     /// command waiting, and the status, which takes the reading quietly at a
     /// rest that renames the row, announces nothing, though the query
     /// changed too: announcing its rest as well, it was heard twice, the
-    /// rename's reading and the status's. Elsewhere the status announces the
-    /// command waiting with its place, once, which is the reading heard.
+    /// rename's reading and the status's. Elsewhere the row's name takes the
+    /// command waiting as the Fetch starts, and the status announces it with
+    /// its place, once, which is the reading heard.
     #[gpui::test]
     fn a_context_change_while_the_query_rests_is_heard_once_as_the_final_reading(
         cx: &mut TestAppContext,
@@ -3835,6 +3868,14 @@ mod render_tests {
         heard.frame(cx);
         let (waiting, waiting_row) = reading_and_row(query, at, &availability(cx));
         assert_ne!(waiting, typed, "the Fetch makes the command wait");
+        // Where the row does not carry the change (macOS), its name follows
+        // the live context at once.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&waiting_row),
+            "the Fetch renames the row at once, to the command waiting"
+        );
         heard.wait(cx, 200);
         assert_eq!(
             heard.take(),
@@ -3918,6 +3959,9 @@ mod render_tests {
     /// within the rest, as a Fetch starting and a second write's end 100 ms
     /// later would. Each rename of the selected row is spoken on Linux
     /// (QA-96), so one that came back to the reading heard was heard twice.
+    /// Where the row's name does not carry a change of context (macOS), it
+    /// follows the change and its undoing at once, and the status says
+    /// nothing.
     #[gpui::test]
     fn a_context_change_that_leaves_the_selected_reading_renames_nothing(cx: &mut TestAppContext) {
         let (app, cx) = hub(cx);
@@ -3999,9 +4043,26 @@ mod render_tests {
         flush(&mut heard);
         fetching(cx, Some("Fetching…"));
         heard.frame(cx);
+        // Where the row does not carry the change (macOS), its name follows
+        // the live context at once, there and back.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let busy = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+            assert_eq!(
+                heard.take_renamed(),
+                [reading_and_row("", changed, &busy).1],
+                "the Fetch renames the row at once"
+            );
+        }
         heard.wait(cx, 100);
         fetching(cx, None);
         heard.frame(cx);
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&named.1),
+            "and its undoing renames the row back at once"
+        );
         heard.wait(cx, 2000);
         assert_eq!(heard.row_name(), Some(named.1.as_str()));
         if ROW_CARRIES_CONTEXT {
@@ -4030,7 +4091,9 @@ mod render_tests {
     /// longer presenting the row, does not speak: the adapter reports a
     /// rename as it walks a frame's changes and the change of selection
     /// after them, so a row renamed as it was left was still the item Orca
-    /// presented when its rename arrived. The rest announces nothing.
+    /// presented when its rename arrived. Elsewhere (macOS) the selected row
+    /// takes the write's reading at once, as every row does. The rest
+    /// announces nothing.
     #[gpui::test]
     fn a_move_during_the_rest_reads_the_live_reading_of_the_row_it_reaches(
         cx: &mut TestAppContext,
@@ -4078,6 +4141,14 @@ mod render_tests {
                 "the change of context rests"
             );
         }
+        // Where the row does not carry the change (macOS), its name took the
+        // write's reading as it began.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            [reading_and_row("", at, &busy).1],
+            "the write renames the selected row at once"
+        );
         // The rows it does not hold, the one Down reaches among them, took
         // the write's readings at once.
         #[cfg(target_os = "linux")]
@@ -4187,7 +4258,9 @@ mod render_tests {
     /// that frame, ahead of the change of selection, while Orca still
     /// presents the row Up leaves, so it is not spoken; kept held, the row
     /// would be selected again with the reading the write had replaced and
-    /// renamed while selected at the rest.
+    /// renamed while selected at the rest. Where the row's name does not
+    /// carry a change of context (macOS), it took the write's reading as
+    /// the write began, before Down left it.
     #[gpui::test]
     fn a_move_back_onto_the_held_row_reads_its_live_reading(cx: &mut TestAppContext) {
         let (app, cx) = hub(cx);
@@ -4218,6 +4291,14 @@ mod render_tests {
             back_row,
             reading_and_row("", at, &idle).1,
             "the write changes the held row's reading"
+        );
+        // Where the row does not carry the change (macOS), its name took the
+        // write's reading as it began, before Down left it.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            std::slice::from_ref(&back_row),
+            "the write renames the selected row at once"
         );
         heard.take();
         heard.take_renamed();
@@ -4304,7 +4385,8 @@ mod render_tests {
     /// name carries a change of context ([`ROW_CARRIES_CONTEXT`], Linux), the
     /// row left is renamed at no time while selected; taking the rest as one
     /// that renamed the selected row, the status would say nothing of the
-    /// command the query selected.
+    /// command the query selected. Elsewhere (macOS) the row takes the
+    /// write's reading as the write begins, while still selected.
     #[gpui::test]
     fn a_query_that_selects_another_command_during_the_rest_is_announced(cx: &mut TestAppContext) {
         let (app, cx) = hub(cx);
@@ -4360,6 +4442,14 @@ mod render_tests {
         });
         heard.frame(cx);
         heard.wait(cx, 100);
+        // Where the row does not carry the change (macOS), its name took the
+        // write's reading as it began.
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            heard.take_renamed(),
+            [reading_and_row("", place, &availability(cx)).1],
+            "the write renames the selected row at once"
+        );
         cx.simulate_input(query);
         heard.frame(cx);
         assert!(
