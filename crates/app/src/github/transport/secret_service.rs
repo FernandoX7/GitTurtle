@@ -2,7 +2,9 @@
 //! (`docs/development/2026-10-28-linux-github-secret-service.md`). One item in the
 //! collection behind the `default` alias holds the same JSON `{login, token}` the macOS
 //! item holds. A stored read never asks the keyring to unlock or create anything and
-//! ends within five seconds. Every failure fails closed: there is no file or other
+//! ends within five seconds; only Connect and Disconnect may show the keyring's own
+//! prompts, and they end within two minutes or soon after a Cancel, saying when a write
+//! or delete already went out. Every failure fails closed: there is no file or other
 //! fallback, and no message carries the token or a keyring error's own text.
 //!
 //! Each call opens one fresh session (`Backend::connect`), which survives a restarted
@@ -14,7 +16,12 @@
 use super::*;
 use futures::future::{Either, select};
 use oo7::{Secret, dbus::Error};
-use std::{future::Future, pin::pin};
+use std::{
+    cell::Cell,
+    future::Future,
+    pin::pin,
+    sync::{Mutex, MutexGuard},
+};
 
 /// The macOS item's service and account, so `secret-tool` and other Secret Service
 /// clients that key items by `service` and `username` find it.
@@ -30,6 +37,11 @@ pub(super) const ATTRIBUTES: [(&str, &str); 3] = [
 ];
 /// A stored read never prompts, so it answers quickly or not at all.
 const READ_LIMIT: Duration = Duration::from_secs(5);
+/// Connect and Disconnect may wait on the keyring's own prompts.
+const PROMPT_LIMIT: Duration = Duration::from_secs(120);
+/// How often the cancel watch looks at the operation's Cancel: a Cancel returns well
+/// within 100 ms.
+const CANCEL_POLL: Duration = Duration::from_millis(25);
 
 const NO_KEYRING: &str = "No desktop keyring answered. Start your desktop's keyring (gnome-keyring on Omarchy), then try again.";
 const LOCKED: &str = "Your desktop keyring is locked. Unlock it, or choose Connect GitHub CLI account, then retry. Stored account reads never open an unlock prompt.";
@@ -37,6 +49,33 @@ const READ_DEADLINE: &str = "Your desktop keyring did not answer within 5 second
 const READ_FAILED: &str = "Your desktop keyring could not read the GitHub authorization. Try again, or choose Connect GitHub CLI account.";
 const INVALID: &str = "The GitHub keyring entry is invalid. Connect the account again.";
 const DUPLICATES: &str = "Your desktop keyring holds more than one GitTurtle GitHub entry. Choose Disconnect GitTurtle to remove them, then connect again.";
+const BUSY: &str = "Another GitHub keyring operation is active. Complete or dismiss your keyring's prompt before trying again.";
+const DISMISSED: &str = "The keyring prompt was dismissed. Nothing was stored.";
+const SAVE_REFUSED: &str =
+    "Your desktop keyring could not save GitHub authorization. No plaintext credential was stored.";
+const SAVED_MISSING: &str = "The saved GitHub authorization was not found in your desktop keyring. Connect the account again.";
+const CHANGED: &str = "The GitHub authorization in your desktop keyring changed during connection. Connect the intended account again.";
+const SENT_UNCONFIRMED: &str = "Your desktop keyring did not confirm saving GitHub authorization; it may remain stored. Choose Disconnect GitTurtle to remove it, or connect again.";
+const SENT_UNREAD: &str = "GitHub authorization was sent to your desktop keyring but could not be read back; it may remain stored. Choose Disconnect GitTurtle to remove it, or connect again.";
+const CONNECT_DEADLINE: &str = "Your desktop keyring did not finish within 2 minutes. Close its prompt if it is still open; nothing was stored.";
+const CONNECT_DEADLINE_SENT: &str = "Your desktop keyring did not finish within 2 minutes. Close its prompt if it is still open; GitHub authorization may remain stored in it.";
+const CONNECT_CANCELLED: &str = "GitHub account connection cancelled. Close your desktop keyring's prompt if it is still open; nothing was stored.";
+const CONNECT_CANCELLED_SENT: &str = "GitHub account connection cancelled; authorization may remain stored in your desktop keyring. Close its prompt if it is still open.";
+const REMOVE_DISMISSED: &str =
+    "The keyring prompt was dismissed. GitHub authorization remains in your desktop keyring.";
+const REMOVE_FAILED: &str = "Your desktop keyring could not remove the GitHub authorization.";
+const REMAINS: &str = "Your desktop keyring still holds GitTurtle's GitHub authorization. Choose Disconnect GitTurtle again.";
+const DISCONNECT_DEADLINE: &str = "Your desktop keyring did not finish within 2 minutes. Close its prompt if it is still open; nothing was removed.";
+const DISCONNECT_DEADLINE_SENT: &str = "Your desktop keyring did not finish within 2 minutes. Close its prompt if it is still open; GitHub authorization may remain in it.";
+const DISCONNECT_CANCELLED: &str = "Disconnect cancelled. Close your desktop keyring's prompt if it is still open; nothing was removed.";
+const DISCONNECT_CANCELLED_SENT: &str = "Disconnect cancelled; GitHub authorization may remain in your desktop keyring. Choose Disconnect GitTurtle again.";
+
+/// One credential call at a time across every window: a second is refused at once,
+/// rather than waiting behind, or opening, a second keyring prompt.
+static ACCESS: Mutex<()> = Mutex::new(());
+fn access() -> Result<MutexGuard<'static, ()>> {
+    ACCESS.try_lock().map_err(|_| anyhow!(BUSY))
+}
 
 /// The Secret Service calls the flows make. `Session` is one connection with its
 /// transfer session; collections and items are handles within it.
@@ -189,6 +228,20 @@ fn read_failure(error: Error) -> anyhow::Error {
         Failure::Dismissed | Failure::Other => READ_FAILED,
     })
 }
+fn save_failure(error: Error) -> anyhow::Error {
+    anyhow!(match failure(&error) {
+        Failure::Unanswered => NO_KEYRING,
+        Failure::Dismissed => DISMISSED,
+        Failure::Locked | Failure::Other => SAVE_REFUSED,
+    })
+}
+fn remove_failure(error: Error) -> anyhow::Error {
+    anyhow!(match failure(&error) {
+        Failure::Unanswered => NO_KEYRING,
+        Failure::Dismissed => REMOVE_DISMISSED,
+        Failure::Locked | Failure::Other => REMOVE_FAILED,
+    })
+}
 
 /// The stored authorization, read without any prompt: a missing `default` alias or item
 /// is nothing stored, and a locked collection or item is refused rather than unlocked.
@@ -266,10 +319,186 @@ async fn read_within<B: Backend>(
     }
 }
 
+/// Ends once the operation is cancelled, looking every [`CANCEL_POLL`].
+async fn cancellation(control: &OperationControl) {
+    while !control.is_cancelled() {
+        async_io::Timer::after(CANCEL_POLL).await;
+    }
+}
+
+/// The JSON the macOS item holds, straight into a `Secret`, which zeroes it on drop. The
+/// buffer fits the longest possible JSON (every byte escaped as `\u00XX`), so writing it
+/// never reallocates and leaves a partial copy behind; `Secret::Text` is what
+/// `Secret::text` builds, without its copy.
+fn secret_text(credential: &Credential) -> Result<Secret> {
+    let longest = 32 + 6 * (credential.login.len() + credential.token.len());
+    let mut bytes = Vec::with_capacity(longest);
+    serde_json::to_writer(&mut bytes, credential).map_err(|_| anyhow!(SAVE_REFUSED))?;
+    Ok(Secret::Text(
+        String::from_utf8(bytes).map_err(|_| anyhow!(SAVE_REFUSED))?,
+    ))
+}
+
+/// `sent` records that the write went out, after which a stopped Connect cannot say
+/// nothing was stored.
+async fn save_flow<B: Backend>(
+    backend: &B,
+    credential: &Credential,
+    control: &OperationControl,
+    sent: &Cell<bool>,
+) -> Result<()> {
+    let session = backend.connect().await.map_err(save_failure)?;
+    let collection = backend
+        .default_collection(&session)
+        .await
+        .map_err(save_failure)?;
+    if backend
+        .collection_locked(&collection)
+        .await
+        .map_err(save_failure)?
+    {
+        backend.unlock(&collection).await.map_err(save_failure)?;
+    }
+    // Unlocked first and checked here, so a Cancel during the unlock prompt stores
+    // nothing even when the person completes the prompt afterwards.
+    ensure!(!control.is_cancelled(), CONNECT_CANCELLED);
+    let secret = secret_text(credential)?;
+    sent.set(true);
+    // Once the write went out, only a dismissed prompt (which stores nothing, per the
+    // specification) says nothing was stored: an unanswered call (oo7's 30 s method
+    // timeout) or a refused one may still have stored it.
+    backend
+        .create_item(&collection, LABEL, &ATTRIBUTES, secret)
+        .await
+        .map_err(|error| match failure(&error) {
+            Failure::Dismissed => anyhow!(DISMISSED),
+            _ => anyhow!(SENT_UNCONFIRMED),
+        })?;
+    // Read back as Refresh will, with no prompt, before reporting success.
+    let restored = stored(backend, &session)
+        .await
+        .map_err(|_| anyhow!(SENT_UNREAD))?
+        .ok_or_else(|| anyhow!(SAVED_MISSING))?;
+    ensure!(
+        restored.login == credential.login && restored.token == credential.token,
+        CHANGED
+    );
+    Ok(())
+}
+async fn save_within<B: Backend>(
+    backend: &B,
+    credential: &Credential,
+    control: &OperationControl,
+    deadline: impl Future<Output = ()>,
+    cancelled: impl Future<Output = ()>,
+) -> Result<()> {
+    let sent = Cell::new(false);
+    let ended = race(
+        save_flow(backend, credential, control, &sent),
+        deadline,
+        cancelled,
+    )
+    .await;
+    match (ended, sent.get()) {
+        (Ended::Done(result), _) => result,
+        (Ended::Deadline, false) => bail!(CONNECT_DEADLINE),
+        (Ended::Deadline, true) => bail!(CONNECT_DEADLINE_SENT),
+        (Ended::Cancelled, false) => bail!(CONNECT_CANCELLED),
+        (Ended::Cancelled, true) => bail!(CONNECT_CANCELLED_SENT),
+    }
+}
+
+/// `sent` records that a delete went out, after which a stopped Disconnect cannot say
+/// nothing was removed.
+async fn remove_flow<B: Backend>(
+    backend: &B,
+    control: &OperationControl,
+    sent: &Cell<bool>,
+) -> Result<()> {
+    let session = backend.connect().await.map_err(remove_failure)?;
+    let Some(collection) = backend
+        .stored_collection(&session)
+        .await
+        .map_err(remove_failure)?
+    else {
+        return Ok(());
+    };
+    if backend
+        .collection_locked(&collection)
+        .await
+        .map_err(remove_failure)?
+    {
+        backend.unlock(&collection).await.map_err(remove_failure)?;
+    }
+    ensure!(!control.is_cancelled(), DISCONNECT_CANCELLED);
+    let items = backend
+        .search_items(&collection, &ATTRIBUTES)
+        .await
+        .map_err(remove_failure)?;
+    for item in &items {
+        sent.set(true);
+        backend.delete(item).await.map_err(remove_failure)?;
+    }
+    ensure!(
+        backend
+            .search_items(&collection, &ATTRIBUTES)
+            .await
+            .map_err(remove_failure)?
+            .is_empty(),
+        REMAINS
+    );
+    Ok(())
+}
+async fn remove_within<B: Backend>(
+    backend: &B,
+    control: &OperationControl,
+    deadline: impl Future<Output = ()>,
+    cancelled: impl Future<Output = ()>,
+) -> Result<()> {
+    let sent = Cell::new(false);
+    let ended = race(remove_flow(backend, control, &sent), deadline, cancelled).await;
+    match (ended, sent.get()) {
+        (Ended::Done(result), _) => result,
+        (Ended::Deadline, false) => bail!(DISCONNECT_DEADLINE),
+        (Ended::Deadline, true) => bail!(DISCONNECT_DEADLINE_SENT),
+        (Ended::Cancelled, false) => bail!(DISCONNECT_CANCELLED),
+        (Ended::Cancelled, true) => bail!(DISCONNECT_CANCELLED_SENT),
+    }
+}
+
 /// The stored authorization, for Refresh and opening a pull request: never a prompt,
 /// and an answer within [`READ_LIMIT`].
 pub(super) fn load(backend: &impl Backend) -> Result<Option<Credential>> {
+    let _access = access()?;
     futures::executor::block_on(read_within(backend, deadline(READ_LIMIT)))
+}
+/// Connect's write: the keyring may prompt to create or unlock its default collection.
+/// It ends within [`PROMPT_LIMIT`] or soon after `control` is cancelled, and succeeds
+/// only once a read without any prompt returns the same account and token.
+pub(super) fn save(
+    backend: &impl Backend,
+    credential: &Credential,
+    control: &OperationControl,
+) -> Result<()> {
+    let _access = access()?;
+    futures::executor::block_on(save_within(
+        backend,
+        credential,
+        control,
+        deadline(PROMPT_LIMIT),
+        cancellation(control),
+    ))
+}
+/// Disconnect: removes every GitTurtle item, unlocking through the keyring's prompt
+/// when needed, then checks that none remains. Bounded as [`save`] is.
+pub(super) fn remove(backend: &impl Backend, control: &OperationControl) -> Result<()> {
+    let _access = access()?;
+    futures::executor::block_on(remove_within(
+        backend,
+        control,
+        deadline(PROMPT_LIMIT),
+        cancellation(control),
+    ))
 }
 
 #[cfg(test)]
@@ -280,6 +509,8 @@ mod tests {
 
     /// The call that fails, and the error it returns.
     type Failing = (&'static str, fn() -> Error);
+    /// A write the fake received: its label, attributes and secret.
+    type Written = (String, Vec<(String, String)>, Secret);
     /// A keyring in memory. Each call is logged by name; `fail` makes one call return an
     /// error, and `hang` makes one call never finish after it fires `fire`.
     struct Fake {
@@ -289,6 +520,13 @@ mod tests {
         items: RefCell<Vec<Option<Secret>>>,
         log: RefCell<Vec<&'static str>>,
         searched: RefCell<Vec<Vec<(String, String)>>>,
+        created: RefCell<Vec<Written>>,
+        /// What a write stores instead of the secret it was given.
+        replace_with: Option<String>,
+        /// Whether a write reports success but stores nothing.
+        drop_writes: bool,
+        /// Whether a delete reports success but keeps the item.
+        delete_keeps: bool,
         fail: Option<Failing>,
         hang: Option<&'static str>,
         fire: RefCell<Option<oneshot::Sender<()>>>,
@@ -302,6 +540,10 @@ mod tests {
                 items: RefCell::new(items.iter().map(|text| Some(Secret::text(text))).collect()),
                 log: RefCell::default(),
                 searched: RefCell::default(),
+                created: RefCell::default(),
+                replace_with: None,
+                drop_writes: false,
+                delete_keeps: false,
                 fail: None,
                 hang: None,
                 fire: RefCell::default(),
@@ -376,12 +618,29 @@ mod tests {
         async fn create_item(
             &self,
             _: &(),
-            _: &str,
-            _: &[(&str, &str)],
+            label: &str,
+            attributes: &[(&str, &str)],
             secret: Secret,
         ) -> Result<(), Error> {
             self.enter("create_item").await?;
-            self.items.borrow_mut().push(Some(secret));
+            self.created.borrow_mut().push((
+                label.to_owned(),
+                attributes
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+                secret.clone(),
+            ));
+            if self.drop_writes {
+                return Ok(());
+            }
+            let secret = self.replace_with.as_ref().map_or(secret, Secret::text);
+            // Replaces the first matching item, as `replace = true` does.
+            let mut items = self.items.borrow_mut();
+            match items.iter_mut().find(|item| item.is_some()) {
+                Some(item) => *item = Some(secret),
+                None => items.push(Some(secret)),
+            }
             Ok(())
         }
         async fn item_locked(&self, _: &usize) -> Result<bool, Error> {
@@ -394,7 +653,9 @@ mod tests {
         }
         async fn delete(&self, item: &usize) -> Result<(), Error> {
             self.enter("delete").await?;
-            self.items.borrow_mut()[*item] = None;
+            if !self.delete_keeps {
+                self.items.borrow_mut()[*item] = None;
+            }
             Ok(())
         }
     }
@@ -540,5 +801,325 @@ mod tests {
         ]
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .to_vec()
+    }
+
+    fn credential() -> Credential {
+        Credential {
+            login: "fixture-reviewer".into(),
+            token: MARKER.into(),
+        }
+    }
+    fn connect(fake: &Fake, control: &OperationControl) -> Result<()> {
+        let (deadline, cancelled) = (futures::future::pending(), futures::future::pending());
+        futures::executor::block_on(save_within(
+            fake,
+            &credential(),
+            control,
+            deadline,
+            cancelled,
+        ))
+    }
+    fn disconnect(fake: &Fake, control: &OperationControl) -> Result<()> {
+        let (deadline, cancelled) = (futures::future::pending(), futures::future::pending());
+        futures::executor::block_on(remove_within(fake, control, deadline, cancelled))
+    }
+    fn position(fake: &Fake, operation: &str) -> usize {
+        let log = fake.log.borrow();
+        log.iter().position(|logged| *logged == operation).unwrap()
+    }
+
+    #[test]
+    fn connect_unlocks_first_writes_the_schema_and_reads_the_item_back() {
+        let fake = Fake::new(true, &[]);
+        fake.locked.set(true);
+        connect(&fake, &OperationControl::default()).unwrap();
+        assert!(position(&fake, "unlock") < position(&fake, "create_item"));
+        assert!(position(&fake, "create_item") < position(&fake, "secret"));
+        let created = fake.created.borrow();
+        let [(label, attributes, secret)] = created.as_slice() else {
+            panic!("Connect writes one item");
+        };
+        assert_eq!(label, "GitTurtle GitHub authorization (github.com)");
+        assert_eq!(*attributes, schema());
+        assert_eq!(secret.content_type(), oo7::ContentType::Text);
+        assert_eq!(secret.as_bytes(), stored_json().as_bytes());
+    }
+
+    #[test]
+    fn a_dismissed_keyring_prompt_stores_nothing() {
+        let fake = Fake {
+            fail: Some(("unlock", || Error::Dismissed)),
+            ..Fake::new(true, &[])
+        };
+        fake.locked.set(true);
+        assert_eq!(
+            message(connect(&fake, &OperationControl::default())),
+            DISMISSED
+        );
+        assert!(!fake.called("create_item"));
+
+        // The prompt that creates a missing default collection, too.
+        let fake = Fake {
+            fail: Some(("default_collection", || Error::Dismissed)),
+            ..Fake::new(false, &[])
+        };
+        assert_eq!(
+            message(connect(&fake, &OperationControl::default())),
+            DISMISSED
+        );
+        assert!(!fake.called("create_item"));
+
+        // The prompt the write itself may show, for a collection locked again meanwhile.
+        let fake = Fake {
+            fail: Some(("create_item", || Error::Dismissed)),
+            ..Fake::new(true, &[])
+        };
+        assert_eq!(
+            message(connect(&fake, &OperationControl::default())),
+            DISMISSED
+        );
+    }
+
+    #[test]
+    fn a_cancel_during_the_unlock_prompt_returns_and_stores_nothing() {
+        let fake = Fake {
+            hang: Some("unlock"),
+            ..Fake::new(true, &[])
+        };
+        fake.locked.set(true);
+        let cancelled = fake.fired();
+        let result = futures::executor::block_on(save_within(
+            &fake,
+            &credential(),
+            &OperationControl::default(),
+            futures::future::pending(),
+            cancelled,
+        ));
+        assert_eq!(message(result), CONNECT_CANCELLED);
+        assert!(fake.called("unlock") && !fake.called("create_item"));
+    }
+
+    #[test]
+    fn a_cancel_that_lands_as_the_prompt_completes_stores_nothing() {
+        // The watch has not fired yet, but the operation is already cancelled when the
+        // person completes the unlock prompt.
+        let fake = Fake::new(true, &[]);
+        fake.locked.set(true);
+        let control = OperationControl::default();
+        control.cancel();
+        assert_eq!(message(connect(&fake, &control)), CONNECT_CANCELLED);
+        assert!(fake.called("unlock") && !fake.called("create_item"));
+    }
+
+    #[test]
+    fn the_cancel_watch_ends_only_once_the_operation_is_cancelled() {
+        use futures::FutureExt as _;
+        assert!(
+            CANCEL_POLL <= Duration::from_millis(25),
+            "Cancel returns within 100 ms"
+        );
+        let control = OperationControl::default();
+        assert!(cancellation(&control).now_or_never().is_none());
+        control.cancel();
+        assert!(cancellation(&control).now_or_never().is_some());
+    }
+
+    #[test]
+    fn a_stop_after_the_write_went_out_says_it_may_remain_stored() {
+        let fake = Fake {
+            hang: Some("create_item"),
+            ..Fake::new(true, &[])
+        };
+        let cancelled = fake.fired();
+        let control = OperationControl::default();
+        let pending = futures::future::pending();
+        let result = futures::executor::block_on(save_within(
+            &fake,
+            &credential(),
+            &control,
+            pending,
+            cancelled,
+        ));
+        assert_eq!(message(result), CONNECT_CANCELLED_SENT);
+
+        let fake = Fake {
+            hang: Some("create_item"),
+            ..Fake::new(true, &[])
+        };
+        let deadline = fake.fired();
+        let pending = futures::future::pending();
+        let result = futures::executor::block_on(save_within(
+            &fake,
+            &credential(),
+            &control,
+            deadline,
+            pending,
+        ));
+        assert_eq!(message(result), CONNECT_DEADLINE_SENT);
+
+        // The deadline during the unlock prompt, before anything was sent.
+        let fake = Fake {
+            hang: Some("unlock"),
+            ..Fake::new(true, &[])
+        };
+        fake.locked.set(true);
+        let deadline = fake.fired();
+        let pending = futures::future::pending();
+        let result = futures::executor::block_on(save_within(
+            &fake,
+            &credential(),
+            &control,
+            deadline,
+            pending,
+        ));
+        assert_eq!(message(result), CONNECT_DEADLINE);
+    }
+
+    #[test]
+    fn a_keyring_that_never_connects_ends_connect_and_disconnect_at_the_deadline() {
+        let control = OperationControl::default();
+        let fake = Fake {
+            hang: Some("connect"),
+            ..Fake::new(true, &[&stored_json()])
+        };
+        let (deadline, pending) = (fake.fired(), futures::future::pending());
+        let result = futures::executor::block_on(save_within(
+            &fake,
+            &credential(),
+            &control,
+            deadline,
+            pending,
+        ));
+        assert_eq!(message(result), CONNECT_DEADLINE);
+
+        let fake = Fake {
+            hang: Some("connect"),
+            ..Fake::new(true, &[&stored_json()])
+        };
+        let (deadline, pending) = (fake.fired(), futures::future::pending());
+        let result = futures::executor::block_on(remove_within(&fake, &control, deadline, pending));
+        assert_eq!(message(result), DISCONNECT_DEADLINE);
+    }
+
+    #[test]
+    fn a_failed_read_back_after_the_write_says_it_may_remain_stored() {
+        for fake in [
+            Fake {
+                fail: Some(("secret", || Error::NotFound("gone".into()))),
+                ..Fake::new(true, &[])
+            },
+            Fake {
+                item_locked: true,
+                ..Fake::new(true, &[])
+            },
+        ] {
+            assert_eq!(
+                message(connect(&fake, &OperationControl::default())),
+                SENT_UNREAD
+            );
+            assert!(fake.called("create_item"));
+        }
+    }
+
+    #[test]
+    fn an_unanswered_write_says_it_may_remain_stored() {
+        let fake = Fake {
+            fail: Some(("create_item", || {
+                Error::ZBus(oo7::zbus::Error::InputOutput(std::sync::Arc::new(
+                    std::io::ErrorKind::TimedOut.into(),
+                )))
+            })),
+            ..Fake::new(true, &[])
+        };
+        assert_eq!(
+            message(connect(&fake, &OperationControl::default())),
+            SENT_UNCONFIRMED
+        );
+    }
+
+    #[test]
+    fn a_read_back_of_another_account_or_token_fails_connect() {
+        let other_token = format!(r#"{{"login":"fixture-reviewer","token":"other-{MARKER}"}}"#);
+        let other_login = format!(r#"{{"login":"other-reviewer","token":"{MARKER}"}}"#);
+        for stored in [other_token, other_login] {
+            let fake = Fake {
+                replace_with: Some(stored),
+                ..Fake::new(true, &[])
+            };
+            assert_eq!(
+                message(connect(&fake, &OperationControl::default())),
+                CHANGED
+            );
+        }
+        // A write the keyring accepted but does not return.
+        let fake = Fake {
+            drop_writes: true,
+            ..Fake::new(true, &[])
+        };
+        assert_eq!(
+            message(connect(&fake, &OperationControl::default())),
+            SAVED_MISSING
+        );
+    }
+
+    /// The only test that takes the process-wide lock, since a test holding it refuses
+    /// every other caller; the other tests drive the flows beneath it.
+    #[test]
+    fn a_second_keyring_call_is_refused_at_once_without_touching_the_keyring() {
+        let control = OperationControl::default();
+        let fake = Fake::new(true, &[&stored_json()]);
+        let held = access().unwrap();
+        assert_eq!(message(load(&fake)), BUSY);
+        assert_eq!(message(save(&fake, &credential(), &control)), BUSY);
+        assert_eq!(message(remove(&fake, &control)), BUSY);
+        assert!(fake.log.borrow().is_empty());
+        drop(held);
+        assert_eq!(load(&fake).unwrap().unwrap().login, "fixture-reviewer");
+
+        // Connect watches the operation's own Cancel through the unlock prompt.
+        let fake = Fake {
+            hang: Some("unlock"),
+            ..Fake::new(true, &[])
+        };
+        fake.locked.set(true);
+        control.cancel();
+        assert_eq!(
+            message(save(&fake, &credential(), &control)),
+            CONNECT_CANCELLED
+        );
+        assert!(!fake.called("create_item"));
+
+        // Disconnect does, too.
+        let fake = Fake {
+            hang: Some("unlock"),
+            ..Fake::new(true, &[&stored_json()])
+        };
+        fake.locked.set(true);
+        assert_eq!(message(remove(&fake, &control)), DISCONNECT_CANCELLED);
+        assert!(!fake.called("delete"));
+    }
+
+    #[test]
+    fn disconnect_removes_every_duplicate_and_checks_none_remains() {
+        let control = OperationControl::default();
+        let fake = Fake::new(true, &[&stored_json(), &stored_json()]);
+        fake.locked.set(true);
+        disconnect(&fake, &control).unwrap();
+        assert!(position(&fake, "unlock") < position(&fake, "delete"));
+        let deletes = fake.log.borrow().iter().filter(|c| **c == "delete").count();
+        assert_eq!(deletes, 2);
+        assert!(fake.items.borrow().iter().all(Option::is_none));
+        assert_eq!(fake.searched.borrow().len(), 2);
+
+        let fake = Fake {
+            delete_keeps: true,
+            ..Fake::new(true, &[&stored_json()])
+        };
+        assert_eq!(message(disconnect(&fake, &control)), REMAINS);
+
+        // Nothing GitTurtle saved can be in a keyring with no default collection.
+        let fake = Fake::new(false, &[]);
+        disconnect(&fake, &control).unwrap();
+        assert!(!fake.called("unlock") && !fake.called("default_collection"));
     }
 }
