@@ -1191,12 +1191,13 @@ impl GitTurtle {
                             // An absent side's two lines where each sentence
                             // keeps one line and the room holds both, and
                             // otherwise its one short line, whole where it
-                            // fits and only then ending in an ellipsis; the
-                            // tooltip and the side's line read keep both
-                            // sentences. Wrapped, the sentences broke into
-                            // ragged pieces at 13 pt in a 461 × 490 window
-                            // ("No image on / this side / The file was /
-                            // added").
+                            // fits, broken after its colon where it takes
+                            // two lines, and only then ending in an
+                            // ellipsis; the tooltip and the side's line read
+                            // keep both sentences. Wrapped, the sentences
+                            // broke into ragged pieces at 13 pt in a 461 ×
+                            // 490 window ("No image on / this side / The
+                            // file was / added").
                             let text = details[i].clone();
                             let InPlace { short, lines, cut } = empty[i]
                                 .as_ref()
@@ -1729,8 +1730,9 @@ pub(crate) fn absent_side(index: usize) -> &'static str {
 /// point of the second line, so it is said in the fewest words, and only
 /// this line ends in an ellipsis where even it does not fit (two lines once
 /// lost the cause at 461 × 490, "No image on / this side / The file…").
-/// `None` for a side with an image or one that says why it could not be
-/// shown.
+/// Its label and its reason meet at its colon, where it breaks wherever it
+/// takes two lines ([`short_lines`]). `None` for a side with an image or
+/// one that says why it could not be shown.
 fn absent_short(index: usize, side: &worker::ImageSide) -> Option<&'static str> {
     (side.image.is_none() && side.message.is_none()).then_some(if index == 0 {
         "No image: file added"
@@ -2480,9 +2482,11 @@ impl InPlace {
     /// Side's reason `text` and any `short` line, laid out at `size` for a
     /// room of one line and of two, `room` wide: its sentences where they
     /// hold that room whole, otherwise its short line where it has one,
-    /// on lines ending at word boundaries ([`clamped_lines`]). Each line
-    /// is measured as its text element shapes it, a pixel inside `room`,
-    /// which layout can round a side's padding into.
+    /// broken after its colon where it does not fit one line
+    /// ([`short_lines`]), on lines ending at word boundaries
+    /// ([`clamped_lines`]). Each line is measured as its text element
+    /// shapes it, a pixel inside `room`, which layout can round a side's
+    /// padding into.
     fn measured(
         text: &str,
         short: Option<&str>,
@@ -2499,7 +2503,7 @@ impl InPlace {
                 .width
         };
         let whole = word_lines(text, room, &width);
-        let brief = short.map(|short| word_lines(short, room, &width));
+        let brief = short.map(|short| short_lines(short, room, &width));
         [1, 2].map(|most| {
             let (lines, cut) = clamped_lines(&whole, most, room, &width);
             match &brief {
@@ -2547,6 +2551,24 @@ fn word_lines(text: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> Vec<
         }
     }
     lines
+}
+
+/// A short line ([`absent_short`]) on the lines it takes `room` wide: one
+/// where it fits whole, and otherwise broken after its colon, its label
+/// ("No image:") ending the first line and its reason ("file added")
+/// starting the next, each wrapped at its spaces ([`word_lines`]), so the
+/// break is the line's own wherever the width falls. Wrapped where the line
+/// ran out, it split the reason at 13 and 18 pt in a 461 × 490 window, "No
+/// image: file / added". In a room of one line its label then ends in the
+/// ellipsis ([`clamped_lines`]).
+fn short_lines(short: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> Vec<String> {
+    let lines = word_lines(short, room, width);
+    match short.split_once(": ") {
+        Some((label, reason)) if lines.len() > 1 => {
+            word_lines(&format!("{label}:\n{reason}"), room, width)
+        }
+        _ => lines,
+    }
 }
 
 /// `lines` ([`word_lines`]) on at most `most` lines, and whether that leaves
@@ -2961,9 +2983,57 @@ pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: 
 mod tests {
     use super::{
         BandLines, Beneath, Drag, Pan, State, ToolbarForms, clamped_lines, layout, note_lines,
-        source_geometry, word_lines,
+        short_lines, source_geometry, word_lines,
     };
     use gpui_kit::{point, px};
+
+    /// An absent side's short line takes one line where it fits whole, and
+    /// otherwise breaks after its colon, its label then its reason, at
+    /// whatever width: wrapped where the line ran out, it split the reason
+    /// at 13 and 18 pt in a 461 × 490 window, "No image: file / added".
+    /// Where its reason does not fit a line either, the reason wraps between
+    /// words and two lines end in an ellipsis; in a room of one line the
+    /// label ends in it. Every character here is 6 px wide.
+    #[test]
+    fn a_short_line_breaks_after_its_colon() {
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let chars = |n: f32| px(6. * n);
+        let added = "No image: file added";
+        assert_eq!(short_lines(added, chars(20.), &width), [added]);
+        assert_eq!(
+            word_lines(added, chars(14.), &width),
+            ["No image: file", "added"],
+            "wrapped where the line runs out, the reason splits"
+        );
+        for room in [14., 12., 10.] {
+            assert_eq!(
+                short_lines(added, chars(room), &width),
+                ["No image:", "file added"],
+                "in a room of {room} characters"
+            );
+        }
+        assert_eq!(
+            short_lines("No image: file deleted", chars(18.), &width),
+            ["No image:", "file deleted"]
+        );
+        let narrow = short_lines(added, chars(9.), &width);
+        assert_eq!(narrow, ["No image:", "file", "added"]);
+        assert_eq!(
+            clamped_lines(&narrow, 2, chars(9.), &width),
+            (vec!["No image:".to_owned(), "file…".to_owned()], true),
+            "a reason no line holds whole ends the second line in an ellipsis"
+        );
+        assert_eq!(
+            clamped_lines(
+                &short_lines(added, chars(14.), &width),
+                1,
+                chars(14.),
+                &width
+            ),
+            (vec!["No image…".to_owned()], true),
+            "a room of one line"
+        );
+    }
 
     /// A reason in an image's place wraps only between words and takes at
     /// most the lines its room holds, two at most: the lines before its last
@@ -4522,6 +4592,145 @@ mod render_tests {
             }
             cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         }
+    }
+
+    /// Where an absent side's short line takes two lines in its image's
+    /// place, it breaks after its colon, "No image:" then "file added" or
+    /// "file deleted", and where it takes one, that line is the whole short
+    /// line where the room holds it and otherwise "No image…", at 11, 13 and
+    /// 18 pt in 461 × 490 and 1480 × 973 windows at scales 2 and 1.25;
+    /// where the sentences each keep a line, they are drawn. Where even the reason does not fit its line, as "file deleted"
+    /// at 13 and 18 pt in 461 × 490, it ends in an ellipsis after whole
+    /// words, both sentences in the tooltip. Wrapped where the line ran out,
+    /// Before read "No image: file / added" Side by side at 13 and 18 pt in
+    /// a 461 × 490 window, at scale 1.25 too.
+    #[gpui::test]
+    async fn an_absent_sides_short_line_breaks_after_its_colon(cx: &mut TestAppContext) {
+        let png = crate::system_preview::tests::png(Some(b"image"));
+        let windows = [
+            (11, 461., 490.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (11, 1480., 973.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ];
+        let mut met = std::collections::BTreeSet::new();
+        for (absent, steps, short, reason, whole) in [
+            (
+                0,
+                vec![Some(png.as_slice())],
+                "No image: file added",
+                "file added",
+                "No image on this side\nThe file was added",
+            ),
+            (
+                1,
+                vec![Some(png.as_slice()), None],
+                "No image: file deleted",
+                "file deleted",
+                "No image on this side\nThe file was deleted",
+            ),
+        ] {
+            let (_fixture, app, cx) = history_window_from(&mut *cx, image_commits(&steps)).await;
+            cx.update(|_, cx| {
+                appearance::ThemeChoice::Midnight.apply(None, cx);
+                cx.set_reduce_motion(true);
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            settle(&app, cx).await;
+            for (scale, (text, width, height)) in [2., 1.25]
+                .into_iter()
+                .flat_map(|scale| windows.map(|window| (scale, window)))
+            {
+                let at =
+                    format!("side {absent} at {text} pt in {width} × {height} at scale {scale}");
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                let drawn = super::IN_PLACE
+                    .with(|drawn| drawn.borrow()[absent].clone())
+                    .unwrap_or_else(|| panic!("{at}: the side says why in its image's place"));
+                let lines = drawn.lines;
+                let shows = |drawn: &str, cx: &mut VisualTestContext| {
+                    cx.debug_bounds(format!("image-side-empty-{absent}: {drawn}").leak())
+                        .is_some()
+                };
+                if shows(short, cx) {
+                    match lines.as_slice() {
+                        [line] => {
+                            // The whole short line where the side's room
+                            // holds it, otherwise its label before the
+                            // ellipsis.
+                            let area = cx
+                                .debug_bounds("image-canvas-area")
+                                .expect("the image's area");
+                            let fits = cx.update(|window, _| {
+                                let room = area.size.width / 2. - window.rem_size() * 1.5;
+                                let weight = window.text_style().font_weight;
+                                crate::views::shaped_width(
+                                    short,
+                                    appearance::ui_text(11.),
+                                    weight,
+                                    window,
+                                ) <= room - px(1.)
+                            });
+                            assert_eq!(
+                                line,
+                                if fits { short } else { "No image…" },
+                                "{at}: one line is the whole short line or its label"
+                            );
+                            met.insert("one line");
+                        }
+                        [label, rest] => {
+                            assert_eq!(label, "No image:", "{at}: {lines:?} break after the colon");
+                            met.insert("two lines");
+                            if rest != reason {
+                                // Where even the reason does not fit its
+                                // line, it ends in an ellipsis after whole
+                                // words, both sentences in the tooltip.
+                                assert!(
+                                    rest.strip_suffix('…').is_some_and(|kept| {
+                                        reason.starts_with(&format!("{kept} "))
+                                    }),
+                                    "{at}: {lines:?} give the reason the second line"
+                                );
+                                assert_eq!(
+                                    drawn.tooltip.as_deref(),
+                                    Some(whole),
+                                    "{at}: the tooltip keeps both sentences"
+                                );
+                                met.insert("reason cut");
+                            }
+                            if absent == 0 && text == 13 && width < 500. && scale == 1.25 {
+                                assert_eq!(rest, reason, "{at}: QA's frame draws the reason whole");
+                                met.insert("QA's frame");
+                            }
+                        }
+                        _ => panic!("{at}: {lines:?} take one or two lines"),
+                    }
+                } else {
+                    assert!(
+                        shows(whole, cx),
+                        "{at}: draws the sentences or the short line"
+                    );
+                    assert_eq!(
+                        lines,
+                        whole.split('\n').collect::<Vec<_>>(),
+                        "{at}: each sentence keeps a line"
+                    );
+                    met.insert("sentences");
+                }
+            }
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        }
+        assert!(
+            ["two lines", "QA's frame", "reason cut", "sentences"]
+                .iter()
+                .all(|case| met.contains(case)),
+            "the walk meets each case: {met:?}"
+        );
     }
 
     /// A side whose image could not be shown says why in its image's place
