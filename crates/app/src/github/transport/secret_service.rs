@@ -20,7 +20,7 @@ use std::{
     cell::Cell,
     future::Future,
     pin::pin,
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, TryLockError},
 };
 
 /// The macOS item's service and account, so `secret-tool` and other Secret Service
@@ -74,7 +74,15 @@ const DISCONNECT_CANCELLED_SENT: &str = "Disconnect cancelled; GitHub authorizat
 /// rather than waiting behind, or opening, a second keyring prompt.
 static ACCESS: Mutex<()> = Mutex::new(());
 fn access() -> Result<MutexGuard<'static, ()>> {
-    ACCESS.try_lock().map_err(|_| anyhow!(BUSY))
+    match ACCESS.try_lock() {
+        Ok(access) => Ok(access),
+        // A panic during a call (oo7 0.6.0 unwraps a prompt's reply, so a keyring daemon
+        // that exits mid-prompt panics; the operation executor catches it) poisons the
+        // lock as the guard unwinds, but releases it. The lock guards no data, so recover
+        // it rather than refuse every later call.
+        Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => bail!(BUSY),
+    }
 }
 
 /// The Secret Service calls the flows make. `Session` is one connection with its
@@ -117,15 +125,72 @@ pub(super) trait Backend {
 /// (which unlocks before every read).
 pub(super) struct DesktopKeyring(());
 impl DesktopKeyring {
+    /// A test build refuses, before any bus call, unless a test started a private bus
+    /// for it (`private_test_bus`).
     pub(super) fn new() -> Result<Self> {
+        #[cfg(test)]
+        ensure!(
+            on_private_test_bus(),
+            "A test reaches a desktop keyring only on a private bus named by {FIXTURE_BUS}"
+        );
         Ok(Self(()))
     }
+}
+/// Checked again before each connection, since zbus reads the session bus address anew
+/// for every one.
+#[cfg(test)]
+fn on_private_test_bus() -> bool {
+    private_test_bus(
+        std::env::var_os(FIXTURE_BUS).as_deref(),
+        std::env::var_os("DBUS_SESSION_BUS_ADDRESS").as_deref(),
+        &std::env::temp_dir(),
+    )
+    .is_some()
+}
+/// Names the private session bus a hermetic test started for its own keyring.
+#[cfg(test)]
+const FIXTURE_BUS: &str = "GITTURTLE_KEYRING_FIXTURE_BUS";
+/// Whether the session bus is one a test started, so no test reaches the developer's own
+/// keyring: the fixture variable names it exactly, as a single `unix:path=` address (with
+/// at most a GUID after it) whose socket is under the system temp directory.
+#[cfg(test)]
+fn private_test_bus(
+    fixture: Option<&std::ffi::OsStr>,
+    session: Option<&std::ffi::OsStr>,
+    temp: &std::path::Path,
+) -> Option<()> {
+    use std::{
+        os::unix::fs::FileTypeExt as _,
+        path::{Component, Path},
+    };
+    let (fixture, session) = (fixture?, session?);
+    let address = session.to_str().filter(|_| fixture == session)?;
+    let mut keys = address.strip_prefix("unix:path=")?.split(',');
+    let path = Path::new(keys.next()?);
+    if address.contains([';', '%']) || !keys.all(|key| key.starts_with("guid=")) {
+        return None;
+    }
+    if !path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+        return None;
+    }
+    let socket = std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_socket();
+    let directory = std::fs::canonicalize(path.parent()?).ok()?;
+    (socket && directory.starts_with(std::fs::canonicalize(temp).ok()?)).then_some(())
 }
 impl Backend for DesktopKeyring {
     type Session = oo7::dbus::Service;
     type Collection = oo7::dbus::Collection;
     type Item = oo7::dbus::Item;
     async fn connect(&self) -> Result<Self::Session, Error> {
+        #[cfg(test)]
+        if !on_private_test_bus() {
+            return Err(Error::ZBus(oo7::zbus::Error::Address(format!(
+                "a test connects only to a private bus named by {FIXTURE_BUS}"
+            ))));
+        }
         oo7::dbus::Service::new().await
     }
     async fn stored_collection(
@@ -1076,6 +1141,16 @@ mod tests {
         drop(held);
         assert_eq!(load(&fake).unwrap().unwrap().login, "fixture-reviewer");
 
+        // A panic during a call poisons the lock as its guard unwinds; later calls run.
+        std::thread::spawn(|| {
+            let _access = access().unwrap();
+            panic!("a keyring call panicked");
+        })
+        .join()
+        .unwrap_err();
+        assert!(ACCESS.is_poisoned());
+        assert_eq!(load(&fake).unwrap().unwrap().login, "fixture-reviewer");
+
         // Connect watches the operation's own Cancel through the unlock prompt.
         let fake = Fake {
             hang: Some("unlock"),
@@ -1121,5 +1196,187 @@ mod tests {
         let fake = Fake::new(false, &[]);
         disconnect(&fake, &control).unwrap();
         assert!(!fake.called("unlock") && !fake.called("default_collection"));
+    }
+
+    /// Runs Connect (`connect`) or Disconnect against `fake` and stops it, by the deadline
+    /// or by Cancel, once the fake's `hang` call starts.
+    fn stopped(fake: &Fake, connect: bool, by_deadline: bool) -> String {
+        use futures::FutureExt as _;
+        let (fired, never) = (
+            fake.fired().boxed_local(),
+            futures::future::pending().boxed_local(),
+        );
+        let (deadline, cancelled) = if by_deadline {
+            (fired, never)
+        } else {
+            (never, fired)
+        };
+        let control = OperationControl::default();
+        message(futures::executor::block_on(async {
+            match connect {
+                true => save_within(fake, &credential(), &control, deadline, cancelled).await,
+                false => remove_within(fake, &control, deadline, cancelled).await,
+            }
+        }))
+    }
+
+    #[test]
+    fn no_message_carries_the_token_a_keyring_error_or_another_platforms_store() {
+        let control = OperationControl::default();
+        let fake = |locked: bool| {
+            let fake = Fake::new(true, &[&stored_json()]);
+            fake.locked.set(locked);
+            fake
+        };
+        let hanging = |call, locked| Fake {
+            hang: Some(call),
+            ..fake(locked)
+        };
+        let failing = |call, error: fn() -> Error, locked| Fake {
+            fail: Some((call, error)),
+            ..fake(locked)
+        };
+        let detail: fn() -> Error = || Error::NotFound(format!("keyring detail {MARKER}"));
+        let unanswered: fn() -> Error = || {
+            Error::ZBus(oo7::zbus::Error::Address(format!(
+                "keyring detail {MARKER}"
+            )))
+        };
+        let dismissed: fn() -> Error = || Error::Dismissed;
+        let mut messages = vec![
+            message(read(&fake(true))),
+            message(read(&Fake::new(true, &[&stored_json(), &stored_json()]))),
+            message(read(&Fake::new(true, &[&format!("{{{MARKER}")]))),
+            message(read(&failing("connect", unanswered, false))),
+            message(read(&failing("secret", detail, false))),
+            message(connect(&failing("unlock", dismissed, true), &control)),
+            message(connect(&failing("unlock", detail, true), &control)),
+            message(connect(&failing("create_item", detail, false), &control)),
+            message(connect(&failing("secret", detail, false), &control)),
+            message(connect(
+                &Fake {
+                    drop_writes: true,
+                    ..Fake::new(true, &[])
+                },
+                &control,
+            )),
+            message(connect(
+                &Fake {
+                    replace_with: Some(format!(r#"{{"login":"x","token":"{MARKER}-2"}}"#)),
+                    ..fake(false)
+                },
+                &control,
+            )),
+            message(disconnect(&failing("unlock", dismissed, true), &control)),
+            message(disconnect(&failing("delete", detail, false), &control)),
+            message(disconnect(
+                &Fake {
+                    delete_keeps: true,
+                    ..fake(false)
+                },
+                &control,
+            )),
+        ];
+        let reading = hanging("secret", false);
+        let deadline = reading.fired();
+        messages.push(message(futures::executor::block_on(read_within(
+            &reading, deadline,
+        ))));
+        for connect in [true, false] {
+            for by_deadline in [true, false] {
+                messages.push(stopped(&hanging("unlock", true), connect, by_deadline));
+                let write = if connect { "create_item" } else { "delete" };
+                messages.push(stopped(&hanging(write, false), connect, by_deadline));
+            }
+        }
+        // A second caller gets this one; the test that holds the lock checks it does.
+        messages.push(BUSY.to_owned());
+
+        let every = [
+            NO_KEYRING,
+            LOCKED,
+            READ_DEADLINE,
+            READ_FAILED,
+            INVALID,
+            DUPLICATES,
+            BUSY,
+            DISMISSED,
+            SAVE_REFUSED,
+            SAVED_MISSING,
+            CHANGED,
+            SENT_UNCONFIRMED,
+            SENT_UNREAD,
+            CONNECT_DEADLINE,
+            CONNECT_DEADLINE_SENT,
+            CONNECT_CANCELLED,
+            CONNECT_CANCELLED_SENT,
+            REMOVE_DISMISSED,
+            REMOVE_FAILED,
+            REMAINS,
+            DISCONNECT_DEADLINE,
+            DISCONNECT_DEADLINE_SENT,
+            DISCONNECT_CANCELLED,
+            DISCONNECT_CANCELLED_SENT,
+        ];
+        let seen = messages.iter().map(String::as_str).collect();
+        assert_eq!(std::collections::BTreeSet::from(every), seen);
+        for message in &messages {
+            let lower = message.to_lowercase();
+            assert!(!message.contains(MARKER) && !lower.contains("keyring detail"));
+            assert!(!lower.contains("keychain") && !lower.contains("encrypt"));
+        }
+    }
+
+    #[test]
+    fn a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus() {
+        use std::{ffi::OsStr, os::unix::net::UnixListener};
+        // The constructor consults the guard (it never touches a bus); `connect` is left
+        // untested, since a test calling it could reach a real bus without its guard.
+        assert_eq!(DesktopKeyring::new().is_ok(), on_private_test_bus());
+        let temp = std::env::temp_dir();
+        let private = tempfile::tempdir().unwrap();
+        let socket = private.path().join("bus");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let file = private.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let link = private.path().join("link");
+        std::os::unix::fs::symlink(&socket, &link).unwrap();
+        let address = |path: &std::path::Path| format!("unix:path={}", path.display());
+        let bus = address(&socket);
+        let accepts = |fixture: Option<&str>, session: Option<&str>, temp: &std::path::Path| {
+            private_test_bus(fixture.map(OsStr::new), session.map(OsStr::new), temp).is_some()
+        };
+        assert!(accepts(Some(&bus), Some(&bus), &temp));
+        let with_guid = format!("{bus},guid=0123456789abcdef0123456789abcdef");
+        assert!(accepts(Some(&with_guid), Some(&with_guid), &temp));
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let escaped = format!(
+            "unix:path={}/../{}/bus",
+            private.path().display(),
+            private.path().file_name().unwrap().to_str().unwrap()
+        );
+        let refused = [
+            (None, None),
+            (None, Some(bus.clone())),
+            (Some(bus.clone()), None),
+            (Some(format!("{bus},guid=00")), Some(bus.clone())),
+            (Some(address(&file)), Some(address(&file))),
+            (Some(address(&link)), Some(address(&link))),
+            (Some(escaped.clone()), Some(escaped)),
+            (Some(format!("{bus};{bus}")), Some(format!("{bus};{bus}"))),
+            (
+                Some(format!("{bus},abstract=x")),
+                Some(format!("{bus},abstract=x")),
+            ),
+            (
+                Some("unix:abstract=bus".into()),
+                Some("unix:abstract=bus".into()),
+            ),
+        ];
+        for (fixture, session) in refused {
+            assert!(!accepts(fixture.as_deref(), session.as_deref(), &temp));
+        }
+        assert!(!accepts(Some(&bus), Some(&bus), elsewhere.path()));
     }
 }
