@@ -9234,6 +9234,27 @@ pub(crate) mod tests {
         draw(cx);
     }
 
+    /// Holds quiet reads from starting for the rest of the test, once one
+    /// already running has landed, so state a test sets by hand where a
+    /// quiet read installs the repository's own, as the profile or the
+    /// working status, stays as set. [`settle`] lands the reads the window
+    /// awaits as tasks, but not the rescan the watcher's setup asks for as
+    /// it lands, nor the read a fixture's own writes ask for once their
+    /// events settle, and either lands at whatever park comes next: on a
+    /// macOS host one replaced a profile set to "Al" with the fixture's
+    /// identity, "Fixture", before the header drew it.
+    pub(crate) fn hold_quiet_reads_for_test(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(true)));
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_running()) {
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        panic!("a running quiet read never landed");
+    }
+
     /// A 1000 × 680 window on a one-commit fixture, in History with the
     /// commit selected. Keep the returned directory until the test ends.
     pub(crate) async fn history_window(
@@ -21559,6 +21580,10 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
     ) {
         let (_fixture, app, cx) = working_window(cx).await;
+        // The repository's name, its branch and the profile are set by hand
+        // below, and a quiet read landing after would put the fixture's back:
+        // on macOS the fixture's identity replaced "Al" before its read.
+        hold_quiet_reads_for_test(&app, cx);
         let path = app
             .read_with(cx, |app, _| app.path.clone())
             .expect("a repository");

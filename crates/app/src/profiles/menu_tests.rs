@@ -3,7 +3,7 @@
 //! (`menu-item: <label> · <role>`), and each label's drawn style.
 use super::*;
 use crate::native_accessibility::menu_tests::menu_label_style;
-use crate::views::tests::{history_window, settle};
+use crate::views::tests::{history_window, hold_quiet_reads_for_test, settle};
 use core::prelude::v1::test;
 use gitturtle_core::GitProfile;
 
@@ -42,15 +42,17 @@ async fn open_menu(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     open_menu_as(app, cx, "GitTurtle QA", "qa@example.invalid").await;
 }
 
-/// Open the menu with `name` and `email` as the identity Git authors with.
-/// It is set just before the click, so a quiet refresh of the fixture's own
-/// identity cannot replace it first.
+/// Open the menu with `name` and `email` as the identity Git authors with,
+/// quiet reads held so none installs the fixture's own identity before the
+/// menu is built: it is built at a draw after the click, and the click parks
+/// between its press and its release.
 async fn open_menu_as(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
     name: &str,
     email: &str,
 ) {
+    hold_quiet_reads_for_test(app, cx);
     let picker = cx
         .debug_bounds("profile-button")
         .expect("the profile picker");
