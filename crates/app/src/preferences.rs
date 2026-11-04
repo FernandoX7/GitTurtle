@@ -61,6 +61,14 @@ pub struct AppSettings {
     /// Linux: draw code in the desktop's fontconfig `monospace` family when
     /// it loads and is monospace; the bundled DejaVu Sans Mono otherwise.
     pub system_code_font: bool,
+    /// Settings' Reduce motion: follow the desktop's (or macOS's) reduced
+    /// motion, or turn it on or off whatever the desktop asks
+    /// (`native_accessibility::sync_preferences`).
+    pub reduce_motion: DisplayChoice,
+    /// Settings' Increase contrast: follow the desktop's (or macOS's)
+    /// request for more contrast, or turn More contrast on or off whatever
+    /// the desktop asks.
+    pub increase_contrast: DisplayChoice,
     pub reopen_last: bool,
     pub default_branch: String,
     /// Show the project list on the far left of the window.
@@ -82,12 +90,31 @@ impl Default for AppSettings {
             interface_text_size: crate::appearance::DEFAULT_INTERFACE_TEXT_SIZE,
             code_text_size: crate::appearance::DEFAULT_CODE_TEXT_SIZE,
             system_code_font: false,
+            reduce_motion: DisplayChoice::Follow,
+            increase_contrast: DisplayChoice::Follow,
             reopen_last: true,
             default_branch: "main".into(),
             project_pane: false,
             project_pane_width: 240.,
         }
     }
+}
+
+/// A display preference the person can leave to the desktop or decide
+/// themselves. Stored as `"follow"`, `"on"` or `"off"`; a value this build
+/// does not know loads as [`Self::Follow`]. The fields holding it were added
+/// to version 6 without a version bump: a store without them loads as
+/// Follow, and an older build reads a newer store and saves it without them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayChoice {
+    On,
+    Off,
+    /// Whatever the desktop (macOS's accessibility settings, or the Linux
+    /// desktop's settings portal) asks. Last, as serde's catch-all must be.
+    #[default]
+    #[serde(other)]
+    Follow,
 }
 
 impl AppSettings {
@@ -1362,6 +1389,146 @@ mod tests {
                 ..saved.settings
             }
         );
+    }
+
+    /// A version-6 store written before Reduce motion and Increase contrast
+    /// loads both as Follow, its other settings as stored, and loading writes
+    /// nothing: the fields are additive, so no version bump.
+    #[test]
+    fn a_version_six_store_without_the_display_choices_follows_the_desktop() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let original = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 6,
+            "settings": {"theme": "nord", "density": "compact", "system_code_font": true},
+            "custom_themes": []
+        }))
+        .unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(
+            (
+                loaded.settings.reduce_motion,
+                loaded.settings.increase_contrast
+            ),
+            (DisplayChoice::Follow, DisplayChoice::Follow)
+        );
+        assert_eq!(
+            loaded.settings,
+            AppSettings {
+                theme: ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                density: Density::Compact,
+                system_code_font: true,
+                ..AppSettings::default()
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+    }
+
+    /// "on" and "off" are saved as those strings by a settings save, read back
+    /// as they were saved, and carried through by the writers that reread the
+    /// store and merge one section (drafts, recents), still at version 6.
+    #[test]
+    fn display_choices_round_trip_through_a_settings_save_and_every_merge() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let project = directory.0.join("project");
+        fs::create_dir(&project).unwrap();
+        for (motion, contrast) in [
+            (DisplayChoice::On, DisplayChoice::Off),
+            (DisplayChoice::Off, DisplayChoice::On),
+            (DisplayChoice::Follow, DisplayChoice::Follow),
+        ] {
+            let at = format!("{motion:?} motion, {contrast:?} contrast");
+            let settings = AppSettings {
+                reduce_motion: motion,
+                increase_contrast: contrast,
+                density: Density::Compact,
+                ..AppSettings::default()
+            };
+            let saved = Preferences::save_settings_at(&settings, &path).unwrap();
+            assert_eq!(saved.settings, settings, "{at}: the save's reply");
+            let stored = |path: &Path| -> serde_json::Value {
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+            };
+            let word = |choice: DisplayChoice| match choice {
+                DisplayChoice::Follow => "follow",
+                DisplayChoice::On => "on",
+                DisplayChoice::Off => "off",
+            };
+            assert_eq!(stored(&path)["version"], STORE_VERSION, "{at}");
+            assert_eq!(
+                (
+                    &stored(&path)["settings"]["reduce_motion"],
+                    &stored(&path)["settings"]["increase_contrast"]
+                ),
+                (
+                    &serde_json::json!(word(motion)),
+                    &serde_json::json!(word(contrast))
+                ),
+                "{at}: stored as words"
+            );
+            assert_eq!(
+                Preferences::load_from(&path).unwrap().settings,
+                settings,
+                "{at}: read back"
+            );
+            // Writers of other sections reread the store and keep the choices.
+            let mut stale = Preferences::default();
+            stale.remember_at(&project, &path).unwrap();
+            assert_eq!(stale.settings, settings, "{at}: a recent-project save");
+            Preferences::save_commit_drafts_at(
+                &HashMap::from([(
+                    project.canonicalize().unwrap(),
+                    CommitDraft {
+                        title: "Draft".into(),
+                        description: String::new(),
+                    },
+                )]),
+                &path,
+            )
+            .unwrap();
+            assert_eq!(
+                Preferences::load_from(&path).unwrap().settings,
+                settings,
+                "{at}: after a draft save"
+            );
+        }
+    }
+
+    /// A choice this build does not know, such as a later build's, loads as
+    /// Follow beside the other settings, without failing the store or
+    /// rewriting it, and the next save goes through.
+    #[test]
+    fn an_unknown_display_choice_follows_the_desktop_without_failing_the_store() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let original = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 6,
+            "settings": {
+                "theme": "nord",
+                "reduce_motion": "sometimes",
+                "increase_contrast": "on"
+            },
+            "custom_themes": []
+        }))
+        .unwrap();
+        fs::write(&path, &original).unwrap();
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert_eq!(
+            loaded.settings,
+            AppSettings {
+                theme: ThemeSelection::BuiltIn(ThemeChoice::Nord),
+                reduce_motion: DisplayChoice::Follow,
+                increase_contrast: DisplayChoice::On,
+                ..AppSettings::default()
+            }
+        );
+        assert_eq!(fs::read(&path).unwrap(), original, "loading never writes");
+        Preferences::save_commit_drafts_at(&HashMap::new(), &path).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["settings"]["reduce_motion"], "follow");
+        assert_eq!(stored["settings"]["increase_contrast"], "on");
     }
 
     /// A missing store is a first launch: it takes the desktop's settings, and a write that
