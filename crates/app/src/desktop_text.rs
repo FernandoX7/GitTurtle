@@ -627,6 +627,17 @@ pub(super) struct Observed {
     pub text_scale: Option<f64>,
     /// fontconfig's `antialias|rgba` defaults for the generic sans family.
     pub fontconfig: Option<String>,
+    /// The portal's appearance `reduced-motion`: 0 no preference, 1 reduce.
+    pub reduced_motion: Option<u32>,
+    /// The portal's appearance `contrast`: 0 normal, 1 higher.
+    pub contrast: Option<u32>,
+    /// GNOME a11y `reduced-motion` (GNOME 50 and later): "no-preference" or
+    /// "reduce".
+    pub gnome_reduced_motion: Option<String>,
+    /// GNOME a11y `high-contrast`.
+    pub high_contrast: Option<bool>,
+    /// GNOME `enable-animations`; false turns animation off.
+    pub enable_animations: Option<bool>,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -709,7 +720,7 @@ pub(super) fn rendering_from_fontconfig(defaults: &str) -> Option<gpui_kit::Text
 #[cfg(target_os = "linux")]
 mod portal {
     use super::{DesktopText, Observed};
-    use ashpd::{desktop::settings::Settings, zbus, zvariant::OwnedValue};
+    use ashpd::{desktop::settings::Settings, zbus, zvariant::Value};
     use futures::channel::mpsc::{self, Receiver, Sender};
     use futures::{FutureExt as _, StreamExt as _};
     use gpui_kit::BackgroundExecutor;
@@ -724,6 +735,28 @@ mod portal {
     const FONT_RENDERING: &str = "font-rendering";
     const FONT_ANTIALIASING: &str = "font-antialiasing";
     const TEXT_SCALING_FACTOR: &str = "text-scaling-factor";
+    const ENABLE_ANIMATIONS: &str = "enable-animations";
+    const APPEARANCE: &str = "org.freedesktop.appearance";
+    const A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
+    /// In both the appearance and the GNOME a11y namespace.
+    const REDUCED_MOTION: &str = "reduced-motion";
+    const CONTRAST: &str = "contrast";
+    const HIGH_CONTRAST: &str = "high-contrast";
+
+    /// The keys a signal set, one bit each.
+    type Keys = u16;
+    const SET_FONT_RENDERING: Keys = 1;
+    const SET_FONT_ANTIALIASING: Keys = 1 << 1;
+    const SET_TEXT_SCALE: Keys = 1 << 2;
+    const SET_REDUCED_MOTION: Keys = 1 << 3;
+    const SET_CONTRAST: Keys = 1 << 4;
+    const SET_GNOME_REDUCED_MOTION: Keys = 1 << 5;
+    const SET_HIGH_CONTRAST: Keys = 1 << 6;
+    const SET_ENABLE_ANIMATIONS: Keys = 1 << 7;
+    /// The text keys. Only a change to one of them can need fontconfig's
+    /// rendering defaults; motion and contrast keys never run `fc-match`.
+    const TEXT_KEYS: Keys = SET_FONT_RENDERING | SET_FONT_ANTIALIASING | SET_TEXT_SCALE;
+
     const PORTAL_WAIT: Duration = Duration::from_millis(250);
     const FONTCONFIG_WAIT: Duration = Duration::from_millis(100);
     const FONTCONFIG_BYTES: usize = 128;
@@ -866,9 +899,10 @@ mod portal {
     }
 
     struct Session {
-        // Retain the private connection only for this subscription's lifetime.
-        _settings: Settings,
-        changes: zbus::proxy::SignalStream<'static>,
+        // Retain the private connection only for this subscription's lifetime;
+        // tests supply a session without one.
+        _settings: Option<Settings>,
+        changes: futures::stream::BoxStream<'static, zbus::Message>,
         observed: Observed,
     }
 
@@ -880,28 +914,50 @@ mod portal {
             .await
             .ok()?;
         let settings = Settings::with_connection(connection).await.ok()?;
-        // Subscribe first, on one ordered stream. Separate per-key streams can
+        // Subscribe first, on one ordered stream of every namespace, which
+        // `change` selects from. Separate per-key or per-namespace streams can
         // reorder coupled font-rendering/antialiasing changes.
         let mut changes = settings
-            .receive_signal_with_args("SettingChanged", &[(0, INTERFACE)])
+            .receive_signal("SettingChanged")
             .await
-            .ok()?;
+            .ok()?
+            .boxed();
         let observed = snapshot(&mut changes, async {
-            let (font_rendering, antialiasing, text_scale) = futures::join!(
+            // A key the backend lacks answers an error, and reads as absent.
+            let (
+                font_rendering,
+                antialiasing,
+                text_scale,
+                enable_animations,
+                reduced_motion,
+                contrast,
+                gnome_reduced_motion,
+                high_contrast,
+            ) = futures::join!(
                 settings.read(INTERFACE, FONT_RENDERING),
                 settings.read(INTERFACE, FONT_ANTIALIASING),
                 settings.read(INTERFACE, TEXT_SCALING_FACTOR),
+                settings.read(INTERFACE, ENABLE_ANIMATIONS),
+                settings.read(APPEARANCE, REDUCED_MOTION),
+                settings.read(APPEARANCE, CONTRAST),
+                settings.read(A11Y_INTERFACE, REDUCED_MOTION),
+                settings.read(A11Y_INTERFACE, HIGH_CONTRAST),
             );
             Observed {
                 font_rendering: font_rendering.ok(),
                 antialiasing: antialiasing.ok(),
                 text_scale: text_scale.ok(),
                 fontconfig: None,
+                reduced_motion: reduced_motion.ok(),
+                contrast: contrast.ok(),
+                gnome_reduced_motion: gnome_reduced_motion.ok(),
+                high_contrast: high_contrast.ok(),
+                enable_animations: enable_animations.ok(),
             }
         })
         .await;
         Some(Session {
-            _settings: settings,
+            _settings: Some(settings),
             changes,
             observed,
         })
@@ -937,39 +993,107 @@ mod portal {
         // Consume signals while the reads are in flight, so a full bounded
         // signal queue cannot block delivery of the read replies. A signal
         // received during the snapshot wins over that key's earlier read.
-        if seen & 1 != 0 {
-            initial.font_rendering = updates.font_rendering;
+        fn take<T>(seen: Keys, key: Keys, read: &mut T, signalled: T) {
+            if seen & key != 0 {
+                *read = signalled;
+            }
         }
-        if seen & 2 != 0 {
-            initial.antialiasing = updates.antialiasing;
-        }
-        if seen & 4 != 0 {
-            initial.text_scale = updates.text_scale;
-        }
+        let Observed {
+            font_rendering,
+            antialiasing,
+            text_scale,
+            fontconfig: _,
+            reduced_motion,
+            contrast,
+            gnome_reduced_motion,
+            high_contrast,
+            enable_animations,
+        } = updates;
+        take(
+            seen,
+            SET_FONT_RENDERING,
+            &mut initial.font_rendering,
+            font_rendering,
+        );
+        take(
+            seen,
+            SET_FONT_ANTIALIASING,
+            &mut initial.antialiasing,
+            antialiasing,
+        );
+        take(seen, SET_TEXT_SCALE, &mut initial.text_scale, text_scale);
+        take(
+            seen,
+            SET_REDUCED_MOTION,
+            &mut initial.reduced_motion,
+            reduced_motion,
+        );
+        take(seen, SET_CONTRAST, &mut initial.contrast, contrast);
+        take(
+            seen,
+            SET_GNOME_REDUCED_MOTION,
+            &mut initial.gnome_reduced_motion,
+            gnome_reduced_motion,
+        );
+        take(
+            seen,
+            SET_HIGH_CONTRAST,
+            &mut initial.high_contrast,
+            high_contrast,
+        );
+        take(
+            seen,
+            SET_ENABLE_ANIMATIONS,
+            &mut initial.enable_animations,
+            enable_animations,
+        );
         initial
     }
 
-    fn change(observed: &mut Observed, message: zbus::Message) -> u8 {
+    /// Applies one `SettingChanged` signal and returns the key it set, or
+    /// nothing for another namespace's key, an unknown key or a malformed
+    /// signal. The stream carries every namespace, so each key is matched
+    /// with its own; the value is read borrowed from the message, so a
+    /// signal this ignores copies nothing.
+    fn change(observed: &mut Observed, message: zbus::Message) -> Keys {
         let body = message.body();
-        let Ok((namespace, key, value)) = body.deserialize::<(&str, &str, OwnedValue)>() else {
+        let Ok((namespace, key, value)) = body.deserialize::<(&str, &str, Value<'_>)>() else {
             return 0;
         };
-        if namespace != INTERFACE {
-            return 0;
-        }
+        let text = |value: &Value<'_>| <&str>::try_from(value).ok().map(str::to_owned);
         // Invalid values clear the old preference so resolution can fall back.
-        match key {
-            FONT_RENDERING => {
-                observed.font_rendering = <&str>::try_from(&value).ok().map(str::to_owned);
-                1
+        match (namespace, key) {
+            (INTERFACE, FONT_RENDERING) => {
+                observed.font_rendering = text(&value);
+                SET_FONT_RENDERING
             }
-            FONT_ANTIALIASING => {
-                observed.antialiasing = <&str>::try_from(&value).ok().map(str::to_owned);
-                2
+            (INTERFACE, FONT_ANTIALIASING) => {
+                observed.antialiasing = text(&value);
+                SET_FONT_ANTIALIASING
             }
-            TEXT_SCALING_FACTOR => {
+            (INTERFACE, TEXT_SCALING_FACTOR) => {
                 observed.text_scale = f64::try_from(&value).ok();
-                4
+                SET_TEXT_SCALE
+            }
+            (INTERFACE, ENABLE_ANIMATIONS) => {
+                observed.enable_animations = bool::try_from(&value).ok();
+                SET_ENABLE_ANIMATIONS
+            }
+            (APPEARANCE, REDUCED_MOTION) => {
+                observed.reduced_motion = u32::try_from(&value).ok();
+                SET_REDUCED_MOTION
+            }
+            (APPEARANCE, CONTRAST) => {
+                observed.contrast = u32::try_from(&value).ok();
+                SET_CONTRAST
+            }
+            (A11Y_INTERFACE, REDUCED_MOTION) => {
+                observed.gnome_reduced_motion = text(&value);
+                SET_GNOME_REDUCED_MOTION
+            }
+            (A11Y_INTERFACE, HIGH_CONTRAST) => {
+                observed.high_contrast = bool::try_from(&value).ok();
+                SET_HIGH_CONTRAST
             }
             _ => 0,
         }
@@ -989,13 +1113,14 @@ mod portal {
         .await;
     }
 
-    fn drain(session: &mut Session) -> bool {
-        let mut changed = false;
+    /// Applies the signals already queued and returns the keys they set.
+    fn drain(session: &mut Session) -> Keys {
+        let mut changed = 0;
         // Fixed work per turn, even if a backend continuously emits signals.
         for _ in 0..SIGNAL_BATCH {
             match session.changes.next().now_or_never() {
                 Some(Some(message)) => {
-                    changed |= change(&mut session.observed, message) != 0;
+                    changed |= change(&mut session.observed, message);
                 }
                 _ => break,
             }
@@ -1079,13 +1204,16 @@ mod portal {
                     }
                     break;
                 };
-                let changed = change(&mut session.observed, message) != 0;
-                if drain(&mut session) || changed {
-                    if super::rendering_from_gnome(
-                        session.observed.font_rendering.as_deref(),
-                        session.observed.antialiasing.as_deref(),
-                    )
-                    .is_none()
+                let changed = change(&mut session.observed, message) | drain(&mut session);
+                if changed != 0 {
+                    // fontconfig's defaults stand in for unresolved GNOME
+                    // rendering keys, so only a text key's change asks again.
+                    if changed & TEXT_KEYS != 0
+                        && super::rendering_from_gnome(
+                            session.observed.font_rendering.as_deref(),
+                            session.observed.antialiasing.as_deref(),
+                        )
+                        .is_none()
                     {
                         session.observed.fontconfig = fontconfig.defaults(&executor).await;
                     }
@@ -1214,16 +1342,21 @@ mod portal {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use ashpd::zvariant::OwnedValue;
 
-        fn signal(key: &str, value: OwnedValue) -> zbus::Message {
+        fn signal(namespace: &str, key: &str, value: OwnedValue) -> zbus::Message {
             zbus::Message::signal(
                 "/org/freedesktop/portal/desktop",
                 "org.freedesktop.portal.Settings",
                 "SettingChanged",
             )
             .unwrap()
-            .build(&(INTERFACE, key, value))
+            .build(&(namespace, key, value))
             .unwrap()
+        }
+
+        fn text(value: &str) -> OwnedValue {
+            OwnedValue::from(ashpd::zvariant::Str::from(value))
         }
 
         #[test]
@@ -1234,13 +1367,21 @@ mod portal {
             let emit = async move {
                 for index in 0..100 {
                     sender
-                        .send(signal(TEXT_SCALING_FACTOR, OwnedValue::from(index as f64)))
+                        .send(signal(
+                            INTERFACE,
+                            TEXT_SCALING_FACTOR,
+                            OwnedValue::from(index as f64),
+                        ))
                         .await
                         .unwrap();
                 }
                 // Wrong type must clear the previous antialiasing value.
                 sender
-                    .send(signal(FONT_ANTIALIASING, OwnedValue::from(123u32)))
+                    .send(signal(
+                        INTERFACE,
+                        FONT_ANTIALIASING,
+                        OwnedValue::from(123u32),
+                    ))
                     .await
                     .unwrap();
                 reply
@@ -1248,7 +1389,7 @@ mod portal {
                         font_rendering: Some("manual".into()),
                         antialiasing: Some("rgba".into()),
                         text_scale: Some(1.25),
-                        fontconfig: None,
+                        ..Observed::default()
                     })
                     .unwrap();
             };
@@ -1258,6 +1399,161 @@ mod portal {
             assert_eq!(observed.font_rendering.as_deref(), Some("manual"));
             assert_eq!(observed.antialiasing, None);
             assert_eq!(observed.text_scale, Some(99.0));
+        }
+
+        /// The one stream carries every namespace: each motion and contrast
+        /// key is read in its own namespace, the same name in another
+        /// namespace and unknown keys change nothing, and a value of the
+        /// wrong type clears the key's old value.
+        #[test]
+        fn change_reads_each_motion_and_contrast_key_in_its_own_namespace() {
+            let mut observed = Observed::default();
+            for (namespace, key, value, set) in [
+                (
+                    APPEARANCE,
+                    REDUCED_MOTION,
+                    OwnedValue::from(1u32),
+                    SET_REDUCED_MOTION,
+                ),
+                (APPEARANCE, CONTRAST, OwnedValue::from(1u32), SET_CONTRAST),
+                (
+                    A11Y_INTERFACE,
+                    REDUCED_MOTION,
+                    text("reduce"),
+                    SET_GNOME_REDUCED_MOTION,
+                ),
+                (
+                    A11Y_INTERFACE,
+                    HIGH_CONTRAST,
+                    OwnedValue::from(true),
+                    SET_HIGH_CONTRAST,
+                ),
+                (
+                    INTERFACE,
+                    ENABLE_ANIMATIONS,
+                    OwnedValue::from(false),
+                    SET_ENABLE_ANIMATIONS,
+                ),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    set,
+                    "{namespace} {key}"
+                );
+            }
+            let read = Observed {
+                reduced_motion: Some(1),
+                contrast: Some(1),
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                enable_animations: Some(false),
+                ..Observed::default()
+            };
+            assert_eq!(observed, read);
+
+            for (namespace, key, value) in [
+                (INTERFACE, REDUCED_MOTION, OwnedValue::from(0u32)),
+                (INTERFACE, CONTRAST, OwnedValue::from(0u32)),
+                (INTERFACE, HIGH_CONTRAST, OwnedValue::from(false)),
+                (A11Y_INTERFACE, CONTRAST, OwnedValue::from(0u32)),
+                (A11Y_INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(true)),
+                (A11Y_INTERFACE, FONT_ANTIALIASING, text("rgba")),
+                (APPEARANCE, HIGH_CONTRAST, OwnedValue::from(false)),
+                (APPEARANCE, ENABLE_ANIMATIONS, OwnedValue::from(true)),
+                (APPEARANCE, TEXT_SCALING_FACTOR, OwnedValue::from(2.0)),
+                (
+                    "org.gnome.desktop.a11y",
+                    REDUCED_MOTION,
+                    text("no-preference"),
+                ),
+                (APPEARANCE, "color-scheme", OwnedValue::from(1u32)),
+                (A11Y_INTERFACE, "show-status-shapes", OwnedValue::from(true)),
+                (INTERFACE, "gtk-theme", text("Adwaita")),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    0,
+                    "{namespace} {key}"
+                );
+            }
+            assert_eq!(observed, read);
+
+            for (namespace, key, value, set) in [
+                (APPEARANCE, REDUCED_MOTION, text("1"), SET_REDUCED_MOTION),
+                (APPEARANCE, CONTRAST, OwnedValue::from(true), SET_CONTRAST),
+                (
+                    A11Y_INTERFACE,
+                    REDUCED_MOTION,
+                    OwnedValue::from(1u32),
+                    SET_GNOME_REDUCED_MOTION,
+                ),
+                (
+                    A11Y_INTERFACE,
+                    HIGH_CONTRAST,
+                    text("true"),
+                    SET_HIGH_CONTRAST,
+                ),
+                (
+                    INTERFACE,
+                    ENABLE_ANIMATIONS,
+                    OwnedValue::from(0u32),
+                    SET_ENABLE_ANIMATIONS,
+                ),
+            ] {
+                assert_eq!(
+                    change(&mut observed, signal(namespace, key, value)),
+                    set,
+                    "{namespace} {key}"
+                );
+            }
+            assert_eq!(observed, Observed::default());
+        }
+
+        /// A motion or contrast signal received during the initial reads wins
+        /// over that key's read, a wrong type clearing it, while a key no
+        /// signal named keeps its read.
+        #[test]
+        fn a_motion_or_contrast_signal_during_the_reads_wins_over_its_read() {
+            use futures::SinkExt as _;
+            let (mut sender, mut changes) = mpsc::channel(0);
+            let (reply, reads) = futures::channel::oneshot::channel();
+            let emit = async move {
+                for (namespace, key, value) in [
+                    (APPEARANCE, REDUCED_MOTION, OwnedValue::from(1u32)),
+                    (APPEARANCE, CONTRAST, OwnedValue::from(1u32)),
+                    (A11Y_INTERFACE, REDUCED_MOTION, text("reduce")),
+                    (A11Y_INTERFACE, HIGH_CONTRAST, text("yes")),
+                    (INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(false)),
+                ] {
+                    sender.send(signal(namespace, key, value)).await.unwrap();
+                }
+                reply
+                    .send(Observed {
+                        font_rendering: Some("automatic".into()),
+                        reduced_motion: Some(0),
+                        contrast: Some(0),
+                        gnome_reduced_motion: Some("no-preference".into()),
+                        high_contrast: Some(true),
+                        enable_animations: Some(true),
+                        ..Observed::default()
+                    })
+                    .unwrap();
+            };
+            let (observed, ()) = futures::executor::block_on(async {
+                futures::join!(snapshot(&mut changes, async { reads.await.unwrap() }), emit)
+            });
+            assert_eq!(
+                observed,
+                Observed {
+                    font_rendering: Some("automatic".into()),
+                    reduced_motion: Some(1),
+                    contrast: Some(1),
+                    gnome_reduced_motion: Some("reduce".into()),
+                    high_contrast: None,
+                    enable_animations: Some(false),
+                    ..Observed::default()
+                }
+            );
         }
 
         #[gpui_kit::test]
@@ -1287,7 +1583,7 @@ mod portal {
 
         #[test]
         fn continuously_ready_signals_yield_to_cancellation() {
-            let message = signal(TEXT_SCALING_FACTOR, OwnedValue::from(1.25));
+            let message = signal(INTERFACE, TEXT_SCALING_FACTOR, OwnedValue::from(1.25));
             let mut changes = futures::stream::repeat(message);
             // A perpetually ready source must still return Pending instead of
             // monopolizing one poll and defeating the enclosing deadline.
@@ -1552,6 +1848,124 @@ mod portal {
             drop(refresh);
             until(cx, || done.load(Ordering::SeqCst));
             assert!(fake.reaped());
+        }
+
+        /// A portal session without a bus: `observed` stands for its reads,
+        /// and the returned sender emits its signals.
+        fn fake_session(observed: Observed) -> (Session, mpsc::UnboundedSender<zbus::Message>) {
+            let (signals, changes) = mpsc::unbounded();
+            let session = Session {
+                _settings: None,
+                changes: changes.boxed(),
+                observed,
+            };
+            (session, signals)
+        }
+
+        /// A connection that hands out `sessions` in order, then none.
+        fn connect_to(
+            sessions: Vec<Session>,
+        ) -> impl Fn() -> futures::future::Ready<Option<Session>> {
+            let sessions = Mutex::new(std::collections::VecDeque::from(sessions));
+            move || futures::future::ready(sessions.lock().unwrap().pop_front())
+        }
+
+        /// On a desktop whose GNOME rendering keys do not decide, rendering
+        /// falls back to fontconfig. A burst of motion and contrast changes
+        /// sends its snapshot at once and runs no `fc-match`; a change to a
+        /// text key runs one.
+        #[gpui_kit::test]
+        fn motion_and_contrast_changes_never_ask_fontconfig_again(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::TextRenderingMode::Subpixel;
+            let fake = super::super::StandIn::new();
+            // The code font setting is off, so only the defaults are queried.
+            let generation = Arc::new(AtomicU64::new(0));
+            let (session, signals) = fake_session(Observed::default());
+            let (sender, _wakes, latest) = snapshots();
+            let (refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![session]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            let defaults = || {
+                fake.queries()
+                    .iter()
+                    .filter(|(_, pattern)| pattern == "sans-serif")
+                    .count()
+            };
+
+            // The launch snapshot asks fontconfig, which answers subpixel.
+            until_clock_held(cx, || fake.exited(1));
+            super::super::pass_real_time(&executor);
+            let launch = latest.lock().unwrap().take().expect("the launch snapshot");
+            assert_eq!(launch.rendering, Subpixel);
+            assert_eq!(defaults(), 1);
+
+            for _ in 0..3 {
+                for (namespace, key, value) in [
+                    (APPEARANCE, REDUCED_MOTION, OwnedValue::from(1u32)),
+                    (APPEARANCE, CONTRAST, OwnedValue::from(1u32)),
+                    (A11Y_INTERFACE, REDUCED_MOTION, text("reduce")),
+                    (A11Y_INTERFACE, HIGH_CONTRAST, OwnedValue::from(true)),
+                    (INTERFACE, ENABLE_ANIMATIONS, OwnedValue::from(false)),
+                ] {
+                    signals
+                        .unbounded_send(signal(namespace, key, value))
+                        .unwrap();
+                }
+            }
+            // The test clock alone: a snapshot waiting on a real `fc-match`
+            // could not be sent here.
+            for _ in 0..4 {
+                executor.advance_clock(CHANGE_COALESCE_WAIT);
+                executor.run_until_parked();
+            }
+            let burst = latest.lock().unwrap().take().expect("the burst's snapshot");
+            assert_eq!(burst.rendering, Subpixel, "fontconfig's answer stands");
+            for _ in 0..50 {
+                super::super::pass_real_time(&executor);
+            }
+            assert_eq!(defaults(), 1, "motion and contrast run no fc-match");
+
+            // A text key's change that leaves the GNOME keys undecided asks
+            // fontconfig once.
+            signals
+                .unbounded_send(signal(INTERFACE, FONT_ANTIALIASING, text("lcd-v")))
+                .unwrap();
+            executor.run_until_parked();
+            until_clock_held(cx, || fake.exited(2));
+            super::super::pass_real_time(&executor);
+            let text_change = latest.lock().unwrap().take();
+            assert_eq!(
+                text_change.map(|snapshot| snapshot.rendering),
+                Some(Subpixel)
+            );
+            for _ in 0..50 {
+                super::super::pass_real_time(&executor);
+            }
+            assert_eq!(defaults(), 2, "a text key's change runs one");
+            assert_eq!(fake.queries().len(), 2, "and no code font query");
+
+            drop(refresh);
+            until(cx, || done.load(Ordering::SeqCst));
+            drop(signals);
+            assert!(fake.reaped());
+            assert!(!fake.overlapped());
         }
 
         /// A query that outlives the bound is killed, reaped and reported
@@ -1952,6 +2366,7 @@ mod tests {
             antialiasing: Some("rgba".into()),
             text_scale: Some(1.25),
             fontconfig: Some("True|5".into()),
+            ..Observed::default()
         };
         assert_eq!(
             desktop.resolve(true),
@@ -1981,8 +2396,8 @@ mod tests {
         Observed {
             font_rendering: font_rendering.map(str::to_owned),
             antialiasing: antialiasing.map(str::to_owned),
-            text_scale: None,
             fontconfig: fontconfig.map(str::to_owned),
+            ..Observed::default()
         }
         .resolve(false)
         .rendering
