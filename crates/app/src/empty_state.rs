@@ -1636,4 +1636,96 @@ pub(crate) mod tests {
             "working-pane",
         );
     }
+
+    /// Clear filter keeps its label exactly where its labelled form fits the
+    /// list: at 18 pt and display scales 1.2 and 2, in the narrowest window,
+    /// to the device pixel, where it draws its label, the no-match block
+    /// holds Clear filter as wide as it is drawn labelled, and a device pixel
+    /// narrower, where it draws its icon, the block is narrower than that.
+    /// The form is chosen from the width layout places the labelled control
+    /// at (`labelled_button_width`: its insets, icon and gap each on a whole
+    /// device pixel and its label rounded up to one); summed unrounded, the
+    /// width fell short of the drawn one at fractional scales, and the label
+    /// was drawn in a block too narrow to hold it.
+    #[gpui::test]
+    async fn clear_filter_draws_its_label_wherever_the_list_holds_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
+        std::fs::write(root.join("notes.txt"), "changed\n").unwrap();
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value("zzz", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        crate::path_filter::filters_land(&app, cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let mut met = Vec::new();
+        for scale in [1.2f32, 2.] {
+            // Windows are counted in device pixels; a resize takes the test
+            // display's scale, 2, so the scale is set after it.
+            let width = |n: i32| n as f32 / scale;
+            let drawn_at = |n: i32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width(n)), px(800.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                let block = cx
+                    .debug_bounds("working-no-match")
+                    .expect("the no-match block");
+                let clear = cx
+                    .debug_bounds("working-clear-filter")
+                    .expect("Clear filter");
+                // An icon is its pixel-snapped 28 px square.
+                let labelled = clear.size.width > appearance::ui_size(28.) + px(1.);
+                (labelled, block.size.width, clear.size.width)
+            };
+            let (narrow, wide) = ((461. * scale) as i32, (1480. * scale) as i32);
+            let (labelled, _, drawn) = drawn_at(wide, cx);
+            assert!(
+                labelled,
+                "scale {scale}: Clear filter is labelled in 1480 × 800"
+            );
+            assert!(
+                !drawn_at(narrow, cx).0,
+                "scale {scale}: Clear filter is its icon in 461 × 800"
+            );
+            // The narrowest window that labels it, by bisection.
+            let (mut lo, mut hi) = (narrow, wide);
+            while hi - lo > 1 {
+                let middle = lo + (hi - lo) / 2;
+                if drawn_at(middle, cx).0 {
+                    hi = middle;
+                } else {
+                    lo = middle;
+                }
+            }
+            let (_, holds, labelled_width) = drawn_at(hi, cx);
+            let (_, short, _) = drawn_at(lo, cx);
+            met.push((scale, width(lo), short, width(hi), holds, labelled_width));
+            assert!(
+                (labelled_width - drawn).abs() < px(0.01),
+                "scale {scale}: labelled at {labelled_width:?} in {} and {drawn:?} wide",
+                width(hi)
+            );
+            assert!(
+                holds >= drawn - px(0.01),
+                "scale {scale}: in {} the block {holds:?} holds the labelled {drawn:?}",
+                width(hi)
+            );
+            assert!(
+                short < drawn - px(0.01),
+                "scale {scale}: in {} Clear filter is its icon, where the block {short:?} \
+                 would hold the labelled {drawn:?}",
+                width(lo)
+            );
+        }
+        eprintln!("scale, icon's window, its block, label's window, its block, its width: {met:?}");
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+    }
 }

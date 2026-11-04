@@ -487,10 +487,19 @@ fn working_list_floor(rows: usize, density: crate::appearance::Density, window: 
 }
 
 /// The width the file list's no-match state has in an inspector `width`
-/// wide: the list stands 1 px in from the inspector's divider, and the state
-/// keeps the rows' text inset inside the list's border.
+/// wide, as layout draws it: the inspector on its nearest device pixel, as
+/// it stands at the window's edge (a pinned inspector's width is reckoned
+/// before layout, between two); the list 1 px in from its divider; and the
+/// rows' text inset inside the list's border; the margin, the border and
+/// the inset each on its whole device pixel, halves toward zero. Taken raw,
+/// they made the room up to a device pixel narrower than drawn, at scale
+/// 1.2 by the margin and the 0.75 rem inset, at scale 2 by the pinned
+/// width (178.38 px for a state drawn 178.5 px wide at 18 pt), so Clear
+/// filter took its icon in a list that held its label.
 fn working_no_match_room(width: Pixels, window: &Window) -> Pixels {
-    width - px(1.) - window.pixel_snap(px(1.)) * 2. - window.rem_size() * 0.75 * 2.
+    crate::image_compare::on_device_pixel(width, window)
+        - window.pixel_snap(px(1.)) * 3.
+        - window.pixel_snap(window.rem_size() * 0.75) * 2.
 }
 
 /// The no-match line the file list draws in `room`: the whole line where it
