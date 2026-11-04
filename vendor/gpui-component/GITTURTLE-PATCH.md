@@ -656,6 +656,52 @@ pass unchanged, since nothing sets the edge. Remove this part of the patch
 when upstream offers a resting-edge or high-contrast style for filled
 controls, and those tests pass without it.
 
+The field-fill patch modifies `src/theme/mod.rs` and `src/input/input.rs`.
+Upstream derives a field's fills from `input`, the colour of the field's
+outline: a dark theme's field fill at 30% (`Theme::input_background`) and a
+disabled field's fill at 80%, light or dark (`input::input_style`), so an
+application cannot strengthen the outline without lifting the fills inside it
+and everything that rests on them. GitTurtle's More contrast appearance raises
+`input`, with the app's `border`, to a 3:1 edge: a dark field's fill rose with
+it (Midnight `#1a2330` to `#2a323d`), the placeholder on it read worse
+(Omarchy tokyo-night 5.99:1 to 5.32:1), and a disabled field's fill rose in
+every palette. `Theme::input_fill_base`, `None` by default, set in code and
+skipped by theme files, is the colour both fills derive from where an
+application sets one; unset, it is `input`, as upstream. `input_background`
+is the base at 30% in a dark theme and `background` in a light one, and
+`Theme::disabled_input_background`, which `input_style` now reads, is the base
+at 80% in either mode. `input` itself, the outline, is untouched.
+
+Every kit read of `input` was reviewed. Two fills derive from the base:
+`Theme::input_background` and `Theme::disabled_input_background`. The readers
+of `input_background` take the base with no change of their own: the styled
+Input's enabled fill (`input::input_style`), a disabled default Button's fill
+(half of it) and an outline default Button's resting fill
+(`button/button.rs`), an unchecked Checkbox's and Radio's fill, and the editor
+background where the highlight theme sets none (`Theme::editor_background`).
+`input_style`, with both fills, also styles the OTP input, Select, Combobox,
+DatePicker and NumberInput. Unchanged, reading `input` itself: every outline
+(the Input's, Checkbox's, Radio's and default Button's borders, the
+half-strength borders of a disabled default Button, Radio and NumberInput,
+and the OTP input's, Select's, Combobox's, DatePicker's, NumberInput's and
+ColorPicker's), and the fills derived from `input` at other strengths, none of
+which the app draws: an outline default Button's hover and pressed fills (50%
+and 70%), NumberInput's step buttons hovered and pressed (`input` at 40% and
+60%) and the theme-file fallbacks for `button`, `button_hover` and
+`button_active` (`theme/schema.rs`), which apply only to colours a theme file
+leaves unset.
+
+The consuming path is the app's More contrast appearance: it is to set the
+fill from its palette as chosen, before the adjustment, so a dark field's
+fill and the disabled Save's keep the values they have with More contrast
+off while the outline is adjusted, and to leave it unset otherwise. The
+kit's own `input_fill_sets_the_dark_field_fill_and_leaves_the_outline` reads
+`input_background` unset (`input` at 30%) and set (the set value) in a dark
+theme, `input` and its semantic token untouched, and `background` in a light
+theme either way (`scripts/vendor-crate-test.sh vendor/gpui-component
+input_fill`). Remove this part of the patch when upstream lets a theme set a
+field's fill apart from its outline, and those checks pass without it.
+
 The popup-inset patch modifies `src/menu/context_menu.rs`,
 `src/native_menu/fallback.rs`, `src/popover.rs` and `src/styled.rs`, with the
 base patch's `set_popup_bottom_inset`

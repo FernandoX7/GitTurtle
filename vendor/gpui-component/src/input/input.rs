@@ -93,10 +93,13 @@ fn exposes_accessibility_value(masked: bool, content_type: Option<InputContentTy
 }
 
 /// Returns `(background, foreground)` colors for input-like components.
+///
+/// GitTurtle patch: the disabled fill is `Theme::disabled_input_background`, which derives from
+/// the theme's field-fill base where an application sets one, as the enabled fill does.
 pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
     if disabled {
         (
-            cx.theme().input.mix_oklab(cx.theme().transparent, 0.8),
+            cx.theme().disabled_input_background(),
             cx.theme().muted_foreground,
         )
     } else {

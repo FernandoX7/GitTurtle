@@ -209,6 +209,21 @@ pub struct Theme {
     /// edge is a layer over the control's bounds and moves nothing.
     #[serde(skip)]
     pub resting_edge: Option<Hsla>,
+    /// GitTurtle patch: the colour a field's fills derive from, or `None` for
+    /// `input`, the field's outline, as upstream derives them: a dark field's
+    /// fill is this base at 30% ([`Self::input_background`]; a light field
+    /// rests on `background`) and a disabled field's fill this base at 80% in
+    /// either mode ([`Self::disabled_input_background`]). Every outline stays
+    /// `input`.
+    ///
+    /// Set in code, not read from theme files, so an application can give a
+    /// field's outline a stronger colour, as a higher-contrast appearance
+    /// asks, without lifting the fills inside it. Everything that rests on
+    /// [`Self::input_background`] takes it: a field, a disabled default
+    /// Button (at half strength), an unchecked Checkbox or Radio, and an
+    /// editor whose highlight theme sets no background of its own.
+    #[serde(skip)]
+    pub input_fill_base: Option<Hsla>,
     /// The label of a control that cannot be used, which
     /// [`Self::disabled_foreground`] resolves, or `None` for
     /// `muted_foreground` at half strength.
@@ -443,13 +458,31 @@ impl Theme {
     ///
     /// For dark, use a transparent color mixed with the input border: `cx.theme().input`,
     /// otherwise use the `cx.theme().background` color.
+    ///
+    /// GitTurtle patch: for dark, mixed with [`Self::input_fill_base`] where the application
+    /// sets one.
     #[inline]
     pub fn input_background(&self) -> Hsla {
         if self.is_dark() {
-            self.input.mix_oklab(self.transparent, 0.3)
+            self.input_fills_from().mix_oklab(self.transparent, 0.3)
         } else {
             self.background
         }
+    }
+
+    /// GitTurtle patch: the fill of a disabled field, light or dark: a transparent color mixed
+    /// with [`Self::input_fill_base`] where the application sets one, else with the input
+    /// border, `cx.theme().input`, as upstream draws it.
+    #[inline]
+    pub fn disabled_input_background(&self) -> Hsla {
+        self.input_fills_from().mix_oklab(self.transparent, 0.8)
+    }
+
+    /// GitTurtle patch: the colour a field's fills derive from, [`Self::input_fill_base`] where
+    /// the application sets one, else `input`.
+    #[inline]
+    fn input_fills_from(&self) -> Hsla {
+        self.input_fill_base.unwrap_or(self.input)
     }
 
     /// Get the editor background color, if not set, use the input background color.
@@ -723,6 +756,61 @@ mod semantic_token_tests {
         assert!(theme.base_theme().tokens.radius.md.is_zero());
     }
 
+    /// GitTurtle patch: a field's fills derive from `input`, the field's
+    /// outline, as upstream derives them, until an application sets
+    /// `input_fill_base`; set, they derive from that base and `input` is
+    /// untouched. A dark field's fill is its base at 30%, a light one rests
+    /// on `background`, and a disabled field's fill is its base at 80% in
+    /// either mode.
+    #[test]
+    fn input_fill_base_sets_the_field_fills_and_leaves_the_outline() {
+        use super::{Colorize as _, ThemeMode};
+        use gpui::hsla;
+
+        let mut theme = Theme::default();
+        let outline = hsla(0.6, 0.25, 0.45, 1.);
+        let base = hsla(0.6, 0.3, 0.2, 1.);
+        let (background, transparent) = (hsla(0.6, 0.1, 0.96, 1.), theme.transparent);
+        theme.input = outline;
+        theme.background = background;
+        assert_eq!(theme.input_fill_base, None, "unset by default");
+        assert_ne!(
+            base.mix_oklab(transparent, 0.3),
+            outline.mix_oklab(transparent, 0.3)
+        );
+        assert_ne!(
+            base.mix_oklab(transparent, 0.8),
+            outline.mix_oklab(transparent, 0.8)
+        );
+
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let fill = |from: Hsla| {
+                if mode.is_dark() {
+                    from.mix_oklab(transparent, 0.3)
+                } else {
+                    background
+                }
+            };
+            theme.mode = mode;
+            theme.input_fill_base = None;
+            assert_eq!(theme.input_background(), fill(outline), "{mode:?}");
+            assert_eq!(
+                theme.disabled_input_background(),
+                outline.mix_oklab(transparent, 0.8),
+                "{mode:?}"
+            );
+            theme.input_fill_base = Some(base);
+            assert_eq!(theme.input_background(), fill(base), "{mode:?}");
+            assert_eq!(
+                theme.disabled_input_background(),
+                base.mix_oklab(transparent, 0.8),
+                "{mode:?}"
+            );
+            assert_eq!(theme.input, outline, "{mode:?}");
+            assert_eq!(theme.color_tokens().input, outline, "{mode:?}");
+        }
+    }
+
     #[test]
     fn disabled_legacy_shadows_project_to_empty_elevations() {
         let mut theme = Theme::default();
@@ -764,6 +852,7 @@ impl From<&ThemeColor> for Theme {
             secondary_edge: None,
             disabled_edge: None,
             resting_edge: None,
+            input_fill_base: None,
             disabled_label: None,
             menu_label_size: None,
             popup_gap: None,
