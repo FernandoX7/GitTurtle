@@ -134,7 +134,7 @@ impl ImageFlags {
         for (set, words) in [
             (self.crop_not_applied, " · crop not applied"),
             (self.hdr_not_tone_mapped, " · HDR not tone-mapped"),
-            (self.profile_not_applied, " · colour profile not applied"),
+            (self.profile_not_applied, " · color profile not applied"),
         ] {
             if set {
                 caption.push_str(words);
@@ -926,7 +926,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             read.image.format,
-            "AVIF · first frame of an animation · crop not applied · HDR not tone-mapped · colour profile not applied"
+            "AVIF · first frame of an animation · crop not applied · HDR not tone-mapped · color profile not applied"
         );
         let mut trailing = valid.clone();
         trailing.push(0);

@@ -1173,7 +1173,7 @@ mod tests {
                 .unwrap_or_else(|kind| panic!("{case}: {kind:?}"));
             assert!(reply.flags.profile_not_applied, "{case}");
             assert_eq!(
-                reply.image.format, "AVIF · first image · colour profile not applied",
+                reply.image.format, "AVIF · first image · color profile not applied",
                 "{case}"
             );
             assert_quadrants(&reply.image, P3_STORED, 12, case);

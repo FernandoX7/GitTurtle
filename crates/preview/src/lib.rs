@@ -286,7 +286,7 @@ pub fn decode_image(bytes: &[u8], file_name: &str, max_edge: u32) -> Result<Imag
             // (`confined_image_format`), never here, and HEIF not at all.
             #[cfg(target_os = "linux")]
             if format == "HEIF / HEIC" {
-                bail!("HEIF / HEIC images are not decoded on Linux.")
+                bail!("HEIF / HEIC images are not decoded on Linux")
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -949,7 +949,7 @@ mod tests {
             ),
             (
                 include_bytes!("../tests/fixtures/half-red-blue.heic").as_slice(),
-                "HEIF / HEIC images are not decoded on Linux.",
+                "HEIF / HEIC images are not decoded on Linux",
             ),
         ] {
             assert_eq!(

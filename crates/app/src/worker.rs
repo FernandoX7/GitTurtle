@@ -5143,7 +5143,7 @@ pub(crate) mod helper_image_tests {
                 AVIF,
                 1,
                 8,
-                "AVIF · first image · colour profile not applied",
+                "AVIF · first image · color profile not applied",
             ),
             ("picture.jp2", JP2, 2, 0, "JPEG 2000 / JP2 · first image"),
             (
@@ -5231,7 +5231,7 @@ pub(crate) mod helper_image_tests {
                 "photo.heic",
                 HEIC,
                 None,
-                "HEIF / HEIC images are not decoded on Linux.",
+                "HEIF / HEIC images are not decoded on Linux",
             ),
         ];
         let images: Vec<Vec<u8>> = cases
