@@ -928,18 +928,20 @@ impl FindBar {
     /// them, and the compact control's 28 px line they take whatever their
     /// forms, so a form never moves the code.
     ///
-    /// The gap is the quarter rem on its whole device pixel, halves toward
-    /// zero, as layout draws each gap (`Window::pixel_snap`), so the plan's
-    /// lines sum the gaps drawn between their parts: summed from the raw
+    /// The gap and the line are each on their whole device pixel, halves
+    /// toward zero, as layout draws each gap and each line
+    /// (`Window::pixel_snap`), so the plan's lines sum the gaps drawn
+    /// between their parts and the lines drawn: summed from the raw
     /// 3.25 px at 13 pt, the plan's five gaps on one line were 0.42 px
     /// short of the 4 device pixels layout draws each at scale 1.2 and
     /// 0.25 px over them at 1.25, so the line a form was chosen by was not
-    /// the line drawn.
+    /// the line drawn; and the raw line, 38.77 px at 18 pt, drawn on 48
+    /// device pixels at 1.25, made the bar's box 49 ([`Plan::height`]).
     fn fit(count: SharedString, window: &Window) -> Fit {
         Fit {
             count,
             gap: window.pixel_snap(window.rem_size() * 0.25),
-            row: crate::appearance::ui_size(28.),
+            row: window.pixel_snap(crate::appearance::ui_size(28.)),
         }
     }
 
@@ -950,8 +952,8 @@ impl FindBar {
 
     /// The height the bar takes `width` across, as layout draws it on this
     /// display's device pixels ([`Self::frame`], [`Fitted`]): its controls'
-    /// lines inside its pane insets, measured and rounded up to a device
-    /// pixel as layout sizes a measured element; its padding, and the gap
+    /// lines inside its pane insets ([`Plan::height`]), rounded up to a
+    /// device pixel as layout sizes a measured element; its padding, and the gap
     /// before the limit's notice where it states it, each a quarter rem on
     /// its whole device pixel, halves toward zero; its 1 px rule on at
     /// least one device pixel; and the notice's line rounded up to one, the
@@ -969,7 +971,7 @@ impl FindBar {
         // `py_1` above and below, and `gap_1` before the notice.
         let padding = window.pixel_snap(window.rem_size() * 0.25);
         let rule = window.pixel_snap(px(1.)).max(px(1. / scale));
-        let lines = measured(widths.plan(controls).height(fit.row, fit.gap));
+        let lines = measured(widths.plan(controls).height(fit.row, fit.gap, window));
         let notice = if self.too_long(cx) {
             let mut style = window.text_style();
             style.font_size = crate::appearance::ui_text(11.).into();
@@ -1374,6 +1376,16 @@ impl Widths {
 /// checkbox up a device pixel early.
 const FIT_SLACK: Pixels = px(1e-3);
 
+/// The debug selectors of the bar's lines, in their order, which a test
+/// reads each line's bounds by: a bar takes at most one line a part.
+const LINE_SELECTORS: [&str; 5] = [
+    "file-find-line-1",
+    "file-find-line-2",
+    "file-find-line-3",
+    "file-find-line-4",
+    "file-find-line-5",
+];
+
 /// The parts in their order on a bar of one line: the field, then Match
 /// case, the count with Previous and Next, and Close at the line's end, as
 /// it stands at the first line's end on a wrapped bar.
@@ -1407,10 +1419,27 @@ struct Plan {
 }
 
 impl Plan {
-    /// The height its lines take, `row` each, `gap` apart.
-    fn height(&self, row: Pixels, gap: Pixels) -> Pixels {
+    /// The height its lines take, `row` each, `gap` apart, each on whole
+    /// device pixels as layout draws them ([`FindBar::fit`]), as the size of
+    /// a measured element that layout lays out on those device pixels: it
+    /// rounds a measured size up to a device pixel (GPUI's
+    /// `ceil_to_device_pixel`), and whole device pixels divided by the scale
+    /// can multiply back a float's error over them, which it would round up
+    /// to one more (99 device pixels at 1.2, two lines at 18 pt, came back
+    /// 99.00001). Summed from the raw 28 px row, the bar's box was a device
+    /// pixel taller than the lines drawn in it, below the last, at 18 pt at
+    /// scales 1.25 and 1.5.
+    fn height(&self, row: Pixels, gap: Pixels, window: &Window) -> Pixels {
         let lines = self.lines.len() as f32;
-        row * lines + gap * (lines - 1.)
+        let height =
+            crate::image_compare::on_device_pixel(row * lines + gap * (lines - 1.), window);
+        let scale = window.scale_factor();
+        let device = (f32::from(height) * scale).round();
+        let mut measured = f32::from(height);
+        while measured * scale > device {
+            measured = measured.next_down();
+        }
+        px(measured)
     }
 }
 
@@ -1490,7 +1519,7 @@ impl gpui_kit::Element for Fitted {
             ..Default::default()
         };
         let measured = planned.clone();
-        let id = window.request_measured_layout(style, move |known, available, _, _| {
+        let id = window.request_measured_layout(style, move |known, available, window, _| {
             let width = known.width.unwrap_or(match available.width {
                 gpui_kit::AvailableSpace::Definite(width) => width,
                 _ => px(0.),
@@ -1501,7 +1530,7 @@ impl gpui_kit::Element for Fitted {
             if known.width.is_some() {
                 measured.set(Some(lines));
             }
-            gpui_kit::size(width, widths.plan(lines).height(row, widths.gap))
+            gpui_kit::size(width, widths.plan(lines).height(row, widths.gap, window))
         });
         (id, Some((widths, planned)))
     }
@@ -1683,7 +1712,7 @@ impl Controls {
             .flex()
             .flex_col()
             .gap(gap)
-            .children(plan.lines.iter().map(|parts_of_line| {
+            .children(plan.lines.iter().enumerate().map(|(index, parts_of_line)| {
                 // What follows Match case on a wrapped line stands at the
                 // line's end, after the line's one gap: a spacer between
                 // them took a gap either side of it, one more than the plan
@@ -1702,7 +1731,9 @@ impl Controls {
                 };
                 let leading = take(leading);
                 let trailing = take(trailing);
-                let drawn = line().children(leading);
+                let drawn = line()
+                    .debug_selector(move || LINE_SELECTORS.get(index).copied().unwrap_or("").into())
+                    .children(leading);
                 if trailing.is_empty() {
                     drawn
                 } else {
@@ -3661,6 +3692,100 @@ mod bar_tests {
                 );
             }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Opens Find in each case the bar's device-pixel tests walk and hands
+    /// `check` the case, its display scale, its mode, the bar drawn and the
+    /// rule it paints, in Midnight's colours: at display scales 1, 1.2,
+    /// 1.25, 1.5 and 2 and at 13 and 18 pt, in the unified patch and over
+    /// each of Split's sides, in 461 and 1,480 px windows. Returns the lines
+    /// each case's bar drew, which meet one and two.
+    fn each_drawn_bar(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        mut check: impl FnMut(&mut VisualTestContext, &str, f32, TextMode, Bounds<Pixels>, PaintedRule),
+    ) -> Vec<usize> {
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let colours = cx.update(|_, cx| {
+            let palette = appearance::palette(cx);
+            [palette.accent, palette.border].map(|colour| gpui_kit::Hsla::from(rgb(colour)))
+        });
+        let mut met = Vec::new();
+        for scale in [1f32, 1.2, 1.25, 1.5, 2.] {
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for (name, mode, side) in [
+                    ("the unified patch", TextMode::Unified, 0),
+                    ("Split over Before", TextMode::Split, 0),
+                    ("Split over After", TextMode::Split, 1),
+                ] {
+                    for width in [461., 1480.] {
+                        let at = format!("scale {scale}, {text} pt, {name} in {width} × 490");
+                        open_find_on(app, cx, mode, side, width);
+                        at_scale(cx, scale);
+                        let bar = drawn(cx, "file-find-bar", &at);
+                        let lines = DRAWN_FORMS
+                            .with_borrow(|drawn| *drawn)
+                            .unwrap_or_else(|| panic!("{at}: the controls are laid out"))
+                            .2;
+                        let painted = cx.update(|window, _| painted_rule(window, bar, colours));
+                        check(cx, &at, scale, mode, bar, painted);
+                        met.push(lines);
+                        cx.simulate_keystrokes("escape");
+                        crate::width_walk::frame(cx);
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        for lines in [1, 2] {
+            assert!(
+                met.contains(&lines),
+                "the walk meets a bar of {lines} lines: {met:?}"
+            );
+        }
+        met
+    }
+
+    /// The find bar's padding is as deep below its lines as above them in
+    /// every case [`each_drawn_bar`] walks: in device pixels, from the bar's
+    /// top to its first line and from its last line to its rule. Its lines
+    /// were summed from the raw 28 px row, which layout rounds up to a
+    /// device pixel as it sizes the bar's measured controls while it draws
+    /// each line on its device pixel, halves toward zero: at 18 pt the
+    /// controls' box was a device pixel taller than their lines at scales
+    /// 1.25 and 1.5 (49 device pixels for 48 at 1.25), all of it below the
+    /// last line.
+    #[gpui::test]
+    async fn the_find_bar_pads_its_lines_as_deep_below_as_above(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let mut failures = Vec::new();
+        each_drawn_bar(&app, cx, |cx, at, scale, _, bar, painted| {
+            let lines = DRAWN_FORMS
+                .with_borrow(|drawn| *drawn)
+                .expect("the controls are laid out")
+                .2;
+            let first = drawn(cx, super::LINE_SELECTORS[0], at);
+            let last = drawn(cx, super::LINE_SELECTORS[lines - 1], at);
+            let rule = painted
+                .rule
+                .unwrap_or_else(|| panic!("{at}: the bar {bar:?} draws a rule"));
+            // In device pixels, as layout draws them.
+            let device = |length: Pixels| f32::from(length) * scale;
+            let above = device(first.top()) - device(bar.top());
+            let below = rule.top().as_f32() - device(last.bottom());
+            if (above - below).abs() > 0.5 {
+                failures.push(format!(
+                    "{at}: the bar {bar:?} pads its {lines} lines {above} device pixels above, \
+                     from {first:?}, and {below} below, to {last:?} above its rule {rule:?}"
+                ));
+            }
+        });
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
