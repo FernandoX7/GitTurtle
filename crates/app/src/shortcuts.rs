@@ -1392,7 +1392,10 @@ pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_mil
 /// list (`NSAccessibilitySelectedRowsChangedNotification`), not on the item,
 /// and VoiceOver's cursor follows focus into the search field, so nothing
 /// shows that VoiceOver speaks it (not yet checked natively): there the
-/// status announces the entry a move selects.
+/// status announces the entry a move selects. The command palette's list
+/// follows the same rule: its status announced each Up and Down on Linux
+/// too, and Orca 51.1 spoke the move twice, 41 ms apart, the status's "Go to
+/// History · 2 of 3" and the list's "Go to History" (QA-94, 2026-11-04).
 pub(crate) const LIST_SPEAKS_SELECTION: bool = cfg!(target_os = "linux");
 
 #[cfg(test)]

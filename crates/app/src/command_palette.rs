@@ -777,6 +777,11 @@ struct Palette {
     query: Entity<InputState>,
     results: Vec<usize>,
     selection: Selection,
+    /// Whether the status last changed quietly, for a move the list speaks
+    /// itself ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux): it is no live
+    /// region until the query next changes, so the screen reader does not
+    /// say the command a second time.
+    quiet: bool,
     scroll: UniformListScrollHandle,
     error: Option<String>,
     _subscription: Subscription,
@@ -800,6 +805,7 @@ impl Palette {
                 InputEvent::Change => {
                     this.results = matches(&this.query.read(cx).value());
                     this.highlight_first_available();
+                    this.quiet = false;
                     this.error = None;
                     cx.notify();
                 }
@@ -827,6 +833,7 @@ impl Palette {
             query,
             results: matches(""),
             selection: Selection::default(),
+            quiet: false,
             scroll: UniformListScrollHandle::new(),
             error: None,
             _subscription: subscription,
@@ -846,6 +853,27 @@ impl Palette {
         // the first screen.
         self.scroll
             .scroll_to_item_strict(self.selection.index, ScrollStrategy::Bottom);
+    }
+    /// What the status reads for the selected result: its command, its
+    /// place among the results and, where the context cannot run it, why
+    /// ("Go to History · 2 of 3"), or that nothing matches.
+    fn reading(&self) -> SharedString {
+        self.results
+            .get(self.selection.index)
+            .map(|&index| {
+                let reason = COMMANDS[index].id.reason(&self.context.availability);
+                format!(
+                    "{} · {} of {}{}",
+                    COMMANDS[index].label,
+                    self.selection.index + 1,
+                    self.results.len(),
+                    reason
+                        .map(|reason| format!(" · Unavailable: {reason}"))
+                        .unwrap_or_default()
+                )
+                .into()
+            })
+            .unwrap_or_else(|| "No matching commands".into())
     }
     fn can_activate(&self) -> bool {
         !self.selection.closed
@@ -1102,36 +1130,45 @@ impl Render for Palette {
                     "up" => -1,
                     _ => return,
                 };
+                let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
+                if this.selection.index != was {
+                    this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
+                }
                 this.scroll
                     .scroll_to_item(this.selection.index, ScrollStrategy::Center);
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .child(
-                div()
-                    .id("command-palette-current-result")
-                    .role(Role::Status)
-                    .polite()
-                    .aria_label(
-                        self.results
-                            .get(self.selection.index)
-                            .map(|index| {
-                                format!(
-                                    "{} · {} of {}{}",
-                                    COMMANDS[*index].label,
-                                    self.selection.index + 1,
-                                    self.results.len(),
-                                    reason
-                                        .map(|reason| format!(" · Unavailable: {reason}"))
-                                        .unwrap_or_default()
-                                )
-                            })
-                            .unwrap_or_else(|| "No matching commands".into()),
-                    )
-                    .h(px(1.))
-                    .overflow_hidden(),
-            )
+            // The status draws nothing and reads the selected command, its
+            // place and why it cannot run. Where the list speaks a moved
+            // selection itself (`shortcuts::LIST_SPEAKS_SELECTION`, Linux), a
+            // move changes it quietly, as no live region (`quiet`): Orca 51.1
+            // spoke each Down twice, 41 ms apart, the status's "Go to History
+            // · 2 of 3" and the list's "Go to History" (QA-94). AT-SPI
+            // announces a live node's name and macOS's adapter its value
+            // alone, so both carry the reading, as Keyboard Shortcuts'
+            // status's do: named alone, it was announced on Linux only.
+            .child({
+                let reading = self.reading();
+                native_accessibility::static_text(
+                    div()
+                        .id("command-palette-current-result")
+                        .role(Role::Status)
+                        .live_region(
+                            if self.quiet {
+                                gpui::accesskit::Live::Off
+                            } else {
+                                gpui::accesskit::Live::Polite
+                            },
+                            false,
+                        )
+                        .aria_value(reading.clone())
+                        .h(px(1.))
+                        .overflow_hidden(),
+                    reading,
+                )
+            })
             .child(
                 Input::new(&self.query)
                     .aria_label("Search app commands")
@@ -2841,5 +2878,245 @@ mod render_tests {
         );
         cx.simulate_keystrokes("escape");
         crate::tags::tests::draw(cx);
+    }
+
+    /// What a screen reader hears from the command palette, frame by frame:
+    /// its status's name each time it changes while it is polite, as AT-SPI
+    /// announces a live node whose name changes, and none it takes quietly;
+    /// on Linux every announcement the window's AT-SPI adapter itself made,
+    /// fed each frame's tree, so a second live node announcing beside the
+    /// status is heard too, and the command the list holds selected each
+    /// time the adapter reported a change of its selection, which Orca
+    /// speaks.
+    struct Heard {
+        named: Option<String>,
+        heard: Vec<String>,
+        #[cfg(target_os = "linux")]
+        bus: crate::native_accessibility::atspi_state_tests::Bus,
+        #[cfg(target_os = "linux")]
+        adapter: Vec<String>,
+        #[cfg(target_os = "linux")]
+        listed: Vec<String>,
+    }
+
+    impl Heard {
+        /// The palette's status, by element ID.
+        const STATUS: &str = "command-palette-current-result";
+
+        /// Starts listening to the open palette, as it opened already heard.
+        fn new(cx: &mut VisualTestContext) -> Self {
+            #[cfg(target_os = "linux")]
+            let bus = crate::native_accessibility::atspi_state_tests::Bus::new(
+                crate::native_accessibility::atspi_state_tests::next_frame(cx),
+            );
+            let mut heard = Self {
+                named: None,
+                heard: Vec::new(),
+                #[cfg(target_os = "linux")]
+                bus,
+                #[cfg(target_os = "linux")]
+                adapter: Vec::new(),
+                #[cfg(target_os = "linux")]
+                listed: Vec::new(),
+            };
+            heard.frame(cx);
+            heard.heard.clear();
+            #[cfg(target_os = "linux")]
+            {
+                heard.adapter.clear();
+                heard.listed.clear();
+            }
+            heard
+        }
+
+        /// Draws a frame and records what it announces.
+        fn frame(&mut self, cx: &mut VisualTestContext) {
+            use crate::native_accessibility::written;
+            #[cfg(target_os = "linux")]
+            let tree = crate::native_accessibility::atspi_state_tests::next_frame(cx);
+            #[cfg(not(target_os = "linux"))]
+            {
+                written::forget();
+                crate::tags::tests::draw(cx);
+            }
+            // The status is polite, or off for a change it takes quietly,
+            // and carries its reading as its name, which AT-SPI announces,
+            // and its value, which macOS's adapter announces.
+            let mut polite = true;
+            let name = written::get(Self::STATUS).and_then(|status| {
+                let live = written::announced(Self::STATUS).map(|live| live.live);
+                polite = live == Some(gpui::accesskit::Live::Polite);
+                assert!(
+                    polite || live == Some(gpui::accesskit::Live::Off),
+                    "the palette's status is polite, or quiet: {live:?}"
+                );
+                assert_eq!(
+                    status.node.value(),
+                    status.node.label(),
+                    "the status's value is its name"
+                );
+                status.node.label().map(str::to_owned)
+            });
+            if name != self.named {
+                if polite {
+                    self.heard.extend(name.clone());
+                }
+                self.named = name;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                self.bus.update(tree);
+                self.adapter.extend(self.bus.announced());
+                self.listed.extend(self.bus.selection_changed());
+            }
+        }
+
+        /// Lets the test clock run `millis` and draws, recording what the
+        /// frame announces.
+        fn wait(&mut self, cx: &mut VisualTestContext, millis: u64) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            cx.run_until_parked();
+            self.frame(cx);
+        }
+
+        /// What was announced since the last call, which on Linux is all the
+        /// AT-SPI adapter announced, nothing besides it.
+        fn take(&mut self) -> Vec<String> {
+            let heard = std::mem::take(&mut self.heard);
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                std::mem::take(&mut self.adapter),
+                heard,
+                "the AT-SPI adapter announces what the status's name says, and nothing else"
+            );
+            heard
+        }
+
+        /// The commands the list held selected each time the AT-SPI adapter
+        /// reported a change of its selection since the last call, each of
+        /// which Orca speaks.
+        #[cfg(target_os = "linux")]
+        fn take_listed(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.listed)
+        }
+    }
+
+    /// The status's reading and the row's name for place `at` among
+    /// `query`'s results in `availability`.
+    fn reading_and_row(query: &str, at: usize, availability: &Availability) -> (String, String) {
+        let results = matches(query);
+        let spec = COMMANDS[results[at]];
+        let reason = spec.id.reason(availability);
+        let status = format!(
+            "{} · {} of {}{}",
+            spec.label,
+            at + 1,
+            results.len(),
+            reason
+                .map(|reason| format!(" · Unavailable: {reason}"))
+                .unwrap_or_default()
+        );
+        let row = format!(
+            "{}{}",
+            spec.label,
+            reason
+                .map(|reason| format!(". Unavailable: {reason}"))
+                .unwrap_or_default()
+        );
+        (status, row)
+    }
+
+    /// Each Up and Down in the palette is spoken once, in the whole list
+    /// and in a search's, and a Down to a row the list had not drawn too.
+    /// Where the list speaks a moved selection itself
+    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), the status announces
+    /// no move and the AT-SPI adapter reports the list's change of
+    /// selection, whose command Orca speaks; elsewhere the status announces
+    /// the command each move reaches with its place, at once. The status
+    /// announced every move on Linux too, and Orca 51.1 spoke a Down twice,
+    /// 41 ms apart, "Go to History · 2 of 3" and then "Go to History"
+    /// (QA-94).
+    #[gpui::test]
+    fn a_move_is_left_to_the_list_where_it_speaks_it(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        let moved = |cx: &mut VisualTestContext, heard: &mut Heard, keys: &str, query: &str, at| {
+            cx.simulate_keystrokes(keys);
+            heard.frame(cx);
+            let (status, row) = reading_and_row(query, at, &availability);
+            assert_eq!(
+                heard.named.as_deref(),
+                Some(status.as_str()),
+                "{keys} in {query:?}'s list reaches place {at}"
+            );
+            let own = if shortcuts::LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![status]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "{keys} in {query:?}'s list: the app announces the command only where the list does not"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_listed(),
+                [row],
+                "{keys} in {query:?}'s list: the list reports its selection changed, and Orca speaks the command"
+            );
+            #[cfg(not(target_os = "linux"))]
+            let _ = row;
+        };
+        let start = first_available(&matches(""), &availability);
+        assert_eq!(start, 0, "the whole list starts on its first command");
+        moved(cx, &mut heard, "down", "", 1);
+        moved(cx, &mut heard, "down", "", 2);
+        moved(cx, &mut heard, "up", "", 1);
+        // Down to the row past the list's foot, which it had not drawn.
+        let drawn = (0..matches("").len())
+            .filter(|&row| {
+                cx.debug_bounds(format!("palette-command-{row}").leak())
+                    .is_some()
+            })
+            .max()
+            .expect("the list draws rows");
+        for at in 2..=drawn + 1 {
+            if at == drawn + 1 {
+                assert!(
+                    cx.debug_bounds(format!("palette-command-{at}").leak())
+                        .is_none(),
+                    "row {at} is not drawn before Down reaches it"
+                );
+            }
+            moved(cx, &mut heard, "down", "", at);
+        }
+
+        // A search's list: its first available command, then Down and Up.
+        cx.simulate_input("go");
+        heard.wait(cx, 2000);
+        let first = first_available(&matches("go"), &availability);
+        assert_eq!(
+            heard.take(),
+            [reading_and_row("go", first, &availability).0],
+            "after the moves the search announces the command it selects, with its place, once"
+        );
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+        assert!(
+            matches("go").len() > first + 1,
+            "\"go\" finds more than one command"
+        );
+        assert_eq!(
+            heard.named,
+            Some(reading_and_row("go", first, &availability).0),
+            "the search selects its first available command"
+        );
+        moved(cx, &mut heard, "down", "go", first + 1);
+        moved(cx, &mut heard, "up", "go", first);
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }
 }
