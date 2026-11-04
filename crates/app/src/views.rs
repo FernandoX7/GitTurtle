@@ -3829,7 +3829,8 @@ fn partial_reason(reason: SharedString, muted: u32) -> Div {
 const CODE_LINE_HEIGHT: f32 = 1.5;
 
 /// The code editor's padding above and below its lines, which no line is
-/// drawn in (the kit's medium field's `input_py`, at every text size).
+/// drawn in (the kit's medium field's `input_py`, at every text size), and
+/// which layout draws on its whole device pixel, halves toward zero.
 const CODE_PADDING: Pixels = px(8.);
 
 /// The fewest whole rows of Split's text Compare's footer leaves in view
@@ -3879,9 +3880,13 @@ fn split_room(
             crate::in_frame::measured_height(partial_reason(reason, muted), width, window, cx)
         });
         let line = (appearance::code_text() * CODE_LINE_HEIGHT).round();
+        // The padding as drawn: reckoned at the raw 8 px, drawn on 10 device
+        // pixels at scale 1.2, the footer stayed with 0.17 px to spare
+        // beyond the rows, a fifth of the device pixel below.
+        let padding = window.pixel_snap(CODE_PADDING);
         // A device pixel short of the rows, as layout may draw the
         // text's edges, takes the footer away.
-        let text = bounds.size.height - reason - footer - bar - CODE_PADDING * 2.;
+        let text = bounds.size.height - reason - footer - bar - padding * 2.;
         text < line * SPLIT_FIND_ROWS + px(1. / window.scale_factor())
     });
     let (footer, described) = match footer {

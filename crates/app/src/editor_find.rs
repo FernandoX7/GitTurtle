@@ -3695,6 +3695,82 @@ mod bar_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Split's footer stays beneath an open Find bar only while it leaves
+    /// each side three whole rows of its text and a device pixel more
+    /// (`views::split_room`): at display scales 1.1, 1.2 and 2 and at 13 and
+    /// 18 pt, Find open over Before in a window 1,480 px wide, in the
+    /// shortest window that keeps the footer, found by bisection over device
+    /// pixels, each side's text has that room in view. The rule reckoned the
+    /// editor's padding above and below its lines at the raw 8 px, which
+    /// layout draws on 10 device pixels at 1.2, 8.33 px each, and on 9 at
+    /// 1.1: at 1.2 and 18 pt the footer stayed with each side's text
+    /// 54.17 px tall, three 18 px rows and 0.17 px, a fifth of the device
+    /// pixel the rule keeps for the text's edges.
+    #[gpui::test]
+    async fn split_s_footer_stays_only_with_three_rows_and_a_device_pixel_to_spare(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::CompareText, cx).await;
+        let mut failures = Vec::new();
+        for scale in [1.1f32, 1.2, 2.] {
+            // Windows are counted in device pixels.
+            let height = |n: i32| n as f32 / scale;
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                open_find(&app, cx, TextMode::Split, 1480.);
+                let editors = split_editors(&app, cx);
+                let kept = |n: i32, cx: &mut VisualTestContext| {
+                    cx.simulate_resize(size(px(1480.), px(height(n))));
+                    at_scale(cx, scale);
+                    cx.debug_bounds("compare-footer").is_some()
+                };
+                let (mut lo, mut hi) = ((200. * scale) as i32, (490. * scale) as i32);
+                assert!(
+                    !kept(lo, cx) && kept(hi, cx),
+                    "scale {scale}, {text} pt: the footer gives way in a window {} px tall \
+                     and stays in one 490 px tall",
+                    height(lo)
+                );
+                while hi - lo > 1 {
+                    let middle = lo + (hi - lo) / 2;
+                    if kept(middle, cx) {
+                        hi = middle;
+                    } else {
+                        lo = middle;
+                    }
+                }
+                kept(hi, cx);
+                let at = format!("scale {scale}, {text} pt, Split in 1480 × {}", height(hi));
+                for (side, editor) in ["Before", "After"].into_iter().zip(&editors) {
+                    let (viewport, line) = cx.update(|_, cx| {
+                        let editor = editor.read(cx);
+                        (
+                            editor.text_bounds().expect("the text is laid out"),
+                            editor.line_height().expect("the text is laid out"),
+                        )
+                    });
+                    let room = line * 3. + px(1. / scale);
+                    if viewport.size.height < room - px(1e-3) {
+                        failures.push(format!(
+                            "{at}: {side}'s text {viewport:?} shows less than three {line:?} \
+                             rows and a device pixel, {room:?}, above the footer"
+                        ));
+                    }
+                }
+                cx.simulate_resize(size(px(1480.), px(490.)));
+                at_scale(cx, scale);
+                cx.simulate_keystrokes("escape");
+                crate::width_walk::frame(cx);
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(2.);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// Opens Find in each case the bar's device-pixel tests walk and hands
     /// `check` the case, its display scale, its mode, the bar drawn and the
     /// rule it paints, in Midnight's colours: at display scales 1, 1.2,
