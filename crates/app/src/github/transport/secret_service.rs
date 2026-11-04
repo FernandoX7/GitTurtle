@@ -1325,6 +1325,68 @@ mod tests {
         }
     }
 
+    /// An account's whole life through the flows on one keyring, with a marker token:
+    /// Connect, the stored read that follows, Disconnect, then a stored read the keyring
+    /// fails with an error whose own text carries the token. Nothing returned carries the
+    /// token in any form the panel or a log could show (`{}` as Disconnect's failure shows,
+    /// `{:#}` with every cause as Connect's and Refresh's do, `{:?}`), and none names another
+    /// platform's store or calls the keyring encrypted.
+    #[test]
+    fn an_accounts_life_in_the_keyring_shows_its_token_nowhere() {
+        fn shown<T: std::fmt::Debug>(result: &Result<T>) -> Vec<String> {
+            match result {
+                Ok(value) => vec![format!("{value:?}")],
+                Err(error) => vec![
+                    error.to_string(),
+                    format!("{error:#}"),
+                    format!("{error:?}"),
+                ],
+            }
+        }
+        let control = OperationControl::default();
+        // No default collection yet: Connect's save creates it.
+        let fake = Fake::new(false, &[]);
+        let connected = connect(&fake, &control);
+        let mut texts = shown(&connected);
+        connected.expect("Connect stores the account");
+        // The token went through the flow, so it could have leaked.
+        let created = fake.created.borrow();
+        let [(_, _, secret)] = created.as_slice() else {
+            panic!("Connect writes one item");
+        };
+        assert!(String::from_utf8_lossy(secret.as_bytes()).contains(MARKER));
+        drop(created);
+        let restored = read(&fake);
+        texts.extend(shown(&restored));
+        assert_eq!(restored.unwrap().expect("the stored account").token, MARKER);
+        let removed = disconnect(&fake, &control);
+        texts.extend(shown(&removed));
+        removed.expect("Disconnect removes it");
+        let emptied = read(&fake);
+        texts.extend(shown(&emptied));
+        assert!(emptied.unwrap().is_none());
+        let failing = Fake {
+            fail: Some(("secret", || {
+                Error::NotFound(format!("keyring detail {MARKER}"))
+            })),
+            ..Fake::new(true, &[&stored_json()])
+        };
+        let failed = read(&failing);
+        texts.extend(shown(&failed));
+        assert_eq!(texts.len(), 7);
+        for text in &texts {
+            let lower = text.to_lowercase();
+            assert!(
+                !text.contains(MARKER) && !lower.contains("keyring detail"),
+                "{text}"
+            );
+            for store in ["keychain", "encrypt", "secure storage"] {
+                assert!(!lower.contains(store), "{store}: {text}");
+            }
+        }
+        assert_eq!(message(failed), READ_FAILED);
+    }
+
     #[test]
     fn a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus() {
         use std::{ffi::OsStr, os::unix::net::UnixListener};

@@ -3509,6 +3509,96 @@ mod tests {
         settle_panel(&app, cx).await;
     }
 
+    /// What the panel shows and names for assistive technology through Connect, Disconnect
+    /// and a failed stored read (Refresh PRs, which a test build refuses for want of a stored
+    /// account, where a locked or missing keyring refuses it with its own line) names the
+    /// store from one place and, on Linux, never Keychain, encryption or secure storage:
+    /// every label the window wrote, and the names, values and descriptions of the panel's
+    /// lines. A test build's panel reaches no token; the keyring's own messages, in the forms
+    /// the panel shows them, carry none
+    /// (`secret_service::tests::an_accounts_life_in_the_keyring_shows_its_token_nowhere`).
+    #[gpui::test]
+    async fn the_account_pane_names_only_the_desktop_keyring(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::native_accessibility::written;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.review.fixture = false);
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        let mut texts = Vec::new();
+        for step in ["connect", "disconnect", "refresh"] {
+            match step {
+                "connect" => click(cx, "github-connect"),
+                "disconnect" => click(cx, "github-disconnect"),
+                _ => cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| panel.refresh(1, window, cx))
+                }),
+            }
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            written::forget();
+            draw(cx);
+            draw(cx);
+            let (notice, error) =
+                panel.read_with(cx, |panel, _| (panel.notice.clone(), panel.error.clone()));
+            match step {
+                "connect" => assert_eq!(
+                    notice,
+                    Some(format!(
+                        "Connected as {}; authorization is stored in {}.",
+                        account::LOGIN,
+                        SecureStore::NAME
+                    ))
+                ),
+                "disconnect" => assert!(
+                    notice.as_deref().is_some_and(
+                        |notice| notice.starts_with("GitTurtle authorization removed.")
+                    ),
+                    "{notice:?}"
+                ),
+                _ => assert!(
+                    error.as_deref().is_some_and(
+                        |error| error.starts_with("A test build has no GitHub account")
+                    ),
+                    "the stored read failed: {error:?}"
+                ),
+            }
+            texts.extend(notice.into_iter().chain(error));
+            for (_, name) in written::labels() {
+                texts.extend(name);
+            }
+            for id in ["github-notice", "github-error", "github-connection-help"] {
+                if let Some(line) = written::get(id) {
+                    let node = line.node;
+                    texts.extend(
+                        [node.label(), node.value(), node.description()]
+                            .into_iter()
+                            .flatten()
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        }
+        assert!(
+            texts.iter().any(|text| text.contains(SecureStore::NAME)),
+            "the panel names its store: {texts:?}"
+        );
+        #[cfg(target_os = "linux")]
+        for text in &texts {
+            assert!(!misnames_the_linux_store(text), "{text}");
+        }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
     /// While a request of the panel runs, the operation bar's Cancel, labelled
     /// or as its icon, is named after what it cancels and its tooltip says
     /// what stops, from the request's kind (`RequestKind::cancel`): it was
