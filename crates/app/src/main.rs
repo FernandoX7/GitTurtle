@@ -2027,6 +2027,20 @@ impl GitTurtle {
         }
     }
     fn select_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_file(index, true, window, cx);
+    }
+    /// Shows changed file `index` in Compare as choosing it does, focusing
+    /// the changed-file list where `focus`. Where not, as for a tab's
+    /// restore (`restore_tab_file`), which then lands focus by its own rule
+    /// (`land_restore_focus`), the window names that list's pane and leaves
+    /// focus where it is.
+    fn show_file(
+        &mut self,
+        index: usize,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.close_blame(window, cx);
         if index >= self.files.len() {
             return;
@@ -2044,7 +2058,11 @@ impl GitTurtle {
             self.sidebar = false;
             self.mode = WorkspaceMode::Compare;
         }
-        self.focus_compare_files(window, cx);
+        if focus {
+            self.focus_compare_files(window, cx);
+        } else {
+            self.pane = Pane::Files;
+        }
         if reading {
             cx.notify();
         } else if self.selected_file == Some(index) && self.content.is_some() {

@@ -1811,7 +1811,16 @@ impl GitTurtle {
             })
         {
             if saved.compare {
-                self.select_file(index, window, cx);
+                // Focus lands as it does on a captured comparison: a dialog,
+                // a sheet, Settings or Projects shown over the restore, or a
+                // control the person moved to keeps it, and History's list,
+                // where showing the tab put it, gives way to the list
+                // Compare draws. Chosen as a click chooses it, the file took
+                // focus from a dialog, whose keys then reached the page
+                // under it, and from Settings or Projects, whose keys then
+                // reached no drawn control.
+                self.show_file(index, false, window, cx);
+                self.land_restore_focus(window, cx);
             } else {
                 self.selected_file = Some(index);
             }
@@ -1861,7 +1870,9 @@ impl GitTurtle {
         self.request_restored_comparison(saved, window, cx);
     }
 
-    /// Focus as a cold tab's restore lands in Compare. Showing the tab put
+    /// Focus as a cold tab's restore lands in Compare, on its captured
+    /// comparison or on the file an older session's bookmark chooses from
+    /// the saved commit's changes (`restore_tab_file`). Showing the tab put
     /// focus on History's commit list (`open`, through `back_to_history`),
     /// which Compare does not draw, so it goes where choosing the file puts
     /// it, the changed-file list (`focus_compare_files`), and so does the
@@ -7558,6 +7569,148 @@ mod tests {
                 drawn_focus(&app, cx),
                 Some(files.clone()),
                 "{opened}: closed, on the changed-file list"
+            );
+        }
+    }
+
+    /// A cold tab whose bookmark is in Compare without a captured
+    /// comparison, as an older session saved it, restores its file in
+    /// Compare from the saved commit's changes (`restore_tab_file`). A
+    /// dialog opened over the restore, Local workspaces, keeps focus as the
+    /// file is chosen: the file is still selected and shown, and closing
+    /// the dialog gives focus to the changed-file list. The restore once
+    /// chose the file as a click does and focused that list under the
+    /// dialog, whose keys then reached the page behind it.
+    #[gpui::test]
+    async fn restoring_a_tabs_file_leaves_focus_in_an_open_dialog(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        app.update(cx, |app, _| {
+            let saved = &mut app.repository_tabs.tabs[1].saved;
+            saved.comparison = None;
+            assert!(saved.compare, "a bookmark in Compare");
+        });
+        // Shown, it reads its snapshot while the dialog opens.
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_library(window, cx)));
+        draw_tab_frames(cx);
+        let dialog = cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "the dialog opened");
+            window.focused(cx).expect("the dialog holds focus")
+        });
+        assert!(dialog != files, "the dialog holds focus");
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "restored");
+            assert!(app.mode == WorkspaceMode::Compare, "its file is chosen");
+            let file = app.selected_file.and_then(|index| app.files.get(index));
+            assert_eq!(file.map(FileChange::path), Some(Path::new("notes.txt")));
+            assert!(app.content.is_some(), "and shown");
+        });
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "the dialog stays open");
+            assert_eq!(window.focused(cx), Some(dialog), "the dialog keeps focus");
+            window.close_dialog(cx);
+        });
+        draw_tab_frames(cx);
+        assert_eq!(
+            drawn_focus(&app, cx),
+            Some(files),
+            "closed, on the changed-file list"
+        );
+    }
+
+    /// Settings or Projects shown over the restore of a cold tab whose
+    /// bookmark is in Compare without a captured comparison keeps focus on
+    /// its control as the file is chosen from the saved commit's changes
+    /// (`restore_tab_file`), as it does over a captured comparison's
+    /// restore: the file is still selected and shown, and Back from the
+    /// page focuses the changed-file list, not History's list, where
+    /// showing the tab put focus. The restore once chose the file as a
+    /// click does and focused that list under the page, which draws none
+    /// of it, so keys reached no drawn control.
+    #[gpui::test]
+    async fn restoring_a_tabs_file_leaves_focus_on_the_page_shown_over_it(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files) = app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        for (page, name) in [
+            (AppPage::Settings, "Settings"),
+            (AppPage::Projects, "Projects"),
+        ] {
+            leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+            app.update(cx, |app, _| {
+                let saved = &mut app.repository_tabs.tabs[1].saved;
+                saved.comparison = None;
+                assert!(saved.compare, "{name}: a bookmark in Compare");
+            });
+            // Shown, it reads its snapshot while the page is shown over it.
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if page == AppPage::Settings {
+                        app.show_settings(window, cx);
+                    } else {
+                        app.show_projects(window, cx);
+                    }
+                })
+            });
+            draw_tab_frames(cx);
+            assert!(app.read_with(cx, |app, _| app.page == page), "{name} shown");
+            let control = drawn_focus(&app, cx).expect("the page's control holds focus");
+            assert!(
+                control != files && control != list,
+                "{name}: its own control"
+            );
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{name}: restored");
+                assert!(app.page == page, "{name}: still shown");
+                assert!(
+                    app.mode == WorkspaceMode::Compare,
+                    "{name}: its file chosen"
+                );
+                let file = app.selected_file.and_then(|index| app.files.get(index));
+                assert_eq!(file.map(FileChange::path), Some(Path::new("notes.txt")));
+                assert!(app.content.is_some(), "{name}: and shown");
+            });
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(control),
+                "{name}: its control keeps focus"
+            );
+            app.read_with(cx, |app, _| {
+                assert_eq!(
+                    app.page_return_focus,
+                    Some(files.clone()),
+                    "{name}: Back returns to the changed-file list itself"
+                );
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::Compare);
+            });
+            assert_eq!(
+                drawn_focus(&app, cx),
+                Some(files.clone()),
+                "{name}: back, on the changed-file list"
             );
         }
     }
