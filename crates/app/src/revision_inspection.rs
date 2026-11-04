@@ -1156,8 +1156,18 @@ impl Render for QuickForm {
                     .map(|index| {
                         let entry = &this.page.as_ref().unwrap().entries[index];
                         let path = entry.path.display().to_string();
-                        div()
-                            .id(("quick-file", index))
+                        // The row's ID is the path it shows, by its bytes,
+                        // rather than its place in the results, so the window's
+                        // tree keeps one node for each path across searches and
+                        // a search that changes the results takes nodes away and
+                        // adds others rather than renaming them. Keyed by place,
+                        // a query changed after a move renamed the node at each
+                        // place, and Orca would speak the path now in it, "not
+                        // selected", as it did in Keyboard Shortcuts' list
+                        // (QA-92). Its debug selector is still its place, which
+                        // tests read.
+                        let row = div()
+                            .id(ElementId::Path(Arc::from(entry.path.as_path())))
                             .debug_selector(move || format!("quick-file-{index}"))
                             .role(Role::ListBoxOption)
                             .aria_label(path.clone())
@@ -1180,8 +1190,10 @@ impl Render for QuickForm {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.selected = index;
                                 this.activate(window, cx);
-                            }))
-                            .into_any_element()
+                            }));
+                        // Recorded for tests, which read the rows the window's
+                        // tree holds.
+                        crate::native_accessibility::recorded(row).into_any_element()
                     })
                     .collect()
             }),

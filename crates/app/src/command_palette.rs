@@ -933,8 +933,18 @@ impl Render for Palette {
                         let disabled = spec.id.reason(&context);
                         let selected = this.selection.index == index;
                         let shortcut = spec.shortcut.map(shortcuts::label).unwrap_or_default();
-                        div()
-                            .id(("palette-command", index))
+                        // The row's ID is the command it shows, its place in
+                        // the whole registry, rather than its place among the
+                        // results, so the window's tree keeps one node for each
+                        // command across searches and a search that changes the
+                        // results takes nodes away and adds others rather than
+                        // renaming them. Keyed by place, a query changed after
+                        // a move renamed the node at each place, and Orca would
+                        // speak the command now in it, "not selected", as it did
+                        // in Keyboard Shortcuts' list (QA-92). Its debug
+                        // selector is still its place, which tests read.
+                        let row = div()
+                            .id(("palette-command", this.results[index]))
                             .debug_selector(move || format!("palette-command-{index}"))
                             .role(Role::ListBoxOption)
                             .aria_label(format!(
@@ -1029,8 +1039,10 @@ impl Render for Palette {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.selection.index = index;
                                 this.activate(window, cx);
-                            }))
-                            .into_any_element()
+                            }));
+                        // Recorded for tests, which read the rows the window's
+                        // tree holds.
+                        native_accessibility::recorded(row).into_any_element()
                     })
                     .collect()
             }),
@@ -2633,5 +2645,201 @@ mod render_tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A dialog's list as the window's tree holds its rows frame by frame
+    /// and, on Linux, the window's AT-SPI adapter fed those frames, as
+    /// GPUI's Linux backend feeds `accesskit_unix`.
+    struct ListRows {
+        list: &'static str,
+        #[cfg(target_os = "linux")]
+        bus: crate::native_accessibility::atspi_state_tests::Bus,
+    }
+
+    impl ListRows {
+        /// Starts on the window's next frame.
+        fn new(cx: &mut VisualTestContext, list: &'static str) -> Self {
+            #[cfg(target_os = "linux")]
+            let bus = crate::native_accessibility::atspi_state_tests::Bus::new(
+                crate::native_accessibility::atspi_state_tests::next_frame(cx),
+            );
+            #[cfg(not(target_os = "linux"))]
+            crate::tags::tests::draw(cx);
+            Self {
+                list,
+                #[cfg(target_os = "linux")]
+                bus,
+            }
+        }
+
+        /// Draws a frame and returns the list's rows the window's tree then
+        /// holds, by node, with their names.
+        fn frame(
+            &mut self,
+            cx: &mut VisualTestContext,
+        ) -> std::collections::HashMap<String, Option<String>> {
+            use crate::native_accessibility::written;
+            #[cfg(target_os = "linux")]
+            self.bus
+                .update(crate::native_accessibility::atspi_state_tests::next_frame(
+                    cx,
+                ));
+            #[cfg(not(target_os = "linux"))]
+            {
+                written::forget();
+                crate::tags::tests::draw(cx);
+            }
+            written::inside(self.list)
+                .into_iter()
+                .filter_map(|id| {
+                    let row = written::get(&id)?;
+                    (row.node.role() == Role::ListBoxOption)
+                        .then(|| (id, row.node.label().map(str::to_owned)))
+                })
+                .collect()
+        }
+
+        /// The list items the adapter reported renamed since the last call,
+        /// by the name each reads now; none off Linux, which has no adapter
+        /// here.
+        fn renamed(&mut self) -> Vec<String> {
+            #[cfg(target_os = "linux")]
+            {
+                self.bus
+                    .renamed()
+                    .into_iter()
+                    .filter(|(role, _)| *role == accesskit_atspi_common::Role::ListItem)
+                    .map(|(_, name)| name)
+                    .collect()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Vec::new()
+            }
+        }
+    }
+
+    /// Asserts that each row node `after` holds that `before` held too reads
+    /// the name it read, and that some do.
+    fn renames_none(
+        before: &std::collections::HashMap<String, Option<String>>,
+        after: &std::collections::HashMap<String, Option<String>>,
+    ) {
+        let kept: Vec<_> = after
+            .iter()
+            .filter(|(id, _)| before.contains_key(*id))
+            .collect();
+        assert!(
+            !kept.is_empty(),
+            "rows stay in the tree across the search's change: {before:?} → {after:?}"
+        );
+        let renamed: Vec<_> = kept
+            .iter()
+            .filter(|(id, name)| before[*id] != **name)
+            .map(|(id, name)| format!("{id}: {:?} → {name:?}", before[*id]))
+            .collect();
+        assert_eq!(
+            renamed,
+            Vec::<String>::new(),
+            "a row node keeps its name across the search's change"
+        );
+    }
+
+    /// A query changed after a move takes the palette's rows away and adds
+    /// others, renaming none: after "go" and Down, Backspace ("g") puts
+    /// GitHub pull requests… ahead of Go to Projects, and each row node the
+    /// window's tree holds before and after it keeps its name. On Linux the
+    /// AT-SPI adapter reports no list item renamed. Each row was its place
+    /// among the results, so Backspace renamed the node at each place, and
+    /// Orca would speak the command now in it, "not selected", as it did in
+    /// Keyboard Shortcuts' list (QA-92).
+    #[gpui::test]
+    fn a_query_changed_after_a_move_renames_no_command(cx: &mut TestAppContext) {
+        let (_, cx) = hub(cx);
+        let mut rows = ListRows::new(cx, "command-palette-results");
+        // Backspace moves a command the list shows to another place.
+        let (go, g) = (matches("go"), matches("g"));
+        assert!(
+            (0..go.len().min(g.len()).min(7)).any(|place| go[place] != g[place]),
+            "\"g\" lists another command where \"go\" listed one"
+        );
+        cx.simulate_input("go");
+        rows.frame(cx);
+        cx.simulate_keystrokes("down");
+        let before = rows.frame(cx);
+        rows.renamed();
+        cx.simulate_keystrokes("backspace");
+        let after = rows.frame(cx);
+        let github = |rows: &std::collections::HashMap<String, Option<String>>| {
+            rows.values()
+                .flatten()
+                .any(|name| name.starts_with("GitHub pull requests"))
+        };
+        assert!(
+            !github(&before) && github(&after),
+            "Backspace leaves \"g\": {before:?} → {after:?}"
+        );
+        renames_none(&before, &after);
+        assert_eq!(
+            rows.renamed(),
+            Vec::<String>::new(),
+            "the adapter reports no command renamed"
+        );
+    }
+
+    /// Quick Open's query changed after a move takes rows away and adds
+    /// others, renaming none: after Down in the whole list (a.txt,
+    /// b-notes.txt, c-notes.txt), "notes" drops a.txt, so b-notes.txt and
+    /// c-notes.txt each move up a place, and each row node the window's tree
+    /// holds before and after it keeps its name. On Linux the AT-SPI adapter
+    /// reports no list item renamed. Each row was its place in the results,
+    /// so the search renamed the node at each place, and Orca would speak
+    /// the path now in it, "not selected", as it did in Keyboard Shortcuts'
+    /// list (QA-92).
+    #[gpui::test]
+    async fn quick_opens_query_changed_after_a_move_renames_no_path(cx: &mut TestAppContext) {
+        use crate::tags::tests::{git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["a.txt", "b-notes.txt", "c-notes.txt"] {
+            std::fs::write(repo.path().join(name), "text\n").unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
+        crate::tags::tests::draw(cx);
+        crate::revision_inspection::settle_quick_open(cx).await;
+        let mut rows = ListRows::new(cx, "quick-open-results");
+        let names = |rows: &std::collections::HashMap<String, Option<String>>| {
+            let mut names: Vec<_> = rows.values().flatten().cloned().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            names(&rows.frame(cx)),
+            ["a.txt", "b-notes.txt", "c-notes.txt"],
+            "the whole list"
+        );
+        cx.simulate_keystrokes("down");
+        let before = rows.frame(cx);
+        rows.renamed();
+        cx.simulate_input("notes");
+        crate::revision_inspection::settle_quick_open(cx).await;
+        let after = rows.frame(cx);
+        assert_eq!(
+            names(&after),
+            ["b-notes.txt", "c-notes.txt"],
+            "\"notes\" drops a.txt"
+        );
+        renames_none(&before, &after);
+        assert_eq!(
+            rows.renamed(),
+            Vec::<String>::new(),
+            "the adapter reports no path renamed"
+        );
+        cx.simulate_keystrokes("escape");
+        crate::tags::tests::draw(cx);
     }
 }
