@@ -105,11 +105,12 @@ python3 "$project_root/scripts/package-identity.py" \
 # text and images) is a dynamically linked executable, one with a PT_INTERP
 # program header; the package ships no other ELF, such as a shared library or
 # a static executable. Each executable links the distribution's libdav1d: it
-# needs libdav1d.so.7, imports dav1d_* symbols and defines none (a static copy
-# from dav1d-sys's internal build would), and carries no RPATH or RUNPATH that
-# could load another copy. A miss names the file and the check.
+# needs libdav1d.so.7, keeps its .symtab, imports dav1d_* symbols and defines
+# none (a static copy from dav1d-sys's internal build would), and carries no
+# RPATH or RUNPATH that could load another copy. A miss names the file and the
+# check.
 check_dav1d_link() {
-  local file="$1" name="${1#"$staged_bundle"/}" dynamic symbols imported defined
+  local file="$1" name="${1#"$staged_bundle"/}" dynamic sections symbols imported defined
   if ! dynamic="$(LC_ALL=C readelf -d -W "$file" 2>&1)"; then
     echo "Packaged executable $name: readelf could not read its dynamic section." >&2; return 1
   fi
@@ -118,6 +119,21 @@ check_dav1d_link() {
   fi
   if grep -Eq '\((RPATH|RUNPATH)\)' <<<"$dynamic"; then
     echo "Packaged executable $name sets DT_RPATH or DT_RUNPATH." >&2; return 1
+  fi
+  # "Defines none" holds only while the symbol table exists: a fully stripped
+  # executable keeps just .dynsym, where a static copy's functions need not
+  # appear, so it would pass vacuously. The release profile's
+  # strip = "debuginfo" keeps .symtab. No fixed list of imports is required:
+  # the dav1d_* functions imported are the dav1d crate's internal call set,
+  # which a crate update changes, so such a list would refuse a correct
+  # package. NEEDED libdav1d.so.7, at least one import and no definition in a
+  # present .symtab already prove dynamic linking.
+  if ! sections="$(LC_ALL=C readelf -S -W "$file" 2>&1)"; then
+    echo "Packaged executable $name: readelf could not read its section headers." >&2; return 1
+  fi
+  if ! grep -Eq '^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]+\.symtab[[:space:]]+SYMTAB[[:space:]]' <<<"$sections"; then
+    echo "Packaged executable $name has no .symtab section, so a static copy of dav1d would go unseen. Package an executable that keeps its symbol table, as the release profile's strip = \"debuginfo\" does." >&2
+    return 1
   fi
   # One line per dav1d_* symbol of code or data: its table, whether it is
   # defined, its name. FILE and SECTION symbols (Type, the fourth column) name
@@ -144,7 +160,7 @@ check_dav1d_link() {
     echo "Packaged executable $name defines dav1d_* symbols, a static copy of dav1d: $(tr '\n' ' ' <<<"$defined")" >&2
     return 1
   fi
-  echo "Checked $name: NEEDED libdav1d.so.7, $imported dav1d_* symbols imported and none defined, no RPATH or RUNPATH"
+  echo "Checked $name: NEEDED libdav1d.so.7, .symtab present, $imported dav1d_* symbols imported and none defined, no RPATH or RUNPATH"
 }
 elf_count=0
 while IFS= read -r -d '' file; do

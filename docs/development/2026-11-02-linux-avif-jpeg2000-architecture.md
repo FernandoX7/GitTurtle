@@ -258,7 +258,7 @@ No finding blocks the design; the open facts at the end are evidence the slices 
 7. **Library provenance.** Both checks are needed.
    - The packages carry the dependency.
    - The helper refuses a libdav1d older than 1.4.1, read from `dav1d_version()` with a strict parse. It takes the leading decimal `major.minor.patch`, refuses anything else, and runs before `mp4parse`, with its fixed sentence (C7, requirement 9).
-   - Packaging and CI check that `NEEDED` lists `libdav1d.so.7` and that the executable defines no `dav1d_*` symbol (no static copy).
+   - Packaging and CI check that `NEEDED` lists `libdav1d.so.7` and that the executable defines no `dav1d_*` symbol (no static copy). That holds only while `.symtab` exists, so they refuse an executable without one (`strip = "debuginfo"` keeps it). They require no fixed list of imports: the set is the `dav1d` crate's internal call set, which a crate update changes.
    - They also check that no `SYSTEM_DEPS_*` variable is set. The internal build in `dav1d-sys`'s `build.rs` would `git clone` dav1d 1.5.0 and link it statically.
    - They record `pkg-config --modversion dav1d` and its `libdir` (requirements 3 and 15).
 
