@@ -677,6 +677,15 @@ impl Button {
             .theme()
             .disabled_edge
             .filter(|_| disabled && !own_border && style.keeps_a_disabled_fill());
+        // GitTurtle patch: an enabled Button that rests on a fill of its own
+        // and has no border draws the theme's resting edge from the same
+        // layer, in every pointer state and while selected, so it keeps its
+        // shape where that fill nearly equals the surface beneath.
+        let resting_edge = cx
+            .theme()
+            .resting_edge
+            .filter(|_| !disabled && !own_border && style.keeps_a_resting_fill(self.selected));
+        let edge_layer = disabled_edge.or(resting_edge);
         // The layer follows the Button's corners, its caller's where it
         // rounds them itself.
         let edge_corner = |own: Option<AbsoluteLength>, rounded: bool| {
@@ -905,7 +914,7 @@ impl Button {
             )
         })
         .child(content)
-        .when_some(disabled_edge, |this, edge| {
+        .when_some(edge_layer, |this, edge| {
             this.child(
                 div()
                     .absolute()
@@ -1438,6 +1447,25 @@ impl ButtonVariant {
         match self {
             Self::Primary | Self::Secondary => true,
             Self::Custom(style) => style.disabled.is_some(),
+            _ => false,
+        }
+    }
+
+    /// GitTurtle patch: whether an enabled Button of this variant rests on a
+    /// fill of its own, the fill [`crate::Theme::resting_edge`] outlines: a
+    /// secondary one always, and a custom variant whose resting fill, or
+    /// selected fill while `selected`, is not transparent. A primary
+    /// Button's accent fill already stands off the surface; ghost, link and
+    /// text Buttons rest on none of their own, a default one draws its own
+    /// border, and the danger, warning, success and info variants keep
+    /// upstream's look.
+    fn keeps_a_resting_fill(&self, selected: bool) -> bool {
+        match self {
+            Self::Secondary => true,
+            Self::Custom(style) => {
+                let fill = if selected { style.active } else { style.color };
+                !fill.is_transparent()
+            }
             _ => false,
         }
     }
@@ -2149,5 +2177,374 @@ mod tests {
         );
         assert_eq!(edges(cx, "enabled-primary"), vec![], "enabled: none");
         assert_eq!(edges(cx, "disabled-ghost"), vec![], "no fill: none");
+    }
+
+    /// The Buttons that rest on a fill of their own and draw no border of
+    /// their own, which take the theme's resting edge: a secondary one, a
+    /// custom variant with a resting fill and, selected, one transparent at
+    /// rest with a selected fill (an application's selected segment).
+    const RESTING_ON_A_FILL: [&str; 4] = [
+        "secondary",
+        "selected-secondary",
+        "filled-custom",
+        "selected-segment",
+    ];
+
+    /// The Buttons that take no resting edge, the theme's set or not.
+    const NO_RESTING_EDGE: [&str; 11] = [
+        "primary",
+        "ghost",
+        "default",
+        "danger",
+        "link",
+        "text",
+        "transparent-custom",
+        "outline-secondary",
+        "bordered-secondary",
+        "disabled-secondary",
+        "disabled-custom",
+    ];
+
+    /// One Button the resting-edge harness draws.
+    #[derive(Clone, Copy)]
+    struct ButtonSpec {
+        id: &'static str,
+        variant: ButtonVariant,
+        outline: bool,
+        /// With a border its caller gives it.
+        bordered: bool,
+        selected: bool,
+        disabled: bool,
+    }
+
+    impl ButtonSpec {
+        fn new(id: &'static str, variant: ButtonVariant) -> Self {
+            Self {
+                id,
+                variant,
+                outline: false,
+                bordered: false,
+                selected: false,
+                disabled: false,
+            }
+        }
+
+        fn button(self) -> Button {
+            use gpui::prelude::FluentBuilder as _;
+
+            let id = self.id;
+            Button::new(id)
+                .debug_selector(move || id.into())
+                .label("Fetch")
+                .with_variant(self.variant)
+                .when(self.outline, |button| button.outline())
+                .when(self.bordered, |button| button.border_1())
+                .selected(self.selected)
+                .disabled(self.disabled)
+        }
+
+        /// The style upstream's rule gives this Button with the pointer away,
+        /// over it or pressing it: its variant's disabled, selected, resting,
+        /// hovered or pressed style, none of which the resting edge changes.
+        fn upstream_style(self, pointer: Pointer, cx: &mut App) -> ButtonVariantStyle {
+            let (variant, outline) = (self.variant, self.outline);
+            if self.disabled {
+                variant.disabled(outline, cx)
+            } else if self.selected {
+                variant.selected(outline, cx)
+            } else {
+                match pointer {
+                    Pointer::Away => variant.normal(outline, cx),
+                    Pointer::Over => variant.hovered(outline, cx),
+                    Pointer::Pressing => variant.active(outline, cx),
+                }
+            }
+        }
+
+        /// Whether it draws a border of its own: a default or outline
+        /// Button, or one its caller gives a border.
+        fn own_border(self) -> bool {
+            self.variant.is_default() || self.outline || self.bordered
+        }
+    }
+
+    /// Every Button the resting-edge harness draws, by the IDs
+    /// [`RESTING_ON_A_FILL`] and [`NO_RESTING_EDGE`] name.
+    fn button_specs(cx: &App) -> [ButtonSpec; 15] {
+        let fill = gpui::hsla(0.6, 0.3, 0.5, 1.);
+        let hover = gpui::hsla(0.6, 0.3, 0.6, 1.);
+        let pressed = gpui::hsla(0.6, 0.3, 0.4, 1.);
+        let filled = ButtonCustomVariant::new(cx)
+            .color(fill)
+            .hover(hover)
+            .active(pressed);
+        let transparent = ButtonCustomVariant::new(cx).hover(hover).active(pressed);
+        let spec = ButtonSpec::new;
+        [
+            spec("secondary", ButtonVariant::Secondary),
+            ButtonSpec {
+                selected: true,
+                ..spec("selected-secondary", ButtonVariant::Secondary)
+            },
+            spec("filled-custom", ButtonVariant::Custom(filled)),
+            ButtonSpec {
+                selected: true,
+                ..spec("selected-segment", ButtonVariant::Custom(transparent))
+            },
+            spec("primary", ButtonVariant::Primary),
+            spec("ghost", ButtonVariant::Ghost),
+            spec("default", ButtonVariant::Default),
+            spec("danger", ButtonVariant::Danger),
+            spec("link", ButtonVariant::Link),
+            spec("text", ButtonVariant::Text),
+            spec("transparent-custom", ButtonVariant::Custom(transparent)),
+            ButtonSpec {
+                outline: true,
+                ..spec("outline-secondary", ButtonVariant::Secondary)
+            },
+            ButtonSpec {
+                bordered: true,
+                ..spec("bordered-secondary", ButtonVariant::Secondary)
+            },
+            ButtonSpec {
+                disabled: true,
+                ..spec("disabled-secondary", ButtonVariant::Secondary)
+            },
+            ButtonSpec {
+                disabled: true,
+                ..spec(
+                    "disabled-custom",
+                    ButtonVariant::Custom(filled.disabled(fill.opacity(0.5))),
+                )
+            },
+        ]
+    }
+
+    struct RestingEdgeHarness;
+
+    impl gpui::Render for RestingEdgeHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .p_2()
+                .children(button_specs(cx).map(ButtonSpec::button))
+        }
+    }
+
+    fn resting_edge_harness(cx: &mut gpui::TestAppContext) -> &mut gpui::VisualTestContext {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|_, _| RestingEdgeHarness);
+        cx
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Pointer {
+        Away,
+        Over,
+        Pressing,
+    }
+
+    /// A bordered quad painted over a Button's bounds.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct PaintedEdge {
+        color: Hsla,
+        widths: Edges<gpui::ScaledPixels>,
+        corners: Corners<gpui::ScaledPixels>,
+    }
+
+    /// What one frame painted over a Button's bounds.
+    #[derive(Debug)]
+    struct PaintedButton {
+        bounds: gpui::Bounds<Pixels>,
+        /// Each filled quad, with its corners.
+        fills: Vec<(Background, Corners<gpui::ScaledPixels>)>,
+        /// Each bordered quad, once: GPUI paints a border over a transparent
+        /// fill as up to four strips of one quad.
+        edges: Vec<PaintedEdge>,
+    }
+
+    /// Draws the Button at `selector` with the pointer away from it, over it
+    /// or pressing it, and reads what the frame painted over its bounds.
+    fn painted_button(
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+        pointer: Pointer,
+    ) -> PaintedButton {
+        use gpui::{Modifiers, point, px};
+
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        draw(cx);
+        let center = cx.debug_bounds(selector).expect(selector).center();
+        let away = point(px(1.), px(1.));
+        match pointer {
+            Pointer::Away => cx.simulate_mouse_move(away, None, Modifiers::default()),
+            Pointer::Over => cx.simulate_mouse_move(center, None, Modifiers::default()),
+            Pointer::Pressing => {
+                cx.simulate_mouse_move(center, None, Modifiers::default());
+                cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            }
+        }
+        draw(cx);
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        let painted = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let near = |device: gpui::ScaledPixels, logical: Pixels| {
+                (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+            };
+            let mut fills = Vec::new();
+            let mut edges = Vec::new();
+            for quad in window.painted_quads() {
+                if !(near(quad.bounds.left(), bounds.left())
+                    && near(quad.bounds.top(), bounds.top())
+                    && near(quad.bounds.right(), bounds.right())
+                    && near(quad.bounds.bottom(), bounds.bottom()))
+                {
+                    continue;
+                }
+                let widths = quad.border_widths;
+                if [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .any(|width| width.as_f32() > 0.)
+                {
+                    let edge = PaintedEdge {
+                        color: quad.border_color,
+                        widths,
+                        corners: quad.corner_radii,
+                    };
+                    if !edges.contains(&edge) {
+                        edges.push(edge);
+                    }
+                } else if !quad.background.is_transparent() {
+                    fills.push((quad.background, quad.corner_radii));
+                }
+            }
+            PaintedButton {
+                bounds,
+                fills,
+                edges,
+            }
+        });
+        if let Pointer::Pressing = pointer {
+            cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+        }
+        cx.simulate_mouse_move(away, None, Modifiers::default());
+        painted
+    }
+
+    fn set_resting_edge(cx: &mut gpui::VisualTestContext, edge: Option<Hsla>) {
+        cx.update(|_, cx| crate::Theme::global_mut(cx).resting_edge = edge);
+    }
+
+    /// GitTurtle patch: with the theme's `resting_edge` set, an enabled
+    /// Button that rests on a fill of its own and draws no border of its own
+    /// paints one 1 px edge of that colour over its bounds, with the corners
+    /// of its fill, at rest, hovered, pressed and selected; its bounds and
+    /// fills are those it paints with the edge unset, when it paints none.
+    #[gpui::test]
+    fn an_enabled_filled_button_draws_the_themes_resting_edge_in_every_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = resting_edge_harness(cx);
+        let edge = gpui::hsla(0.75, 0.4, 0.4, 1.);
+        let scale = cx.update(|window, _| window.scale_factor());
+        for id in RESTING_ON_A_FILL {
+            for pointer in [Pointer::Away, Pointer::Over, Pointer::Pressing] {
+                let unset = painted_button(cx, id, pointer);
+                set_resting_edge(cx, Some(edge));
+                let set = painted_button(cx, id, pointer);
+                set_resting_edge(cx, None);
+
+                assert!(unset.edges.is_empty(), "{id} {pointer:?} unset: {unset:?}");
+                let [(_, corners), ..] = unset.fills[..] else {
+                    panic!("{id} {pointer:?} rests on a fill: {unset:?}");
+                };
+                let [drawn] = set.edges[..] else {
+                    panic!("{id} {pointer:?} set: one edge: {set:?}");
+                };
+                assert_eq!(drawn.color, edge, "{id} {pointer:?}");
+                let widths = drawn.widths;
+                assert!(
+                    [widths.top, widths.right, widths.bottom, widths.left]
+                        .into_iter()
+                        .all(|width| (width.as_f32() - scale).abs() < 0.5),
+                    "{id} {pointer:?}: 1 px on every side, {widths:?}"
+                );
+                assert_eq!(drawn.corners, corners, "{id} {pointer:?}: its corners");
+                assert_eq!(
+                    set.bounds, unset.bounds,
+                    "{id} {pointer:?}: it moves nothing"
+                );
+                assert_eq!(set.fills, unset.fills, "{id} {pointer:?}: its fill");
+            }
+        }
+    }
+
+    /// GitTurtle patch: a primary, ghost, default, danger, link or text
+    /// Button, a custom variant transparent at rest, an outline or bordered
+    /// secondary Button and a disabled filled one draw no resting edge, in
+    /// any pointer state; disabled, a filled Button keeps the disabled edge.
+    #[gpui::test]
+    fn only_an_enabled_button_on_a_fill_of_its_own_draws_the_resting_edge(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = resting_edge_harness(cx);
+        let resting = gpui::hsla(0.75, 0.4, 0.4, 1.);
+        let disabled = gpui::hsla(0.3, 0.4, 0.4, 1.);
+        set_resting_edge(cx, Some(resting));
+        for id in NO_RESTING_EDGE {
+            for pointer in [Pointer::Away, Pointer::Over, Pointer::Pressing] {
+                let painted = painted_button(cx, id, pointer);
+                assert!(
+                    painted.edges.iter().all(|edge| edge.color != resting),
+                    "{id} {pointer:?}: {painted:?}"
+                );
+            }
+        }
+        cx.update(|_, cx| crate::Theme::global_mut(cx).disabled_edge = Some(disabled));
+        for id in ["disabled-secondary", "disabled-custom"] {
+            let painted = painted_button(cx, id, Pointer::Away);
+            let colors: Vec<_> = painted.edges.iter().map(|edge| edge.color).collect();
+            assert_eq!(colors, [disabled], "{id}: the disabled edge alone");
+        }
+    }
+
+    /// GitTurtle patch: with the theme's `resting_edge` unset, as upstream,
+    /// every Button paints what upstream's rule paints, at rest, hovered and
+    /// pressed, selected or disabled: the fill its variant's style gives that
+    /// state, where it is not transparent, and no edge over its bounds but
+    /// the border it draws itself, in that style's colour.
+    #[gpui::test]
+    fn without_a_resting_edge_every_button_paints_as_upstream(cx: &mut gpui::TestAppContext) {
+        let cx = resting_edge_harness(cx);
+        let specs = cx.update(|_, cx| button_specs(cx));
+        let ids: Vec<_> = specs.iter().map(|spec| spec.id).collect();
+        let named: Vec<_> = RESTING_ON_A_FILL
+            .into_iter()
+            .chain(NO_RESTING_EDGE)
+            .collect();
+        assert_eq!(ids, named, "the harness draws every Button the lists name");
+        for spec in specs {
+            let id = spec.id;
+            for pointer in [Pointer::Away, Pointer::Over, Pointer::Pressing] {
+                let painted = painted_button(cx, id, pointer);
+                let upstream = cx.update(|_, cx| spec.upstream_style(pointer, cx));
+                let fills: Vec<_> = painted.fills.iter().map(|(fill, _)| *fill).collect();
+                let fill: Vec<_> = Some(upstream.bg)
+                    .filter(|fill| !fill.is_transparent())
+                    .into_iter()
+                    .collect();
+                assert_eq!(fills, fill, "{id} {pointer:?}: its fill, {painted:?}");
+                let colors: Vec<_> = painted.edges.iter().map(|edge| edge.color).collect();
+                let own: Vec<_> = Some(upstream.border)
+                    .filter(|_| spec.own_border())
+                    .into_iter()
+                    .collect();
+                assert_eq!(colors, own, "{id} {pointer:?}: its edges, {painted:?}");
+            }
+        }
     }
 }

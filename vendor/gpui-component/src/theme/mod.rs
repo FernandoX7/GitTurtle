@@ -196,6 +196,19 @@ pub struct Theme {
     /// can nearly equal them, and the Button then drew only its dim label.
     #[serde(skip)]
     pub disabled_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px edge an enabled control that rests on a fill
+    /// of its own draws over its bounds, or `None` for none, as upstream
+    /// draws none: a Button that keeps a resting fill and has no border of
+    /// its own (a secondary one, or a custom variant whose resting fill, or
+    /// selected fill while selected, is not transparent) at rest, hovered,
+    /// pressed and selected.
+    ///
+    /// Set in code, not read from theme files, so an application can give
+    /// such a control an edge against the surfaces it lies on, as a
+    /// higher-contrast appearance asks, without changing its layout: the
+    /// edge is a layer over the control's bounds and moves nothing.
+    #[serde(skip)]
+    pub resting_edge: Option<Hsla>,
     /// The label of a control that cannot be used, which
     /// [`Self::disabled_foreground`] resolves, or `None` for
     /// `muted_foreground` at half strength.
@@ -750,6 +763,7 @@ impl From<&ThemeColor> for Theme {
             dialog_edge: None,
             secondary_edge: None,
             disabled_edge: None,
+            resting_edge: None,
             disabled_label: None,
             menu_label_size: None,
             popup_gap: None,
