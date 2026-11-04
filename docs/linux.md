@@ -482,9 +482,19 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   Refresh and copyable Details. Ignore-rule edits reconsider affected coverage,
   including shared and global excludes. Refresh or returning focus retries
   degraded coverage. See the [local refresh contract](../crates/app/docs/navigation-and-refresh.md#local-refresh).
-- Automatic reading of OS reduced-motion, contrast and transparency
-  accessibility preferences is macOS-only. Manual app preferences remain
-  available; Linux screen-reader and IME coverage is not established.
+- Reduced motion follows the desktop through the XDG settings portal: the
+  appearance `reduced-motion` (1 reduces), GNOME's
+  `org.gnome.desktop.a11y.interface` `reduced-motion` (`reduce`) and
+  `org.gnome.desktop.interface` `enable-animations` (false). Any one of them
+  asking reduces motion; unknown values and missing keys ask for nothing. The
+  appearance `contrast` and GNOME's `high-contrast` are read but do not change
+  the palette yet; there is no transparency preference. Omarchy's settings
+  backend, xdg-desktop-portal-gtk, does not publish the appearance
+  `reduced-motion`, so there the GNOME keys decide. Omarchy has no switch for
+  any of these keys: they stay at their defaults until set with `gsettings`
+  (for example `gsettings set org.gnome.desktop.a11y.interface reduced-motion
+  reduce`), and `omarchy toggle animations` changes only Hyprland's own
+  animations. Linux screen-reader and IME coverage is not established.
 - Glyph antialiasing reads `font-rendering` and `font-antialiasing` from the
   XDG settings portal (`org.gnome.desktop.interface`). GNOME Automatic mode
   uses grayscale, matching [GTK 4](https://docs.gtk.org/gtk4/property.Settings.gtk-xft-rgba.html);

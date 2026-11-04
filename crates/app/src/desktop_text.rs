@@ -1,4 +1,5 @@
-//! Desktop text on Linux: the code font, glyph antialiasing and text scaling.
+//! Desktop text on Linux: the code font, glyph antialiasing and text scaling,
+//! and the desktop's motion and contrast preferences.
 //!
 //! The toolkit's Linux backend always recommends subpixel (RGB stripe) glyph
 //! rendering and never consults the session's font settings. That fringes on
@@ -15,8 +16,17 @@
 //! unless Settings asks for the desktop's fontconfig `monospace` family, which
 //! is looked up on the same worker, one `fc-match` at a time and for up to a
 //! few seconds so that a cold fontconfig cache can answer, and used only when
-//! the toolkit has loaded it and it draws at one advance. Nothing here writes a
-//! setting.
+//! the toolkit has loaded it and it draws at one advance. The same portal
+//! session, one subscription to every namespace's changes on one ordered
+//! stream under the same deadline and batch bounds, also reads the
+//! appearance `reduced-motion` and `contrast` and GNOME's `reduced-motion`,
+//! `high-contrast` and `enable-animations`; each snapshot carries their
+//! resolved `DisplayPreferences` (`Observed::display`), which
+//! `native_accessibility` keeps and applies to the toolkit's motion policy.
+//! Only a text key's change runs `fc-match` again. Once the portal has
+//! answered, a refresh that cannot reconnect keeps that answer and sends
+//! nothing, so neither text nor motion resets while it is away. Nothing here
+//! writes a setting.
 
 use gpui_kit::AsyncApp;
 
