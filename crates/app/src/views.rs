@@ -11797,7 +11797,10 @@ pub(crate) mod tests {
     /// the preview, at 13 and 18 pt in 461 × 490 and 640 × 680 windows: whole
     /// where two lines ending between words hold it, and otherwise on two,
     /// or the one its room holds, the last ending in an ellipsis with the
-    /// whole line in its tooltip. It
+    /// whole line in its tooltip; it takes one line where two fit only for
+    /// the word its second line would start with, not for a later word that
+    /// does not fit beside the ellipsis (the check once accepted any such
+    /// word, so a one-line cut of the JPX reason passed). It
     /// is static text read by its whole line, once: the caption neither
     /// draws it nor repeats it in the name's accessible name, and where the
     /// notes have given way the area is named for the images it draws ("After
@@ -11951,17 +11954,32 @@ pub(crate) mod tests {
                     && text
                         .split_whitespace()
                         .any(|word| word != last && word.starts_with(last));
+                // Moved to one line only for the word the second line
+                // would start with, the first the first line's most words
+                // leave out (`image_compare::clamped_lines`): a later word
+                // that does not fit beside the ellipsis leaves the second
+                // line to the words before it. The reasons cut here are one
+                // paragraph each.
                 let kept = words(&lines.join(" ")).len();
                 let moved = shown == 1
                     && cx.update(|window, _| {
                         let weight = window.text_style().font_weight;
-                        text.split_whitespace().skip(kept).any(|word| {
-                            shaped_width(
-                                &format!("{word}…"),
-                                appearance::ui_text(11.),
-                                weight,
-                                window,
-                            ) > room - px(1.)
+                        let width = |line: &str| {
+                            shaped_width(line, appearance::ui_text(11.), weight, window)
+                        };
+                        let words: Vec<&str> = text.split_whitespace().collect();
+                        let mut second = kept;
+                        while second < words.len()
+                            && width(&words[..=second].join(" ")) <= room - px(1.)
+                        {
+                            second += 1;
+                        }
+                        // A word wider than the whole room is cut inside on
+                        // the second line ("The JPX is / 32-millio…"), so
+                        // only one that fits a line alone moves the cut.
+                        words.get(second).is_some_and(|word| {
+                            width(word) <= room - px(1.)
+                                && width(&format!("{word}…")) > room - px(1.)
                         })
                     });
                 assert!(
@@ -12065,7 +12083,11 @@ pub(crate) mod tests {
         // A reason of two lines, overlaid only: beneath the name, once the
         // dimensions give way, its lines are joined on its one line.
         let two_lines = "Could not read the image\nThe PNG header is damaged";
-        for message in [None, Some(short), Some(failure), Some(two_lines)] {
+        // A reason with a word past its second line's first that does not
+        // fit beside the ellipsis, side by side only: its second line keeps
+        // the words before that word (`image_helper`'s Linux JPX reason).
+        let jpx = "This JPX file is not JP2-compatible and is not decoded on Linux";
+        for message in [None, Some(short), Some(failure), Some(two_lines), Some(jpx)] {
             edit_image_sides(&app, cx, |side, image| {
                 if side == 0 {
                     image.message = message.map(str::to_owned);
@@ -12073,7 +12095,7 @@ pub(crate) mod tests {
             });
             let text = message.unwrap_or(absent);
             for overlaid in [false, true] {
-                if message == Some(two_lines) && !overlaid {
+                if (message == Some(two_lines) && !overlaid) || (message == Some(jpx) && overlaid) {
                     continue;
                 }
                 app.update(cx, |app, cx| {
