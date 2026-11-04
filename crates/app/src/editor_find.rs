@@ -3771,6 +3771,52 @@ mod bar_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// A wrapped bar keeps on its line what fills the line's room exactly at
+    /// a fractional scale ([`super::FIT_SLACK`]): at 1.2, Match case's "Aa"
+    /// toggle, the count and Previous and Next's icons, 40, 30 and 34 device
+    /// pixels with their three gaps of 4, fill the 150 device pixels of the
+    /// bar's room inside its insets, where the sum of their lengths in
+    /// pixels runs a float's error past the room's 124.99999 px. Compared
+    /// without the slack, Previous and Next took a third line, a control's
+    /// height more.
+    #[test]
+    fn a_wrapped_find_bar_keeps_what_fills_its_line_exactly_at_a_fractional_scale() {
+        use super::{Part, Widths, planned_width};
+        let scale = 1.2f32;
+        let device = |n: f32| px(n / scale);
+        let widths = Widths {
+            floor: device(100.),
+            close: device(80.),
+            previous: device(100.),
+            next: device(70.),
+            case: device(150.),
+            toggle: device(40.),
+            count: device(30.),
+            icon: device(34.),
+            gap: device(4.),
+        };
+        // The room inside the bar's insets, on the whole device pixel at or
+        // below the width layout measures.
+        let room = planned_width(device(150.3), scale);
+        // The second line, summed as the plan sums its parts.
+        let second = widths.toggle
+            + (widths.gap + widths.count)
+            + widths.gap
+            + (widths.gap + widths.icon + widths.icon);
+        assert!(
+            second > room && second - room < px(1e-4),
+            "the second line, {second:?}, runs a float's error past the room, {room:?}"
+        );
+        assert_eq!(
+            widths.plan(room).lines,
+            vec![
+                vec![Part::Field, Part::Close],
+                vec![Part::Case, Part::Count, Part::Previous, Part::Next],
+            ],
+            "Previous and Next end the line they fill in a room of {room:?}"
+        );
+    }
+
     /// Opens Find in each case the bar's device-pixel tests walk and hands
     /// `check` the case, its display scale, its mode, the bar drawn and the
     /// rule it paints, in Midnight's colours: at display scales 1, 1.2,
