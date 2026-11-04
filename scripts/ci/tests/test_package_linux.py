@@ -3,6 +3,8 @@
 Run the real shell entry point and shared identity checks against disposable
 source trees. Native tools/notice collection are explicit test doubles; tar is
 an error sentinel so these tests never manufacture a distributable archive.
+The packager's ELF checks run the real readelf: a developer host without it
+skips these tests, and a job that sets CI fails them instead.
 """
 from __future__ import annotations
 
@@ -15,11 +17,24 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 # The packager always targets the machine it runs on.
 TARGET, ELF_MACHINE = {"x86_64": ("x86_64-unknown-linux-gnu", 62),
                        "aarch64": ("aarch64-unknown-linux-gnu", 183)}.get(platform.machine(), (None, None))
+READELF_MISSING = "readelf (GNU binutils) is not installed; the Linux packager tests need it"
+
+
+def require_readelf() -> None:
+    """Skip the packager tests on a developer host without readelf. Where the
+    environment sets CI, as hosted jobs do, fail instead: the job that builds
+    the package must never skip them silently."""
+    if shutil.which("readelf"):
+        return
+    if "CI" in os.environ:
+        raise AssertionError(f"{READELF_MISSING}, and CI is set, so they must run here")
+    raise unittest.SkipTest(READELF_MISSING)
 
 
 def shared_object(message: bytes) -> bytes:
@@ -135,6 +150,11 @@ def dynamic_executable(interpreter: Path, defines: tuple[str, ...] = (),
 @unittest.skipUnless(platform.system() == "Linux" and TARGET,
                      "Linux packager entry point requires Linux x86-64 or AArch64")
 class LinuxPackageRefusalTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        require_readelf()
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="gitturtle-package-refusal-")
         self.addCleanup(self.temporary.cleanup)
@@ -397,6 +417,46 @@ if "--require-complete" in args:
                       "dav1d: .symtab defined dav1d_open \n", result.stderr)
         self.assertNotIn("Checked bin/gitturtle", result.stdout)
         self.assert_no_output()
+
+
+class ReadelfRequirementTests(unittest.TestCase):
+    """The packager tests' class hook, with the readelf lookup faked; it runs on
+    every platform, whatever the host has installed."""
+
+    def set_up_packager_tests(self, readelf, environment):
+        """What the hook raises, or None. The exception is returned, not
+        raised: a SkipTest escaping a test would report it skipped, not
+        failed, whatever it asserts."""
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch("shutil.which", return_value=readelf) as which:
+            try:
+                LinuxPackageRefusalTests.setUpClass()
+            except Exception as raised:
+                return raised
+            finally:
+                which.assert_called_once_with("readelf")
+        return None
+
+    def without_ci(self):
+        return {name: value for name, value in os.environ.items() if name != "CI"}
+
+    def test_a_developer_host_without_readelf_skips_the_packager_tests(self):
+        raised = self.set_up_packager_tests(None, self.without_ci())
+        self.assertIs(type(raised), unittest.SkipTest, raised)
+        self.assertEqual(str(raised),
+                         "readelf (GNU binutils) is not installed; the Linux packager tests need it")
+
+    def test_a_ci_job_without_readelf_fails_the_packager_tests(self):
+        raised = self.set_up_packager_tests(None, dict(self.without_ci(), CI="true"))
+        self.assertIs(type(raised), AssertionError, raised)
+        self.assertEqual(str(raised),
+                         "readelf (GNU binutils) is not installed; the Linux packager tests need it, "
+                         "and CI is set, so they must run here")
+
+    def test_with_readelf_the_packager_tests_run_with_or_without_ci(self):
+        for environment in (self.without_ci(), dict(self.without_ci(), CI="true")):
+            with self.subTest(ci="CI" in environment):
+                self.assertIsNone(self.set_up_packager_tests("/usr/bin/readelf", environment))
 
 
 if __name__ == "__main__":

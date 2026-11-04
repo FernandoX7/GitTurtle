@@ -209,9 +209,12 @@ bash -n scripts/package-linux.sh
 ```
 
 The source fixtures use synthetic payloads/tool doubles and skip real-bundle
-checks unless supplied a bundle. They establish refusal and recovery behavior,
-not a native/package acceptance result. For that result, verify the produced
-archive checksum, extract into a new directory, and pass the extracted bundle to:
+checks unless supplied a bundle. The packager fixtures run the real `readelf`
+from binutils: without it they skip on a developer host, and they fail where
+`CI` is set, so a hosted job never skips them. They establish refusal and
+recovery behavior, not a native/package acceptance result. For that result,
+verify the produced archive checksum, extract into a new directory, and pass
+the extracted bundle to:
 
 ```sh
 python3 scripts/test-install-linux.py --bundle /absolute/path/to/extracted/gitturtle-linux-x86_64
