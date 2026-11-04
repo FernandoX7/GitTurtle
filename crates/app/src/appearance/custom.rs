@@ -501,7 +501,10 @@ impl Palette {
     }
 
     /// Every pair in the readability rules that falls below its minimum, grouped by rule.
-    /// Empty for every built-in palette; advisory for custom palettes.
+    /// Empty for every built-in palette; advisory for custom palettes. It measures the palette
+    /// it is given and never applies More contrast (`Palette::with_more_contrast`), so the theme
+    /// editor lists the issues of the draft as it will be saved while its live preview, applied
+    /// through `Palette::apply`, shows the draft adjusted.
     pub fn readability_issues(self) -> Vec<ReadabilityIssue> {
         use ReadabilityBackground::SelectedRowHover;
         use TokenKind::*;

@@ -6158,4 +6158,174 @@ mod tests {
         }
         assert_eq!(pinned, OFF_PATH_FINGERPRINT.len(), "every pinned palette");
     }
+
+    /// The selectors the width walk (`width_walk`) and the layout grid
+    /// (`layout_grid`) read: what More contrast must leave where it is.
+    const LAID_OUT: &[&str] = &[
+        "branch-edge",
+        "branch-edge-line",
+        "changed-files-count",
+        "changed-files-header",
+        "changed-files-label",
+        "changes-count-badge",
+        "changes-tab",
+        "code-editor",
+        "commit-composer",
+        "commit-description",
+        "commit-inspector",
+        "commit-inspector-files",
+        "commit-message-toolbar",
+        "commit-message-viewport",
+        "commit-recovery-menu",
+        "commit-staged",
+        "commit-staged-count",
+        "commit-title",
+        "commit-title-counter",
+        "compare-footer",
+        "compare-toolbar",
+        "copy-commit",
+        "current-branch",
+        "custom-themes-card",
+        "edge-add-remote",
+        "edge-create-branch",
+        "files-pane",
+        "git-actions",
+        "git-actions-toggle",
+        "history-clear-search",
+        "history-column-0",
+        "history-column-1",
+        "history-column-2",
+        "history-column-3",
+        "history-column-4",
+        "history-column-5",
+        "history-empty-state",
+        "history-list-edge",
+        "history-no-match-line",
+        "history-pane",
+        "history-scope-count",
+        "history-scope-name",
+        "history-scope-toolbar",
+        "history-search",
+        "history-search-controls",
+        "history-search-summary",
+        "history-sidebar",
+        "image-system-preview-0",
+        "image-system-preview-1",
+        "local-refresh-details",
+        "local-refresh-warning",
+        "main-menu",
+        "navigation-filter",
+        "navigation-hint",
+        "nav-mode-local",
+        "nav-mode-remote",
+        "nav-mode-worktrees",
+        "open-blame",
+        "preview-content",
+        "preview-file-path",
+        "project-pane",
+        "project-pane-tree",
+        "repository-header",
+        "repository-navigation",
+        "repository-rail",
+        "repository-tab-0",
+        "repository-tab-strip",
+        "repository-workspaces",
+        "retry-local-refresh",
+        "selected-changed-file",
+        "settings-repository-identity",
+        "settings-scroll",
+        "settings-section: Appearance",
+        "settings-section: Git identity",
+        "settings-section: History columns",
+        "settings-section: Projects",
+        "stage-all",
+        "staged-heading-count",
+        "status-hints",
+        "status-line",
+        "system-preview-0",
+        "system-preview-1",
+        "text-mode-menu",
+        "unstage-all",
+        "unstaged-heading-count",
+        "working-header",
+        "working-header-count",
+        "working-header-label",
+        "working-pane",
+        "working-toolbar",
+    ];
+
+    /// More contrast recolors and moves nothing. On the fixture in History,
+    /// then Compare, then Settings, in a 1,480 × 973 window and a 461 × 490
+    /// half tile, at 13 and 18 pt, every selector of [`LAID_OUT`] keeps its
+    /// bounds with More contrast on and off, the window drawn whole (Settings
+    /// is a cached view) with motion reduced.
+    #[gpui::test]
+    async fn more_contrast_moves_nothing_on_any_page(cx: &mut gpui::TestAppContext) {
+        use crate::width_walk;
+        let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let mut moved = Vec::new();
+        for page in ["History", "Compare", "Settings"] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| match page {
+                    "Compare" => {
+                        let readme = app
+                            .files
+                            .iter()
+                            .position(|file| file.path() == std::path::Path::new("README.md"))
+                            .expect("README.md among the commit's files");
+                        app.select_file(readme, window, cx);
+                    }
+                    "Settings" => app.show_settings(window, cx),
+                    _ => {}
+                })
+            });
+            crate::views::tests::settle(&app, cx).await;
+            let mut drawn = 0;
+            for (width, height) in [(1480., 973.), (461., 490.)] {
+                for text in [13, 18] {
+                    cx.update(|window, cx| {
+                        apply_text_sizes(text, DEFAULT_CODE_TEXT_SIZE, window, cx)
+                    });
+                    cx.simulate_resize(gpui::size(px(width), px(height)));
+                    let [off, on] = [false, true].map(|on| {
+                        cx.update(|_, cx| {
+                            set_more_contrast(on, cx);
+                            ThemeChoice::Midnight.apply(None, cx);
+                        });
+                        width_walk::frame(cx);
+                        app.update(cx, |_, cx| cx.notify());
+                        width_walk::frame(cx);
+                        cx.update(|window, cx| {
+                            window.refresh();
+                            window.draw(cx).clear(cx);
+                        });
+                        LAID_OUT
+                            .iter()
+                            .map(|&selector| (selector, cx.debug_bounds(selector)))
+                            .collect::<Vec<_>>()
+                    });
+                    drawn += off.iter().filter(|(_, bounds)| bounds.is_some()).count();
+                    for ((selector, off), (_, on)) in off.into_iter().zip(on) {
+                        if off != on {
+                            moved.push(format!(
+                                "{page} {width}x{height} at {text} pt: {selector} {off:?} -> {on:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            assert!(drawn >= 4 * 5, "{page} draws {drawn} of the selectors");
+        }
+        cx.update(|window, cx| {
+            set_more_contrast(false, cx);
+            apply_text_sizes(
+                DEFAULT_INTERFACE_TEXT_SIZE,
+                DEFAULT_CODE_TEXT_SIZE,
+                window,
+                cx,
+            )
+        });
+        assert!(moved.is_empty(), "{}", moved.join("\n"));
+    }
 }
