@@ -1,7 +1,9 @@
 //! Native accessibility semantics, keyboard navigation, and local OS choices.
 //! No setting is changed here: macOS display preferences are read on startup
-//! and on workspace display-change notifications, then applied to the toolkit's
-//! motion policy. Foreground activation remains a fallback read.
+//! and on workspace display-change notifications, Linux ones arrive with the
+//! desktop observer's settings-portal snapshots (`desktop_text`), and either is
+//! applied to the toolkit's motion policy. Foreground activation remains a
+//! fallback read.
 use crate::*;
 use gpui_kit::component::menu::{CursorRests, PopupMenu, PopupMenuItem};
 
@@ -3863,8 +3865,33 @@ pub(super) struct DisplayPreferences {
     pub reduce_transparency: bool,
 }
 
+/// Linux: the desktop's display preferences from the latest settings-portal
+/// snapshot (`desktop_text`). Absent until the first snapshot is applied, so
+/// until then a window's activation leaves the toolkit's motion policy as it
+/// is. Each `GitTurtle` window observes it to pause playback when it changes,
+/// as the macOS display-change notification does.
+#[cfg(target_os = "linux")]
+pub(super) struct DesktopDisplay(DisplayPreferences);
+#[cfg(target_os = "linux")]
+impl gpui_kit::Global for DesktopDisplay {}
+
+/// Linux: keeps a snapshot's display preferences and returns whether they
+/// changed. An unchanged answer leaves the global untouched, so no window's
+/// observer runs for a snapshot that changed only text.
+#[cfg(target_os = "linux")]
+pub(super) fn store_desktop_preferences(preferences: DisplayPreferences, cx: &mut App) -> bool {
+    if cx
+        .try_global::<DesktopDisplay>()
+        .is_some_and(|desktop| desktop.0 == preferences)
+    {
+        return false;
+    }
+    cx.set_global(DesktopDisplay(preferences));
+    true
+}
+
 #[cfg(target_os = "macos")]
-pub(super) fn display_preferences() -> Option<DisplayPreferences> {
+pub(super) fn display_preferences(_cx: &App) -> Option<DisplayPreferences> {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     Some(DisplayPreferences {
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
@@ -3872,13 +3899,19 @@ pub(super) fn display_preferences() -> Option<DisplayPreferences> {
         reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
     })
 }
-#[cfg(not(target_os = "macos"))]
-pub(super) fn display_preferences() -> Option<DisplayPreferences> {
+/// The desktop's latest answer, or `None` before the first snapshot.
+#[cfg(target_os = "linux")]
+pub(super) fn display_preferences(cx: &App) -> Option<DisplayPreferences> {
+    cx.try_global::<DesktopDisplay>().map(|desktop| desktop.0)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn display_preferences(_cx: &App) -> Option<DisplayPreferences> {
     None
 }
 
+/// The one place that sets the toolkit's motion policy, on both platforms.
 pub(super) fn sync_preferences(cx: &mut App) {
-    if let Some(preferences) = display_preferences() {
+    if let Some(preferences) = display_preferences(cx) {
         cx.set_reduce_motion(preferences.reduce_motion);
     }
 }

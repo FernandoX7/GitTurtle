@@ -306,6 +306,12 @@ fn apply(snapshot: DesktopText, cx: &mut gpui_kit::App) {
     if changed {
         cx.refresh_windows();
     }
+    // `native_accessibility` keeps the desktop's latest display preferences
+    // and stays the one place that sets the toolkit's motion policy; windows
+    // observe the change and pause playback.
+    if crate::native_accessibility::store_desktop_preferences(snapshot.display, cx) {
+        crate::native_accessibility::sync_preferences(cx);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1171,28 +1177,38 @@ mod portal {
         mut refresh: Receiver<()>,
         executor: BackgroundExecutor,
     ) {
+        // The portal's last answer, once a session has given one.
+        let mut known: Option<Observed> = None;
         loop {
             let mut session = bounded(&executor, connect()).await.flatten();
             if let Some(session) = &mut session {
                 drain(session);
             }
-            let mut observed = session
-                .as_ref()
-                .map(|session| session.observed.clone())
-                .unwrap_or_default();
-            if super::rendering_from_gnome(
-                observed.font_rendering.as_deref(),
-                observed.antialiasing.as_deref(),
-            )
-            .is_none()
-            {
-                observed.fontconfig = fontconfig.defaults(&executor).await;
-            }
-            // Launch waits for the first snapshot, so the code font lookup
-            // follows it rather than holding the window back. The lookup
-            // holds this loop, so a refresh requested meanwhile waits for it.
-            if !sender.send(observed.resolve(scales_text)) {
-                return;
+            // A refresh whose connection fails or outlives its bound keeps
+            // the last answer and sends nothing, so the desktop's preferences
+            // hold until a refresh connects again. A desktop that never
+            // answered resolves without portal values at every attempt.
+            let keeps = session.is_none() && known.is_some();
+            let mut observed = match &session {
+                Some(session) => session.observed.clone(),
+                None => known.clone().unwrap_or_default(),
+            };
+            if !keeps {
+                if super::rendering_from_gnome(
+                    observed.font_rendering.as_deref(),
+                    observed.antialiasing.as_deref(),
+                )
+                .is_none()
+                {
+                    observed.fontconfig = fontconfig.defaults(&executor).await;
+                }
+                // Launch waits for the first snapshot, so the code font
+                // lookup follows it rather than holding the window back. The
+                // lookup holds this loop, so a refresh requested meanwhile
+                // waits for it.
+                if !sender.send(observed.resolve(scales_text)) {
+                    return;
+                }
             }
             let code = fontconfig.code_font(&executor).await;
             let resolve = |observed: &Observed| DesktopText {
@@ -1244,6 +1260,7 @@ mod portal {
                 }
                 executor.timer(CHANGE_COALESCE_WAIT).await;
             }
+            known = Some(session.observed);
         }
     }
 
@@ -1884,12 +1901,13 @@ mod portal {
             (session, signals)
         }
 
-        /// A connection that hands out `sessions` in order, then none.
+        /// A connection whose attempts answer `sessions` in order, `None`
+        /// failing to connect, and then fail.
         fn connect_to(
-            sessions: Vec<Session>,
+            sessions: Vec<Option<Session>>,
         ) -> impl Fn() -> futures::future::Ready<Option<Session>> {
             let sessions = Mutex::new(std::collections::VecDeque::from(sessions));
-            move || futures::future::ready(sessions.lock().unwrap().pop_front())
+            move || futures::future::ready(sessions.lock().unwrap().pop_front().flatten())
         }
 
         /// On a desktop whose GNOME rendering keys do not decide, rendering
@@ -1911,7 +1929,7 @@ mod portal {
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let finished = done.clone();
             let worker = observe_with(
-                connect_to(vec![session]),
+                connect_to(vec![Some(session)]),
                 false,
                 stand_in(&generation, &fake),
                 sender,
@@ -1993,6 +2011,142 @@ mod portal {
             drop(signals);
             assert!(fake.reaped());
             assert!(!fake.overlapped());
+        }
+
+        /// Focus return picks up a change made while the window was
+        /// inactive: the refresh it requests replaces the connection, reads
+        /// again and sends a snapshot with what the desktop says now.
+        #[gpui_kit::test]
+        fn a_refresh_reconnects_and_sends_what_the_desktop_reads_now(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use crate::native_accessibility::DisplayPreferences;
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(0));
+            // GNOME's rendering keys decide, so fontconfig is never asked.
+            let decided = Observed {
+                font_rendering: Some("automatic".into()),
+                ..Observed::default()
+            };
+            let (first, _first_signals) = fake_session(decided.clone());
+            let (second, _second_signals) = fake_session(Observed {
+                gnome_reduced_motion: Some("reduce".into()),
+                high_contrast: Some(true),
+                ..decided
+            });
+            let (sender, _wakes, latest) = snapshots();
+            let (mut refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![Some(first), Some(second)]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            executor.run_until_parked();
+            let launch = latest.lock().unwrap().take().expect("the launch snapshot");
+            assert_eq!(launch.display, DisplayPreferences::default());
+
+            refresh.try_send(()).unwrap();
+            executor.run_until_parked();
+            let returned = latest
+                .lock()
+                .unwrap()
+                .take()
+                .expect("the refresh's snapshot");
+            assert_eq!(
+                returned.display,
+                DisplayPreferences {
+                    reduce_motion: true,
+                    increase_contrast: true,
+                    reduce_transparency: false,
+                }
+            );
+            assert!(fake.queries().is_empty(), "{:?}", fake.queries());
+
+            drop(refresh);
+            executor.run_until_parked();
+            assert!(done.load(Ordering::SeqCst));
+        }
+
+        /// Once the portal has answered, a refresh whose connection fails
+        /// keeps that answer and sends no snapshot, so the desktop's reduced
+        /// motion stays on rather than resetting until the next good refresh;
+        /// a later refresh that connects sends what the desktop says then.
+        #[gpui_kit::test]
+        fn a_failed_refresh_keeps_the_desktops_last_answer(cx: &mut gpui_kit::TestAppContext) {
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(0));
+            // GNOME's rendering keys decide, so fontconfig is never asked.
+            let decided = Observed {
+                font_rendering: Some("automatic".into()),
+                ..Observed::default()
+            };
+            let (reducing, _reducing_signals) = fake_session(Observed {
+                enable_animations: Some(false),
+                ..decided.clone()
+            });
+            let (animating, _animating_signals) = fake_session(Observed {
+                enable_animations: Some(true),
+                ..decided
+            });
+            let (sender, _wakes, latest) = snapshots();
+            let (mut refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                connect_to(vec![Some(reducing), None, Some(animating)]),
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            // Applies the latest snapshot, as the app's update task does,
+            // and says whether there was one.
+            let apply_latest = |cx: &mut gpui_kit::TestAppContext| {
+                executor.run_until_parked();
+                let snapshot = latest.lock().unwrap().take();
+                let sent = snapshot.is_some();
+                if let Some(snapshot) = snapshot {
+                    cx.update(|cx| super::super::apply(snapshot, cx));
+                }
+                sent
+            };
+            let reduced = |cx: &mut gpui_kit::TestAppContext| cx.read(|cx| cx.reduce_motion());
+
+            assert!(apply_latest(cx), "the launch snapshot");
+            assert!(reduced(cx));
+
+            refresh.try_send(()).unwrap();
+            assert!(!apply_latest(cx), "a failed refresh sends nothing");
+            assert!(reduced(cx), "and the desktop's answer holds");
+
+            refresh.try_send(()).unwrap();
+            assert!(apply_latest(cx), "a refresh that connects sends its answer");
+            assert!(!reduced(cx));
+            assert!(fake.queries().is_empty(), "{:?}", fake.queries());
+
+            drop(refresh);
+            cx.executor().run_until_parked();
+            assert!(done.load(Ordering::SeqCst));
         }
 
         /// A query that outlives the bound is killed, reaped and reported
@@ -2681,5 +2835,158 @@ mod tests {
         };
         assert_eq!(display(gnome_49(false)), motion);
         assert_eq!(display(gnome_49(true)), none);
+    }
+
+    /// A `git fast-import` stream of one commit adding `animation.gif`: two
+    /// 4 × 4 frames of 10 s each.
+    #[cfg(target_os = "linux")]
+    fn gif_commit() -> Vec<u8> {
+        use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
+        let mut gif = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut gif);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(Frame::from_parts(
+                        RgbaImage::from_pixel(4, 4, Rgba(color)),
+                        0,
+                        0,
+                        Delay::from_numer_denom_ms(10_000, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let mut input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 9\nanimation\nM 100644 inline animation.gif\ndata {}\n",
+            gif.len()
+        )
+        .into_bytes();
+        input.extend_from_slice(&gif);
+        input.extend_from_slice(b"\ndone\n");
+        input
+    }
+
+    /// The snapshot of a desktop whose GNOME `enable-animations` is off, or on.
+    #[cfg(target_os = "linux")]
+    fn reducing_motion(reduce: bool) -> DesktopText {
+        Observed {
+            enable_animations: Some(!reduce),
+            ..Observed::default()
+        }
+        .resolve(true)
+    }
+
+    /// The desktop's reduced motion, applied as the observer applies a
+    /// snapshot, pauses a GIF playing in image comparison, and a later
+    /// snapshot that turns it off leaves the GIF paused until the person
+    /// presses Play GIF. The GIF's controls carry no selector of their own:
+    /// Play GIF is the first control of the row just above their note, and
+    /// whether the GIF plays is read from the fill painted there, which the
+    /// toggle draws at rest only while it is selected, that is playing.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    async fn the_desktops_reduced_motion_pauses_a_playing_gif_until_play(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::views::tests::{draw, history_window_from, settle};
+        use gpui_kit::{Modifiers, Pixels, Point, VisualTestContext, point, px};
+        let (_fixture, app, cx) = history_window_from(cx, gif_commit()).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // Play GIF's middle: 14 px into its 28 px row, which ends 4 px above
+        // the note, and 6 px in from the left edge they share.
+        let note = cx
+            .debug_bounds("gif-playback-note")
+            .expect("the GIF's controls");
+        let toggle = point(note.left() + px(6.), note.top() - px(18.));
+        // Whether a control-sized quad paints a fill under `at`.
+        let filled = |at: Point<Pixels>, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let (x, y) = (at.x.as_f32() * scale, at.y.as_f32() * scale);
+                window.painted_quads().into_iter().any(|quad| {
+                    let bounds = quad.bounds;
+                    !quad.background.is_transparent()
+                        && bounds.size.height.as_f32() < 40. * scale
+                        && (bounds.left().as_f32()..=bounds.right().as_f32()).contains(&x)
+                        && (bounds.top().as_f32()..=bounds.bottom().as_f32()).contains(&y)
+                })
+            })
+        };
+        // The pointer rests on the image, so the toggle draws its state's
+        // fill rather than its hover's.
+        let rest = |cx: &mut VisualTestContext| {
+            let image = cx.debug_bounds("image-canvas-area").expect("the image");
+            cx.simulate_mouse_move(image.center(), None, Modifiers::default());
+            draw(cx);
+        };
+        let press = |cx: &mut VisualTestContext| {
+            cx.simulate_click(toggle, Modifiers::default());
+            rest(cx);
+        };
+        let desktop = |reduce: bool, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| apply(reducing_motion(reduce), cx));
+            draw(cx);
+        };
+
+        cx.simulate_mouse_move(toggle, None, Modifiers::default());
+        draw(cx);
+        assert!(
+            filled(toggle, cx),
+            "hovered, Play GIF at {toggle:?} draws a fill"
+        );
+        rest(cx);
+        assert!(!filled(toggle, cx), "the GIF is paused at first");
+        press(cx);
+        assert!(filled(toggle, cx), "Play GIF plays");
+
+        desktop(true, cx);
+        assert!(cx.read(|cx| cx.reduce_motion()));
+        assert!(
+            !filled(toggle, cx),
+            "while reduced motion is on, the GIF is shown paused"
+        );
+        desktop(false, cx);
+        assert!(!cx.read(|cx| cx.reduce_motion()));
+        assert!(
+            !filled(toggle, cx),
+            "turning reduced motion off resumes nothing"
+        );
+
+        press(cx);
+        assert!(filled(toggle, cx), "until the person presses Play GIF");
+    }
+
+    /// Until a snapshot has been applied, a window's activation leaves the
+    /// toolkit's motion policy as it is, so a reduced motion set by hand
+    /// stays; once the desktop has answered, activation applies its answer
+    /// again.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    async fn activation_applies_the_desktops_answer_only_once_there_is_one(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::VisualTestContext;
+        let (_fixture, _app, cx) = crate::views::tests::history_window(cx).await;
+        let reactivate = |cx: &mut VisualTestContext| {
+            cx.deactivate_window();
+            cx.update(|window, _| window.activate_window());
+            cx.run_until_parked();
+        };
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        reactivate(cx);
+        assert!(
+            cx.read(|cx| cx.reduce_motion()),
+            "no snapshot yet: activation keeps it"
+        );
+
+        cx.update(|_, cx| apply(reducing_motion(false), cx));
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        reactivate(cx);
+        assert!(!cx.read(|cx| cx.reduce_motion()), "the desktop's answer");
     }
 }

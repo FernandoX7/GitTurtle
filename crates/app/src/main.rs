@@ -1124,6 +1124,18 @@ impl GitTurtle {
             );
             // What launch already read, applied once the window is assembled.
             cx.defer_in(window, |this, window, cx| this.omarchy_changed(window, cx));
+            // The desktop's reduced motion, which its settings-portal observer
+            // has already applied to the toolkit (`desktop_text`), pauses this
+            // window's playback, as the macOS display-change notification does.
+            this.subscriptions.push(
+                cx.observe_global_in::<native_accessibility::DesktopDisplay>(
+                    window,
+                    |this, _, cx| {
+                        this.apply_motion_preferences(cx);
+                        cx.notify();
+                    },
+                ),
+            );
         }
         this._display_preferences_task = native_accessibility::observe_display_preferences(cx);
         this.subscriptions
