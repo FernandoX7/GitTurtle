@@ -2978,8 +2978,9 @@ impl EditorHighlights {
     /// Under More contrast, `palette` is the adjusted palette, `roles` are fitted at
     /// [`MORE_CONTRAST_TEXT`] and `chosen` is the palette as chosen, and every highlight is
     /// raised from the one `chosen` draws off ([`Self::raised`]), so no color reads worse on it
-    /// and it stands from its lines on the same side and no nearer than it does with More
-    /// contrast off: each word tint by [`Self::raised_word_tint`], the selection and Find's
+    /// and it stands from its lines on the same side, no nearer and with no less luminance
+    /// contrast than it does with More contrast off: each word tint by
+    /// [`Self::raised_word_tint`], the selection and Find's
     /// matches likewise ([`Self::fit_raised`]), the current match no nearer the other matches
     /// than off. Off, `chosen` is `None`.
     fn fit(palette: Palette, roles: SyntaxRoles, chosen: Option<Palette>) -> Self {
@@ -3044,26 +3045,12 @@ impl EditorHighlights {
             .raise(palette.selected, away, palette.accent)
             .unwrap_or(off.selection);
         let current = mix(palette.selected, palette.accent, 64);
-        let apart = oklab_distance(oklab(off.find_current), oklab(off.selection));
-        let beside = |distance: f64| {
-            raised(off.find_current)
-                .apart_from(selection, distance)
-                .raise(current, away, palette.accent)
-        };
-        let raised_current = beside(apart.max(HIGHLIGHT_DISTANCE)).or_else(|| {
-            if apart < HIGHLIGHT_DISTANCE {
-                beside(apart)
-            } else {
-                None
-            }
-        });
-        let (selection, find_current) = match raised_current {
-            Some(find_current) => (selection, find_current),
-            None if oklab_distance(oklab(off.find_current), oklab(selection)) >= apart => {
-                (selection, off.find_current)
-            }
-            None => (off.selection, off.find_current),
-        };
+        let (selection, find_current) =
+            Self::current_beside(off.selection, off.find_current, selection, |distance| {
+                raised(off.find_current)
+                    .apart_from(selection, distance)
+                    .raise(current, away, palette.accent)
+            });
         let word =
             |diff: u32, line: u32| Self::raised_word_tint(palette, roles, chosen, diff, line);
         Self {
@@ -3075,12 +3062,45 @@ impl EditorHighlights {
         }
     }
 
+    /// The selection and current match [`Self::fit_raised`] draws: `selection` is raised from
+    /// `off_selection`, the selection drawn with More contrast off (or is it, where none is
+    /// raised), and `beside(distance)` raises the current match from `off_current`, the one
+    /// drawn off, to stand at least `distance` from `selection`, or is `None` where none does.
+    /// The current match keeps the distance `apart` it stands from the other matches off: it is
+    /// raised to stand at least `apart` and at least [`HIGHLIGHT_DISTANCE`] from the selection,
+    /// or only `apart` where `apart` is less, and the raised selection stays beside it. Where
+    /// none is raised, the off current match stays beside the raised selection if it stands at
+    /// least `apart` from it, and otherwise both keep their off highlights.
+    fn current_beside(
+        off_selection: u32,
+        off_current: u32,
+        selection: u32,
+        beside: impl Fn(f64) -> Option<u32>,
+    ) -> (u32, u32) {
+        let apart = oklab_distance(oklab(off_current), oklab(off_selection));
+        let raised = beside(apart.max(HIGHLIGHT_DISTANCE)).or_else(|| {
+            if apart < HIGHLIGHT_DISTANCE {
+                beside(apart)
+            } else {
+                None
+            }
+        });
+        match raised {
+            Some(current) => (selection, current),
+            None if oklab_distance(oklab(off_current), oklab(selection)) >= apart => {
+                (selection, off_current)
+            }
+            None => (off_selection, off_current),
+        }
+    }
+
     /// The fit that raises a highlight under More contrast from `off`, the same highlight fitted
     /// with More contrast off, so it reads and marks no worse: each color in `drawn`, with the
     /// lines it is drawn on, reaches [`MORE_CONTRAST_TEXT`], or its own lowest contrast on those
     /// lines where that is lower ([`drawn_target`]), and at least the contrast its counterpart
     /// in `own` reads on `off`, on a highlight that stands apart from each of `lines` as `off`
-    /// does, on the same side and at least as far ([`HighlightFit::at_least_as_apart_as`]).
+    /// does, on the same side, at least as far and with at least its luminance contrast
+    /// ([`HighlightFit::at_least_as_apart_as`]).
     /// [`HighlightFit::raise`] finds the candidate nearest a seed that reaches all of that,
     /// searched as [`Self::fit`] searches, or `None`, and the caller keeps `off`.
     fn raised(drawn: &[(u32, &[u32])], own: &[u32], off: u32, lines: &[u32]) -> HighlightFit {
@@ -3175,13 +3195,17 @@ impl EditorHighlights {
     /// lowest contrast on the lines it is drawn on where that is lower, and never reads below
     /// the contrast the same role reads on `chosen`'s own tint with More contrast off: the
     /// candidate nearest the seed that reaches both and stands from its line at least as far as
-    /// that tint does ([`Self::raised`]), searched as [`Self::fit`]
-    /// searches, or else `chosen`'s tint itself, where the raised colors read at least as their
-    /// own did. Re-fitted at 4.75:1 against the raised syntax, the tint grew heavier and the
-    /// added text on it read 5.81:1 where it read 6.45:1 with More contrast off (Midnight;
-    /// matte-black's removed words 4.77:1 where they read 5.84:1); held only to the readings,
-    /// it drew nearer its line, so the changed word stood out less (Midnight's added words
-    /// 0.077 to 0.041 from their line in OKLab, and Porcelain's removed tint near white).
+    /// that tint does, on its side, with at least its luminance contrast ([`Self::raised`]),
+    /// searched as [`Self::fit`] searches, or else `chosen`'s tint itself, where the raised
+    /// colors read at least as their own did. A tint lying between its line tint and the
+    /// colors on it could only make them read 7:1 by moving toward that line, which the
+    /// luminance bound forbids, so such a tint keeps `chosen`'s. Re-fitted at 4.75:1 against
+    /// the raised syntax, the tint grew heavier and the added text on it read 5.81:1 where it
+    /// read 6.45:1 with More contrast off (Midnight; matte-black's removed words 4.77:1 where
+    /// they read 5.84:1); held only to the readings, it drew nearer its line, so the changed
+    /// word stood out less (Midnight's added words 0.077 to 0.041 from their line in OKLab,
+    /// and Porcelain's removed tint near white); held only to its distance and side, it took
+    /// its line's luminance ([`HighlightFit::at_least_as_apart_as`]).
     fn raised_word_tint(
         palette: Palette,
         roles: SyntaxRoles,
@@ -3227,6 +3251,8 @@ struct HighlightFit {
 struct Apart {
     /// The color's OKLab coordinates.
     oklab: [f64; 3],
+    /// The color's relative luminance.
+    luminance: f64,
     /// The distance, in ΔEOK, the highlight stands from it at least: [`HIGHLIGHT_DISTANCE`], or
     /// more for a raised highlight ([`HighlightFit::at_least_as_apart_as`]).
     distance: f64,
@@ -3234,6 +3260,12 @@ struct Apart {
     /// (`Less`), or `None` for either: a raised highlight keeps the side of the one drawn with
     /// More contrast off ([`HighlightFit::at_least_as_apart_as`]).
     side: Option<std::cmp::Ordering>,
+    /// The relative luminance the highlight keeps beyond, with the side of the color's it lies
+    /// on: at least it where that side is lighter (`Greater`), at most it where darker (`Less`),
+    /// or `None` for no bound. A raised highlight keeps the luminance of the one drawn with More
+    /// contrast off, so its luminance contrast with the color is at least the off one's, on the
+    /// same side ([`HighlightFit::at_least_as_apart_as`]).
+    beyond: Option<(std::cmp::Ordering, f64)>,
 }
 
 /// How a candidate highlight reads under the colors drawn on it.
@@ -3269,8 +3301,10 @@ impl HighlightFit {
                 .iter()
                 .map(|&line| Apart {
                     oklab: oklab(line),
+                    luminance: custom::luminance(line),
                     distance: HIGHLIGHT_DISTANCE,
                     side: None,
+                    beyond: None,
                 })
                 .collect(),
         }
@@ -3305,18 +3339,28 @@ impl HighlightFit {
 
     /// This fit for a highlight that stands apart from each line as `off` does: on the same
     /// side of it in OKLab lightness, lighter or darker, and at least as far from it, never
-    /// nearer than [`HIGHLIGHT_DISTANCE`]. Under More contrast a raised highlight never marks its
+    /// nearer than [`HIGHLIGHT_DISTANCE`], and with at least `off`'s luminance contrast with it,
+    /// on the same side in luminance. Under More contrast a raised highlight never marks its
     /// text more faintly than the highlight drawn with it off, and never with the other polarity:
     /// a changed-word tint that turned darker than its lighter line tint read as a gap in the
     /// line (Midnight's added words, #0f1d19 on #19322d), and a selection that turned near black
-    /// lost its hue (Midnight's, #0b3e3e to #000001).
+    /// lost its hue (Midnight's, #0b3e3e to #000001). Its lightness against the line is the mark
+    /// that survives colour-blind vision, so distance gained through saturation alone does not
+    /// stand in for it: held only to the distance, every raised word tint took its line's
+    /// luminance, 1.00 to 1.01:1, where the ones drawn off stand 1.08 to 1.37:1 from theirs, and
+    /// in a protanopia and deuteranopia model Midnight's removed word turned darker than its line
+    /// and Porcelain's added word fell from 0.067 to 0.018 from it.
     fn at_least_as_apart_as(mut self, off: u32) -> Self {
-        let off = oklab(off);
+        let (off, off_luminance) = (oklab(off), custom::luminance(off));
         for apart in &mut self.lines {
             apart.distance = apart.distance.max(oklab_distance(off, apart.oklab));
             apart.side = match off[0].total_cmp(&apart.oklab[0]) {
                 std::cmp::Ordering::Equal => None,
                 side => Some(side),
+            };
+            apart.beyond = match off_luminance.total_cmp(&apart.luminance) {
+                std::cmp::Ordering::Equal => None,
+                side => Some((side, off_luminance)),
             };
         }
         self
@@ -3328,8 +3372,10 @@ impl HighlightFit {
     fn apart_from(mut self, color: u32, distance: f64) -> Self {
         self.lines.push(Apart {
             oklab: oklab(color),
+            luminance: custom::luminance(color),
             distance,
             side: None,
+            beyond: None,
         });
         self
     }
@@ -3342,13 +3388,19 @@ impl HighlightFit {
     }
 
     /// Whether `color` stands from every line at least its distance ([`HIGHLIGHT_DISTANCE`]
-    /// unless [`Self::at_least_as_apart_as`] raised it), on its side where it keeps one.
-    fn distinct(&self, color: [f64; 3]) -> bool {
+    /// unless [`Self::at_least_as_apart_as`] raised it), on its side where it keeps one, and
+    /// beyond the luminance it keeps there, if any.
+    fn distinct(&self, color: u32) -> bool {
+        let (lab, luminance) = (oklab(color), custom::luminance(color));
         self.lines.iter().all(|apart| {
-            oklab_distance(color, apart.oklab) >= apart.distance
+            oklab_distance(lab, apart.oklab) >= apart.distance
                 && apart
                     .side
-                    .is_none_or(|side| color[0].total_cmp(&apart.oklab[0]) == side)
+                    .is_none_or(|side| lab[0].total_cmp(&apart.oklab[0]) == side)
+                && apart.beyond.is_none_or(|(side, bound)| match side {
+                    std::cmp::Ordering::Greater => luminance >= bound,
+                    _ => luminance <= bound,
+                })
         })
     }
 
@@ -3356,7 +3408,7 @@ impl HighlightFit {
     /// stands apart; `tint` lends its hue to a seed too grey to have one of its own.
     fn search(&self, seed: u32, away: u32, tint: u32) -> Option<u32> {
         let origin = oklab(seed);
-        if self.reading(seed) == Reading::Target && self.distinct(origin) {
+        if self.reading(seed) == Reading::Target && self.distinct(seed) {
             return Some(seed);
         }
         // Candidates in order of the distance from the seed each was built at, merged from rows
@@ -3416,8 +3468,8 @@ impl HighlightFit {
                 }
             };
             match self.reading(color) {
-                Reading::Target if self.distinct(oklab(color)) => return Some(color),
-                Reading::Rule if fallback.is_none() && self.distinct(oklab(color)) => {
+                Reading::Target if self.distinct(color) => return Some(color),
+                Reading::Rule if fallback.is_none() && self.distinct(color) => {
                     fallback = Some(color);
                 }
                 _ => {}
@@ -6574,6 +6626,27 @@ mod tests {
         }
     }
 
+    /// How a highlight drawn under More contrast, `on`, marks itself on
+    /// `line` more faintly than `off`, the one drawn with it off, if it
+    /// does: by a lower luminance contrast with the line, or on the other
+    /// side of it in luminance. A highlight's lightness against its line is
+    /// the mark that survives colour-blind vision; one that stood apart
+    /// through saturation alone took its line's luminance (every raised word
+    /// tint 1.00 to 1.01:1, where the ones drawn off stand 1.08 to 1.37:1).
+    fn fainter_on_its_line(on: u32, off: u32, line: u32) -> Option<String> {
+        let side = |tint: u32| custom::luminance(tint).total_cmp(&custom::luminance(line));
+        let (ratio, off_ratio) = (contrast(on, line), contrast(off, line));
+        let crossed = side(off).is_ne() && side(on) != side(off);
+        (ratio < off_ratio || crossed).then(|| {
+            format!(
+                "#{on:06x} {ratio:.3}:1 on the line #{line:06x}, {:?} it in luminance, off \
+                 #{off:06x} {off_ratio:.3}:1, {:?}",
+                side(on),
+                side(off)
+            )
+        })
+    }
+
     /// With More contrast on, no color reads worse on a changed word than it
     /// does with More contrast off, in every palette. On the added and
     /// removed word tints the editors draw, `text`, every syntax role but
@@ -6671,6 +6744,9 @@ mod tests {
                         side(off_tint)
                     ));
                 }
+                if let Some(failure) = fainter_on_its_line(on_tint, off_tint, line) {
+                    failures.push(format!("{name} {tint} word {failure}"));
+                }
                 if on_tint == off_tint {
                     kept += 1;
                 } else {
@@ -6685,25 +6761,182 @@ mod tests {
         }
         cx.update(|cx| set_more_contrast(false, cx));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+        // Held to its off luminance contrast with its line, a word tint is
+        // rarely raised; the raise is read in
+        // `a_raised_highlight_keeps_its_off_luminance_contrast_with_its_line`.
+        assert!(kept > 0, "word tints raised {raised}, kept {kept}");
+    }
+
+    /// A raised highlight keeps at least the luminance contrast with its line
+    /// that the one drawn with More contrast off has, on the same side, or
+    /// that one stays. Midnight's removed word and Porcelain's added word,
+    /// held only to their distance from their line and their side of it in
+    /// OKLab lightness, were raised through saturation alone to their line's
+    /// luminance (#5d0016 and #aefed9, 1.00 to 1.01:1, where the tints drawn
+    /// off stand 1.37:1 and 1.22:1 from their lines), and in a protanopia and
+    /// deuteranopia model the removed word turned darker than its line and
+    /// the added word fell from 0.067 to 0.018 from it; held to the
+    /// luminance too, each keeps the tint drawn off. A highlight on the far
+    /// side of its line from the text on it, darker than a dark line under
+    /// light text here, is still raised: away from the line, so its text
+    /// reaches 7:1 and the highlight stands further from the line in
+    /// luminance than off.
+    #[test]
+    fn a_raised_highlight_keeps_its_off_luminance_contrast_with_its_line() {
+        for (case, theme, removed) in [
+            ("Midnight removed word", ThemeChoice::Midnight, true),
+            ("Porcelain added word", ThemeChoice::Porcelain, false),
+        ] {
+            let chosen = theme.palette();
+            let palette = chosen.with_more_contrast();
+            let roles = palette.syntax_roles(true);
+            let (diff, line) = if removed {
+                (palette.removed, palette.removed_background)
+            } else {
+                (palette.added, palette.added_background)
+            };
+            let own_roles = chosen.syntax_roles(false);
+            let off = EditorHighlights::word_tint(chosen, own_roles, diff, line);
+            let (lines, on_line) = (EditorHighlights::lines(palette), [line]);
+            let drawn: Vec<_> =
+                EditorHighlights::word_colors(roles, &lines, diff, &on_line).collect();
+            let own: Vec<_> = own_roles.word_colors().into_iter().chain([diff]).collect();
+            let seed = EditorHighlights::word_seed(diff, line);
+            let away = EditorHighlights::away(palette);
+            let fit = || EditorHighlights::raised(&drawn, &own, off, &on_line);
+            assert_eq!(fit().raise(seed, away, diff), None, "{case}: none raised");
+            assert_eq!(
+                EditorHighlights::raised_word_tint(palette, roles, chosen, diff, line),
+                off,
+                "{case}: keeps the off tint #{off:06x}"
+            );
+            let mut by_distance = fit();
+            for apart in &mut by_distance.lines {
+                apart.beyond = None;
+            }
+            let saturated = by_distance
+                .raise(seed, away, diff)
+                .expect("held only to distance and side, a tint is raised");
+            assert!(
+                contrast(saturated, line) < contrast(off, line),
+                "{case}: held only to distance and side, #{saturated:06x} {:.3}:1 on its line, \
+                 off #{off:06x} {:.3}:1",
+                contrast(saturated, line),
+                contrast(off, line)
+            );
+        }
+
+        // Darker than its dark line under light text, a highlight is raised
+        // away from the line until the text reads 7:1 (6.29:1 on the one
+        // drawn off).
+        let (line, off, text) = (0x30343a, 0x202328, 0xa0a4aa);
+        assert!(contrast(text, off) < MORE_CONTRAST_TEXT);
+        let raised = HighlightFit::targeted(&[(text, MORE_CONTRAST_TEXT)], &[line])
+            .at_least_as_apart_as(off)
+            .raise(off, 0x000000, off)
+            .expect("raised away from its line");
         assert!(
-            raised > 0 && kept > 0,
-            "word tints raised {raised}, kept {kept}"
+            contrast(text, raised) >= MORE_CONTRAST_TEXT
+                && custom::luminance(raised) < custom::luminance(off)
+                && fainter_on_its_line(raised, off, line).is_none(),
+            "#{raised:06x}: text {:.3}:1, {:.3}:1 on its line, off {:.3}:1",
+            contrast(text, raised),
+            contrast(raised, line),
+            contrast(off, line)
         );
+    }
+
+    /// [`EditorHighlights::current_beside`] in literal greys, each way it
+    /// can place the current match beside a raised selection: raised to
+    /// stand from it as far as the off current match stands from the off
+    /// selection, or where the two drawn off stand nearer than
+    /// [`HIGHLIGHT_DISTANCE`], raised to stand only that far; and where none
+    /// is raised, the off current match beside a raised selection that
+    /// stands from it at least as far, or else both highlights drawn off.
+    /// Held to its distance from the raised selection alone, the current
+    /// match settled beside the other matches (Omarchy alacritty-dark 0.040
+    /// to 0.024), and the raised selection beside the off current match
+    /// (Omarchy ristretto 0.090 to 0.039).
+    #[test]
+    fn the_current_match_stands_from_a_raised_selection_as_far_as_off() {
+        let apart = |a: u32, b: u32| oklab_distance(oklab(a), oklab(b));
+        let (off_selection, near, far) = (0x404040, 0x434343, 0x707070);
+        assert!(apart(off_selection, near) < HIGHLIGHT_DISTANCE);
+        assert!(apart(off_selection, far) >= HIGHLIGHT_DISTANCE);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let raised = |current: u32, from: f64| {
+            let asked = &asked;
+            move |distance: f64| {
+                asked.borrow_mut().push(distance);
+                (distance <= from).then_some(current)
+            }
+        };
+
+        // Raised as far from the raised selection as off.
+        let off_apart = apart(off_selection, far);
+        assert_eq!(
+            EditorHighlights::current_beside(off_selection, far, 0x383838, raised(0xaa2222, 1.)),
+            (0x383838, 0xaa2222),
+            "raised"
+        );
+        assert_eq!(asked.take(), [off_apart], "asked as far as off");
+
+        // Drawn off nearer than the floor: raised only as far as off.
+        let off_apart = apart(off_selection, near);
+        assert_eq!(
+            EditorHighlights::current_beside(
+                off_selection,
+                near,
+                0x383838,
+                raised(0x454545, off_apart)
+            ),
+            (0x383838, 0x454545),
+            "raised as far as off, under the floor"
+        );
+        assert_eq!(
+            asked.take(),
+            [HIGHLIGHT_DISTANCE, off_apart],
+            "asked at the floor, then as far as off"
+        );
+
+        // None raised: the off current match stays beside a raised selection
+        // that stands from it at least as far as off, and otherwise both
+        // highlights drawn off stay. Drawn off at least the floor apart, the
+        // current match is searched for once, as far as off, never again.
+        let off_apart = apart(off_selection, far);
+        let none = || raised(0x000000, f64::NEG_INFINITY);
+        assert!(apart(far, 0x202020) >= off_apart);
+        assert_eq!(
+            EditorHighlights::current_beside(off_selection, far, 0x202020, none()),
+            (0x202020, far),
+            "the off current match beside the raised selection"
+        );
+        assert_eq!(asked.take(), [off_apart], "asked once, as far as off");
+        assert!(apart(far, 0x606060) < off_apart);
+        assert_eq!(
+            EditorHighlights::current_beside(off_selection, far, 0x606060, none()),
+            (off_selection, far),
+            "both drawn off"
+        );
+        assert_eq!(asked.take(), [off_apart], "asked once, as far as off");
     }
 
     /// Find's current match keeps the distance it stands from the other
     /// matches with More contrast off, in two synthetic cases built from
     /// built-in palettes, so a run without the Omarchy palettes covers it:
     /// Midnight and Graphite with a grey selected row and a warm accent, in
-    /// which the selection alone would be raised toward the current match
-    /// drawn off (Midnight's #44251e to #551205, 0.012 from the current match
-    /// #591509, where the selection drawn off stands 0.053 from it) and no
-    /// current match stands that far from the raised selection. Both keep the
-    /// highlights drawn off, so the current match stands from the other
-    /// matches as far as off. Held to its distance from the raised
-    /// selection, the current match settled beside it.
+    /// which the current match drawn off stands at least
+    /// [`HIGHLIGHT_DISTANCE`] from the other matches. Both keep the highlights
+    /// drawn off, so the current match stands from the other matches as far
+    /// as off. Held only to its distance from its lines, the selection alone
+    /// was once raised toward the current match drawn off here (Midnight's
+    /// #44251e to #551205, 0.012 from the current match #591509, where the
+    /// selection drawn off stands 0.053 from it); held also to its luminance
+    /// contrast with each line, it is not. Each way the current match is
+    /// placed beside a raised selection is read in
+    /// `the_current_match_stands_from_a_raised_selection_as_far_as_off`.
     #[test]
-    fn the_current_match_keeps_its_off_distance_beside_a_raised_selection() {
+    fn the_current_match_keeps_its_off_distance_from_the_other_matches() {
         for (case, base, selected, accent) in [
             ("Midnight", ThemeChoice::Midnight, 0x383838, 0xc8553d),
             ("Graphite", ThemeChoice::Graphite, 0x343335, 0xb5651d),
@@ -6721,34 +6954,6 @@ mod tests {
             assert!(
                 off_apart >= HIGHLIGHT_DISTANCE,
                 "{case}: the current match drawn off stands {off_apart:.3} from the others"
-            );
-
-            // The selection alone, raised as `fit_raised` raises it, moves
-            // toward the current match drawn off.
-            let lines = EditorHighlights::lines(palette);
-            let patch = EditorHighlights::patch_colors(palette, roles, &lines);
-            let own: Vec<u32> = EditorHighlights::patch_colors(
-                chosen,
-                chosen.syntax_roles(false),
-                &EditorHighlights::lines(chosen),
-            )
-            .into_iter()
-            .map(|(color, _)| color)
-            .collect();
-            let alone = EditorHighlights::raised(&patch, &own, off.selection, &lines)
-                .raise(
-                    palette.selected,
-                    EditorHighlights::away(palette),
-                    palette.accent,
-                )
-                .unwrap_or(off.selection);
-            assert!(
-                alone != off.selection && apart(off.find_current, alone) < off_apart,
-                "{case}: the selection alone raised to #{alone:06x}, {:.3} from the current \
-                 match #{:06x}, off #{:06x} {off_apart:.3}",
-                apart(off.find_current, alone),
-                off.find_current,
-                off.selection
             );
 
             assert_eq!(
@@ -6881,6 +7086,9 @@ mod tests {
                             side(off_tint)
                         ));
                     }
+                    if let Some(failure) = fainter_on_its_line(on_tint, off_tint, line) {
+                        failures.push(format!("{name} {highlight} {failure}"));
+                    }
                 }
                 if !chosen.is_light()
                     && oklab(off_tint)[0] > darkest
@@ -6913,8 +7121,12 @@ mod tests {
         }
         cx.update(|cx| set_more_contrast(false, cx));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+        // Held to their off luminance contrast with every line, the
+        // selection and current match are rarely raised; each way the
+        // current match is placed beside a raised selection is read in
+        // `the_current_match_stands_from_a_raised_selection_as_far_as_off`.
         assert!(
-            raised > 0 && kept > 0 && separated > 0,
+            kept > 0 && separated > 0,
             "selections raised {raised}, kept {kept}; current matches apart off {separated}"
         );
     }
