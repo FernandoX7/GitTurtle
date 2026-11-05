@@ -358,15 +358,15 @@ thread_local! {
 /// [`super::phrases`]): each of `children`, text in the element's own style, reports each of
 /// its lines a person can see to the body collecting them ([`Blocks::collect_lines`]), if one
 /// is. GPUI lays a text's lines out one under another from its top, each as tall as its
-/// style's line height snapped to a device pixel, which the element's text style gives while
-/// it prepaints. Only the lines inside what can be seen are counted, so a long text in a list,
-/// as a 65,536-character comment can be, costs the lines the list shows.
+/// style's line height snapped to a device pixel ([`drawn_line_height`]), which the element's
+/// text style gives while it prepaints. Only the lines inside what can be seen are counted, so
+/// a long text in a list, as a 65,536-character comment can be, costs the lines the list shows.
 pub(super) fn text_lines(children: Vec<Bounds<Pixels>>, window: &mut Window, _: &mut App) {
     COLLECTING.with(|collecting| {
         let Some(collecting) = &*collecting.borrow() else {
             return;
         };
-        let height = window.pixel_snap(window.line_height());
+        let height = drawn_line_height(window);
         if height <= Pixels::ZERO {
             return;
         }
@@ -384,6 +384,19 @@ pub(super) fn text_lines(children: Vec<Bounds<Pixels>>, window: &mut Window, _: 
             }
         }
     });
+}
+/// How far apart GPUI's text element draws the lines of a text in the window's text style: the
+/// style's line height at its font size, snapped to a device pixel, as the element lays its
+/// lines out. Not [`Window::line_height`], which rounds to a whole point first: at 17 pt the
+/// panel's 12 pt text is 15.7 px and its line 25.4 px, drawn 25.5 px apart at two device pixels
+/// to the point but counted 25 px apart, so the connection help's fifth line was taken for
+/// 337.5..362.5 where it drew at 339.5..365, and a reveal left it cut by 2.5 px at the body's
+/// foot as a stop clear of every line.
+fn drawn_line_height(window: &Window) -> Pixels {
+    let style = window.text_style();
+    let rem = window.rem_size();
+    let font_size = style.font_size.to_pixels(rem);
+    window.pixel_snap(style.line_height.to_pixels(font_size.into(), rem))
 }
 /// `list`, a list that scrolls inside the panel's body and clips its rows, in an element that
 /// tells the body collecting lines the list's viewport while the list prepaints, so the rows
@@ -570,15 +583,17 @@ fn landing(
 /// ([`landing`]), so that neither of the view's edges falls inside one of `lines`, the lines of
 /// text and controls of one line drawn in it: a half line reads as a rendering fault, and its
 /// words cannot be read. The part the reveal shows, `top..bottom` with its ring's room, stays
-/// whole, and the edge stays between `first` and `last`, where the content lets it scroll; it
-/// stops at one of `starts`, where blocks start less the ring's room, or at an end of the
-/// content, as [`landing`] does, so it never falls inside text no line reports, and only where
-/// none of those serves, between two of `lines`, at a line's top or foot. Where `edge` leaves
+/// whole, and the edge stays between `first` and `last`, where the content lets it scroll. It
+/// stops first at a safe place: one of `starts`, where blocks start less the ring's room, or
+/// an end of the content, as [`landing`] does, so it never falls inside text no line reports,
+/// or where the view's bottom edge lies at a line's top or foot; and only where none of those
+/// serves, between two of `lines`, at a line's top or foot. Among either, where `edge` leaves
 /// a line cut, the view scrolls the least less that shows that line whole or takes it out of
 /// view, so the part still shows whole and no other line is cut; otherwise the least more,
 /// until the line is wholly out of view; where neither can, the part whole wins and the edge
-/// stays at `edge`. A part taller than the view keeps the half of the view on the side the
-/// reveal shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection
+/// stays at `edge`, as it does where it landed at the content's top, the box's top shown
+/// with the first part. A part taller than the view keeps the half of the view on the side
+/// the reveal shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection
 /// help's second line cut at the body's top edge.
 fn clear_of_lines(
     viewport: Bounds<Pixels>,
@@ -614,7 +629,16 @@ fn clear_of_lines(
             && !cuts(at)
             && !cuts(at + height)
     };
-    if lands(edge) {
+    // A reveal that lands at the content's top, as the first part's does, shows the box's top
+    // with the part ([`landing`]), which no place below it keeps: it would cut what lies
+    // above the part, a padding or a surface that reports no line. At 18 pt in a 1,480 × 800
+    // window, the bottom edge at the foot of a line it cut took Tab wrapping to the offline
+    // fixture's banner 8.5 px down, the banner's surface cut at the body's top. This is a
+    // decided exception to the order of the stops below (coordinator's decision, 2026-11-05):
+    // the content's top is the one stop that cuts nothing above it and the place a Tab wrap
+    // returns to, so it stays even where the body's foot then cuts a line and a safe stop
+    // below it clears every line. Keep it when changing that order.
+    if lands(edge) || edge <= first + slack {
         return edge;
     }
     // Less scrolling moves the edge back toward where the view stood.
@@ -636,8 +660,14 @@ fn clear_of_lines(
     };
     // The top edge stops first where a reveal may bring it, never through a line, whatever
     // drew it: the start of a block or an end of the content. The part's own top lies inside
-    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt.
-    let blocks = &mut starts.iter().copied().chain([first, last]);
+    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt. Or the bottom
+    // edge stops at a line's top or foot: at 17 pt in a 440 × 490 window, Shift+Tab onto
+    // Account options found no block start clear of the connection help's lines below it,
+    // and the bottom edge at the foot of the help's fifth line clears every line.
+    let flush = lines
+        .iter()
+        .flat_map(|(top, bottom)| [*top - height, *bottom - height]);
+    let blocks = &mut starts.iter().copied().chain([first, last]).chain(flush);
     // Where none of those leaves every line whole or out of view, the top edge stops between
     // two lines, at a line's top or foot, inside no line that reports itself: with the
     // connection help in five lines at 18 pt, as macOS lays it out in a 461 × 490 window, no
@@ -2282,19 +2312,34 @@ mod tests {
             "a little more shows it whole"
         );
         // A part taller than the view, shown from its top at 150 as a pane that draws its own
-        // ring is: it keeps the half of the view below its top, so with no block to stop at
-        // the reveal stays where it landed, and where one starts above it, the view stops
-        // there, the part's top, its leading edge, still in view.
+        // ring is: it keeps the half of the view below its top, so where the content starts
+        // just above it, with no block to stop at, the reveal stays where it landed. Where
+        // the content goes on above, the view stops a little less, its bottom edge at the
+        // line's top, or, where that would cut another line at its top edge, at the block
+        // that starts above, the part's top, its leading edge, still in view either way.
         let tall = (px(150.), px(500.));
         assert_eq!(
-            clear_of_lines(viewport, px(150.), tall, &bottom_line, &[], range),
+            clear_of_lines(
+                viewport,
+                px(150.),
+                tall,
+                &bottom_line,
+                &[],
+                (px(145.), px(1000.))
+            ),
             px(150.),
             "with nowhere clear to stop, the tall part stays where it landed"
         );
         assert_eq!(
             clear_of_lines(viewport, px(150.), tall, &bottom_line, &[px(120.)], range),
+            px(140.),
+            "a little less takes the line out of view, the tall part's top still in view"
+        );
+        let above = [(px(135.), px(145.)), (px(340.), px(360.))];
+        assert_eq!(
+            clear_of_lines(viewport, px(150.), tall, &above, &[px(120.)], range),
             px(120.),
-            "a little less clears the line, the tall part's top still in view"
+            "a block start above clears both lines, the tall part's top still in view"
         );
         // Shift+Tab: a reveal scrolling up from a view at 400..600 lands at 190, its bottom
         // edge inside the line at 380..400, and less and more are mirrored: less stops lower.
@@ -2308,19 +2353,22 @@ mod tests {
         );
         assert_eq!(
             clear_of_lines(below, px(190.), (px(190.), px(260.)), &line, &starts, range),
-            px(170.),
-            "scrolling up, where less would cut the part, a little more takes the line out"
+            px(180.),
+            "scrolling up, where less would cut the part, a little more takes the line out, \
+             the bottom edge at its top"
         );
     }
 
-    /// Where no block start leaves every line whole or out of view, the reveal stops between
-    /// two lines, at a line's top or foot: a view at 100..300 scrolled down to 150, inside
-    /// the first of three lines at 145..175 and with its bottom edge inside the line at
-    /// 345..365. A block start that clears both still wins over a nearer place between two
-    /// lines; otherwise the least less, the paragraph's first line whole, and where that would
-    /// cut the part, the least more. As macOS wraps the connection help at 18 pt in a 461 × 490
-    /// window, no block start kept Connect whole with both edges clear, and Tab onto it left
-    /// Disconnect cut at the body's foot.
+    /// Where no block start leaves every line whole or out of view, nor the bottom edge at a
+    /// line's top or foot, the reveal stops between two lines, its top edge at a line's top or
+    /// foot: a view at 100..300 scrolled down to 150, its top edge inside the first of three
+    /// lines at 145..175; the bottom edge at the top or foot of the line at 350..370 below them
+    /// would leave the top edge inside one of the three. A block start that clears
+    /// every line still wins over a nearer place between two lines; otherwise the least less,
+    /// the paragraph's first line whole, and where that would cut the part, the least more,
+    /// past the line at the bottom edge. As macOS wraps the connection help at 18 pt in a
+    /// 461 × 490 window, no block start kept Connect whole with both edges clear, and Tab onto
+    /// it left Disconnect cut at the body's foot.
     #[test]
     fn where_no_block_start_clears_the_lines_the_edge_stops_between_two() {
         let viewport = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(200.)));
@@ -2328,7 +2376,7 @@ mod tests {
             (px(145.), px(155.)),
             (px(155.), px(165.)),
             (px(165.), px(175.)),
-            (px(345.), px(365.)),
+            (px(350.), px(370.)),
         ];
         let range = (px(0.), px(1000.));
         let part = |bottom: f32| (px(250.), px(bottom));
@@ -2351,8 +2399,61 @@ mod tests {
         );
         assert_eq!(
             clear_of_lines(viewport, px(150.), part(346.), &lines, &[px(148.)], range),
-            px(165.),
+            px(175.),
             "where less would cut the part, the least more between two lines"
+        );
+    }
+
+    /// Where no block start clears every line, the reveal stops where the view's bottom edge
+    /// lies at a line's top or foot before it stops between two lines: the connection pane at
+    /// 17 pt in a 440 × 490 window, as Linux lays it out, scrolled up by Shift+Tab onto Account
+    /// options, its body 271 px tall. The reveal lands at Account options' row, 142, its bottom
+    /// edge inside Connect; no block start keeps the control whole with both edges clear, and
+    /// no line's top or foot as the top edge, which once kept the landing where it cut Connect
+    /// (or, with the help's lines counted 25 px apart for 25.5, stopped at 91.5, the help's
+    /// fifth line cut by 2.5 px). The bottom edge at the foot of that line, 365, clears every
+    /// line, the top edge between Refresh and New pull request.
+    #[test]
+    fn where_no_block_start_clears_the_lines_the_bottom_edge_stops_at_one() {
+        let viewport = Bounds::new(point(px(38.), px(396.)), size(px(364.), px(271.)));
+        let help = (0..6).map(|line| {
+            let top = px(237.5) + px(25.5) * line as f32;
+            (top, top + px(25.5))
+        });
+        let lines: Vec<_> = [
+            (px(12.5), px(46.5)),
+            (px(55.), px(91.5)),
+            (px(100.), px(136.5)),
+            (px(145.), px(181.5)),
+            (px(203.5), px(229.)),
+        ]
+        .into_iter()
+        .chain(help)
+        .chain([(px(399.), px(435.5)), (px(444.), px(480.5))])
+        .collect();
+        let ring = px(3.);
+        let starts: Vec<_> = [12.5, 55., 100., 145., 203.5, 237.5, 399., 444.]
+            .into_iter()
+            .map(|start| px(start) - ring)
+            .collect();
+        let range = (px(9.5), px(798.5));
+        let part = (px(142.), px(184.5));
+        assert_eq!(
+            clear_of_lines(viewport, px(142.), part, &lines, &starts, range),
+            px(94.),
+            "the bottom edge at the foot of the help's fifth line"
+        );
+        // Landed at the content's top, as Tab wrapping to the first part does, the reveal
+        // keeps the box's top though its bottom edge cuts a line whose foot, 8.5 px lower,
+        // would clear every line with the part's ring still whole: that place cuts the box
+        // above the part, as it once cut the offline fixture's banner at 18 pt.
+        let top = Bounds::new(point(px(204.), px(600.)), size(px(1072.), px(544.)));
+        let banner = (px(133.), px(178.));
+        let foot = [(px(649.5), px(676.5))];
+        assert_eq!(
+            clear_of_lines(top, px(124.), banner, &foot, &[], (px(124.), px(659.))),
+            px(124.),
+            "the wrap keeps the body's top"
         );
     }
 

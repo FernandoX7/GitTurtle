@@ -4165,21 +4165,22 @@ mod tests {
     }
 
     /// Holds the body to the rule of its reveals once `keys` moved focus onto `control` from
-    /// the body scrolled to `before` ([`review::clear_of_lines`]): the control shows whole
-    /// with its ring's room, and where the body moved, neither of its edges falls inside a
-    /// line (the lines of [`body_lines`]; half a pixel either way is layout's rounding), or no
-    /// place the body's top edge can take keeps the control whole with neither edge inside a
-    /// line, so the control whole won. Those places are every one the frame drawn offers, not
-    /// the reveal's own: each line's top and foot (the top edge between two lines), each
-    /// line's top and foot less the body's height (the bottom edge between two lines), each
-    /// line's top less the ring's room (where a block a line starts stands with its ring above
-    /// it) and both ends of the content, where the content lets the body scroll. Where the
-    /// body did not move, the control was whole there with its ring, which moves nothing. The
-    /// lines and the places are read from the frame drawn, so the rule holds however the
-    /// platform's text wraps. The places once were the reveal's own, the lines' tops and feet
-    /// and the content's ends: at 17 pt in a 440 × 490 window Shift+Tab onto Account options
-    /// left the help's fifth line cut at the body's foot, where the bottom edge at that line's
-    /// foot clears every line.
+    /// the body scrolled to `before` ([`review::clear_of_lines`]), and returns the lines cut
+    /// at the body's edges, whether it moved or not: the control shows whole with its ring's
+    /// room, and where the body moved, neither of its edges falls inside a line (the lines of
+    /// [`body_lines`]; half a pixel either way is layout's rounding), or no place the body's
+    /// top edge can take keeps the control whole with neither edge inside a line, so the
+    /// control whole won. Those places are every one the frame drawn offers, not the reveal's
+    /// own: each line's top and foot (the top edge between two lines), each line's top and
+    /// foot less the body's height (the bottom edge between two lines), each line's top less
+    /// the ring's room (where a block a line starts stands with its ring above it) and both
+    /// ends of the content, where the content lets the body scroll. Where the body did not
+    /// move, the control was whole there with its ring, which moves nothing. The lines and the
+    /// places are read from the frame drawn, so the rule holds however the platform's text
+    /// wraps. The places once were the reveal's own, the lines' tops and feet and the
+    /// content's ends: at 17 pt in a 440 × 490 window Shift+Tab onto Account options left the
+    /// help's fifth line cut at the body's foot, where the bottom edge at that line's foot
+    /// clears every line.
     fn assert_reveal_rule(
         cx: &mut VisualTestContext,
         scroll: &ScrollHandle,
@@ -4187,7 +4188,7 @@ mod tests {
         (keys, control): (&str, &'static str),
         controls: &[&'static str],
         at: &str,
-    ) {
+    ) -> Vec<String> {
         let (body, lines) = body_lines(cx, controls);
         let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
         let shown = cx.debug_bounds(control).expect(control);
@@ -4197,10 +4198,6 @@ mod tests {
             top >= body.top() - slack && bottom <= body.bottom() + slack,
             "{at}: {keys} shows {control} {shown:?} whole with its ring in the body {body:?}"
         );
-        let offset = scroll.offset().y;
-        if offset == before {
-            return;
-        }
         let inside = |edge: Pixels, within: Pixels| {
             lines
                 .iter()
@@ -4210,8 +4207,9 @@ mod tests {
             .chain(inside(body.bottom(), slack))
             .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?}"))
             .collect();
-        if cut.is_empty() {
-            return;
+        let offset = scroll.offset().y;
+        if cut.is_empty() || offset == before {
+            return cut;
         }
         // Where the body's top edge can stop, in this frame's coordinates, with the control
         // whole and no edge inside a line by more than the reveal's own hundredth of a pixel.
@@ -4240,6 +4238,7 @@ mod tests {
             "{at}: after {keys} onto {control}, {cut:?} cut at the edges of the body {body:?} \
              where its top edge could stop clear of every line"
         );
+        cut
     }
 
     /// A list inside the body clips its rows to its own viewport, so the lines of the rows
@@ -4400,30 +4399,62 @@ mod tests {
     }
 
     /// The reveals of [`a_reveal_leaves_no_line_cut_at_the_body_edges`] keep their rule
-    /// wherever the connection pane's text wraps, at 18 pt and 13 pt in windows from 440 px
-    /// to 480 px wide, 490 px tall, as each platform's text measures it. From 468 px at 18 pt
-    /// the help takes five lines, as macOS lays it out at 461 px, and no block start kept the
-    /// control whole with both edges clear: Tab onto Connect left Copy sign-in command cut at
-    /// the body's foot, and Tab onto Copy left Disconnect cut there, 336..375 in the body
-    /// 93..358, as on macOS (hosted run 42032620931), where the top edge at the foot of the
-    /// help's first line clears both. Shift+Tab back onto Account options there, with the
-    /// toolbar's controls each on a row of their own above the pane, has nowhere clear to stop.
+    /// wherever the connection pane's text wraps, at 18, 17 and 13 pt (the largest interface
+    /// size is 18) in windows from 430 px to 500 px wide, 490 px tall, as each platform's text
+    /// measures it, every 5 px: on Linux the walk's stops change at 430, 439, 454, 468 and 497
+    /// px at 18 pt, 430, 435, 448 and 475 px at 17 pt and 478 px at 13 pt, and each width
+    /// costs a quarter of a second. From 468 px at 18 pt the help takes five lines, as macOS
+    /// lays it out at 461 px, and no block start kept the control whole with both edges
+    /// clear: Tab onto Connect left Copy sign-in command cut at the body's foot, and Tab onto
+    /// Copy left Disconnect cut there, 336..375 in the body 93..358, as on macOS (hosted run
+    /// 42032620931), where the top edge at the foot of the help's first line clears both.
+    /// Shift+Tab back onto Account options there, with the toolbar's controls each on a row
+    /// of their own above the pane, has nowhere clear to stop.
     #[gpui::test]
     async fn reveals_keep_their_rule_wherever_the_connection_help_wraps(cx: &mut TestAppContext) {
-        walk_connection_reveals(cx, &[18, 13], (440..=480).step_by(4).map(|w| w as f32)).await;
+        walk_connection_reveals(cx, &[18, 17, 13], (430..=500).step_by(5).map(|w| w as f32)).await;
+    }
+
+    /// At 17 pt in a 440 × 490 window, as Linux wraps the connection help in six lines,
+    /// Shift+Tab from Connect back onto Account options leaves no line cut at the body's
+    /// edges: no block start keeps Account options whole with both edges clear, and the body
+    /// stops with its bottom edge at the foot of the help's fifth line, 365, its top edge at
+    /// 94, between Refresh and New pull request. It once stopped at 91.5, Refresh's foot, and
+    /// left that line cut by 2.5 px at the body's foot (FU16-B's review): the body counted
+    /// the help's lines 25 px apart, GPUI's line height rounded to a whole point, where the
+    /// text draws them 25.5 px apart, its line height snapped to a device pixel, and it took
+    /// no place where its bottom edge lies at a line's foot. macOS measures the help in
+    /// another font, where the swept test holds the rule.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn shift_tab_onto_account_options_at_17_pt_leaves_the_help_whole(
+        cx: &mut TestAppContext,
+    ) {
+        let walked = walk_connection_reveals(cx, &[17], [440.]).await;
+        let (at, _, cut) = walked
+            .iter()
+            .find(|(_, step, _)| *step == ("shift-tab", "github-account-options"))
+            .expect("the walk takes Shift+Tab onto Account options");
+        assert_eq!(
+            cut,
+            &Vec::<String>::new(),
+            "{at}: Shift+Tab onto Account options leaves no line cut at the body's edges"
+        );
     }
 
     /// Opens the panel over a repository with its connection pane open, Connect enabled (no
     /// request runs and the panel is no offline fixture), in each of `widths` × 490 windows
     /// at each of `sizes`, the body scrolled to its top, and walks Tab onto Connect, on onto
     /// Copy sign-in command and Disconnect, and Shift+Tab back onto Account options, holding
-    /// each to the rule of the body's reveals ([`assert_reveal_rule`]).
+    /// each to the rule of the body's reveals ([`assert_reveal_rule`]). Returns each step,
+    /// where it was taken and the keys and control, with the lines it left cut.
     async fn walk_connection_reveals(
         cx: &mut TestAppContext,
         sizes: &[u8],
         widths: impl IntoIterator<Item = f32> + Clone,
-    ) {
+    ) -> Vec<(String, (&'static str, &'static str), Vec<String>)> {
         use crate::tags::tests::draw;
+        let mut walked = Vec::new();
         let (_fixture, app, cx) = repository_window(cx);
         // Tab's bindings, the installed focus ring and motion at rest.
         crate::focus_ring::sweep::prepare(&app, cx);
@@ -4475,13 +4506,15 @@ mod tests {
                     ("shift-tab", "github-account-options"),
                 ] {
                     let before = tab_onto(cx, &scroll, step.0, step.1);
-                    assert_reveal_rule(cx, &scroll, before, step, &controls, &at);
+                    let cut = assert_reveal_rule(cx, &scroll, before, step, &controls, &at);
+                    walked.push((at.clone(), step, cut));
                 }
                 cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
                 settle_panel(&app, cx).await;
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        walked
     }
 
     /// Escape closes the panel and focus returns to what opened it, drawn as
