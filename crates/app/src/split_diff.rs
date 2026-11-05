@@ -957,4 +957,309 @@ mod tests {
             (1..=30).map(Some).chain([None]).collect::<Vec<_>>()
         );
     }
+
+    /// Scrolling a dense diff, for a release build: 2,400 replaced lines,
+    /// each with four changed words a side, so every visible line carries a
+    /// line decoration and word decorations, in the Diff view and in Split,
+    /// at 13 and 18 pt, in Midnight, with More contrast off and on. After
+    /// one untimed pass, each of sixty steps of 800 px down the text times
+    /// the scroll from the call that sets the offset (Split's first side,
+    /// which its observer mirrors to the second) through the frame drawn
+    /// after it: the scroll's effects, then layout, prepaint and paint of the
+    /// whole window on the test platform, with no GPU, compositor or display
+    /// link, and with the test platform's text system, which places glyphs
+    /// without shaping a font. The last step must show row 1,000 or later on
+    /// both sides, so the steps move the text. Then the security review's
+    /// crafted worst case: 37 replaced pairs of 16,384-byte lines, each with
+    /// 81 changed words a side, the most pairs one file's word budget gives
+    /// words, in the Diff view at 13 pt with More contrast off and on, Find
+    /// closed and then open on `.`, which matches every changed word's
+    /// separator, sixty steps between the top and 600 px down. It names no More contrast API beyond the setting, so it measures
+    /// the same steps on a build without the changed-word rule.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_DIFF_SCROLL_BENCH_OUTPUT and run with --release --ignored"]
+    fn diff_scroll_release_benchmark(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{ThemeChoice, apply_text_sizes, set_more_contrast};
+        const LINES: usize = 2_400;
+        const STEPS: usize = 60;
+        const STEP: f32 = 800.;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_DIFF_SCROLL_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+
+        struct Root {
+            split: bool,
+            diff: Entity<diff_view::DiffView>,
+            split_view: Entity<SplitView>,
+            crafted: Option<Entity<diff_view::DiffView>>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let view = if let Some(crafted) = &self.crafted {
+                    crafted.clone().into_any_element()
+                } else if self.split {
+                    self.split_view.clone().into_any_element()
+                } else {
+                    self.diff.clone().into_any_element()
+                };
+                div().w(px(1200.)).h(px(900.)).child(view)
+            }
+        }
+
+        let line = |index: usize, names: [&str; 4]| {
+            format!(
+                "call({}{index}, keep, {}{index}, same, {}{index}, still, {}{index});\n",
+                names[0], names[1], names[2], names[3]
+            )
+        };
+        let before: String = (0..LINES).map(|i| line(i, ["a", "b", "c", "d"])).collect();
+        let after: String = (0..LINES).map(|i| line(i, ["w", "x", "y", "z"])).collect();
+        let mut patch = format!("@@ -1,{LINES} +1,{LINES} @@\n");
+        for text in before.split_inclusive('\n') {
+            patch.push('-');
+            patch.push_str(text);
+        }
+        for text in after.split_inclusive('\n') {
+            patch.push('+');
+            patch.push_str(text);
+        }
+        let presentation = PatchPresentation::prepare(&patch);
+        let split_presentation =
+            Arc::new(SplitPresentation::prepare(&before, &after, &presentation));
+        cx.update(gpui::init);
+        let mut handles = None;
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &patch,
+                "diff",
+                Some(&presentation),
+                window,
+                cx,
+            );
+            let diff = diff_view::new(editor.clone(), &presentation, window, cx);
+            let split_view = new(
+                Arc::clone(&split_presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            handles = Some((editor, decorations.expect("a prepared patch is decorated")));
+            Root {
+                split: false,
+                diff,
+                split_view,
+                crafted: None,
+            }
+        });
+        let (diff_editor, decorations) = handles.expect("the window was built");
+        let draw =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        let mut series = Vec::new();
+        for split in [false, true] {
+            for text in [13, 18] {
+                for more in [false, true] {
+                    let editor = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, text, window, cx);
+                        crate::text::refresh_theme(&decorations, &presentation, cx);
+                        let split_view = root.read(cx).split_view.clone();
+                        split_view.update(cx, |view, cx| view.refresh_theme(cx));
+                        root.update(cx, |root, cx| {
+                            root.split = split;
+                            cx.notify();
+                        });
+                        if split {
+                            split_view.read(cx).editors[0].clone()
+                        } else {
+                            diff_editor.clone()
+                        }
+                    });
+                    let mut step_ms = Vec::new();
+                    for pass in 0..2 {
+                        cx.update(|_, cx| {
+                            editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                            })
+                        });
+                        draw(cx);
+                        draw(cx);
+                        for step in 1..=STEPS {
+                            let offset = point(px(0.), px(-STEP * step as f32));
+                            let started = std::time::Instant::now();
+                            cx.update(|_, cx| {
+                                editor.update(cx, |state, cx| state.set_scroll_offset(offset, cx))
+                            });
+                            draw(cx);
+                            let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                            if pass == 1 {
+                                step_ms.push(elapsed);
+                            }
+                        }
+                    }
+                    // The steps moved the text, on both of Split's sides.
+                    let rows = cx.read(|cx| {
+                        let split_view = root.read(cx).split_view.read(cx);
+                        let first = |editor: &Entity<EditorState>| {
+                            editor.read(cx).visible_row_range().map(|rows| rows.start)
+                        };
+                        if split {
+                            [first(&split_view.editors[0]), first(&split_view.editors[1])]
+                        } else {
+                            [first(&editor); 2]
+                        }
+                    });
+                    assert!(
+                        rows[0].is_some_and(|row| row >= 1_000) && rows[0] == rows[1],
+                        "split {split}, {text} pt: the last step shows rows {rows:?}"
+                    );
+                    let mut sorted = step_ms.clone();
+                    sorted.sort_by(f64::total_cmp);
+                    let at = |share: f64| {
+                        sorted[((share * sorted.len() as f64).ceil() as usize)
+                            .clamp(1, sorted.len())
+                            - 1]
+                    };
+                    series.push(serde_json::json!({
+                        "surface": if split { "split" } else { "diff" },
+                        "text_pt": text,
+                        "more_contrast": more,
+                        "find_open": false,
+                        "step_ms": step_ms,
+                        "median_ms": at(0.5),
+                        "p95_ms": at(0.95),
+                        "max_ms": sorted[sorted.len() - 1],
+                    }));
+                }
+            }
+        }
+        // The crafted worst case: 37 pairs of 16,384-byte lines with 81
+        // changed words a side, the most pairs one file's word budget gives
+        // words (`text::WordBudget`), as the security review's probe made them.
+        const CRAFTED_PAIRS: usize = 37;
+        const CRAFTED_WORDS: usize = 81;
+        const CRAFTED_STEP: f32 = 600.;
+        let shared = "A".repeat(16 * 1024 - 2 * CRAFTED_WORDS - 2);
+        let mut crafted_patch = format!("@@ -1,{CRAFTED_PAIRS} +1,{CRAFTED_PAIRS} @@\n");
+        for (sign, word) in [('-', "x."), ('+', "y.")] {
+            for _ in 0..CRAFTED_PAIRS {
+                crafted_patch.push(sign);
+                crafted_patch.push_str(&shared);
+                crafted_patch.push_str(&word.repeat(CRAFTED_WORDS));
+                crafted_patch.push('\n');
+            }
+        }
+        let crafted = PatchPresentation::prepare(&crafted_patch);
+        let (crafted_editor, crafted_decorations) = cx.update(|window, cx| {
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &crafted_patch,
+                "diff",
+                Some(&crafted),
+                window,
+                cx,
+            );
+            let view = diff_view::new(editor.clone(), &crafted, window, cx);
+            root.update(cx, |root, cx| {
+                root.crafted = Some(view);
+                cx.notify();
+            });
+            (editor, decorations.expect("a prepared patch is decorated"))
+        });
+        draw(cx);
+        for find in [false, true] {
+            if find {
+                let focus = cx.update(|_, cx| crafted_editor.focus_handle(cx));
+                cx.update(|window, cx| window.focus(&focus, cx));
+                cx.dispatch_action(gpui::component::input::Search);
+                cx.simulate_input(".");
+                cx.run_until_parked();
+            }
+            for more in [false, true] {
+                cx.update(|window, cx| {
+                    set_more_contrast(more, cx);
+                    ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                    apply_text_sizes(13, 13, window, cx);
+                    crate::text::refresh_theme(&crafted_decorations, &crafted, cx);
+                });
+                let mut step_ms = Vec::new();
+                for pass in 0..2 {
+                    cx.update(|_, cx| {
+                        crafted_editor.update(cx, |state, cx| {
+                            state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                        })
+                    });
+                    draw(cx);
+                    draw(cx);
+                    for step in 1..=STEPS {
+                        let y = if step % 2 == 1 { -CRAFTED_STEP } else { 0. };
+                        let started = std::time::Instant::now();
+                        cx.update(|_, cx| {
+                            crafted_editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(y)), cx)
+                            })
+                        });
+                        draw(cx);
+                        let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                        if pass == 1 {
+                            step_ms.push(elapsed);
+                        }
+                        if pass == 1 && step == 1 {
+                            let row = cx.read(|cx| {
+                                crafted_editor
+                                    .read(cx)
+                                    .visible_row_range()
+                                    .map(|rows| rows.start)
+                            });
+                            assert!(
+                                row.is_some_and(|row| row > 0),
+                                "find {find}: a step down moves the crafted text, at row {row:?}"
+                            );
+                        }
+                    }
+                }
+                let mut sorted = step_ms.clone();
+                sorted.sort_by(f64::total_cmp);
+                let at = |share: f64| {
+                    sorted
+                        [((share * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len()) - 1]
+                };
+                series.push(serde_json::json!({
+                    "surface": "diff_crafted",
+                    "text_pt": 13,
+                    "more_contrast": more,
+                    "find_open": find,
+                    "step_ms": step_ms,
+                    "median_ms": at(0.5),
+                    "p95_ms": at(0.95),
+                    "max_ms": sorted[sorted.len() - 1],
+                }));
+            }
+        }
+        let result = serde_json::json!({
+            "schema": 1,
+            "palette": "Midnight",
+            "changed_lines": LINES,
+            "changed_words_per_line_a_side": 4,
+            "steps": STEPS,
+            "step_px": STEP,
+            "window": [1200, 900],
+            "crafted": {
+                "pairs": CRAFTED_PAIRS,
+                "line_bytes": 16 * 1024 - 1,
+                "changed_words_per_line_a_side": CRAFTED_WORDS,
+                "step_px": CRAFTED_STEP,
+                "find_query": ".",
+            },
+            "warmup_passes": 1,
+            "boundary": "One scroll step on the UI thread: from before the call that sets the editor's scroll offset (Split's first side, mirrored to the second by its observer as the update's effects flush) through the return of the next `window.draw`: the scroll's effects, layout, prepaint and paint of the whole window on the test platform (no GPU, compositor or display link; the test text system places glyphs without shaping a font).",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        cx.update(|window, cx| apply_text_sizes(13, 12, window, cx));
+    }
 }
