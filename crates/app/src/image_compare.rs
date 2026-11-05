@@ -2579,7 +2579,7 @@ fn short_lines(short: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> Ve
 /// can: where that line's first word fits a line alone but not beside the
 /// ellipsis, the line before ends in it instead, its last words dropped
 /// until it fits, so fewer lines are drawn. A word wider than `room`, which
-/// no line holds whole even alone, is cut at a character boundary after
+/// no line holds whole even alone, is cut between grapheme clusters after
 /// the whole lines before it and ends the text, since in an error that
 /// word is usually the path or hash that matters; so is the last line's
 /// first word where no line drawn holds a whole word beside the ellipsis.
@@ -2623,14 +2623,19 @@ fn clamped_lines(
 }
 
 /// `word`, which does not fit `room` whole beside an ellipsis, cut at the
-/// longest prefix that does, or the ellipsis alone where none does. A
-/// longer prefix is never narrower, so a binary search of its character
-/// boundaries finds that prefix in a logarithmic number of layouts: a
-/// reason can hold a path, URL or hash hundreds of characters long, which
-/// trying each prefix from the longest laid out once per character.
+/// longest prefix that does, or the ellipsis alone where none does. The
+/// prefix ends between extended grapheme clusters, so a letter keeps its
+/// combining marks and a ZWJ emoji sequence or a flag stays whole on one
+/// side of the cut: cut between characters, "é" written as "e" and U+0301
+/// could lose its accent and "👩‍💻" its laptop. A longer prefix is never
+/// narrower, so a binary search of its boundaries finds that prefix in a
+/// logarithmic number of layouts: a reason can hold a path, URL or hash
+/// hundreds of characters long, which trying each prefix from the longest
+/// laid out once per character.
 fn cut_word(word: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> String {
+    use unicode_segmentation::UnicodeSegmentation as _;
     let ends: Vec<usize> = word
-        .char_indices()
+        .grapheme_indices(true)
         .map(|(end, _)| end)
         .filter(|&end| end > 0)
         .collect();
@@ -2982,8 +2987,8 @@ pub(crate) fn literal_source_copy(mark: copy_feedback::Mark, heading: &str, cx: 
 #[cfg(test)]
 mod tests {
     use super::{
-        BandLines, Beneath, Drag, Pan, State, ToolbarForms, clamped_lines, layout, note_lines,
-        short_lines, source_geometry, word_lines,
+        BandLines, Beneath, Drag, Pan, State, ToolbarForms, clamped_lines, cut_word, layout,
+        note_lines, short_lines, source_geometry, word_lines,
     };
     use gpui_kit::{point, px};
 
@@ -3207,6 +3212,39 @@ mod tests {
                 clamped_lines(&lines, 1, room, &width),
                 (vec![cut], true),
                 "a room of {characters} characters"
+            );
+        }
+    }
+
+    /// A word is cut only between extended grapheme clusters, so at every
+    /// room a letter keeps its combining marks and a ZWJ emoji sequence, a
+    /// flag or a Hangul syllable of jamo stays whole on one side of the cut,
+    /// the cut still the longest prefix of whole clusters that fits beside
+    /// the ellipsis: cut between characters, "é" written as "e" and U+0301
+    /// lost its accent and "👩‍💻" its laptop. Every character here is 6 px
+    /// wide, so a cluster of several is wider than one. An ASCII word, whose
+    /// clusters are its characters, cuts where it did
+    /// (`a_long_word_is_cut_in_a_logarithmic_number_of_layouts`).
+    #[test]
+    fn a_cut_word_keeps_every_grapheme_cluster_whole() {
+        use unicode_segmentation::UnicodeSegmentation as _;
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let word = "e\u{301}a\u{30a}\u{323}x\u{1f469}\u{200d}\u{1f4bb}\u{1f1ef}\u{1f1f5}\
+                    \u{1100}\u{1161}\u{11a8}z";
+        let clusters: Vec<&str> = word.graphemes(true).collect();
+        assert_eq!(clusters.len(), 7);
+        for characters in 0..=word.chars().count() + 1 {
+            let room = px(6. * characters as f32);
+            let cut = cut_word(word, room, &width);
+            let kept = cut.strip_suffix('…').expect("the cut ends in the ellipsis");
+            let longest = (1..clusters.len())
+                .rev()
+                .map(|whole| clusters[..whole].concat())
+                .find(|prefix| width(&format!("{prefix}…")) <= room)
+                .unwrap_or_default();
+            assert_eq!(
+                kept, longest,
+                "a room of {characters} characters keeps whole clusters"
             );
         }
     }
