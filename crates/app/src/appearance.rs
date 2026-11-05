@@ -2547,12 +2547,7 @@ impl Palette {
     /// applied as it is.
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         let more_contrast = more_contrast(cx);
-        let (palette, chosen) = if more_contrast {
-            let (palette, chosen) = self.more_contrast_fit();
-            (palette, Some(chosen))
-        } else {
-            (self, None)
-        };
+        let (palette, roles, highlights) = self.fitted(more_contrast);
         Theme::change(
             if is_light {
                 ThemeMode::Light
@@ -2562,8 +2557,6 @@ impl Palette {
             None,
             cx,
         );
-        let roles = palette.syntax_roles(more_contrast.then_some(self));
-        let highlights = EditorHighlights::fit(palette, roles, chosen);
         palette.configure(
             is_light,
             more_contrast,
@@ -2586,6 +2579,28 @@ impl Palette {
         if let Some(window) = window {
             window.refresh();
         }
+    }
+
+    /// What [`Self::apply`] draws for this palette, decided once per
+    /// application: the palette it stores, adjusted by
+    /// [`Self::more_contrast_fit`] while `more_contrast` is on and itself
+    /// otherwise, its syntax roles and its editor highlights, fitted from this
+    /// palette as chosen under More contrast ([`EditorHighlights::fit`]).
+    /// [`editor_highlights`] fits a test application's default palette
+    /// through it too, so no path fits highlights another way.
+    fn fitted(self, more_contrast: bool) -> (Self, SyntaxRoles, EditorHighlights) {
+        let (palette, chosen) = if more_contrast {
+            let (palette, chosen) = self.more_contrast_fit();
+            (palette, Some(chosen))
+        } else {
+            (self, None)
+        };
+        let roles = palette.syntax_roles(more_contrast.then_some(self));
+        (
+            palette,
+            roles,
+            EditorHighlights::fit(palette, roles, chosen),
+        )
     }
 
     /// The palette [`Self::apply`] stores for this one as the `Palette`
@@ -3201,19 +3216,14 @@ pub struct PatchText {
 impl Global for EditorHighlights {}
 
 /// The applied palette's editor highlights. Every application sets them with the palette; only
-/// a test application that has not applied one fits the default palette's here, as its own
-/// palette as chosen under More contrast.
+/// a test application that has not applied one fits the default palette's here, as
+/// [`Palette::apply`] would fit them, More contrast included ([`Palette::fitted`]). Fitted with
+/// no palette as chosen under More contrast, the fallback drew no changed-word rule and kept
+/// the current match and the word tints as drawn off.
 pub fn editor_highlights(cx: &App) -> EditorHighlights {
     cx.try_global::<EditorHighlights>()
         .copied()
-        .unwrap_or_else(|| {
-            let palette = palette(cx);
-            EditorHighlights::fit(
-                palette,
-                palette.syntax_roles(more_contrast(cx).then_some(palette)),
-                None,
-            )
-        })
+        .unwrap_or_else(|| palette(cx).fitted(more_contrast(cx)).2)
 }
 
 /// How far every fitted editor highlight stands from each line background it is drawn on,
@@ -4984,6 +4994,30 @@ mod tests {
             "Midnight's #{thumb:06x} holds 2:1 drawn on Keyboard Shortcuts' raised track"
         );
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// An application that has applied no palette fits its editor highlights as applying the
+    /// default palette would, with More contrast off and on: fitted with no palette as chosen
+    /// under More contrast, the fallback drew no changed-word rule and kept the current match
+    /// and the word tints as drawn off (Midnight's current match #284943 where an application
+    /// draws #004836).
+    #[gpui::test]
+    fn unapplied_highlights_fit_as_the_default_palette_applies(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui::init);
+        for more in [false, true] {
+            let (fallback, applied) = cx.update(|cx| {
+                if cx.has_global::<EditorHighlights>() {
+                    cx.remove_global::<EditorHighlights>();
+                    cx.remove_global::<Palette>();
+                }
+                set_more_contrast(more, cx);
+                let fallback = editor_highlights(cx);
+                ThemeChoice::default().apply(None, cx);
+                (fallback, editor_highlights(cx))
+            });
+            assert_eq!(fallback, applied, "More contrast {more}");
+            assert_eq!(fallback.added_rule.is_some(), more, "More contrast {more}");
+        }
     }
 
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
