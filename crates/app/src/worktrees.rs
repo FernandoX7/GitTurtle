@@ -106,10 +106,17 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = manager.clone();
             let cancel = manager.clone();
+            let shown = manager.clone();
             // The dialog clips its body to the body's bounds, and the manager
             // keeps the focus ring's room inside them above Manage and below
             // its last control. The title's margin and the footer's gap give
-            // the room back, so nothing in the dialog moves.
+            // the room back, so nothing in the dialog moves. The manager lies
+            // in the dialog's content rather than its scrolling body, whose
+            // scroller lays what it holds out at full height: there its
+            // content, sized from the window's height, ran past the dialog's
+            // fold at 18 pt in a 1480 × 800 window, its foot cut with
+            // nothing to cue it. Here the content takes what the dialog's
+            // cap leaves it, above Done, and scrolls the rest, cued.
             let room = appearance::button_ring_room(cx);
             dialog
                 .title(
@@ -120,7 +127,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(700.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
-                .child(manager.clone())
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(crate::tags::dialog_footer("Done", None))
                 // Done and Escape close the dialog here, stopping the read.
                 // The kit's alert dialog never calls an `on_close` (its
@@ -629,7 +636,6 @@ fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palet
 impl Render for WorktreeManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
         let (unavailable, dimmed) = self.unavailable(cx);
         let refusing = |control: Button, key: &'static str, refused: bool, dims: bool| {
             crate::workspace::refusing(
@@ -748,7 +754,7 @@ impl Render for WorktreeManager {
                 + if self.creating { 2 } else { 0 };
             self.content.scroll().scroll_to_item(field);
         }
-        let content = crate::native_accessibility::clips_children(div().on_children_prepainted(self.content.observe()).id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll().track_scroll(self.content.scroll())
+        let content = crate::native_accessibility::clips_children(div().on_children_prepainted(self.content.observe()).id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.) + room * 2.).min_h_0().p(room).mx(-room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(tabs.iter().cloned().map(Some).collect(), room))
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).track_focus(&tabs[0]).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(false, window, cx))))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).track_focus(&tabs[1]).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
@@ -1491,8 +1497,10 @@ pub(crate) mod ring_room_tests {
             };
             task.await;
         }
-        cx.simulate_resize(gpui::size(px(461.), px(490.)));
-        for size in [13, 18] {
+        // The half tile at both sizes, then a shorter window at 13 pt, where
+        // the details still run past the content's fold.
+        for (height, size) in [(490., 13), (490., 18), (400., 13)] {
+            cx.simulate_resize(gpui::size(px(461.), px(height)));
             set_interface_text_size(cx, &app, size);
             park_pointer(cx);
             assert!(
@@ -1507,24 +1515,88 @@ pub(crate) mod ring_room_tests {
                     "at {size} pt {selector} {row:?} lies whole in the list {list:?}"
                 );
             }
-            // The details run past the content's fold, which its scrollbar
-            // cues beside it, clear of the content and its rings' room.
+            // Where the details run past the content's fold, at 18 pt in the
+            // half tile and at 13 pt in the shorter window, its scrollbar
+            // cues them beside it, clear of the content and its rings' room.
+            // Taking all the dialog's cap leaves it, the content holds them
+            // whole at 13 pt in the half tile.
             let content = rendered(cx, "worktree-manager-content");
             let track = rendered(cx, "worktree-manager-scrollbar");
+            let overflows = rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
+                || cx
+                    .debug_bounds("remove-managed-worktree")
+                    .is_none_or(|remove| remove.bottom() > content.bottom());
+            let fits = height == 490. && size == 13;
             assert!(
-                rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
-                    || cx
-                        .debug_bounds("remove-managed-worktree")
-                        .is_none_or(|remove| remove.bottom() > content.bottom()),
-                "at {size} pt the details overflow the content {content:?}"
+                overflows != fits,
+                "at {size} pt in 461 × {height} the details overflow the content \
+                 {content:?}: {overflows}"
             );
+            if fits {
+                continue;
+            }
             let thumb = crate::tags::tests::painted_thumb(cx, track).unwrap_or_else(|| {
-                panic!("at {size} pt the content's scrollbar {track:?} paints a thumb")
+                panic!("at {size} pt in 461 × {height} the content's scrollbar {track:?} paints a thumb")
             });
             assert!(
                 thumb.left() >= content.right() && track.left() >= content.right() - px(0.01),
                 "at {size} pt the thumb {thumb:?} stands beside the content {content:?}"
             );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// At 13 and 18 pt, in a 461 × 490 half tile and in a 1480 × 800 window,
+    /// the manager's content ends above Done, in Manage with a worktree's
+    /// details shown and in Create with its branch choices: it takes what
+    /// the dialog's cap leaves it and scrolls the rest, cued by its
+    /// scrollbar's thumb while it overflows.
+    #[gpui::test]
+    async fn the_manager_content_ends_above_done(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        for index in 0..11 {
+            git(repo.path(), &["branch", &format!("feature-{index:02}")]);
+        }
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let tree = manager.read_with(cx, |manager, _| manager.trees[1].clone());
+        cx.update(|window, cx| manager.update(cx, |manager, cx| manager.select(tree, window, cx)));
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+                break;
+            };
+            task.await;
+        }
+        let scroll = manager.read_with(cx, |manager, _| manager.content.scroll().clone());
+        for creating in [false, true] {
+            manager.update(cx, |manager, cx| {
+                manager.set_creating(creating, cx);
+                manager.new_branch = false;
+                cx.notify();
+            });
+            for (width, height) in [(461., 490.), (1480., 800.)] {
+                cx.simulate_resize(gpui::size(px(width), px(height)));
+                for size in [13, 18] {
+                    set_interface_text_size(cx, &app, size);
+                    park_pointer(cx);
+                    let form = if creating { "Create" } else { "Manage" };
+                    let at = format!("{form} at {size} pt in {width} × {height}");
+                    let content = rendered(cx, "worktree-manager-content");
+                    let done = rendered(cx, "dialog-ok: Done");
+                    assert!(
+                        content.bottom() <= done.top() + px(0.01),
+                        "{at}: the content {content:?} runs past Done {done:?}"
+                    );
+                    if scroll.max_offset().y > px(0.) {
+                        let track = rendered(cx, "worktree-manager-scrollbar");
+                        assert!(
+                            crate::tags::tests::painted_thumb(cx, track).is_some(),
+                            "{at}: the overflowing content paints a thumb in {track:?}"
+                        );
+                    }
+                }
+            }
         }
         set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
     }

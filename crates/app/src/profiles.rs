@@ -7,8 +7,11 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 #[cfg(test)]
+mod manager_tests;
+#[cfg(test)]
 mod menu_tests;
 mod store;
+use crate::focus_reveal::{FocusReveal, Trigger};
 use store::{Definition, Mutation, Signing, Store};
 
 /// Presses a profile's Apply…, whose review opens once its preparation
@@ -34,6 +37,9 @@ pub(super) struct State {
     failed: Option<Mutation>,
     draft: Option<Entity<ProfileForm>>,
     pub prepared: Option<Definition>,
+    /// The body of the profiles dialog opened last, for tests.
+    #[cfg(test)]
+    manager: Option<FocusReveal>,
 }
 
 /// The height, at the default interface size, of the header's controls,
@@ -300,25 +306,40 @@ impl GitTurtle {
         let store = self.profiles.store.clone();
         let error = self.profiles.error.clone();
         let can_apply = self.repository.is_some() && self.page != AppPage::Projects;
+        let body = FocusReveal::new(Trigger::Keyboard);
+        #[cfg(test)]
+        {
+            self.profiles.manager = Some(body.clone());
+        }
+        // Built once: the dialog's builder runs at every render and clones
+        // only the pointer.
+        let manager = std::rc::Rc::new(Manager {
+            owner,
+            path,
+            target,
+            store,
+            error,
+            can_apply,
+            body,
+        });
         window.open_alert_dialog(cx, move |dialog, window, cx| {
-            let p = palette(cx); let create_owner = owner.clone();
-            let content = crate::native_accessibility::clips_children(div().id("profile-manager-content").max_h(px(430.)).overflow_y_scroll().flex().flex_col().gap_3()
-                .child(label("profiles-context", target.clone()).text_size(crate::appearance::ui_text(12.)))
-                .child(label("profiles-purpose", "Profiles choose Git author identity. Provider sign-in, credential helpers and private keys stay separate. Editing or deleting a definition does not change Git configuration.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .children(error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
-                .child(button("new-git-profile", "New profile…", "plus", false).disabled(store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); }))
-                .children(store.iter().flat_map(|store| &store.definitions).enumerate().map(|(index, profile)| {
-                    let apply_owner = owner.clone(); let edit_owner = owner.clone(); let delete_owner = owner.clone();
-                    let apply_profile = profile.clone(); let edit_profile = profile.clone(); let delete_profile = profile.clone(); let path = path.clone();
-                    div().p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().flex_col().gap_2()
-                        .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child(profile.label.clone()))
-                        .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} <{}>", profile.name, profile.email)))
-                        .child(div().flex().gap_2()
-                            .child(button(("apply-profile", index), "Apply…", "", false).disabled(!can_apply).on_click(move |_, window, cx| { let _ = apply_owner.update(cx, |this, cx| { if this.path == path { window.close_dialog(cx); this.prepare_profile(apply_profile.clone(), window, cx); } }); }))
-                            .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
-                            .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
-                })));
-            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(content).footer(crate::tags::dialog_footer("Done", None))
+            let room = appearance::button_ring_room(cx);
+            let manager = manager.clone();
+            // In the dialog's content rather than its scrolling body, whose
+            // scroller lays what it holds out at full height and scrolled it
+            // with no cue: the profiles take what the cap leaves below the
+            // title and above Done, which stays drawn, and scroll the rest,
+            // cued. They keep the focus ring's room below their last
+            // control, which the footer's gap gives back.
+            dialog
+                .title("Git profiles")
+                .width(appearance::dialog_width(px(600.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .gap(crate::tags::DIALOG_FOOTER_GAP - room)
+                .content(move |content, window, cx| {
+                    content.min_h_0().child(manager.render(window, cx))
+                })
+                .footer(crate::tags::dialog_footer("Done", None))
         });
         window.refresh();
     }
@@ -492,9 +513,14 @@ impl GitTurtle {
         self.profiles.draft = Some(form.clone());
         let focus = form.read(cx).label.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
-        window.open_alert_dialog(cx, move |dialog, window, _| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
+            let shown = form.clone();
+            // In the dialog's content, as the profiles dialog's body is: the
+            // form takes what the cap leaves it and scrolls the rest, cued,
+            // with the ring's room below its last control, which the
+            // footer's gap gives back.
             dialog
                 .title(if previous.is_some() {
                     "Edit Git profile"
@@ -503,7 +529,8 @@ impl GitTurtle {
                 })
                 .width(appearance::dialog_width(px(550.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .child(form.clone())
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(crate::tags::dialog_footer("Save profile", Some("Cancel")))
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.submit(window, cx));
@@ -542,6 +569,65 @@ impl GitTurtle {
     }
 }
 
+/// What the profiles dialog shows, captured as it opens, and the scroll of
+/// its body.
+struct Manager {
+    owner: WeakEntity<GitTurtle>,
+    path: Option<PathBuf>,
+    target: String,
+    store: Option<Store>,
+    error: Option<String>,
+    can_apply: bool,
+    /// The body's scroll, which reveals the control Tab moves onto.
+    body: FocusReveal,
+}
+
+impl Manager {
+    /// The dialog's body. It has no height of its own past its 430 px: it
+    /// shrinks to what the dialog's cap leaves it and scrolls the rest, cued
+    /// by its scrollbar, or by its fades where its track is too short for a
+    /// thumb (`tags::ScrollCue`), and a control the keyboard moves focus
+    /// onto scrolls into view with its ring (`focus_reveal`). It keeps the
+    /// ring's room around its controls, given back through its margin, so
+    /// nothing moves, and a wrapper keeps the room below them inside the
+    /// dialog's clip, as the branch chooser does. Laid out at full height in
+    /// the dialog's scrolling body, at 461 × 490 it ran below the fold with
+    /// nothing to say more lay past it.
+    fn render(&self, window: &mut Window, cx: &mut App) -> Div {
+        let p = palette(cx);
+        let room = appearance::button_ring_room(cx);
+        let body = &self.body;
+        body.reveal(window, cx);
+        let create = body.focus("new-git-profile", cx);
+        let mut head = vec![None, None];
+        if self.error.is_some() {
+            head.push(None);
+        }
+        head.push(Some(create.clone()));
+        let (owner, path, can_apply) = (&self.owner, &self.path, self.can_apply);
+        let create_owner = owner.clone();
+        let cue = crate::tags::ScrollCue::revealing(body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(body.observe())).id("profile-manager-content").debug_selector(|| "profile-manager-content".into()).max_h(px(430.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(body.scroll()).p(room).m(-room).flex().flex_col().gap_3()
+            .child(div().flex().flex_col().gap_3().on_children_prepainted(body.controls(head, room))
+                .child(label("profiles-context", self.target.clone()).text_size(crate::appearance::ui_text(12.)))
+                .child(label("profiles-purpose", "Profiles choose Git author identity. Provider sign-in, credential helpers and private keys stay separate. Editing or deleting a definition does not change Git configuration.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+                .children(self.error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
+                .child(button("new-git-profile", "New profile…", "plus", false).track_focus(&create).debug_selector(|| "new-git-profile".into()).disabled(self.store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); })))
+            .children(self.store.iter().flat_map(|store| &store.definitions).enumerate().map(|(index, profile)| {
+                let apply_owner = owner.clone(); let edit_owner = owner.clone(); let delete_owner = owner.clone();
+                let apply_profile = profile.clone(); let edit_profile = profile.clone(); let delete_profile = profile.clone(); let path = path.clone();
+                let focus = ["apply-profile", "edit-profile", "delete-profile"].map(|id| body.focus((id, index), cx));
+                div().p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().flex_col().gap_2()
+                    .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child(profile.label.clone()))
+                    .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} <{}>", profile.name, profile.email)))
+                    .child(div().flex().gap_2().on_children_prepainted(body.controls(focus.iter().cloned().map(Some).collect(), room))
+                        .child(button(("apply-profile", index), "Apply…", "", false).track_focus(&focus[0]).debug_selector(move || format!("apply-profile-{index}")).disabled(!can_apply).on_click(move |_, window, cx| { let _ = apply_owner.update(cx, |this, cx| { if this.path == path { window.close_dialog(cx); this.prepare_profile(apply_profile.clone(), window, cx); } }); }))
+                        .child(button(("edit-profile", index), "Edit…", "", false).track_focus(&focus[1]).debug_selector(move || format!("edit-profile-{index}")).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
+                        .child(button(("delete-profile", index), "Delete…", "", false).track_focus(&focus[2]).debug_selector(move || format!("delete-profile-{index}")).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
+            })), "profile-manager-scrollbar").min_h_0())
+    }
+}
+
 struct ProfileForm {
     owner: WeakEntity<GitTurtle>,
     previous: Option<Definition>,
@@ -555,6 +641,8 @@ struct ProfileForm {
     pending: bool,
     visible: bool,
     error: Option<String>,
+    /// The form's scroll, which reveals the field or control Tab moves onto.
+    body: FocusReveal,
 }
 impl ProfileForm {
     fn new(
@@ -624,6 +712,7 @@ impl ProfileForm {
             pending: false,
             visible: true,
             error: None,
+            body: FocusReveal::new(Trigger::Keyboard),
         }
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -672,15 +761,43 @@ impl ProfileForm {
 impl Render for ProfileForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        crate::native_accessibility::clips_children(div().id("profile-form").max_h(px(420.)).overflow_y_scroll().flex().flex_col().gap_3()
+        // The form has no height of its own past its 420 px: it shrinks to
+        // what the dialog's cap leaves it and scrolls the rest, cued
+        // (`tags::ScrollCue`), and the field or control Tab moves onto
+        // scrolls into view with its ring's room. It keeps that room around
+        // its controls, given back through its margin, so nothing moves, and
+        // a wrapper keeps the room below them inside the dialog's clip. Laid
+        // out at full height in the dialog's scrolling body, at 461 × 490 it
+        // ran below the fold with nothing to say more lay past it.
+        let room = appearance::button_ring_room(cx);
+        self.body.reveal(window, cx);
+        let [label_field, name_field, email_field] =
+            [&self.label, &self.name, &self.email].map(|field| field.read(cx).focus_handle(cx));
+        let signing = self.body.focus("profile-capture-signing", cx);
+        let signer = self.body.focus("profile-use-current-signer", cx);
+        // The form's children in order, those that take focus with their
+        // handle.
+        let controls = vec![
+            None,
+            Some(label_field),
+            None,
+            Some(name_field),
+            None,
+            Some(email_field),
+            Some(signing.clone()),
+            Some(signer.clone()),
+        ];
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("profile-form").debug_selector(|| "profile-form".into()).max_h(px(420.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).flex().flex_col()
+            .child(div().flex().flex_col().gap_3().on_children_prepainted(self.body.controls(controls, room))
             .child(label("profile-label", "Profile name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.label).aria_label("Profile name").disabled(self.pending))
             .child(label("profile-author-label", "Git author name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Profile Git author name").disabled(self.pending))
             .child(label("profile-email-label", "Git author email").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.email).aria_label("Profile Git author email").disabled(self.pending))
-            .child(Checkbox::new("profile-capture-signing").label("Include the existing signing configuration").checked(self.capture_signing).disabled(self.pending).on_click(cx.listener(|this, checked: &bool, _, cx| { this.capture_signing = *checked; cx.notify(); })))
-            .child(button("profile-use-current-signer", "Use current repository signing settings", "", false).disabled(self.pending).on_click(cx.listener(|this, _, _, cx| { this.signing = this.current_signing.clone(); this.capture_signing = true; cx.notify(); })))
+            .child(Checkbox::new("profile-capture-signing").track_focus(&signing).label("Include the existing signing configuration").checked(self.capture_signing).disabled(self.pending).on_click(cx.listener(|this, checked: &bool, _, cx| { this.capture_signing = *checked; cx.notify(); })))
+            .child(button("profile-use-current-signer", "Use current repository signing settings", "", false).track_focus(&signer).debug_selector(|| "profile-use-current-signer".into()).disabled(self.pending).on_click(cx.listener(|this, _, _, cx| { this.signing = this.current_signing.clone(); this.capture_signing = true; cx.notify(); })))
             .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {} · Annotated signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags, self.signing.annotated_tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
-            .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+            .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").debug_selector(|| "profile-save-explanation".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(label("profile-save-pending", "Saving profile…").text_color(rgb(p.accent))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("profile-form-error", error, None, window, cx).text_color(rgb(p.warning)))))
+            .children(self.error.as_ref().map(|error| crate::tags::error_line("profile-form-error", error, None, window, cx).text_color(rgb(p.warning))))), "profile-form-scrollbar").min_h_0())
     }
 }

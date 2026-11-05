@@ -23,7 +23,7 @@ fn shown(cx: &mut VisualTestContext, entry: &str) -> bool {
 
 /// Settle the profile store's load, then give the app `store`, so a late
 /// load cannot replace it.
-async fn use_store(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, store: Store) {
+pub(super) async fn use_store(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, store: Store) {
     let barrier = app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())));
     barrier.await.unwrap().unwrap();
     settle(app, cx).await;
