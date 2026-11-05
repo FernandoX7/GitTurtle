@@ -17,7 +17,14 @@
 //! restore…, the window once left it cut. Scrolling away from a focused
 //! control, or drawing again with the same focus, leaves the container
 //! where it is, and so does a resize after the person has scrolled the
-//! control out of view.
+//! control out of view. A control taller than the view, revealed by its
+//! leading edge, counts as shown while that edge is in view with its margin:
+//! a resize after which it would fit whole but is cut reveals it whole, one
+//! that cuts its leading edge reveals it by that edge again, and any other
+//! leaves it where it is. Counted as cut because it never fitted whole, it
+//! stayed cut when a resize made room for it or moved its top out of view.
+//! A control a frame showed whole that a resize makes taller than the view
+//! is revealed by its leading edge, as a focus change reveals one.
 //!
 //! A resize is revealed in the frame after the one that lays the container
 //! out at its new size, since no frame knows that size before its layout.
@@ -108,6 +115,27 @@ pub(crate) enum Trigger {
     Keyboard,
 }
 
+/// Why a reveal is due ([`FocusReveal::due`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Due {
+    /// Focus has moved in a way the trigger reveals, or a page asked for its
+    /// focus to be revealed.
+    Focus,
+    /// The container's size or the text size has changed under focus the
+    /// last frame showed so.
+    Resize(Shown),
+}
+
+/// How a frame showed the control holding focus ([`FocusReveal::finish`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// Whole in the container's view.
+    Whole,
+    /// Taller than the view with its margins, by its leading edge, which
+    /// lies in the view with its margin ([`leads`]).
+    Leading,
+}
+
 /// One scrolling container's scroll handle, the focus it last drew with,
 /// where its controls lay, and stable focus handles for the controls it
 /// reveals.
@@ -124,11 +152,12 @@ pub(crate) struct FocusReveal {
     /// a resize that cuts its control reveals it whatever the last input
     /// has been since.
     placed: Rc<Cell<bool>>,
-    /// Whether the last frame showed the control holding focus whole in the
-    /// container's view, so a resize that cuts it is what cut it: judged at
+    /// How the last frame showed the control holding focus, if it did:
+    /// whole in the container's view, or, for one taller than the view, by
+    /// its leading edge, so a resize that cuts it is what cut it: judged at
     /// the offset a reveal the frame requested sets once the frame is
     /// painted (`pending`).
-    shown: Rc<Cell<bool>>,
+    shown: Rc<Cell<Option<Shown>>>,
     /// The offset a reveal requested in the frame being prepainted sets
     /// once that frame is painted ([`Self::request`]), which the frame's
     /// end judges `shown` at. Judged at the offset the frame was painted
@@ -227,9 +256,9 @@ impl FocusReveal {
     /// revealed and the first frame that draws the focus shows it whole.
     pub(crate) fn reveal(&self, window: &Window, cx: &App) {
         let observed = self.observation(window, cx);
-        if !self.due(&observed, window) {
+        let Some(due) = self.due(&observed, window) else {
             return;
-        }
+        };
         // A control in a revealing container of its own is revealed there
         // first, so this container shows it where that scroll has moved it.
         if let Some(inner) = self.drawn_within(window, cx) {
@@ -237,7 +266,7 @@ impl FocusReveal {
         }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
             let at = bounds + point(px(0.), self.scroll.offset().y);
-            if let Some(offset) = self.target(at, margin, self.scroll.bounds()) {
+            if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due) {
                 self.scroll.set_offset(offset);
             }
         }
@@ -391,21 +420,25 @@ impl FocusReveal {
         }
     }
 
-    /// Whether a reveal is due: focus has changed since the last frame in a
-    /// way the trigger reveals; a page opening asked for its focus to be
-    /// revealed ([`Self::reveal_next_focus`]) even onto the control it last
-    /// drew focused; or, focus unchanged, the container's size or the text
-    /// size has changed since a frame that showed the control whole, focus
-    /// having been placed there in a way the trigger reveals, so the change
-    /// is what cuts it.
-    fn due(&self, observed: &Observation, window: &Window) -> bool {
+    /// Whether a reveal is due, and why: focus has changed since the last
+    /// frame in a way the trigger reveals; a page opening asked for its
+    /// focus to be revealed ([`Self::reveal_next_focus`]) even onto the
+    /// control it last drew focused; or, focus unchanged, the container's
+    /// size or the text size has changed since a frame that showed the
+    /// control whole, or a control taller than the view by its leading edge
+    /// (`shown`), focus having been placed there in a way the trigger
+    /// reveals, so the change is what cuts it.
+    fn due(&self, observed: &Observation, window: &Window) -> Option<Due> {
         let last = self.observed.borrow();
-        self.next_focus.get()
-            || if last.focus != observed.focus {
-                self.revealing(window)
-            } else {
-                *last != *observed && self.placed.get() && self.shown.get()
-            }
+        if self.next_focus.get() {
+            Some(Due::Focus)
+        } else if last.focus != observed.focus {
+            self.revealing(window).then_some(Due::Focus)
+        } else if *last != *observed && self.placed.get() {
+            self.shown.get().map(Due::Resize)
+        } else {
+            None
+        }
     }
 
     /// Whether a focus change now is one the trigger reveals.
@@ -462,10 +495,22 @@ impl FocusReveal {
             .unwrap_or_else(|| self.scroll.offset().y);
         let viewport = self.scroll.bounds();
         let slack = px(0.01);
+        // A control taller than the view, which a reveal shows by its
+        // leading edge, is shown while that edge is, with its margin, as the
+        // edge a resize leaves where it is (`target`): never whole, it
+        // counted as cut, so a resize that made room for it left it cut.
         self.shown
-            .set(self.drawn_focus(window, cx).is_some_and(|(bounds, _)| {
+            .set(self.drawn_focus(window, cx).and_then(|(bounds, margin)| {
                 let drawn = bounds + point(px(0.), offset);
-                drawn.top() + slack >= viewport.top() && drawn.bottom() <= viewport.bottom() + slack
+                if drawn.top() + slack >= viewport.top()
+                    && drawn.bottom() <= viewport.bottom() + slack
+                {
+                    Some(Shown::Whole)
+                } else if tall(drawn, margin, viewport) && leads(drawn, margin, viewport) {
+                    Some(Shown::Leading)
+                } else {
+                    None
+                }
             }));
         *self.observed.borrow_mut() = observed;
         self.next_focus.set(false);
@@ -526,18 +571,27 @@ impl FocusReveal {
     /// the render's reveal and the request its bounds make agree. Shown by
     /// the least scroll, it showed its foot when it lay below the view, and
     /// the request then scrolled back to its top, so the page swung between
-    /// its edges.
+    /// its edges. After a resize (`due`) that follows a frame showing such a
+    /// control by its leading edge, it stays where it is while that edge
+    /// lies in the view with its margin: only a resize that cuts the edge
+    /// reveals it by it again. One the last frame showed whole is revealed
+    /// by its leading edge wherever a resize leaves it too tall to fit:
+    /// kept where it was, a 500 px control Tab had shown whole kept 153 px
+    /// of itself in a view a resize had cut to 450 px.
     fn target(
         &self,
         bounds: Bounds<Pixels>,
         margin: Pixels,
         viewport: Bounds<Pixels>,
+        due: Due,
     ) -> Option<Point<Pixels>> {
         if viewport.size.height <= Pixels::ZERO {
             return None;
         }
-        let tall = bounds.size.height + margin * 2. > viewport.size.height;
-        let delta = if tall {
+        let delta = if tall(bounds, margin, viewport) {
+            if due == Due::Resize(Shown::Leading) && leads(bounds, margin, viewport) {
+                return None;
+            }
             let delta = viewport.top() - (bounds.top() - margin);
             // Already there, to within what layout's arithmetic leaves.
             if delta.abs() < px(0.01) {
@@ -564,11 +618,11 @@ impl FocusReveal {
     /// shown it: as after a resize, which only this frame's layout shows.
     fn request(&self, bounds: Bounds<Pixels>, margin: Pixels, window: &mut Window, cx: &mut App) {
         let observed = self.observation(window, cx);
-        if !self.due(&observed, window) {
+        let Some(due) = self.due(&observed, window) else {
             return;
-        }
+        };
         let viewport = self.scroll.bounds();
-        let Some(offset) = self.target(bounds, margin, viewport) else {
+        let Some(offset) = self.target(bounds, margin, viewport, due) else {
             return;
         };
         let scroll = self.scroll.clone();
@@ -586,6 +640,24 @@ impl FocusReveal {
             }
         });
     }
+}
+
+/// Whether a control at `bounds` is taller than `viewport` with `margin`
+/// above and below it, so a reveal shows its leading edge.
+fn tall(bounds: Bounds<Pixels>, margin: Pixels, viewport: Bounds<Pixels>) -> bool {
+    bounds.size.height + margin * 2. > viewport.size.height
+}
+
+/// Whether the leading edge of a control at `bounds` lies in `viewport` with
+/// `margin` on either side of it: where a frame counts a tall control as
+/// shown ([`Shown::Leading`]) and where a resize after such a frame leaves
+/// it. Counted shown wherever its top lay above the view's foot, a control
+/// the person had scrolled to within a pixel or two of that foot was then
+/// scrolled almost a whole view by a 1 px wider window.
+fn leads(bounds: Bounds<Pixels>, margin: Pixels, viewport: Bounds<Pixels>) -> bool {
+    let slack = px(0.01);
+    bounds.top() - margin + slack >= viewport.top()
+        && bounds.top() + margin <= viewport.bottom() + slack
 }
 
 #[cfg(test)]
@@ -971,5 +1043,291 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// The height of [`Resizable`]'s tall control.
+    const TALL: f32 = 500.;
+
+    /// A revealing page as large as its window, of a short control, a gap as
+    /// tall as the window is wide, a control [`TALL`] px tall, a gap and
+    /// another short control: the window's height is the view's, and
+    /// narrowing the window moves the tall control up the page by as much.
+    struct Resizable {
+        page: FocusReveal,
+        controls: [FocusHandle; 3],
+    }
+
+    impl Render for Resizable {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.page.reveal(window, cx);
+            let room = ring_room_of(cx);
+            let control = |index: usize, height: f32| {
+                let focus = self.controls[index].clone();
+                div()
+                    .flex_shrink_0()
+                    .on_children_prepainted(self.page.control(focus.clone(), room))
+                    .child(
+                        div()
+                            .id(("resizable-control", index))
+                            .track_focus(&focus.tab_stop(true))
+                            .h(px(height)),
+                    )
+            };
+            div().size_full().child(
+                div()
+                    .on_children_prepainted(self.page.observe())
+                    .id("resizable-page")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(self.page.scroll())
+                    .flex()
+                    .flex_col()
+                    .child(control(0, 20.))
+                    .child(div().flex_shrink_0().h(window.viewport_size().width))
+                    .child(control(1, TALL))
+                    .child(div().flex_shrink_0().h(px(TALL)))
+                    .child(control(2, 20.)),
+            )
+        }
+    }
+
+    /// A [`Resizable`] page at 600 × 400 with the keyboard's focus on its
+    /// first control, its three controls' handles, and the room the
+    /// installed ring takes.
+    fn resizable(
+        cx: &mut TestAppContext,
+    ) -> (
+        FocusReveal,
+        Vec<FocusHandle>,
+        Pixels,
+        &mut VisualTestContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let page = FocusReveal::new(Trigger::Keyboard);
+        let built = page.clone();
+        let handles: Rc<RefCell<Vec<FocusHandle>>> = Rc::default();
+        let kept = handles.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                let controls = [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()];
+                *kept.borrow_mut() = controls.to_vec();
+                Resizable {
+                    page: built,
+                    controls,
+                }
+            });
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let controls = handles.borrow().clone();
+        let room = ring_room(cx);
+        cx.simulate_resize(size(px(600.), px(400.)));
+        draw(cx);
+        cx.update(|window, cx| window.focus(&controls[0], cx));
+        draw(cx);
+        // A key no binding takes, so the window has switched to keyboard
+        // input before the walk, as in the test above.
+        cx.simulate_keystrokes("f13");
+        draw(cx);
+        (page, controls, room, cx)
+    }
+
+    /// The last frame the page painted once drawing has settled: where it
+    /// drew the focused control, and its view.
+    fn settled(cx: &mut VisualTestContext, page: &FocusReveal) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        page.take_painted();
+        draw(cx);
+        let frame = page.take_painted().pop().expect("the page paints");
+        (
+            frame.control.expect("the page draws the focused control"),
+            frame.viewport,
+        )
+    }
+
+    /// The window resized to `width` × `height`, drawn until it settles.
+    fn resize(cx: &mut VisualTestContext, width: f32, height: f32) {
+        cx.simulate_resize(size(px(width), px(height)));
+        for _ in 0..3 {
+            draw(cx);
+        }
+    }
+
+    /// Tab from the first control onto the tall one, which the page shows
+    /// by its top, the ring's room below the view's top.
+    fn tab_onto_tall(
+        cx: &mut VisualTestContext,
+        page: &FocusReveal,
+        controls: &[FocusHandle],
+        room: Pixels,
+    ) {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| controls[1].is_focused(window)),
+            "Tab focuses the tall control"
+        );
+        let (control, view) = settled(cx, page);
+        assert!(
+            control.size.height + room * 2. > view.size.height
+                && (control.top() - room - view.top()).abs() < px(0.01),
+            "Tab shows the tall control {control:?} by its top in {view:?}"
+        );
+    }
+
+    /// A control taller than the view, focused by Tab and revealed by its
+    /// top, counts as shown while its top is in view, so a resize after
+    /// which it would fit whole but is cut reveals it whole: narrowed, the
+    /// window moves it up the page, its top 97 px above the view it now
+    /// fits in. Counted as cut because it never fitted whole, it stayed
+    /// there.
+    #[gpui::test]
+    fn a_resize_that_makes_room_for_a_tall_control_reveals_it_whole(cx: &mut TestAppContext) {
+        let (page, controls, room, cx) = resizable(cx);
+        tab_onto_tall(cx, &page, &controls, room);
+        resize(cx, 500., 800.);
+        let slack = px(0.01);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            control.size.height + room * 2. <= view.size.height
+                && control.top() - room + slack >= view.top()
+                && control.bottom() + room <= view.bottom() + slack,
+            "a resize that makes room for the tall control shows it, {control:?}, whole in \
+             {view:?}"
+        );
+        assert!(
+            cx.update(|window, _| controls[1].is_focused(window)),
+            "the tall control keeps focus"
+        );
+    }
+
+    /// A control taller than the view, focused by Tab and revealed by its
+    /// top, counts as shown while its top is in view, so a resize that cuts
+    /// that top, narrowing and shortening the window to leave it 97 px above
+    /// a view it is still taller than, reveals it by its top again, and one
+    /// that leaves the top in view with the ring's room, here where the
+    /// person has scrolled it 40 px down the view, leaves the page where it
+    /// is. Counted as cut because it never fitted whole, it stayed where the
+    /// resize put it, its top out of view.
+    #[gpui::test]
+    fn a_resize_that_cuts_a_tall_controls_top_reveals_it_by_its_top(cx: &mut TestAppContext) {
+        let (page, controls, room, cx) = resizable(cx);
+        tab_onto_tall(cx, &page, &controls, room);
+        let slack = px(0.01);
+        resize(cx, 500., 350.);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            control.size.height + room * 2. > view.size.height
+                && (control.top() - room - view.top()).abs() < slack,
+            "a resize that cuts the tall control's top shows it, {control:?}, by its top \
+             again in {view:?}"
+        );
+
+        // The person scrolls its top 40 px down the view; a resize that
+        // leaves the top in view moves nothing.
+        let scrolled = page.scroll().offset() + point(px(0.), px(40.));
+        cx.update(|window, _| {
+            page.scroll().set_offset(scrolled);
+            window.refresh();
+        });
+        draw(cx);
+        resize(cx, 500., 330.);
+        assert_eq!(
+            page.scroll().offset(),
+            scrolled,
+            "a resize that leaves the tall control's top in view leaves the page"
+        );
+    }
+
+    /// A control Tab showed whole, which a resize then makes taller than the
+    /// view, is revealed by its top, as before the rule that leaves a tall
+    /// control shown by its top where a resize keeps that top in view: in a
+    /// 600 × 800 window Tab shows the 500 px control whole, its top 297 px
+    /// down the view, and shortened to 450 px the window kept it there, 153
+    /// of its 500 px in view.
+    #[gpui::test]
+    fn a_resize_that_makes_a_whole_control_tall_reveals_it_by_its_top(cx: &mut TestAppContext) {
+        let (page, controls, room, cx) = resizable(cx);
+        resize(cx, 600., 800.);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| controls[1].is_focused(window)),
+            "Tab focuses the tall control"
+        );
+        let slack = px(0.01);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            control.size.height + room * 2. <= view.size.height
+                && control.top() - room > view.top() + slack
+                && (control.bottom() + room - view.bottom()).abs() < slack,
+            "Tab shows the control {control:?} whole at the foot of {view:?}"
+        );
+        resize(cx, 600., 450.);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            control.size.height + room * 2. > view.size.height
+                && (control.top() - room - view.top()).abs() < slack,
+            "a resize that makes the control taller than the view shows it, {control:?}, by \
+             its top in {view:?}"
+        );
+    }
+
+    /// A control taller than the view counts as shown by its top only while
+    /// that top lies in the view with the ring's room, where a resize leaves
+    /// it: scrolled by the person until its top is 2 px above the view's
+    /// foot, a 1 px wider window leaves the page where it is. Counted as
+    /// shown wherever its top lay above the foot, that resize scrolled the
+    /// page almost a whole view to show the top at the view's top.
+    #[gpui::test]
+    fn a_tall_control_scrolled_to_the_views_foot_is_left_there(cx: &mut TestAppContext) {
+        let (page, controls, room, cx) = resizable(cx);
+        tab_onto_tall(cx, &page, &controls, room);
+        // The tall control's top, 620 px down the page, 2 px above the foot
+        // of the 400 px view.
+        let scrolled = point(px(0.), px(-222.));
+        cx.update(|window, _| {
+            page.scroll().set_offset(scrolled);
+            window.refresh();
+        });
+        draw(cx);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            (view.bottom() - control.top() - px(2.)).abs() < px(0.01),
+            "the person scrolls the control's top, {control:?}, 2 px above the foot of {view:?}"
+        );
+        resize(cx, 601., 400.);
+        assert_eq!(
+            page.scroll().offset(),
+            scrolled,
+            "a 1 px wider window leaves the page where the person scrolled it"
+        );
+    }
+
+    /// A control taller than the view that a click focused is never
+    /// scrolled: not by the click, which leaves its top 50 px above the
+    /// view, nor by a resize after which it would fit whole but is cut.
+    #[gpui::test]
+    fn a_tall_control_focused_by_a_click_is_never_scrolled(cx: &mut TestAppContext) {
+        let (page, controls, _, cx) = resizable(cx);
+        // The tall control's top, 620 px down the page, 50 px above the view.
+        let away = point(px(0.), px(-670.));
+        cx.update(|window, _| {
+            page.scroll().set_offset(away);
+            window.refresh();
+        });
+        draw(cx);
+        cx.simulate_click(point(px(300.), px(200.)), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.update(|window, _| controls[1].is_focused(window)),
+            "the click focuses the tall control"
+        );
+        assert_eq!(page.scroll().offset(), away, "the click scrolls nothing");
+        resize(cx, 500., 800.);
+        let (control, view) = settled(cx, &page);
+        assert!(
+            control.size.height < view.size.height && control.top() < view.top(),
+            "the resize leaves the control {control:?}, which would fit, cut in {view:?}"
+        );
+        assert_eq!(page.scroll().offset(), away, "the resize scrolls nothing");
     }
 }
