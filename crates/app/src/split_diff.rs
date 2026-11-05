@@ -1143,7 +1143,11 @@ mod tests {
     /// whole window on the test platform, with no GPU, compositor or display
     /// link, and with the test platform's text system, which places glyphs
     /// without shaping a font. The last step must show row 1,000 or later on
-    /// both sides, so the steps move the text. Then the security review's
+    /// both sides, so the steps move the text. Then the same steps over many
+    /// one-line changed blocks (`diff_blocks` and `split_blocks`), the slowest
+    /// input for the changed lines' row fills: 1,600 unchanged lines, each
+    /// followed by a removed and an added line, every other added line blank.
+    /// Then the security review's
     /// crafted worst case: 37 replaced pairs of 16,384-byte lines, each with
     /// 81 changed words a side, the most pairs one file's word budget gives
     /// words, in the Diff view at 13 pt with More contrast off and on, Find
@@ -1312,6 +1316,138 @@ mod tests {
                 }
             }
         }
+        // Many one-line blocks, the slowest input for the changed lines' row
+        // fills: 1,600 unchanged lines, each followed by one removed line and
+        // one added line, every other added line blank, so the Diff view
+        // draws a one-line removed block and a one-line added block between
+        // each pair of unchanged lines, and each Split side a one-line block
+        // every other row. The views take the main ones' place in the root,
+        // whose series are already recorded, and run the same steps.
+        const BLOCK_PAIRS: usize = 1_600;
+        let block_before: String = (0..BLOCK_PAIRS)
+            .map(|i| format!("keep{i}();\nold{i}();\n"))
+            .collect();
+        let added = |i: usize| {
+            if i.is_multiple_of(2) {
+                format!("new{i}();\n")
+            } else {
+                "\n".to_owned()
+            }
+        };
+        let block_after: String = (0..BLOCK_PAIRS)
+            .map(|i| format!("keep{i}();\n{}", added(i)))
+            .collect();
+        let mut block_patch = format!("@@ -1,{0} +1,{0} @@\n", 2 * BLOCK_PAIRS);
+        for i in 0..BLOCK_PAIRS {
+            block_patch.push_str(&format!(" keep{i}();\n-old{i}();\n+{}", added(i)));
+        }
+        let block_presentation = PatchPresentation::prepare(&block_patch);
+        let block_split = Arc::new(SplitPresentation::prepare(
+            &block_before,
+            &block_after,
+            &block_presentation,
+        ));
+        let (block_editor, block_decorations) = cx.update(|window, cx| {
+            let (editor, decorations) = crate::text::editor_with_decorations(
+                &block_patch,
+                "diff",
+                Some(&block_presentation),
+                window,
+                cx,
+            );
+            let diff = diff_view::new(editor.clone(), &block_presentation, window, cx);
+            let split_view = new(
+                Arc::clone(&block_split),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            root.update(cx, |root, cx| {
+                root.diff = diff;
+                root.split_view = split_view;
+                cx.notify();
+            });
+            (editor, decorations.expect("a prepared patch is decorated"))
+        });
+        for split in [false, true] {
+            for text in [13, 18] {
+                for more in [false, true] {
+                    let editor = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, text, window, cx);
+                        crate::text::refresh_theme(&block_decorations, &block_presentation, cx);
+                        let split_view = root.read(cx).split_view.clone();
+                        split_view.update(cx, |view, cx| view.refresh_theme(cx));
+                        root.update(cx, |root, cx| {
+                            root.split = split;
+                            cx.notify();
+                        });
+                        if split {
+                            split_view.read(cx).editors[0].clone()
+                        } else {
+                            block_editor.clone()
+                        }
+                    });
+                    let mut step_ms = Vec::new();
+                    for pass in 0..2 {
+                        cx.update(|_, cx| {
+                            editor.update(cx, |state, cx| {
+                                state.set_scroll_offset(point(px(0.), px(0.)), cx)
+                            })
+                        });
+                        draw(cx);
+                        draw(cx);
+                        for step in 1..=STEPS {
+                            let offset = point(px(0.), px(-STEP * step as f32));
+                            let started = std::time::Instant::now();
+                            cx.update(|_, cx| {
+                                editor.update(cx, |state, cx| state.set_scroll_offset(offset, cx))
+                            });
+                            draw(cx);
+                            let elapsed = started.elapsed().as_secs_f64() * 1000.;
+                            if pass == 1 {
+                                step_ms.push(elapsed);
+                            }
+                        }
+                    }
+                    // The steps moved the text, on both of Split's sides.
+                    let rows = cx.read(|cx| {
+                        let split_view = root.read(cx).split_view.read(cx);
+                        let first = |editor: &Entity<EditorState>| {
+                            editor.read(cx).visible_row_range().map(|rows| rows.start)
+                        };
+                        if split {
+                            [first(&split_view.editors[0]), first(&split_view.editors[1])]
+                        } else {
+                            [first(&editor); 2]
+                        }
+                    });
+                    assert!(
+                        rows[0].is_some_and(|row| row >= 1_000) && rows[0] == rows[1],
+                        "blocks, split {split}, {text} pt: the last step shows rows {rows:?}"
+                    );
+                    let mut sorted = step_ms.clone();
+                    sorted.sort_by(f64::total_cmp);
+                    let at = |share: f64| {
+                        sorted[((share * sorted.len() as f64).ceil() as usize)
+                            .clamp(1, sorted.len())
+                            - 1]
+                    };
+                    series.push(serde_json::json!({
+                        "surface": if split { "split_blocks" } else { "diff_blocks" },
+                        "text_pt": text,
+                        "more_contrast": more,
+                        "find_open": false,
+                        "step_ms": step_ms,
+                        "median_ms": at(0.5),
+                        "p95_ms": at(0.95),
+                        "max_ms": sorted[sorted.len() - 1],
+                    }));
+                }
+            }
+        }
         // The crafted worst case: 37 pairs of 16,384-byte lines with 81
         // changed words a side, the most pairs one file's word budget gives
         // words (`text::WordBudget`), as the security review's probe made them.
@@ -1428,6 +1564,12 @@ mod tests {
                 "changed_words_per_line_a_side": CRAFTED_WORDS,
                 "step_px": CRAFTED_STEP,
                 "find_query": ".",
+            },
+            "blocks": {
+                "pairs": BLOCK_PAIRS,
+                "shape": "an unchanged line, then one removed line and one added line, every other added line blank: one-line changed blocks between unchanged lines",
+                "steps": STEPS,
+                "step_px": STEP,
             },
             "warmup_passes": 1,
             "boundary": "One scroll step on the UI thread: from before the call that sets the editor's scroll offset (Split's first side, mirrored to the second by its observer as the update's effects flush) through the return of the next `window.draw`: the scroll's effects, layout, prepaint and paint of the whole window on the test platform (no GPU, compositor or display link; the test text system places glyphs without shaping a font).",
