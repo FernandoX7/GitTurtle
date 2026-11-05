@@ -4472,7 +4472,15 @@ mod tests {
     /// how many lines the connection help took.
     struct Walked {
         at: String,
+        #[cfg_attr(
+            not(target_os = "linux"),
+            allow(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
+        )]
         step: (&'static str, &'static str),
+        #[cfg_attr(
+            not(target_os = "linux"),
+            allow(dead_code, reason = "only the Linux-only Shift+Tab test reads it")
+        )]
         cut: Vec<String>,
         whole: Vec<String>,
         help: usize,
