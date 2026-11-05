@@ -1426,4 +1426,104 @@ mod tests {
         }
         assert!(moved, "More contrast moves Tokyo Night's added line tint");
     }
+
+    /// With no reserved Find layer, as on an editor made past `editor_find`'s retained bound,
+    /// Find underlines every match and draws no background, on a collection made after the
+    /// patch's, whose underlines the kit lets hide no rule: under More contrast a matched
+    /// changed word's rule gives way under the match, so two strokes never run one above the
+    /// other, and stays along the rest of the word and under every unmatched changed word,
+    /// each word keeping its tint. "re" matches the removed "red" and the added "green".
+    #[gpui_kit::test]
+    fn find_without_a_reserved_layer_hides_every_matched_word_s_rule(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use gpui_kit::{Context, Focusable, IntoElement, ParentElement, Render, Styled, div, px};
+
+        /// The view, the decorations' handle kept for the window's life, as Compare keeps it,
+        /// and the editors that took every reserved Find layer first.
+        struct Root {
+            view: Entity<crate::diff_view::DiffView>,
+            _decorations: crate::editor_find::PatchDecorations,
+            _reserving: Vec<Entity<EditorState>>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(900.)).h(px(600.)).child(self.view.clone())
+            }
+        }
+
+        let patch = DENSE_HUNK[2];
+        let presentation = PatchPresentation::prepare(patch);
+        cx.update(gpui_kit::init);
+        let mut patch_editor = None;
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            set_more_contrast(true, cx);
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            apply_text_sizes(13, 13, window, cx);
+            let reserving = (0..64)
+                .map(|_| {
+                    let editor = cx.new(|cx| EditorState::new(window, cx));
+                    crate::editor_find::reserve_highlight_layer(&editor, cx);
+                    editor
+                })
+                .collect();
+            let (editor, decorations) =
+                editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
+            patch_editor = Some(editor.clone());
+            Root {
+                view: crate::diff_view::new(editor, &presentation, window, cx),
+                _decorations: decorations.expect("a prepared patch is decorated"),
+                _reserving: reserving,
+            }
+        });
+        let editor = patch_editor.expect("the patch editor");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = cx.update(|_, cx| editor.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.dispatch_action(gpui_kit::component::input::Search);
+        cx.simulate_input("re");
+        cx.run_until_parked();
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let highlights = cx.update(|_, cx| editor_highlights(cx));
+        let tints = [highlights.added_word, highlights.removed_word];
+        let rules = [highlights.added_rule, highlights.removed_rule]
+            .map(|rule| rule.expect("More contrast is on"));
+        let (drawn, stray) = cx.update(|window, _| painted_word_rules(window, &tints, &rules));
+        let backgrounds = cx.update(|window, _| {
+            let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
+            window
+                .painted_quads()
+                .iter()
+                .filter(|quad| {
+                    [highlights.find_match, highlights.find_current]
+                        .iter()
+                        .any(|&color| quad.background == fill(color))
+                })
+                .count()
+        });
+        assert_eq!(backgrounds, 0, "Find draws no background without its layer");
+        assert_eq!(
+            drawn.len(),
+            8,
+            "every changed word keeps its tint: {drawn:?}"
+        );
+        let whole = drawn
+            .iter()
+            .filter(|(_, _, along)| !along.is_empty())
+            .count();
+        assert_eq!(
+            whole, 6,
+            "the six unmatched changed words keep their whole rule: {drawn:?}"
+        );
+        assert_eq!(
+            stray, 3,
+            "\"red\" keeps its rule under \"d\" and \"green\" under \"g\" and \"en\", none under \
+             a match: {drawn:?}"
+        );
+    }
 }

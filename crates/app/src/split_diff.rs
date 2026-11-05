@@ -1014,6 +1014,102 @@ mod tests {
         }
     }
 
+    /// Under More contrast, Find on a Split side over its emphasized words, as in the Diff view
+    /// (`text::tests::find_hides_a_changed_word_s_rule_only_under_its_current_match`): a word's
+    /// rule stays under Find's other matches, so a matched word still reads as changed, and
+    /// gives way under the current match, whose accent underline, on the side's reserved first
+    /// collection, would run about 2.6 px above it. "n" on After matches the emphasized "new"
+    /// and "green" and the unchanged "one" and "line".
+    #[gpui::test]
+    fn find_hides_an_emphasized_word_s_rule_only_under_its_current_match(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::DENSE_HUNK;
+        let presentation = Arc::new(prepare(before, after, patch));
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            set_more_contrast(true, cx);
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            apply_text_sizes(13, 13, window, cx);
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let after = cx.read(|cx| root.read(cx).0.read(cx).editors[1].clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = cx.update(|_, cx| after.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.dispatch_action(gpui::component::input::Search);
+        cx.simulate_input("n");
+        cx.run_until_parked();
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let highlights = cx.update(|_, cx| editor_highlights(cx));
+        let fill = |color: u32| gpui::Background::from(gpui::Hsla::from(rgb(color)));
+        let rule = fill(highlights.added_rule.expect("More contrast is on"));
+        let (quads, stroke) = cx.update(|window, _| {
+            let stroke = (window.scale_factor() - 0.5).ceil().max(1.);
+            (window.painted_quads(), stroke)
+        });
+        let painted = |color: u32| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == fill(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (current, others) = (
+            painted(highlights.find_current),
+            painted(highlights.find_match),
+        );
+        assert_eq!(
+            (current.len(), others.len()),
+            (1, 3),
+            "one current match and three others: {current:?}, {others:?}"
+        );
+        let ruled = quads
+            .iter()
+            .filter(|quad| quad.bounds.size.height.0 == stroke && quad.background == rule)
+            .map(|quad| quad.bounds)
+            .collect::<Vec<_>>();
+        let keeps = |at: &gpui::Bounds<gpui::ScaledPixels>| {
+            ruled.iter().any(|rule| {
+                rule.bottom() == at.bottom()
+                    && rule.left() <= at.left()
+                    && rule.right() >= at.right()
+            })
+        };
+        let current = current[0];
+        assert!(
+            !ruled.iter().any(|rule| rule.bottom() == current.bottom()
+                && rule.left() < current.right()
+                && rule.right() > current.left()),
+            "the current match {current:?} hides its word's rule: {ruled:?}"
+        );
+        // The current match is the first, in "new"; "green"'s match keeps its rule.
+        assert_eq!(
+            others.iter().filter(|other| keeps(other)).count(),
+            1,
+            "the other match in an emphasized word keeps its rule: {others:?}, {ruled:?}"
+        );
+    }
+
     /// Each side of Split carries a changed line's tint across its editor's whole row, so a
     /// replacement reads as one block a side with a straight right edge (decision, 2026-11-05):
     /// a short changed line, a blank one, which drew no tint at all, and one wider than the view

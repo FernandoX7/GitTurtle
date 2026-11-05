@@ -36,7 +36,11 @@ impl Global for Panels {}
 
 struct ReservedLayer {
     editor: WeakEntity<EditorState>,
-    decorations: TextDecorationCollection,
+    /// Find's collection, made before any other on the editor so its current match's underline
+    /// hides a patch's changed-word rule beneath it; `None` past [`RETAINED_PANELS`] reserved
+    /// collections, where Find draws its matches on a collection of its own made after the
+    /// patch's, underlined and without a background ([`FindBar::background_available`]).
+    decorations: Option<TextDecorationCollection>,
     patch: Option<Weak<RefCell<PatchLayer>>>,
 }
 #[derive(Default)]
@@ -47,20 +51,30 @@ impl Global for ReservedLayers {}
 /// pinned renderer composes overlapping properties in hash order, so patch
 /// backgrounds are explicitly removed underneath Find instead of relying on
 /// collection order. Handles retain neither released editors nor patch data.
+/// Past [`RETAINED_PANELS`] reserved collections the editor is still listed,
+/// without one, so Find can mask its patch layer there too (`PatchLayer::underlined`).
 pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
-    if reserved_layer(editor, cx).is_some() {
+    if cx.try_global::<ReservedLayers>().is_some_and(|layers| {
+        layers
+            .0
+            .iter()
+            .any(|layer| layer.editor.entity_id() == editor.entity_id())
+    }) {
         return;
     }
     let mut layers = std::mem::take(&mut cx.default_global::<ReservedLayers>().0);
     layers.retain(|layer| layer.editor.upgrade().is_some());
-    if layers.len() >= RETAINED_PANELS {
-        // Keep memory bounded if a future caller retains more groups. Find's
-        // fallback still has a visible underline without competing backgrounds.
-        cx.default_global::<ReservedLayers>().0 = layers;
-        return;
-    }
-    let decorations = editor.update(cx, |source, cx| {
-        source.create_decorations_collection(Vec::new(), cx)
+    // Keep the editors' collections bounded if a future caller retains more
+    // groups. Find's fallback still has a visible underline without competing
+    // backgrounds; a listed editor holds only weak handles.
+    let reserved = layers
+        .iter()
+        .filter(|layer| layer.decorations.is_some())
+        .count();
+    let decorations = (reserved < RETAINED_PANELS).then(|| {
+        editor.update(cx, |source, cx| {
+            source.create_decorations_collection(Vec::new(), cx)
+        })
     });
     layers.push(ReservedLayer {
         editor: editor.downgrade(),
@@ -74,6 +88,23 @@ struct PatchLayer {
     collection: TextDecorationCollection,
     source: Vec<TextDecoration>,
     matches: Vec<Range<usize>>,
+    /// Whether Find underlines every one of `matches` and draws no background under them, as
+    /// it does on an editor without a reserved collection: then the patch keeps its
+    /// backgrounds and gives up its changed-word rules under the matches, since an underline
+    /// on Find's later collection does not hide them and two strokes would run one above the
+    /// other under every match (decision, 2026-11-05: the rule gives way under an underline).
+    underlined: bool,
+}
+
+impl PatchLayer {
+    /// The decorations the editor draws for this layer under Find's matches.
+    fn visible(&self) -> Vec<TextDecoration> {
+        if self.underlined {
+            without_match_rules(&self.source, &self.matches)
+        } else {
+            without_match_backgrounds(&self.source, &self.matches)
+        }
+    }
 }
 
 /// Patch styles owned with their editor view; Find only holds a weak handle.
@@ -92,10 +123,7 @@ impl PatchDecorations {
         let (collection, visible) = {
             let mut layer = self.0.borrow_mut();
             layer.source = decorations;
-            (
-                layer.collection.clone(),
-                without_match_backgrounds(&layer.source, &layer.matches),
-            )
+            (layer.collection.clone(), layer.visible())
         };
         collection.set(visible, cx);
     }
@@ -114,6 +142,7 @@ pub fn patch_decorations(
         collection,
         source: Vec::new(),
         matches: Vec::new(),
+        underlined: false,
     })));
     if let Some(layer) = cx
         .default_global::<ReservedLayers>()
@@ -154,7 +183,7 @@ impl PatchDecorations {
     /// exactly their ranges in this layer's collection.
     pub fn drawn(&self, cx: &App) -> Vec<TextDecoration> {
         let layer = self.0.borrow();
-        let visible = without_match_backgrounds(&layer.source, &layer.matches);
+        let visible = layer.visible();
         assert_eq!(
             layer.collection.get_ranges(cx),
             visible
@@ -167,7 +196,14 @@ impl PatchDecorations {
     }
 }
 
-fn set_match_ranges(editor: &WeakEntity<EditorState>, ranges: Vec<Range<usize>>, cx: &mut App) {
+/// Mask `editor`'s patch layer under Find's match `ranges`, which Find draws `underlined`, each
+/// with an underline and no background, where the editor has no reserved collection.
+fn set_match_ranges(
+    editor: &WeakEntity<EditorState>,
+    ranges: Vec<Range<usize>>,
+    underlined: bool,
+    cx: &mut App,
+) {
     let patch = cx
         .try_global::<ReservedLayers>()
         .and_then(|layers| {
@@ -181,14 +217,12 @@ fn set_match_ranges(editor: &WeakEntity<EditorState>, ranges: Vec<Range<usize>>,
     if let Some(patch) = patch {
         let (collection, visible) = {
             let mut layer = patch.borrow_mut();
-            if layer.matches == ranges {
+            if layer.matches == ranges && layer.underlined == underlined {
                 return;
             }
             layer.matches = ranges;
-            (
-                layer.collection.clone(),
-                without_match_backgrounds(&layer.source, &layer.matches),
-            )
+            layer.underlined = underlined;
+            (layer.collection.clone(), layer.visible())
         };
         collection.set(visible, cx);
     }
@@ -201,10 +235,42 @@ fn without_match_backgrounds(
     source: &[TextDecoration],
     matches: &[Range<usize>],
 ) -> Vec<TextDecoration> {
+    split_under_matches(
+        source,
+        matches,
+        |decoration| decoration.style.background_color.is_some(),
+        |decoration| decoration.style.background_color = None,
+    )
+}
+
+/// `source` with the bottom rule of each decoration that draws one taken away under `matches`,
+/// every other property and decoration kept whole, for Find's underlined matches
+/// ([`PatchLayer::underlined`]).
+fn without_match_rules(source: &[TextDecoration], matches: &[Range<usize>]) -> Vec<TextDecoration> {
+    split_under_matches(
+        source,
+        matches,
+        |decoration| decoration.bottom_rule.is_some(),
+        |decoration| decoration.bottom_rule = None,
+    )
+}
+
+/// `source` with each decoration `masked` selects split around `matches`, `unmask` applied to
+/// its pieces under them, and every other decoration kept whole.
+fn split_under_matches(
+    source: &[TextDecoration],
+    matches: &[Range<usize>],
+    masked: impl Fn(&TextDecoration) -> bool,
+    unmask: impl Fn(&mut TextDecoration),
+) -> Vec<TextDecoration> {
+    let piece = |decoration: &TextDecoration, range: Range<usize>| TextDecoration {
+        range,
+        ..decoration.clone()
+    };
     let mut output = Vec::with_capacity(source.len().saturating_add(matches.len() * 2));
     let mut first_match = 0;
     for decoration in source {
-        if decoration.style.background_color.is_none() {
+        if !masked(decoration) {
             output.push(decoration.clone());
             continue;
         }
@@ -219,20 +285,17 @@ fn without_match_backgrounds(
             let start = range.start.max(cursor);
             let end = range.end.min(decoration.range.end);
             if cursor < start {
-                output.push(TextDecoration::new(cursor..start, decoration.style));
+                output.push(piece(decoration, cursor..start));
             }
             if start < end {
-                let mut style = decoration.style;
-                style.background_color = None;
-                output.push(TextDecoration::new(start..end, style));
+                let mut unmasked = piece(decoration, start..end);
+                unmask(&mut unmasked);
+                output.push(unmasked);
                 cursor = end;
             }
         }
         if cursor < decoration.range.end {
-            output.push(TextDecoration::new(
-                cursor..decoration.range.end,
-                decoration.style,
-            ));
+            output.push(piece(decoration, cursor..decoration.range.end));
         }
     }
     output
@@ -243,7 +306,7 @@ fn reserved_layer(editor: &Entity<EditorState>, cx: &App) -> Option<TextDecorati
         .0
         .iter()
         .find(|layer| layer.editor.entity_id() == editor.entity_id())
-        .map(|layer| layer.decorations.clone())
+        .and_then(|layer| layer.decorations.clone())
 }
 
 fn panel(editor: &Entity<EditorState>, cx: &App) -> Option<Entity<FindBar>> {
@@ -828,7 +891,7 @@ impl FindBar {
         self.height = px(0.);
         self.painted = None;
         self.decorations.clear(cx);
-        set_match_ranges(&self.editor, Vec::new(), cx);
+        set_match_ranges(&self.editor, Vec::new(), !self.background_available, cx);
         if focus_source && let Some(editor) = self.editor.upgrade() {
             editor.focus_handle(cx).focus(window, cx);
         }
@@ -873,6 +936,7 @@ impl FindBar {
                 .iter()
                 .map(|decoration| decoration.range.clone())
                 .collect(),
+            !self.background_available,
             cx,
         );
         self.painted = Some(PaintedMatches {
