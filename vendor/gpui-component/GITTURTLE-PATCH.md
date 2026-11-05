@@ -346,15 +346,18 @@ was read apart from the switch; Follow system appearance also drew its words
 as the Switch's label, which at 18 pt in a 461 px window wrapped its title to
 three lines. `Switch::leading` now draws an element before the track inside
 the base Switch, which then fills its width with the track at its trailing
-edge: a press anywhere on the row toggles it, the hover lift covers the row
-(the root's group), a disabled Switch blocks the row and gives its text the
-disabled label colour wherever it sets none of its own, and the leading text
-is drawn but not read, provided no element in it has an ID (one that has
-writes a node of its own, read apart from the Switch) and the label stays on
-its default side, the right (a label on the left reverses the row, putting
-`leading` after the track). `Switch::accessibility_description` sets the base
-Switch's `aria_description`, which assistive technology reads after the name.
-Without `leading` or a description the Switch renders as before.
+edge and its top on the leading content's top, so the track stays on a
+settings row's title line however many lines the description wraps to
+(centred, it drifted down the row with each one): a press anywhere on the row
+toggles it, the hover lift covers the row (the root's group), a disabled
+Switch blocks the row and gives its text the disabled label colour wherever it
+sets none of its own, and the leading text is drawn but not read, provided no
+element in it has an ID (one that has writes a node of its own, read apart
+from the Switch) and the label stays on its default side, the right (a label
+on the left reverses the row, putting `leading` after the track).
+`Switch::accessibility_description` sets the base Switch's `aria_description`,
+which assistive technology reads after the name. Without `leading` or a
+description the Switch renders as before.
 
 The consumers are the four Settings switch rows, three outside Linux, where
 the desktop's monospace font row is not offered, and the disabled-dim probe
@@ -366,7 +369,11 @@ each switch's own node, its base Switch rendered, named by its row's title and
 described by its description, no row text read apart from it, and the track
 ending the row;
 `a_switch_row_answers_the_pointer_as_its_switch` presses a row's title and
-description and hovers its title; on Linux only,
+description and hovers its title;
+`each_settings_row_puts_its_control_on_its_title_line` requires each track
+beside its text to start on its row's title line at 13 and 18 pt in a 1,480
+and a 900 px window, Restore repository tabs on startup's description wrapping
+to two lines or more at 13 pt in the 1,480 px one; on Linux only,
 `a_locked_follow_system_row_toggles_nothing` and
 `a_locked_follow_system_dims_its_title` lock it with the Omarchy theme, so a
 removal check elsewhere runs neither. Remove this part of the patch when

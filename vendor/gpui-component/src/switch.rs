@@ -113,11 +113,12 @@ impl Switch {
     }
 
     /// Draw `leading` before the track, inside the Switch, which then fills
-    /// its width with the track at its trailing edge: a settings row whose
-    /// title and description are the control. A press anywhere on the row
-    /// toggles it, hovering it lifts the track as hovering the label does,
-    /// and its text takes the disabled label colour wherever it sets none of
-    /// its own. Its text is drawn, not read, while no element in it has an
+    /// its width with the track at its trailing edge, its top on the
+    /// leading content's top: a settings row whose title and description
+    /// are the control, its track on the title's line. A press anywhere on
+    /// the row toggles it, hovering it lifts the track as hovering the label
+    /// does, and its text takes the disabled label colour wherever it sets
+    /// none of its own. Its text is drawn, not read, while no element in it has an
     /// ID: one with an ID writes a node of its own, which is read apart from
     /// the Switch. Name the Switch with
     /// [`accessibility_label`](Self::accessibility_label) and describe it
@@ -296,13 +297,11 @@ impl Switch {
             })
             .h_flex()
             .gap_2()
-            .map(|this| {
-                if self.leading.is_some() {
-                    this.w_full().items_center()
-                } else {
-                    this.items_start()
-                }
-            })
+            // Leading content keeps the track at its top, on a settings
+            // row's title line: centred, the track drifted down the row as
+            // its description wrapped to more lines.
+            .items_start()
+            .when(self.leading.is_some(), |this| this.w_full())
             .when(self.label_side.is_left(), |this| this.flex_row_reverse())
             .when_some(self.leading, |this, leading| {
                 this.child(div().flex_1().min_w_0().child(leading))

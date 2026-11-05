@@ -657,10 +657,15 @@ impl GitTurtle {
                 div()
                     .debug_selector(move || format!("{key}-row"))
                     .flex()
-                    .items_center()
+                    // Every row's trailing control, these segments as List
+                    // density's, the text sizes', each switch's track and
+                    // Your themes' actions, has its top on the title's line,
+                    // where it stays as the description rewraps; centred,
+                    // it drifted down the row with each wrapped line.
+                    .items_start()
                     .justify_between()
                     .gap_3()
-                    .when(narrow, |row| row.flex_col().items_start())
+                    .when(narrow, |row| row.flex_col())
                     .pt_4()
                     .border_t_1()
                     .border_color(rgb(p.border))
@@ -831,7 +836,7 @@ impl GitTurtle {
             })
             .flex()
             .flex_wrap()
-            .items_center()
+            .items_start()
             .gap_3()
             .child(div().flex_1().min_w(px(180.)).child(setting_description(
                 label,
@@ -840,6 +845,12 @@ impl GitTurtle {
             )))
             .child(
                 div()
+                    .debug_selector(move || {
+                        format!(
+                            "text-size-controls-{}",
+                            if code { "code" } else { "interface" }
+                        )
+                    })
                     .on_children_prepainted(self.keep_in_view(
                         vec![
                             Some(decrease.clone()),
@@ -1252,27 +1263,33 @@ impl GitTurtle {
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
             )
+            // The steppers' top on the title's line, as every Settings row's
+            // trailing control, here and in History's Columns popover; the
+            // value stays centred between them.
             .child(div()
-                .when_some(keep_in_view(vec![None, less.clone(), None, more.clone()], cx), |row, reveal| {
-                    row.on_children_prepainted(reveal)
-                })
-                .flex().items_center().flex_wrap().gap_2()
+                .flex().items_start().flex_wrap().gap_2()
                 .child(setting_description("Graph lane spacing", "Distinct lanes keep this spacing; wide histories scroll horizontally.", cx))
-                .child(button("graph-spacing-less", "−", "", false)
-                    .when_some(less.as_ref(), |button, focus| button.track_focus(focus))
-                    .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
-                        this.save_preferences(window, cx);
-                    })))
-                .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
-                .child(button("graph-spacing-more", "+", "", false)
-                    .when_some(more.as_ref(), |button, focus| button.track_focus(focus))
-                    .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
-                        this.save_preferences(window, cx);
-                    }))))
+                .child(div()
+                    .when_some(keep_in_view(vec![less.clone(), None, more.clone()], cx), |steppers, reveal| {
+                        steppers.on_children_prepainted(reveal)
+                    })
+                    .debug_selector(|| "graph-spacing-controls".into())
+                    .flex().items_center().gap_2()
+                    .child(button("graph-spacing-less", "−", "", false)
+                        .when_some(less.as_ref(), |button, focus| button.track_focus(focus))
+                        .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
+                            this.save_preferences(window, cx);
+                        })))
+                    .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
+                    .child(button("graph-spacing-more", "+", "", false)
+                        .when_some(more.as_ref(), |button, focus| button.track_focus(focus))
+                        .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
+                            this.save_preferences(window, cx);
+                        })))))
             .children(ColumnId::ALL.into_iter().enumerate().map(|(index, id)| {
                 let setting = self.settings.columns.get(id);
                 let column = focus(("history-column", index).into(), cx);
@@ -2434,10 +2451,10 @@ impl GitTurtle {
                     div()
                         .debug_selector(|| "settings-density-row".into())
                         .flex()
-                        .items_center()
+                        .items_start()
                         .justify_between()
                         .gap_3()
-                        .when(narrow, |row| row.flex_col().items_start())
+                        .when(narrow, |row| row.flex_col())
                         .pt_4()
                         .border_t_1()
                         .border_color(rgb(p.border))
@@ -2448,6 +2465,7 @@ impl GitTurtle {
                         ))
                         .child(
                             div()
+                                .debug_selector(|| "settings-density-segments".into())
                                 .on_children_prepainted(density_segments_drawn)
                                 .flex()
                                 .gap_1()
@@ -6592,6 +6610,95 @@ mod picker_tests {
             element.write_a11y_info(&mut node);
             node
         })
+    }
+
+    /// Every Settings row's trailing control has its top on its title's line,
+    /// beside a description of one line or several, at 13 and 18 pt in a
+    /// 1,480 px and a 900 px window: List density's, Reduce motion's and
+    /// Increase contrast's segments, the two text sizes' controls, Graph lane
+    /// spacing's steppers and each switch's track. At 1,480 px and 13 pt the
+    /// motion and contrast rows' descriptions, kept at their tallest, and
+    /// Restore repository tabs on startup's wrap to two lines or more beside
+    /// their controls; centred on the row, those controls sat lower than List
+    /// density's and drifted down the row with every line a description
+    /// wrapped to. A control stacked below its text, as in the narrow page,
+    /// is left to the stacked layout.
+    #[gpui::test]
+    fn each_settings_row_puts_its_control_on_its_title_line(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let mut segments = vec![("List density", "settings-density-segments".to_owned())];
+        for setting in DisplaySetting::ALL {
+            segments.push((setting.title(), format!("{}-segments", setting.key())));
+        }
+        segments.push(("Interface text size", "text-size-controls-interface".into()));
+        segments.push(("Code text size", "text-size-controls-code".into()));
+        segments.push(("Graph lane spacing", "graph-spacing-controls".into()));
+        let switches = switch_rows();
+        let slack = px(0.5);
+        let mut failures = Vec::new();
+        let mut wrapped = Vec::new();
+        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 900.)] {
+            let at = format!("{interface} pt at {width} px");
+            // Tall enough to paint every row of the page.
+            cx.simulate_resize(size(px(width), px(9000.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let line = appearance::ui_text(11.) * 1.5;
+            let mut rows: Vec<(&str, Option<Bounds<Pixels>>)> = segments
+                .iter()
+                .map(|(title, selector)| (*title, drawn(cx, selector.clone())))
+                .collect();
+            for (_, title, _, row) in &switches {
+                let row = drawn(cx, (*row).to_owned()).expect("the switch's row");
+                rows.push((title, track_in(cx, row)));
+            }
+            for (title, control) in rows {
+                let heading = drawn(cx, format!("setting-title: {title}"));
+                let detail = drawn(cx, format!("setting-detail: {title}"));
+                let (Some(control), Some(heading), Some(detail)) = (control, heading, detail)
+                else {
+                    failures.push(format!("{at}: {title}'s row is not drawn whole"));
+                    continue;
+                };
+                if control.top() + slack >= detail.bottom() {
+                    // Stacked below its text.
+                    continue;
+                }
+                if detail.size.height > line * 1.5 {
+                    wrapped.push(format!("{title} at {at}"));
+                }
+                if (control.top() - heading.top()).abs() > slack {
+                    failures.push(format!(
+                        "{at}: {title}'s control starts at {:?}, its title's line at {:?}, \
+                         its description {:?} tall",
+                        control.top(),
+                        heading.top(),
+                        detail.size.height
+                    ));
+                }
+            }
+        }
+        for title in [
+            DisplaySetting::ReduceMotion.title(),
+            DisplaySetting::IncreaseContrast.title(),
+            REOPEN_LAST,
+        ] {
+            let beside = format!("{title} at 13 pt at 1480 px");
+            assert!(
+                wrapped.contains(&beside),
+                "{title}'s description wraps beside its control at 13 pt in 1,480 px: \
+                 {wrapped:?}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// A press on a switch's row, its title or its description, toggles the
