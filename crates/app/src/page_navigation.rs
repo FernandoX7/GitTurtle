@@ -4504,12 +4504,14 @@ mod tests {
 
     /// Focuses History's commit list, naming its pane, and opens File
     /// history for the selected commit's first file, which takes focus to
-    /// its own list, the changed-file list's handle.
+    /// its own list, the changed-file list's handle, once its first page and
+    /// that revision's preview have landed: a page landing later selects its
+    /// revision, focusing that list, wherever the test has moved focus.
     async fn file_history_from_the_commit_list(
         app: &Entity<GitTurtle>,
         cx: &mut VisualTestContext,
     ) {
-        use crate::views::tests::{draw, settle};
+        use crate::views::tests::draw;
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.pane = Pane::History;
@@ -4517,8 +4519,7 @@ mod tests {
             })
         });
         draw(cx);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
-        settle(app, cx).await;
+        crate::file_history::tests::open_landed(app, cx).await;
         assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
         assert!(
             cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
@@ -4838,7 +4839,7 @@ mod tests {
     async fn a_dialog_opened_in_file_history_closes_onto_its_saved_control(
         cx: &mut TestAppContext,
     ) {
-        use crate::views::tests::{draw, settle};
+        use crate::views::tests::draw;
         let (_fixture, app, cx) = two_files_checked_out(cx).await;
         let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
         let files = app.read_with(cx, |app, _| app.file_focus.clone());
@@ -4847,8 +4848,9 @@ mod tests {
             window.focus(&files, cx);
         });
         draw(cx);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
-        settle(&app, cx).await;
+        // Its first revision's preview shown, read on the window's reader
+        // after the page that selects it.
+        crate::file_history::tests::open_landed(&app, cx).await;
         draw(cx);
         assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
         let preview = shown_editor(&app, cx);

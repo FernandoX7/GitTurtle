@@ -1163,7 +1163,7 @@ impl GitTurtle {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
     use gitturtle_core::{ChangeStatus, Commit, FileChange, FileHistoryEntry, FileHistoryPage};
@@ -1527,8 +1527,16 @@ mod tests {
 
     /// Opens File History on the selected commit's first file and waits for
     /// its first page, which the window's reader reads on a thread
-    /// `run_until_parked` cannot wait for.
-    async fn open_landed(app: &gpui_kit::Entity<GitTurtle>, cx: &mut gpui_kit::VisualTestContext) {
+    /// `run_until_parked` cannot wait for, then for the preview of the
+    /// revision the page selects, which [`settle`](crate::views::tests::settle)
+    /// awaits as the window's read. `settle` alone does not wait for the
+    /// page: opening ends the window's read, and the page lands through File
+    /// history's own task, so on a slow reader `settle` found nothing to
+    /// await and returned before the page selected its revision.
+    pub(crate) async fn open_landed(
+        app: &gpui_kit::Entity<GitTurtle>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) {
         use crate::views::tests::settle;
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
         for _ in 0..8 {
