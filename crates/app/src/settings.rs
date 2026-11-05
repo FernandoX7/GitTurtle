@@ -651,6 +651,27 @@ impl GitTurtle {
         // A focused segment shows its whole row, the description a choice
         // changes with it.
         let (row_in_view, segments_drawn) = self.keep_row_in_view(&focus, cx);
+        let segments = div()
+            .debug_selector(move || format!("{key}-segments"))
+            .on_children_prepainted(segments_drawn)
+            .flex()
+            .flex_shrink_0()
+            .gap_1()
+            .p_1()
+            .rounded(px(8.))
+            .bg(rgb(p.canvas))
+            .children(
+                DisplayChoice::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, option)| {
+                        display_segment(setting, index, option == choice, &focus[index]).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.choose_display(setting, option, window, cx)
+                            }),
+                        )
+                    }),
+            );
         div()
             .on_children_prepainted(row_in_view)
             .child(
@@ -659,9 +680,10 @@ impl GitTurtle {
                     .flex()
                     // Every row's trailing control, these segments as List
                     // density's, the text sizes', each switch's track and
-                    // Your themes' actions, has its top on the title's line,
-                    // where it stays as the description rewraps; centred,
-                    // it drifted down the row with each wrapped line.
+                    // Your themes' actions, is centred on the title's first
+                    // line (`on_title_line`), where it stays as the
+                    // description rewraps; centred on the row, it drifted
+                    // down with each wrapped line.
                     .items_start()
                     .justify_between()
                     .gap_3()
@@ -683,25 +705,13 @@ impl GitTurtle {
                                 cx,
                             )),
                     )
-                    .child(
-                        div()
-                            .debug_selector(move || format!("{key}-segments"))
-                            .on_children_prepainted(segments_drawn)
-                            .flex()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .p_1()
-                            .rounded(px(8.))
-                            .bg(rgb(p.canvas))
-                            .children(DisplayChoice::ALL.into_iter().enumerate().map(
-                                |(index, option)| {
-                                    display_segment(setting, index, option == choice, &focus[index])
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.choose_display(setting, option, window, cx)
-                                        }))
-                                },
-                            )),
-                    ),
+                    // Below the separator, the row's top padding is the
+                    // room above its title.
+                    .child(if narrow {
+                        segments.into_any_element()
+                    } else {
+                        on_title_line(segments, rem(), cx).into_any_element()
+                    }),
             )
             .into_any_element()
     }
@@ -843,7 +853,9 @@ impl GitTurtle {
                 explanation,
                 cx,
             )))
-            .child(
+            // Rows are spaced more than a rem apart. Wrapped below the text
+            // in a narrow page, the controls start their own line.
+            .child(on_title_line(
                 div()
                     .debug_selector(move || {
                         format!(
@@ -912,7 +924,9 @@ impl GitTurtle {
                                 this.choose_text_size(code, default, window, cx)
                             })),
                     ),
-            )
+                rem(),
+                cx,
+            ))
             .child(
                 div()
                     .w_full()
@@ -1263,13 +1277,17 @@ impl GitTurtle {
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
             )
-            // The steppers' top on the title's line, as every Settings row's
-            // trailing control, here and in History's Columns popover; the
-            // value stays centred between them.
+            // In Settings the steppers are centred on the title's first line,
+            // as every Settings row's trailing control, with the value
+            // centred between them; the paragraph above is the gap's 0.75 rem
+            // away. History's Columns popover tops them on the row, as
+            // before.
             .child(div()
+                .debug_selector(|| "graph-spacing-row".into())
                 .flex().items_start().flex_wrap().gap_2()
                 .child(setting_description("Graph lane spacing", "Distinct lanes keep this spacing; wide histories scroll horizontally.", cx))
-                .child(div()
+                .child({
+                let steppers = div()
                     .when_some(keep_in_view(vec![less.clone(), None, more.clone()], cx), |steppers, reveal| {
                         steppers.on_children_prepainted(reveal)
                     })
@@ -1289,11 +1307,18 @@ impl GitTurtle {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
                             this.save_preferences(window, cx);
-                        })))))
+                        })));
+                if in_settings {
+                    on_title_line(steppers, rem() * 0.75, cx).into_any_element()
+                } else {
+                    steppers.into_any_element()
+                }
+            }))
             .children(ColumnId::ALL.into_iter().enumerate().map(|(index, id)| {
                 let setting = self.settings.columns.get(id);
                 let column = focus(("history-column", index).into(), cx);
                 div()
+                    .debug_selector(move || format!("history-column-row-{index}"))
                     .when_some(keep_in_view(vec![column.clone()], cx), |row, reveal| {
                         row.on_children_prepainted(reveal)
                     })
@@ -1747,8 +1772,11 @@ impl GitTurtle {
                         "Start from any built-in theme, adjust its colors with a live preview, and save it under your own name.",
                         cx,
                     ))
-                    .child(
+                    // Centred on the title's first line, as every Settings
+                    // row's trailing control, inside the card's padding.
+                    .child(on_title_line(
                         div()
+                            .debug_selector(|| "custom-themes-actions".into())
                             .on_children_prepainted(self.keep_in_view(
                                 vec![Some(new_theme.clone()), Some(import_theme.clone())],
                                 cx,
@@ -1778,7 +1806,9 @@ impl GitTurtle {
                                         this.import_custom_theme(window, cx)
                                     })),
                             ),
-                    ),
+                        rem(),
+                        cx,
+                    )),
             )
             .when(self.custom_themes.is_empty(), |card| {
                 card.child(
@@ -2408,6 +2438,45 @@ impl GitTurtle {
             .collect();
         let (density_row_in_view, density_segments_drawn) =
             self.keep_row_in_view(&density_focus, cx);
+        let density_segments = div()
+            .debug_selector(|| "settings-density-segments".into())
+            .on_children_prepainted(density_segments_drawn)
+            .flex()
+            .gap_1()
+            .p_1()
+            .rounded(px(8.))
+            .bg(rgb(p.canvas))
+            .children(
+                Density::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, density)| {
+                        let selected = self.settings.density == density;
+                        // The shared helper's look, as History's segments:
+                        // unselected, transparent at rest with the palette's
+                        // hover and pressed fills, so a press steps to
+                        // almost the selected fill; selected, the `selected`
+                        // surface, tinted on hover rather than faded, which
+                        // would fade the focus ring with it.
+                        Button::new(("settings-density", index))
+                            .track_focus(&density_focus[index])
+                            .small()
+                            .with_variant(appearance::control_button_variant(selected))
+                            .label(density.label())
+                            .selected(selected)
+                            .toggled(selected)
+                            .debug_selector(move || format!("settings-density-{index}"))
+                            .when(selected, |button| {
+                                button.hover(appearance::control_selected_hover)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if this.settings.density != density {
+                                    this.settings.density = density;
+                                    this.save_preferences(window, cx);
+                                }
+                            }))
+                    }),
+            );
         let appearance = div()
             .flex()
             .flex_col()
@@ -2463,48 +2532,13 @@ impl GitTurtle {
                             "A little breathing room, or more at a glance.",
                             cx,
                         ))
-                        .child(
-                            div()
-                                .debug_selector(|| "settings-density-segments".into())
-                                .on_children_prepainted(density_segments_drawn)
-                                .flex()
-                                .gap_1()
-                                .p_1()
-                                .rounded(px(8.))
-                                .bg(rgb(p.canvas))
-                                .children(Density::ALL.into_iter().enumerate().map(
-                                    |(index, density)| {
-                                        let selected = self.settings.density == density;
-                                        // The shared helper's look, as History's segments:
-                                        // unselected, transparent at rest with the palette's
-                                        // hover and pressed fills, so a press steps to
-                                        // almost the selected fill; selected, the `selected`
-                                        // surface, tinted on hover rather than faded, which
-                                        // would fade the focus ring with it.
-                                        Button::new(("settings-density", index))
-                                            .track_focus(&density_focus[index])
-                                            .small()
-                                            .with_variant(appearance::control_button_variant(
-                                                selected,
-                                            ))
-                                            .label(density.label())
-                                            .selected(selected)
-                                            .toggled(selected)
-                                            .debug_selector(move || {
-                                                format!("settings-density-{index}")
-                                            })
-                                            .when(selected, |button| {
-                                                button.hover(appearance::control_selected_hover)
-                                            })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if this.settings.density != density {
-                                                    this.settings.density = density;
-                                                    this.save_preferences(window, cx);
-                                                }
-                                            }))
-                                    },
-                                )),
-                        ),
+                        // Below the separator, the row's top padding is
+                        // the room above its title.
+                        .child(if narrow {
+                            density_segments.into_any_element()
+                        } else {
+                            on_title_line(density_segments, rem(), cx).into_any_element()
+                        }),
                 ),
             )
             .child(self.render_display_setting(DisplaySetting::ReduceMotion, narrow, cx))
@@ -4707,10 +4741,12 @@ const PROJECT_PANE: &str = "Show the project list";
 /// description, the switch's name again, and the description apart from
 /// the switch. A press anywhere on the row toggles the switch, hovering it
 /// lifts the track, and the title takes the disabled label's dim with the
-/// switch, as Follow system appearance's label did. The switch draws no
-/// label of its own: Follow system appearance drew one beside its track as
-/// well as its title, which at 18 pt in a 461 px window wrapped to three
-/// lines beside it.
+/// switch, as Follow system appearance's label did. The track is centred on
+/// the title's first line ([`on_title_line`]), its top never above the
+/// row's. The switch draws no label of
+/// its own: Follow system appearance drew one beside its track as well as
+/// its title, which at 18 pt in a 461 px window wrapped to three lines
+/// beside it.
 pub(crate) fn switch_row(
     id: &'static str,
     title: &'static str,
@@ -4726,12 +4762,21 @@ pub(crate) fn switch_row(
             .borrow_mut()
             .insert(id, (name, description.to_string()))
     });
+    // The switch fills its row, which the page reveals with a ring's room
+    // around it, so the track's ring may take that room above the row and
+    // no more: the track never rises above the row's top. At 13 pt the 20 px
+    // track, taller than the title's line (19.5 px on a 2x display, 19 px at
+    // 1x), rose 0.25 px above it (0.5 px at 1x), and the page's edge cut its
+    // ring with the row revealed at the top of the view.
+    let ring = appearance::button_ring_room(cx);
     // The kit leaves 8 px before the track; the rows beside keep 12.
     Switch::new(id)
         .w_full()
         .accessibility_label(name)
         .accessibility_description(description.clone())
         .leading(setting_text(div().pr_1(), title, &description, reserve, cx))
+        // A ring's room above the title: the track's top stays on the row's.
+        .place_track(move |track| TitleLine::new(track, ring, ring).into_any_element())
 }
 
 #[cfg(test)]
@@ -4748,6 +4793,91 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn switch_built(id: &str) -> Option<(&'static str, String)> {
     SWITCHES.with(|switches| switches.borrow().get(id).cloned())
+}
+
+/// A setting title's line height, GPUI's default (`phi`, the golden ratio),
+/// set on the title so its first line box, which the row's trailing control
+/// is centred on, is known while the row is built.
+const TITLE_LINE_HEIGHT: f32 = std::f32::consts::GOLDEN_RATIO;
+
+/// The height of a setting title's first line box in `window`, as GPUI lays
+/// a text line out: the line height snapped to the window's device pixels,
+/// 19.5 px at 13 pt and 27 px at 18 pt on a 2x display.
+fn title_line(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_text(12.) * TITLE_LINE_HEIGHT)
+}
+
+/// One rem, the rem `appearance::apply_text_sizes` sets: the top padding
+/// (`pt_4`) a separated Settings row and the Your themes card keep above
+/// their titles, and less than the gap (`gap_5`) between spaced rows.
+fn rem() -> Pixels {
+    appearance::ui_text(13.)
+}
+
+/// `control`, a Settings row's trailing control beside its text, centred on
+/// the title's first line box: its own text then shares the title's baseline
+/// at every size, and it stays put as the description rewraps. With their
+/// tops on that line instead, a 36 px segment group sat 4 px below the
+/// title's baseline at 18 pt and a switch 3.5 px above its cap centre. A
+/// control taller than the line reaches above the title, but never so far
+/// that its focus ring would pass `room` above it, into the row above or its
+/// separator: such a control is lowered just enough instead. The slot itself
+/// is one title line tall, so the row keeps its text's height, and a control
+/// the row wraps onto a line of its own starts that line, give or take its
+/// height's difference from the title line's. A control stacked below its
+/// text is placed without it, as is History's Columns popover, where the
+/// steppers stand under the panel's paragraph rather than beside a row's
+/// title.
+fn on_title_line(control: impl IntoElement, room: Pixels, cx: &App) -> TitleLine {
+    TitleLine::new(
+        control.into_any_element(),
+        room,
+        appearance::button_ring_room(cx),
+    )
+}
+
+/// [`on_title_line`]'s slot for a control whose focus ring reaches `ring`
+/// outside its edge, built as it is drawn, when the window's device pixels,
+/// which the title's line is snapped to, are known.
+#[derive(IntoElement)]
+struct TitleLine {
+    control: AnyElement,
+    room: Pixels,
+    ring: Pixels,
+}
+
+impl TitleLine {
+    fn new(control: AnyElement, room: Pixels, ring: Pixels) -> Self {
+        Self {
+            control,
+            room,
+            ring,
+        }
+    }
+}
+
+impl RenderOnce for TitleLine {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        title_line_slot(self.control, title_line(window), self.room, self.ring)
+    }
+}
+
+/// The slot [`TitleLine`] draws for a title line `line` tall.
+fn title_line_slot(control: AnyElement, line: Pixels, room: Pixels, ring: Pixels) -> Div {
+    // How far above the title's top the control's edge may go.
+    let reach = room - ring;
+    div().flex_shrink_0().h(line).flex().flex_col().child(
+        // From `reach` above the title's line to as far below it, so a
+        // control centred in it is centred on the line; one too tall for
+        // it makes it taller downwards and starts at its top.
+        div()
+            .flex_shrink_0()
+            .mt(-reach)
+            .min_h((line + reach * 2.).max(Pixels::ZERO))
+            .flex()
+            .items_center()
+            .child(control),
+    )
 }
 
 /// `element` holding a setting's title and description, the description as
@@ -4770,6 +4900,7 @@ fn setting_text<E: Styled + ParentElement>(
             div()
                 .debug_selector(move || format!("setting-title: {title}"))
                 .text_size(crate::appearance::ui_text(12.))
+                .line_height(relative(TITLE_LINE_HEIGHT))
                 .font_weight(FontWeight::MEDIUM)
                 .child(title)
                 .children(appearance::text_probe(move || {
@@ -6612,34 +6743,58 @@ mod picker_tests {
         })
     }
 
-    /// Every Settings row's trailing control has its top on its title's line,
-    /// beside a description of one line or several, at 13 and 18 pt in a
-    /// 1,480 px and a 900 px window: List density's, Reduce motion's and
+    /// Every Settings row's trailing control is centred on its title's first
+    /// line box, beside a description of one line or several, at 13 and 18 pt
+    /// in a 1,480 px and a 900 px window: List density's, Reduce motion's and
     /// Increase contrast's segments, the two text sizes' controls, Graph lane
-    /// spacing's steppers and each switch's track. At 1,480 px and 13 pt the
-    /// motion and contrast rows' descriptions, kept at their tallest, and
-    /// Restore repository tabs on startup's wrap to two lines or more beside
-    /// their controls; centred on the row, those controls sat lower than List
-    /// density's and drifted down the row with every line a description
-    /// wrapped to. A control stacked below its text, as in the narrow page,
-    /// is left to the stacked layout.
+    /// spacing's steppers, Your themes' actions and each switch's track, unless
+    /// its focus ring would then reach past its row's room above the title,
+    /// where it is lowered to that room. Only a switch's track at 13 pt is: a
+    /// switch fills its row, which the page reveals with a ring's room around
+    /// it, so the 20 px track, taller than the title's line (19.5 px on a 2x
+    /// display), keeps its top on the row's rather than rising 0.25 px above
+    /// it. Each lies within
+    /// half a device pixel of that place, the slot as tall as the title's
+    /// line as GPUI lays it out. At
+    /// 1,480 px and 13 pt the motion and contrast rows' descriptions, kept at
+    /// their tallest, and Restore repository tabs on startup's wrap to two
+    /// lines or more beside their controls; centred on the row, those
+    /// controls sat lower than List density's and drifted down with every
+    /// line a description wrapped to, and with their tops on the title's line
+    /// a segment group sat 4 px below the title's baseline at 18 pt and a
+    /// track 3.5 px above its cap centre. A control stacked below its text, as
+    /// in the narrow page, is left to the stacked layout.
     #[gpui::test]
-    fn each_settings_row_puts_its_control_on_its_title_line(cx: &mut TestAppContext) {
+    fn each_settings_row_centres_its_control_on_its_title_line(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         cx.update(|_, cx| cx.set_reduce_motion(true));
         let code = cx.read(|cx| app.read(cx).settings.code_text_size);
-        let mut segments = vec![("List density", "settings-density-segments".to_owned())];
+        let ring = cx.read(appearance::button_ring_room);
+        // Each control, the selector drawn around it, and the room above its
+        // title in rems: a rem, or the 0.75 rem gap above Graph lane spacing;
+        // a switch's is its ring's own room.
+        let mut controls = vec![("List density", "settings-density-segments".to_owned(), 1.)];
         for setting in DisplaySetting::ALL {
-            segments.push((setting.title(), format!("{}-segments", setting.key())));
+            controls.push((setting.title(), format!("{}-segments", setting.key()), 1.));
         }
-        segments.push(("Interface text size", "text-size-controls-interface".into()));
-        segments.push(("Code text size", "text-size-controls-code".into()));
-        segments.push(("Graph lane spacing", "graph-spacing-controls".into()));
+        controls.push((
+            "Interface text size",
+            "text-size-controls-interface".into(),
+            1.,
+        ));
+        controls.push(("Code text size", "text-size-controls-code".into(), 1.));
+        controls.push(("Graph lane spacing", "graph-spacing-controls".into(), 0.75));
+        controls.push(("Your themes", "custom-themes-actions".into(), 1.));
         let switches = switch_rows();
-        let slack = px(0.5);
+        // Half a device pixel: layout puts every edge on the device grid, so
+        // a control whose height differs from the line's by an odd number of
+        // device pixels, as the 28 px steppers beside a 19.5 px line do, lies
+        // a quarter pixel from exact centre at 2x; the rest are exact.
+        let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
         let mut failures = Vec::new();
         let mut wrapped = Vec::new();
-        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 900.)] {
+        let mut checked = 0;
+        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 900.), (18, 900.)] {
             let at = format!("{interface} pt at {width} px");
             // Tall enough to paint every row of the page.
             cx.simulate_resize(size(px(width), px(9000.)));
@@ -6651,16 +6806,23 @@ mod picker_tests {
                 })
             });
             settle(cx);
-            let line = appearance::ui_text(11.) * 1.5;
-            let mut rows: Vec<(&str, Option<Bounds<Pixels>>)> = segments
+            let detail_line = appearance::ui_text(11.) * 1.5;
+            // One line of a title, as a short one draws it.
+            let line = drawn(cx, "setting-title: List density".into())
+                .expect("List density's title")
+                .size
+                .height;
+            let slot = cx.update(|window, _| title_line(window));
+            assert_eq!(line, slot, "{at}: a title's line and its slot");
+            let mut rows: Vec<(&str, Option<Bounds<Pixels>>, Pixels)> = controls
                 .iter()
-                .map(|(title, selector)| (*title, drawn(cx, selector.clone())))
+                .map(|(title, selector, room)| (*title, drawn(cx, selector.clone()), rem() * *room))
                 .collect();
             for (_, title, _, row) in &switches {
                 let row = drawn(cx, (*row).to_owned()).expect("the switch's row");
-                rows.push((title, track_in(cx, row)));
+                rows.push((title, track_in(cx, row), ring));
             }
-            for (title, control) in rows {
+            for (title, control, room) in rows {
                 let heading = drawn(cx, format!("setting-title: {title}"));
                 let detail = drawn(cx, format!("setting-detail: {title}"));
                 let (Some(control), Some(heading), Some(detail)) = (control, heading, detail)
@@ -6672,13 +6834,19 @@ mod picker_tests {
                     // Stacked below its text.
                     continue;
                 }
-                if detail.size.height > line * 1.5 {
+                checked += 1;
+                if detail.size.height > detail_line * 1.5 {
                     wrapped.push(format!("{title} at {at}"));
                 }
-                if (control.top() - heading.top()).abs() > slack {
+                let centred = heading.top() + line / 2. - control.size.height / 2.;
+                let lowest = heading.top() - (room - ring);
+                let expected = centred.max(lowest);
+                if (control.top() - expected).abs() > slack {
                     failures.push(format!(
-                        "{at}: {title}'s control starts at {:?}, its title's line at {:?}, \
-                         its description {:?} tall",
+                        "{at}: {title}'s control {:?} starts at {:?}, not {expected:?}, \
+                         centred on its title's first line from {:?}, {line:?} tall, its \
+                         description {:?} tall",
+                        control.size,
                         control.top(),
                         heading.top(),
                         detail.size.height
@@ -6686,6 +6854,11 @@ mod picker_tests {
                 }
             }
         }
+        // Every control is beside its text at least at 1,480 px.
+        assert!(
+            checked >= 2 * (controls.len() + switches.len()),
+            "{checked} controls checked beside their text"
+        );
         for title in [
             DisplaySetting::ReduceMotion.title(),
             DisplaySetting::IncreaseContrast.title(),
@@ -6699,6 +6872,192 @@ mod picker_tests {
             );
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The focus ring the last frame drew around a Button's or a Switch's
+    /// `control`: the bordered quad the installed `Theme::button_focus_ring`
+    /// paints there, within a device pixel.
+    fn ring_around(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        cx.update(|window, cx| {
+            let scale = window.scale_factor();
+            let setting = gpui_kit::component::Theme::global(cx).button_focus_ring;
+            let footprint = control.dilate(setting.gap + setting.width);
+            window.painted_quads().into_iter().find_map(|quad| {
+                let b = quad.bounds;
+                let drawn = Bounds::from_corners(
+                    point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                    point(
+                        px(b.right().as_f32() / scale),
+                        px(b.bottom().as_f32() / scale),
+                    ),
+                );
+                let near = [
+                    (drawn.left(), footprint.left()),
+                    (drawn.top(), footprint.top()),
+                    (drawn.right(), footprint.right()),
+                    (drawn.bottom(), footprint.bottom()),
+                ]
+                .into_iter()
+                .all(|(edge, expected)| (edge - expected).abs() <= px(1. / scale));
+                (near && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale)
+                    .then_some(drawn)
+            })
+        })
+    }
+
+    /// Centred on its title's first line, a focused control's ring stays
+    /// inside its row: each segment's below its row's separator at 13 and
+    /// 18 pt (10 and 15 px below it, the group reaching 3 and 4.5 px above
+    /// its title), and each switch's inside the row the switch fills at
+    /// 18 pt, where the track sits 3.5 px below its title's top. At 13 pt,
+    /// where the 20 px track is taller than the title's line (19.5 px on a 2x
+    /// display), the ring keeps to the ring's room the page reveals the row
+    /// with: centred, the track rose 0.25 px above the row, and the page's
+    /// edge cut its ring with the row revealed at the top of the view.
+    #[gpui::test]
+    fn a_centred_control_keeps_its_focus_ring_inside_its_row(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let focus = |cx: &mut VisualTestContext, id: ElementId| {
+            let handle = cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus(id, cx)));
+            cx.update(|window, cx| window.focus(&handle, cx));
+            settle(cx);
+        };
+        let mut segments: Vec<(String, String, ElementId)> = vec![(
+            "settings-density-0".into(),
+            "settings-density-row".into(),
+            ("settings-density", 0usize).into(),
+        )];
+        for setting in DisplaySetting::ALL {
+            segments.push((
+                format!("{}-0", setting.key()),
+                format!("{}-row", setting.key()),
+                (setting.key(), 0usize).into(),
+            ));
+        }
+        for interface in [13, 18] {
+            cx.simulate_resize(size(px(1480.), px(9000.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            for (segment, row, id) in &segments {
+                focus(cx, id.clone());
+                let control = drawn(cx, segment.clone()).expect("the segment");
+                let row = drawn(cx, row.clone()).expect("the segment's row");
+                let ring = ring_around(cx, control)
+                    .unwrap_or_else(|| panic!("{interface} pt: {segment} draws its ring"));
+                // The separator is the row's 1 px top border.
+                assert!(
+                    ring.top() >= row.top() + px(1.) && ring.bottom() <= row.bottom(),
+                    "{interface} pt: {segment}'s ring {ring:?} leaves its row {row:?}"
+                );
+            }
+            let room = cx.read(appearance::button_ring_room);
+            for (id, title, _, row) in switch_rows() {
+                focus(cx, id.into());
+                let row = drawn(cx, row.to_owned()).expect("the switch's row");
+                let track = track_in(cx, row).expect("the track");
+                let ring = ring_around(cx, track)
+                    .unwrap_or_else(|| panic!("{interface} pt: {title}'s switch draws its ring"));
+                let top = if interface == 18 {
+                    row.top()
+                } else {
+                    row.top() - room
+                };
+                assert!(
+                    ring.top() >= top && ring.bottom() <= row.bottom(),
+                    "{interface} pt: {title}'s ring {ring:?} leaves its row {row:?}"
+                );
+            }
+        }
+    }
+
+    /// A control too tall to centre on its title's first line without its
+    /// focus ring passing the row's room above the title is lowered just
+    /// enough to keep the ring inside: the ring then meets the separator's
+    /// lower edge. Shorter ones are centred, whether shorter than the line or
+    /// reaching above the title. No Settings control is that tall, so a
+    /// synthetic one stands in, in a row built as a separated row is: a 1 px
+    /// separator above a rem of padding.
+    #[gpui::test]
+    fn a_control_too_tall_to_centre_is_lowered_to_keep_its_ring_in_its_row(
+        cx: &mut TestAppContext,
+    ) {
+        struct Row {
+            height: Pixels,
+        }
+        impl Render for Row {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().pt(px(100.)).child(
+                    div()
+                        .debug_selector(|| "row".into())
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .pt(rem())
+                        .border_t_1()
+                        .child(
+                            div()
+                                .debug_selector(|| "title".into())
+                                .text_size(appearance::ui_text(12.))
+                                .line_height(relative(TITLE_LINE_HEIGHT))
+                                .child("Title"),
+                        )
+                        .child(TitleLine::new(
+                            div()
+                                .debug_selector(|| "control".into())
+                                .w(px(40.))
+                                .h(self.height)
+                                .into_any_element(),
+                            rem(),
+                            px(3.),
+                        )),
+                )
+            }
+        }
+        crate::views::tests::init_app(cx);
+        let (view, cx) = cx.add_window_view(|_, _| Row { height: px(10.) });
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            for height in [10., 30., 40., 60., 120.] {
+                cx.update(|window, cx| {
+                    view.update(cx, |row, cx| {
+                        row.height = px(height);
+                        cx.notify();
+                    });
+                    window.draw(cx).clear(cx);
+                });
+                let at = format!("{interface} pt, {height} px tall");
+                let row = cx.debug_bounds("row").expect("the row");
+                let title = cx.debug_bounds("title").expect("the title");
+                let control = cx.debug_bounds("control").expect("the control");
+                let centre = title.top() + title.size.height / 2.;
+                let ring = control.dilate(px(3.));
+                let separator = row.top() + px(1.);
+                let centred = (control.center().y - centre).abs() <= px(0.5);
+                let lowered = (ring.top() - separator).abs() <= px(0.5);
+                assert!(
+                    (centred && ring.top() + px(0.5) >= separator) || (lowered && !centred),
+                    "{at}: the control {control:?} is neither centred on {centre:?} with its \
+                     ring {ring:?} inside the row nor lowered to put it on the separator \
+                     {separator:?}"
+                );
+                // Room enough to centre a 30 px control at either size; a
+                // 120 px one never fits.
+                if height <= 30. {
+                    assert!(centred, "{at}: centred");
+                }
+                if height >= 120. {
+                    assert!(lowered, "{at}: lowered to the separator");
+                }
+            }
+        }
     }
 
     /// A press on a switch's row, its title or its description, toggles the
@@ -7691,6 +8050,68 @@ mod picker_tests {
                 assert_eq!(editor.preview(), None, "{selector}");
                 assert!(!editor.transfer_pending(), "{selector}");
             });
+        }
+    }
+}
+
+/// History's Columns popover, which keeps its controls off the title line.
+#[cfg(test)]
+mod columns_popover_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// History's Columns popover lays its graph lane spacing out as it did
+    /// before Settings centred its rows' controls on their titles' first
+    /// lines: the steppers top their row and lie inside it, and the column
+    /// list starts the panel's 0.75 rem gap below that row, at 13 and 18 pt
+    /// in a 1,280 and a 461 px window. The title-line slot belongs beside a
+    /// Settings row's title; in the popover it lifted the steppers above
+    /// their row, 4.25 px at 13 pt and 6 px at 18 pt.
+    #[gpui::test]
+    async fn the_columns_popover_tops_its_steppers_on_their_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.column_menu = true;
+                cx.notify();
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        for width in [1280., 461.] {
+            for interface in [13, 18] {
+                let at = format!("{interface} pt at {width} px");
+                cx.simulate_resize(size(px(width), px(1200.)));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.settings.interface_text_size = interface;
+                        appearance::apply_text_sizes(interface, code, window, cx);
+                        cx.notify();
+                    })
+                });
+                crate::views::tests::settle(&app, cx).await;
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let (Some(row), Some(steppers), Some(first)) = (
+                    cx.debug_bounds("graph-spacing-row"),
+                    cx.debug_bounds("graph-spacing-controls"),
+                    cx.debug_bounds("history-column-row-0"),
+                ) else {
+                    panic!("{at}: the popover draws its graph lane spacing and columns");
+                };
+                let half = cx.update(|window, _| px(0.5 / window.scale_factor()));
+                assert!(
+                    steppers.top() == row.top() && steppers.bottom() <= row.bottom(),
+                    "{at}: the steppers {steppers:?} do not top their row {row:?}"
+                );
+                let gap = appearance::ui_size(9.75);
+                assert!(
+                    (first.top() - row.bottom() - gap).abs() <= half,
+                    "{at}: the column list starts at {:?}, not {gap:?} below the row's \
+                     foot at {:?}",
+                    first.top(),
+                    row.bottom()
+                );
+            }
         }
     }
 }

@@ -350,14 +350,18 @@ edge and its top on the leading content's top, so the track stays on a
 settings row's title line however many lines the description wraps to
 (centred on the row, it drifted down with each one). `Switch::place_track`
 hands the track to a caller's function, whose element takes the track's place
-there, so a caller can position the track beside its leading content, and the
-track keeps its size, state, focus ring and hover. A press anywhere on the row
-toggles it, the hover lift covers the row (the root's group), a disabled
-Switch blocks the row and gives its text the disabled label colour wherever it
-sets none of its own, and the leading text is drawn but not read, provided no
-element in it has an ID (one that has writes a node of its own, read apart
-from the Switch) and the label stays on its default side, the right (a label
-on the left reverses the row, putting `leading` after the track).
+there: a Settings row wraps it in a slot one title line tall that centres it
+on that line, as the row's other trailing controls are (with its top on the
+line, the track sat 3.5 px above the title's cap centre at 18 pt), without
+letting it rise above the row's top where it is taller than the line, as at
+13 pt, and the track keeps its size, state, focus ring and hover. A press
+anywhere on the row toggles it, the hover lift covers the row (the root's
+group), a disabled Switch blocks the row and gives its text the disabled label
+colour wherever it sets none of its own, and the leading text is drawn but not
+read, provided no element in it has an ID (one that has writes a node of its
+own, read apart from the Switch) and the label stays on its default side, the
+right (a label on the left reverses the row, putting `leading` after the
+track).
 `Switch::accessibility_description` sets the base Switch's `aria_description`,
 which assistive technology reads after the name. Without `leading`,
 `place_track` or a description the Switch renders as before.
@@ -373,11 +377,14 @@ described by its description, no row text read apart from it, and the track
 ending the row;
 `a_switch_row_answers_the_pointer_as_its_switch` presses a row's title and
 description and hovers its title;
-`each_settings_row_puts_its_control_on_its_title_line` requires each track
-beside its text to start on its row's title line at 13 and 18 pt in a 1,480
-and a 900 px window, Restore repository tabs on startup's description wrapping
-to two lines or more at 13 pt in the 1,480 px one; the kit's own
-`place_track_positions_the_track_beside_leading_content`
+`each_settings_row_centres_its_control_on_its_title_line` requires each
+track beside its text to be centred on its row title's first line, within
+0.5 px, at 13 and 18 pt in a 1,480 and a 900 px window, Restore repository
+tabs on startup's description wrapping to two lines or more at 13 pt in the
+1,480 px one; `a_centred_control_keeps_its_focus_ring_inside_its_row`
+focuses each switch and requires its ring inside the row at 18 pt and within
+a ring's room of it at 13 pt; the kit's
+own `place_track_positions_the_track_beside_leading_content`
 (`scripts/vendor-crate-test.sh vendor/gpui-component switch`) requires the
 track at the leading content's top without `place_track` and where the placing
 element puts it with it, keeping its size, and a press on what that element
