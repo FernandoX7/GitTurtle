@@ -751,12 +751,8 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
-     - **FU18 (in flight; A, B and C landed 2026-11-05):** (D) GitHub panel reveals: QA-97's short scroll area (461 × 490,
-       18 pt; verify), conversation-list and multi-line editor lines, the flush-stop sweep for
-       PR/Overview/Review, FU16-B N3's O(L²) fallback, three test fixes (`github_view*`,
-       `focus_reveal.rs`), M.
-     - **FU19 (B, D and E in flight from BASE `339560a6`; A, C and F wait for FU18's files):**
-       - (A) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
+     - **FU19 (B, C, D and G landed 2026-11-05 afternoon; A, C2 and E+H in flight; F waits for FU19-A's kit dialog file):**
+       - (A, in flight from `cf08ff43`) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
          app's recheck moves it at 300 ms, overriding a click (FU13-A 2-3; kit `dialog.rs`,
          `main.rs`); a dialog opened while another closes loses its restore target (FU13-A 4,
          `main.rs`); `open()` clears `page_return_focus` while Ctrl+1/2 from Settings leave it
@@ -768,23 +764,12 @@ cover current upstream x86-64 Omarchy.
          Find waits for the tab, verify, `main.rs`); `modal_return_focus` untested
          (`page_navigation.rs:392`); a live preparation still dims Projects while its
          shortcut cancels it (PG5, verify, `main.rs`).
-       - (B, in flight) Errors and tabs, S-M: a quiet refresh does not clear an Open-set tab mark
-         (FU15-C, verify, `automatic_refresh.rs`); refusals that set the window's error
-         replace the diff pane (FU15-C, `text_review.rs`); a ninth tab refused from Projects
-         sets only the window's error (FU15-C, `projects.rs`); a failed theme save leaves New
-         theme… disabled (`theme_editor.rs:1417`, verify); another cancellation leaves partial
-         actions suspended (FU8-C, verify, `text_review.rs`).
-       - (C) Editor highlights, M (after FU18-A and FU18-C free the files): Braden's removed
-         word tint lighter than its line, Midnight's Find matches the selection's colour
-         (verify, `appearance.rs`); `editor_highlights`' fallback fits with `None` under More
-         contrast before any palette applies (FU14-A, `appearance.rs`); the ≥0.04 ΔEOK rule
-         between the selection, matches and word tints confirmed by a test over every palette
-         (2026-10-29 follow-up); with no reserved Find layer (over 64 retained editors) the
-         FU17-B rule draws under every match's underline (`text.rs`, `split_diff.rs`); no app
-         test of Split's Find path with the rule; under More contrast the Diff view's patch text
-         takes the fitted roles as Split does (decided 2026-11-05, design review of QA-104;
-         `text.rs`, `appearance.rs`); One Light's and Braden's hovered row beside
-         the selected row reads heavier than the selected row (`appearance.rs`).
+       - (C2, in flight from `0824b23e`) Editor highlights' palette rules (decided 2026-11-05
+         afternoon): under More contrast the word tint beyond its line from the canvas, Find's other
+         matches in their own fitted colour, the selection and current match apart, each with a
+         lightness gap, Off byte-identical; in every mode a hovered row never heavier than the
+         selected one (tuned tokens: One Light, Kanagawa Wave, Kanagawa Lotus); FU19-C's two comment
+         nits. (FU19-C's Diff patch text, fallback fit and Find's fallback rules landed.)
        - (later, after FU18-C) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
          text-field and checkbox focus rings at 2.27:1, under the 3:1 non-text rule (verify);
          the kit's Select, Combobox, OtpInput, DatePicker and ColorPicker draw `input` when
@@ -805,7 +790,7 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
-       - (GitHub Files, first, M; decided 2026-11-05) the panel's Files section fits a narrow
+       - (GitHub Files, in flight as FU20-GH2 from `1d30af48`, item 0 done; decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
@@ -822,17 +807,18 @@ cover current upstream x86-64 Omarchy.
          pitch at code 18 pt (`conflicts.rs:779`); the branch picker's and profiles menu's
          disabled items without a reason (verify); a 16 × 2 px scrollbar strip above the
          message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`).
-       - (FU19-D, in flight) History, S-M: the 18 pt SHA column shows five characters (verify); a long History
-         search shows its start after a tab switch (QA-87 #7, verify, `history_search.rs`);
-         other generation bumps can strand the partial subscription (FU13-C 2,
-         `history_updates.rs`, `history_search.rs`); Return in a rewritten series closes it
-         rather than inspecting files (verify, `interactive_rebase.rs`); History's Shift-F10
-         menu closes when its row moves, and History's changed files, Reflog, Stashes and Tags
-         rows are keyed by index (PL1, M, `views.rs`, `reflog.rs`, `tags.rs`); tracking-branch
-         creation gives no feedback (brief 9 task C, verify, `branch_actions.rs:1347`).
-       - (C) Text cuts, S: a character cut can split a grapheme cluster (FU8-G N-c, verify);
-         `ended()` trims punctuation per character; `DESIGN.md:136`'s "character boundary"
-         rule names grapheme clusters (FU13-C 3-4).
+       - (History, remaining) S: other generation bumps can strand the partial subscription
+         (FU13-C 2, `history_updates.rs`, `history_search.rs`); Reflog and Tags rows keep index
+         keys for their focus handles (no row menu or kept selection; FU19-G2, low); tracking-branch
+         creation gives no feedback (brief 9 task C, verify, `branch_actions.rs:1347`);
+         `labelled_scope_toolbar_width` reads the line key itself (`views.rs:6594`; verify it runs
+         each frame); a stash click during a list read drops Refresh's answer (`recovery.rs`, FU19-G review).
+       - (C) Text cuts, M (vendor, security re-review): GPUI's own `.truncate()`
+         (`LineWrapper::truncate_line`, gpui-pre 0.3.4) cuts between characters and trims
+         punctuation per character, and draws every overflow ellipsis (subjects, branches, tabs,
+         paths); the floors that mirror it (`views.rs` `scope_name_min_width`, `repository_tabs.rs`
+         `tab_label_widths`, `workspace.rs`'s composer heading floor) follow it. The app's own cuts
+         move to grapheme clusters with FU19-D5 (in flight, with Return in a rewritten series).
        - (D) Small visible polish, S: popover clicks not audited for reduce motion
          (`popover.rs`); the tab ring's padding at scale 1.5 and `tab_whole_widths` allocating
          per frame (PH1, `repository_tabs.rs:2709`); `LineKey` caches against a display-scale
@@ -843,10 +829,12 @@ cover current upstream x86-64 Omarchy.
          pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
          verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
          `settings-themes.png` retaken (with a native round).
-     - **Later rounds (accessibility research, L):** (FU19-E, in flight) Orca re-reads the window, dialog and list
-       after a search removes its row (FU9-B item 3; AT-SPI adapter, vendor research); the
-       palette may speak a move twice (native check first); X11 key repeats unmarked
-       (vendored `x11/client.rs`, verify).
+     - **Later rounds (accessibility):** (FU19-E+H in flight with FU19-H2) AT-SPI's cache
+       signals fixed at their root (AccessKit #819 backported) and the removed row kept until it
+       leaves the bus; Orca's check in QA-105. The palette may speak a move twice (native check
+       first); X11 key repeats unmarked (vendored `x11/client.rs`, verify; FU19-D5's fixups touch
+       the Button side); at a window's close the adapter sends no `RemoveAccessible` for any node
+       (upstream behaviour, libatspi keeps the proxies until the app exits; low).
      - **macOS-only (hosted run or a Mac):** Menlo's metrics for FU17-B's rule (hosted run
        `42074771762` passed its tests; native position unmeasured); VoiceOver never hears the
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
