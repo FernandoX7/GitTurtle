@@ -33,6 +33,9 @@ pub struct Switch {
     focus_handle: Option<FocusHandle>,
     /// GitTurtle patch: content drawn before the track, inside the Switch.
     leading: Option<AnyElement>,
+    /// GitTurtle patch: wraps the track in the caller's own elements, which
+    /// place it beside the leading content.
+    place_track: Option<Box<dyn FnOnce(AnyElement) -> AnyElement>>,
     /// GitTurtle patch: what assistive technology reads after the name.
     accessibility_description: Option<SharedString>,
 }
@@ -55,6 +58,7 @@ impl Switch {
             tooltip: ComponentTooltip::default(),
             focus_handle: None,
             leading: None,
+            place_track: None,
             accessibility_description: None,
         }
     }
@@ -114,13 +118,14 @@ impl Switch {
 
     /// Draw `leading` before the track, inside the Switch, which then fills
     /// its width with the track at its trailing edge, its top on the
-    /// leading content's top: a settings row whose title and description
-    /// are the control, its track on the title's line. A press anywhere on
-    /// the row toggles it, hovering it lifts the track as hovering the label
-    /// does, and its text takes the disabled label colour wherever it sets
-    /// none of its own. Its text is drawn, not read, while no element in it has an
-    /// ID: one with an ID writes a node of its own, which is read apart from
-    /// the Switch. Name the Switch with
+    /// leading content's top, or placed there by
+    /// [`place_track`](Self::place_track): a settings row whose title and
+    /// description are the control, its track on the title's line. A press
+    /// anywhere on the row toggles it, hovering it lifts the track as
+    /// hovering the label does, and its text takes the disabled label colour
+    /// wherever it sets none of its own. Its text is drawn, not read, while no
+    /// element in it has an ID: one with an ID writes a node of its own,
+    /// which is read apart from the Switch. Name the Switch with
     /// [`accessibility_label`](Self::accessibility_label) and describe it
     /// with [`accessibility_description`](Self::accessibility_description).
     /// It leads only with the label on its default side, the right: a label
@@ -130,6 +135,18 @@ impl Switch {
     /// track, at the kit's text size.
     pub fn leading(mut self, leading: impl IntoElement) -> Self {
         self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    /// Hand the track to `place`, whose element takes the track's place in
+    /// the row, its top on the leading content's top: a settings row wraps
+    /// the track to centre it on its title's first line. The track keeps its
+    /// size, state, focus ring and hover; `place` only positions it, and a
+    /// press on what it adds toggles the Switch as the rest of the row does.
+    ///
+    /// GitTurtle patch: upstream places the track itself.
+    pub fn place_track(mut self, place: impl FnOnce(AnyElement) -> AnyElement + 'static) -> Self {
+        self.place_track = Some(Box::new(place));
         self
     }
 
@@ -297,18 +314,19 @@ impl Switch {
             })
             .h_flex()
             .gap_2()
-            // Leading content keeps the track at its top, on a settings
-            // row's title line: centred, the track drifted down the row as
-            // its description wrapped to more lines.
+            // Leading content keeps the track at its top, or the element
+            // `place_track` wraps it in, which a settings row uses to centre
+            // it on its title's first line: centred on the row, the track
+            // drifted down it as its description wrapped to more lines.
             .items_start()
             .when(self.leading.is_some(), |this| this.w_full())
             .when(self.label_side.is_left(), |this| this.flex_row_reverse())
             .when_some(self.leading, |this, leading| {
                 this.child(div().flex_1().min_w_0().child(leading))
             })
-            .child(
+            .child({
                 // Switch Bar
-                SwitchTrack::new((self.id.clone(), "track"))
+                let track = SwitchTrack::new((self.id.clone(), "track"))
                     .checked(checked)
                     .disabled(self.disabled)
                     .when(cfg!(test), |this| {
@@ -363,8 +381,13 @@ impl Switch {
                             .styles(|styles| {
                                 styles.disabled(|style| style.bg(disabled_toggle_bg))
                             }),
-                    ),
-            )
+                    )
+                    .into_any_element();
+                match self.place_track {
+                    Some(place) => place(track),
+                    None => track,
+                }
+            })
             .when_some(self.label, |this, label| {
                 this.child(
                     div()
@@ -531,6 +554,84 @@ mod tests {
             .debug_bounds("switch-label")
             .expect("the Switch label must participate in prepaint");
         assert_eq!(bar.origin.y, label.origin.y);
+    }
+
+    /// Beside leading content, the track's top is the content's, or where
+    /// the element `place_track` wraps it in puts it: here 7 px lower, the
+    /// track keeping its size. What `place_track` adds stays part of the
+    /// Switch's row, the target with leading content, so a press on it
+    /// toggles the Switch, while a press below the row toggles nothing.
+    #[gpui::test]
+    fn place_track_positions_the_track_beside_leading_content(cx: &mut TestAppContext) {
+        struct PlacedHarness {
+            placed: bool,
+            toggles: Rc<Cell<usize>>,
+        }
+
+        impl Render for PlacedHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let toggles = self.toggles.clone();
+                div().w(px(240.)).child(
+                    Switch::new("switch")
+                        .leading(
+                            div()
+                                .debug_selector(|| "leading".into())
+                                .h(px(60.))
+                                .child("Airplane mode"),
+                        )
+                        .when(self.placed, |this| {
+                            this.place_track(|track| {
+                                div()
+                                    .debug_selector(|| "placed".into())
+                                    .pt(px(7.))
+                                    .child(track)
+                                    .into_any_element()
+                            })
+                        })
+                        .on_click(move |_, _, _| toggles.set(toggles.get() + 1)),
+                )
+            }
+        }
+
+        cx.update(crate::init);
+        let toggles = Rc::new(Cell::new(0));
+        let (view, cx) = cx.add_window_view({
+            let toggles = toggles.clone();
+            move |_, _| PlacedHarness {
+                placed: false,
+                toggles,
+            }
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let leading = cx.debug_bounds("leading").expect("the leading content");
+        let bar = cx.debug_bounds("switch-bar").expect("the track");
+        assert_eq!(bar.top(), leading.top(), "unplaced, the track tops the row");
+        assert!(cx.debug_bounds("placed").is_none());
+
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.placed = true;
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        let placed = cx.debug_bounds("placed").expect("the placing element");
+        let moved = cx.debug_bounds("switch-bar").expect("the track");
+        assert_eq!(moved.top(), leading.top() + px(7.), "placed 7 px lower");
+        assert_eq!(moved.size, bar.size, "the track keeps its size");
+        assert_eq!(placed.top(), leading.top(), "the placing element tops the row");
+        assert_eq!(moved.right(), placed.right(), "and holds the track");
+
+        cx.simulate_click(
+            point(placed.center().x, placed.top() + px(3.)),
+            Modifiers::default(),
+        );
+        assert_eq!(toggles.get(), 1, "a press above the placed track toggles it");
+        cx.simulate_click(
+            point(placed.center().x, leading.bottom() + px(20.)),
+            Modifiers::default(),
+        );
+        assert_eq!(toggles.get(), 1, "a press below the row toggles nothing");
     }
 
     /// Switches in each state, each alone in a box that takes its track's
