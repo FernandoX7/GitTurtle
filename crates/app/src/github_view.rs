@@ -8473,6 +8473,145 @@ mod tests {
         }
     }
 
+    /// Files reports each of its rows as a line of the body, at 13 and 18 pt in a 461 × 490
+    /// window, so no reveal of the body stops with a row cut at either edge: in Changes, each
+    /// row of the changed-file list and of the patch that its list shows whole, and in Source,
+    /// each row of the editor its clip shows whole, the rows below the body's foot that a
+    /// reveal can bring into view among them. They reported no lines, and the body's reveals
+    /// took them for room between lines, where either edge could stop (FU18-E's review).
+    #[gpui::test]
+    async fn files_rows_are_lines_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let file_rows: Vec<&'static str> = (0..files.len())
+            .map(|index| &*format!("github-file-row-{index}").leak())
+            .collect();
+        let patch_rows: Vec<&'static str> = (0..64)
+            .map(|index| &*format!("github-patch-line-{index}").leak())
+            .collect();
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let slack = px(0.5);
+        for interface in [13, 18] {
+            for mode in [0, 1] {
+                let at = format!("mode {mode} at {interface} pt in 461 × 490");
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                cx.simulate_resize(size(px(461.), px(490.)));
+                let (pull, files) = (pull.clone(), files.clone());
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull);
+                        panel.review.show_list = false;
+                        panel.review.section = Section::Files;
+                        panel.review.files = files;
+                        panel.review.selected_file = None;
+                        panel.select_review_file(0, window, cx);
+                    })
+                });
+                settle_panel(&app, cx).await;
+                if mode == 1 {
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| panel.review_source(1, window, cx))
+                    });
+                    settle_panel(&app, cx).await;
+                }
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                // The file column's top at the body's top, its rows in view and below.
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let list = cx.debug_bounds("github-file-focus").expect("the file list");
+                let offset = (scroll.offset().y - (list.top() - body.top()))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), offset));
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                // Each row whole in the viewport of its list or the clip of Source's text.
+                let whole_in = |row: Bounds<Pixels>, view: Option<Bounds<Pixels>>| {
+                    view.is_some_and(|view| {
+                        row.top() >= view.top() - slack && row.bottom() <= view.bottom() + slack
+                    })
+                };
+                let viewport = cx.debug_bounds("github-file-rows");
+                let mut rows = Vec::new();
+                for selector in &file_rows {
+                    if let Some(row) = cx.debug_bounds(selector)
+                        && whole_in(row, viewport)
+                    {
+                        rows.push((selector.to_string(), row.top(), row.bottom()));
+                    }
+                }
+                let listed = rows.len();
+                assert!(listed > 1, "{at}: the file list shows its rows: {rows:?}");
+                let (clip, room) = if mode == 1 {
+                    let clip = cx.debug_bounds("github-source-text");
+                    let (view, text, line) = cx.read(|cx| {
+                        let source = panel.read(cx).review.source.clone().expect("Source");
+                        let source = source.read(cx);
+                        (
+                            source.input_bounds(),
+                            source.text_bounds(),
+                            source.line_height(),
+                        )
+                    });
+                    let (Some(text), Some(line)) = (text, line) else {
+                        panic!("{at}: Source has painted");
+                    };
+                    let mut top = text.top();
+                    while top < view.bottom() {
+                        let row = Bounds::from_corners(
+                            point(view.left(), top.max(view.top())),
+                            point(view.right(), (top + line).min(view.bottom())),
+                        );
+                        if row.bottom() > row.top() && whole_in(row, clip) {
+                            rows.push((format!("Source row at {top:?}"), row.top(), row.bottom()));
+                        }
+                        top += line;
+                    }
+                    (clip, line)
+                } else {
+                    let clip = cx.debug_bounds("github-patch-rows");
+                    for selector in &patch_rows {
+                        if let Some(row) = cx.debug_bounds(selector)
+                            && whole_in(row, clip)
+                        {
+                            rows.push((selector.to_string(), row.top(), row.bottom()));
+                        }
+                    }
+                    (clip, px(18.))
+                };
+                // At 18 pt the file column's fixed height leaves the file's content less than
+                // a row in a 461 px window, an open finding of FU18-F's reveal sweep.
+                let content = clip.map_or(px(0.), |clip| clip.size.height);
+                assert!(
+                    content < room * 2. || rows.len() > listed + 1,
+                    "{at}: the file's content shows its rows in {clip:?}: {rows:?}"
+                );
+                let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+                let missing: Vec<_> = rows
+                    .iter()
+                    .filter(|(_, top, bottom)| {
+                        !lines.iter().any(|line| {
+                            (line.0 - *top).abs() < px(0.01) && (line.1 - *bottom).abs() < px(0.01)
+                        })
+                    })
+                    .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?}"))
+                    .collect();
+                assert_eq!(
+                    missing,
+                    Vec::<String>::new(),
+                    "{at}: each row Files shows is a line of the body"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Tab through a PR's Overview on the offline fixture, at 13 and 18 pt in a 461 × 490
     /// window and in a 1,480 × 800 one: where a stop scrolls the body or the conversation list,
     /// the scrolled box's top edge lies at the start of a block, cutting no line, as long as

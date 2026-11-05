@@ -308,9 +308,12 @@ pub(super) struct Blocks {
     editors_drawing: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
     editors_drawn: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
 }
-/// A multi-line editor drawn in a container collecting lines, with the span where the
-/// container keeps a line ([`Blocks::editors_drawing`]).
-type DrawnEditor = (Entity<TextareaState>, (Pixels, Pixels));
+/// A multi-line editor drawn in a container collecting lines, as a reader of its layout, with
+/// the span where the container keeps a line ([`Blocks::editors_drawing`]).
+type DrawnEditor = (std::rc::Rc<dyn Fn(&App) -> EditorLayout>, (Pixels, Pixels));
+/// What a multi-line editor laid out when it last painted ([`editor_lines`]): its viewport, the
+/// bounds of its scrolled text and its line height, the last two once it has painted.
+type EditorLayout = (Bounds<Pixels>, Option<Bounds<Pixels>>, Option<Pixels>);
 /// The body collecting the lines its content draws ([`Blocks::collect_lines`]).
 struct Collecting {
     blocks: Blocks,
@@ -512,20 +515,31 @@ pub(super) fn one_line() -> impl IntoElement {
     .absolute()
     .inset_0()
 }
-/// An element laid over `editor`, a multi-line editor such as a composer's, that records it in
-/// each container collecting lines around it ([`Blocks::collect_lines`], [`clipped_lines`]), so
-/// the container's reveals read each of its rows as a line ([`Blocks::lines`]): an edge inside
-/// a row would cut the draft's text, which reported no lines before, so a reveal could stop
-/// with a row of a draft cut at the body's edge. Absolutely placed, it takes no room and moves
-/// nothing.
-pub(super) fn editor_rows(editor: &Entity<TextareaState>) -> impl IntoElement {
+/// An element laid over `editor`, a multi-line editor such as a composer's or Files' Source,
+/// that records it in each container collecting lines around it ([`Blocks::collect_lines`],
+/// [`clipped_lines`]), so the container's reveals read each of its rows as a line
+/// ([`Blocks::lines`]): an edge inside a row would cut its text, which reported no lines
+/// before, so a reveal could stop with a row of a draft, or of Source's patch, cut at the
+/// body's edge. Laid inside the clip that cuts the editor's rows, as Source's is, it counts
+/// only the rows that clip shows whole. Absolutely placed, it takes no room and moves nothing.
+pub(super) fn editor_rows<M: gpui_kit::base::input::MultiLineMode>(
+    editor: &Entity<gpui_kit::base::input::InputBaseState<M>>,
+) -> impl IntoElement {
     let editor = editor.clone();
+    let layout: std::rc::Rc<dyn Fn(&App) -> EditorLayout> = std::rc::Rc::new(move |cx| {
+        let editor = editor.read(cx);
+        (
+            editor.input_bounds(),
+            editor.text_bounds(),
+            editor.line_height(),
+        )
+    });
     canvas(
         move |_, window, _| {
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
                     for (blocks, span) in collecting.spans(window.content_mask().bounds) {
-                        let drawn = (editor.clone(), span);
+                        let drawn = (layout.clone(), span);
                         blocks.editors_drawing.borrow_mut().push(drawn);
                     }
                 }
@@ -536,15 +550,18 @@ pub(super) fn editor_rows(editor: &Entity<TextareaState>) -> impl IntoElement {
     .absolute()
     .inset_0()
 }
-/// The rows of `editor` as it last painted, in that frame's coordinates, each a line where a
-/// person can see some of it: the part of each row the editor's viewport shows, kept where it
-/// lies whole in `span` ([`whole_in`]), added to `lines`. The editor draws its rows one under
-/// another from the top of its scrolled text, each as tall as its laid-out line height; each
-/// place for a row in its viewport counts, the empty ones past its text among them, as the
-/// frame of rows the editor is.
-fn editor_lines(editor: &TextareaState, span: (Pixels, Pixels), lines: &mut Vec<(Pixels, Pixels)>) {
-    let view = editor.input_bounds();
-    let (Some(text), Some(line)) = (editor.text_bounds(), editor.line_height()) else {
+/// The rows of an editor that last painted `layout`, in that frame's coordinates, each a line
+/// where a person can see some of it: the part of each row the editor's viewport shows, kept
+/// where it lies whole in `span` ([`whole_in`]), added to `lines`. The editor draws its rows
+/// one under another from the top of its scrolled text, each as tall as its laid-out line
+/// height; each place for a row in its viewport counts, the empty ones past its text among
+/// them, as the frame of rows the editor is.
+fn editor_lines(
+    (view, text, line): EditorLayout,
+    span: (Pixels, Pixels),
+    lines: &mut Vec<(Pixels, Pixels)>,
+) {
+    let (Some(text), Some(line)) = (text, line) else {
         return;
     };
     if line <= Pixels::ZERO || view.size.height <= Pixels::ZERO {
@@ -598,8 +615,8 @@ impl Blocks {
     /// ([`editor_rows`]), so a reveal deferred until that frame has painted reads that frame's.
     pub(super) fn lines(&self, cx: &App) -> Vec<(Pixels, Pixels)> {
         let mut lines = self.lines_drawn.borrow().clone();
-        for (editor, span) in self.editors_drawn.borrow().iter() {
-            editor_lines(editor.read(cx), *span, &mut lines);
+        for (layout, span) in self.editors_drawn.borrow().iter() {
+            editor_lines(layout(cx), *span, &mut lines);
         }
         lines
     }
@@ -1638,7 +1655,12 @@ impl Panel {
         self.focus_visible_section(window, cx);
         cx.notify();
     }
-    fn review_source(&mut self, mode: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn review_source(
+        &mut self,
+        mode: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.review.mode = mode;
         if mode == 0
             && let Some(index) = self.review.selected_file
@@ -1892,85 +1914,101 @@ impl Panel {
                         "Up and Down select a file. {} moves to its patch.",
                         shortcuts::ENTER
                     ))
+                    // Its rows are lines of the body where the list shows them whole: the
+                    // rows it has scrolled out of itself are none ([`clipped`]).
                     .child(
-                        uniform_list(
-                            "github-file-list",
-                            self.review.files.len(),
-                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                range
-                                    .map(|index| {
-                                        let file = &this.review.files[index];
-                                        let selected = this.review.selected_file == Some(index);
-                                        let path = file.filename.clone();
-                                        let hover = palette(cx).row_hover(selected);
-                                        div()
-                                            .id(("github-file", index))
-                                            .w_full()
-                                            .h(appearance::ui_size(54.))
-                                            .px_3()
-                                            .flex()
-                                            .flex_col()
-                                            .justify_center()
-                                            .gap_1()
-                                            .border_l_2()
-                                            .border_color(rgb(if selected {
-                                                palette(cx).accent
-                                            } else {
-                                                palette(cx).panel
-                                            }))
-                                            .bg(rgb(if selected {
-                                                palette(cx).selected
-                                            } else {
-                                                palette(cx).panel
-                                            }))
-                                            .hover(move |style| style.bg(rgb(hover)))
-                                            .role(Role::ListBoxOption)
-                                            .aria_label(format!(
-                                                "{} · {} · {}, {}",
-                                                file.filename,
-                                                file.status,
-                                                crate::counted(
-                                                    file.additions,
-                                                    "addition",
-                                                    "additions"
-                                                ),
-                                                crate::counted(
-                                                    file.deletions,
-                                                    "deletion",
-                                                    "deletions"
+                        clipped(
+                            uniform_list(
+                                "github-file-list",
+                                self.review.files.len(),
+                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                    range
+                                        .map(|index| {
+                                            let file = &this.review.files[index];
+                                            let selected = this.review.selected_file == Some(index);
+                                            let path = file.filename.clone();
+                                            let hover = palette(cx).row_hover(selected);
+                                            div()
+                                                .id(("github-file", index))
+                                                .debug_selector(move || {
+                                                    format!("github-file-row-{index}")
+                                                })
+                                                .w_full()
+                                                .h(appearance::ui_size(54.))
+                                                .px_3()
+                                                .flex()
+                                                .flex_col()
+                                                .justify_center()
+                                                .gap_1()
+                                                .border_l_2()
+                                                .border_color(rgb(if selected {
+                                                    palette(cx).accent
+                                                } else {
+                                                    palette(cx).panel
+                                                }))
+                                                .bg(rgb(if selected {
+                                                    palette(cx).selected
+                                                } else {
+                                                    palette(cx).panel
+                                                }))
+                                                .hover(move |style| style.bg(rgb(hover)))
+                                                .role(Role::ListBoxOption)
+                                                .aria_label(format!(
+                                                    "{} · {} · {}, {}",
+                                                    file.filename,
+                                                    file.status,
+                                                    crate::counted(
+                                                        file.additions,
+                                                        "addition",
+                                                        "additions"
+                                                    ),
+                                                    crate::counted(
+                                                        file.deletions,
+                                                        "deletion",
+                                                        "deletions"
+                                                    )
+                                                ))
+                                                .aria_selected(selected)
+                                                .cursor_pointer()
+                                                // The row is one line of the body: its two
+                                                // lines of text stand on its own surface.
+                                                .child(one_line())
+                                                .child(
+                                                    div()
+                                                        .text_size(appearance::ui_text(12.))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .truncate()
+                                                        .child(path.clone()),
                                                 )
-                                            ))
-                                            .aria_selected(selected)
-                                            .cursor_pointer()
-                                            .child(
-                                                div()
-                                                    .text_size(appearance::ui_text(12.))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .truncate()
-                                                    .child(path.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(appearance::ui_text(10.))
-                                                    .text_color(rgb(palette(cx).muted))
-                                                    .child(format!(
-                                                        "{} · +{} −{}",
-                                                        file.status, file.additions, file.deletions
-                                                    )),
-                                            )
-                                            .tooltip(move |window, cx| {
-                                                Tooltip::new(path.clone()).build(window, cx)
-                                            })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.select_review_file(index, window, cx)
-                                            }))
-                                            .into_any_element()
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
+                                                .child(
+                                                    div()
+                                                        .text_size(appearance::ui_text(10.))
+                                                        .text_color(rgb(palette(cx).muted))
+                                                        .child(format!(
+                                                            "{} · +{} −{}",
+                                                            file.status,
+                                                            file.additions,
+                                                            file.deletions
+                                                        )),
+                                                )
+                                                .tooltip(move |window, cx| {
+                                                    Tooltip::new(path.clone()).build(window, cx)
+                                                })
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.select_review_file(index, window, cx)
+                                                    },
+                                                ))
+                                                .into_any_element()
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .size_full()
+                            .track_scroll(&self.review.file_scroll),
                         )
-                        .size_full()
-                        .track_scroll(&self.review.file_scroll),
+                        .debug_selector(|| "github-file-rows".into())
+                        .size_full(),
                     ),
             ))
             .child(
@@ -2191,6 +2229,8 @@ impl Panel {
                         .relative()
                         .size_full()
                         .overflow_hidden()
+                        // Each row this clip shows is a line of the body.
+                        .child(editor_rows(source))
                         .child(
                             div()
                                 .absolute()
@@ -2275,11 +2315,12 @@ impl Panel {
                     measured.set(inner.size.height);
                     window.defer(cx, |window, _| window.refresh());
                 }
-            }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
+            }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(clipped(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
                 // The selection's edge overlays the row, so its text keeps Source's place.
-                patch_row(index,row,column,row_height,cx).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
+                // Each row is a line of the body, where the list shows it whole ([`clipped`]).
+                patch_row(index,row,column,row_height,cx).child(one_line()).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
-            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll))))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
+            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)).size_full())))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
     }
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
