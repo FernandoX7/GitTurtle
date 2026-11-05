@@ -845,17 +845,16 @@ impl GitTurtle {
                 )
             })
             .flex()
-            .flex_wrap()
-            .items_start()
+            .flex_col()
             .gap_3()
-            .child(div().flex_1().min_w(px(180.)).child(setting_description(
-                label,
-                explanation,
-                cx,
-            )))
-            // Rows are spaced more than a rem apart. Wrapped below the text
-            // in a narrow page, the controls start their own line.
-            .child(on_title_line(
+            // Rows are spaced more than a rem apart. Too narrow for the
+            // controls beside the text, the row puts them on a line of their
+            // own below it.
+            .child(wrapping_row(
+                div().debug_selector(move || {
+                    format!("text-size-row-{}", if code { "code" } else { "interface" })
+                }),
+                setting_description(label, explanation, cx),
                 div()
                     .debug_selector(move || {
                         format!(
@@ -924,6 +923,9 @@ impl GitTurtle {
                                 this.choose_text_size(code, default, window, cx)
                             })),
                     ),
+                // The kit's small Buttons' height (`h_6`), which the value
+                // between them does not exceed.
+                rem() * 1.5,
                 rem(),
                 cx,
             ))
@@ -1760,55 +1762,54 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .gap_3()
+            // Centred on the title's first line, as every Settings row's
+            // trailing control, inside the card's padding; too narrow for
+            // them beside the text, the actions take a line of their own
+            // below it, as the text sizes' controls do.
             .child(
-                div()
-                    .debug_selector(|| "custom-themes-header".into())
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
+                wrapping_row(
+                    div().debug_selector(|| "custom-themes-header".into()),
+                    setting_description(
                         "Your themes",
                         "Start from any built-in theme, adjust its colors with a live preview, and save it under your own name.",
                         cx,
-                    ))
-                    // Centred on the title's first line, as every Settings
-                    // row's trailing control, inside the card's padding.
-                    .child(on_title_line(
-                        div()
-                            .debug_selector(|| "custom-themes-actions".into())
-                            .on_children_prepainted(self.keep_in_view(
-                                vec![Some(new_theme.clone()), Some(import_theme.clone())],
-                                cx,
-                            ))
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                button("custom-themes-new", new_label, "plus", false)
-                                    .track_focus(&new_theme)
-                                    .debug_selector(|| "custom-themes-new".into())
-                                    .disabled(pending || full)
-                                    .tooltip(new_tooltip)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_theme_editor(None, window, cx)
-                                    })),
-                            )
-                            .child(
-                                button("custom-themes-import", "Import…", "", false)
-                                    .track_focus(&import_theme)
-                                    .debug_selector(|| "custom-themes-import".into())
-                                    .accessibility_label(import_name)
-                                    .disabled(pending || full)
-                                    .tooltip(import_tooltip)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.import_custom_theme(window, cx)
-                                    })),
-                            ),
-                        rem(),
-                        cx,
-                    )),
+                    ),
+                    div()
+                        .debug_selector(|| "custom-themes-actions".into())
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![Some(new_theme.clone()), Some(import_theme.clone())],
+                            cx,
+                        ))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            button("custom-themes-new", new_label, "plus", false)
+                                .track_focus(&new_theme)
+                                .debug_selector(|| "custom-themes-new".into())
+                                .disabled(pending || full)
+                                .tooltip(new_tooltip)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_theme_editor(None, window, cx)
+                                })),
+                        )
+                        .child(
+                            button("custom-themes-import", "Import…", "", false)
+                                .track_focus(&import_theme)
+                                .debug_selector(|| "custom-themes-import".into())
+                                .accessibility_label(import_name)
+                                .disabled(pending || full)
+                                .tooltip(import_tooltip)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.import_custom_theme(window, cx)
+                                })),
+                        ),
+                    // The `button` helper's height.
+                    appearance::ui_size(28.),
+                    rem(),
+                    cx,
+                ),
             )
             .when(self.custom_themes.is_empty(), |card| {
                 card.child(
@@ -4822,12 +4823,11 @@ fn rem() -> Pixels {
 /// control taller than the line reaches above the title, but never so far
 /// that its focus ring would pass `room` above it, into the row above or its
 /// separator: such a control is lowered just enough instead. The slot itself
-/// is one title line tall, so the row keeps its text's height, and a control
-/// the row wraps onto a line of its own starts that line, give or take its
-/// height's difference from the title line's. A control stacked below its
-/// text is placed without it, as is History's Columns popover, where the
-/// steppers stand under the panel's paragraph rather than beside a row's
-/// title.
+/// is one title line tall, so the row keeps its text's height. A control
+/// stacked below its text is placed without it, as is History's Columns
+/// popover, where the steppers stand under the panel's paragraph rather than
+/// beside a row's title; a row whose control wraps below its text when
+/// narrow is a [`wrapping_row`].
 fn on_title_line(control: impl IntoElement, room: Pixels, cx: &App) -> TitleLine {
     TitleLine::new(
         control.into_any_element(),
@@ -4878,6 +4878,97 @@ fn title_line_slot(control: AnyElement, line: Pixels, room: Pixels, ring: Pixels
             .items_center()
             .child(control),
     )
+}
+
+/// Where a control `height` tall starts beside a title whose first line box
+/// is `line` tall, from the title's top: centred on that line, unless that
+/// takes its edge more than `reach` above the title, where it starts
+/// `reach` above. [`title_line_slot`] places a control there by layout.
+fn beside_title(line: Pixels, height: Pixels, reach: Pixels) -> Pixels {
+    ((line - height) / 2.).max(-reach)
+}
+
+/// The least width a [`wrapping_row`]'s text keeps beside its control: 180 px
+/// at the default interface size, scaled with it. At 461 px and 18 pt Your
+/// themes' header, which never wrapped, left its text 66 px beside its
+/// actions, its title on two lines and its description a word a line.
+fn wrapping_text_min() -> Pixels {
+    appearance::ui_size(180.)
+}
+
+/// `row` holding a setting's `text` and its trailing `control`, `height`
+/// tall, that wraps: beside the text while the text keeps at least
+/// [`wrapping_text_min`], the control is centred on the title's first line
+/// as [`on_title_line`] centres one, its focus ring kept within `room` above
+/// the title; narrower, it starts a line of its own at the text's left edge,
+/// the row's gap (a `gap_3`) below the text, with nothing reserved above it.
+/// Only the text sizes' rows and Your themes' header wrap; the others stack
+/// below a breakpoint or keep their control beside their text.
+fn wrapping_row(
+    row: Div,
+    text: impl IntoElement,
+    control: impl IntoElement,
+    height: Pixels,
+    room: Pixels,
+    cx: &App,
+) -> WrappingRow {
+    WrappingRow {
+        row,
+        text: text.into_any_element(),
+        control: control.into_any_element(),
+        height,
+        room,
+        ring: appearance::button_ring_room(cx),
+    }
+}
+
+/// [`wrapping_row`]'s row, built as it is drawn, when the window's device
+/// pixels, which the title's line is snapped to, are known.
+#[derive(IntoElement)]
+struct WrappingRow {
+    row: Div,
+    text: AnyElement,
+    control: AnyElement,
+    height: Pixels,
+    room: Pixels,
+    ring: Pixels,
+}
+
+impl RenderOnce for WrappingRow {
+    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+        let top = beside_title(title_line(window), self.height, self.room - self.ring);
+        let gap = window.rem_size() * 0.75;
+        self.row
+            .flex()
+            .flex_wrap()
+            .items_start()
+            .gap_x(gap)
+            // Beside the text, the control's margin places it on the title's
+            // line. A line of its own starts `top` short of the gap, so the
+            // same margin puts the control's edge the gap below the text:
+            // placed in a title line's slot there, as beside the text, a
+            // 28 px control started 4.25 px above the gap at 13 pt.
+            .gap_y(gap - top)
+            // At least its least width beside the control, which wraps
+            // first; alone on a narrower row, the row's width.
+            .child(
+                div()
+                    .flex_grow(1.)
+                    .flex_shrink(1.)
+                    .flex_basis(wrapping_text_min())
+                    .min_w_0()
+                    .child(self.text),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .h(self.height)
+                    .mt(top)
+                    .flex()
+                    .items_center()
+                    .child(self.control),
+            )
+    }
 }
 
 /// `element` holding a setting's title and description, the description as
@@ -7058,6 +7149,174 @@ mod picker_tests {
                 }
             }
         }
+    }
+
+    /// Your themes' header wraps as the text sizes' rows do. In a 461 × 490
+    /// window at 18 pt, and at 13 pt in a 410 × 490 one, New theme… and
+    /// Import a theme file no longer fit beside the text with the text at
+    /// least 180 px (scaled) wide, so they start a line of their own at the
+    /// title's left edge, a row gap (0.75 rem) below the description, with
+    /// nothing reserved above them; the text takes the row's whole width,
+    /// nothing overlaps, the row ends at the actions' foot, and each action's
+    /// focus ring is drawn whole inside the card and the page's view. At
+    /// 13 pt in 461 px the header is 8 px short of holding both with the
+    /// labels Linux measures, so CoreText's may fit: there the test holds
+    /// whichever layout it takes to that layout's rule. 410 px leaves it
+    /// about 60 px short, so the wrap asserted there holds on every
+    /// platform. At 1,480 × 973 the actions stay beside the text, centred on
+    /// the title's first line. The text sizes'
+    /// controls take the same rule wherever they wrap, as at 18 pt in 461 px:
+    /// as tall as the title's line, they reserve nothing above themselves
+    /// there either. At 461 px and 18 pt the header kept its actions beside
+    /// a text column 66 px wide, its title on two lines and its description
+    /// a word a line, beside 230 px of empty card; placed in a title line's
+    /// slot on their own line, the actions started 4.25 px above the row gap
+    /// at 13 pt and 5.9 px above it at 18 pt.
+    #[gpui::test]
+    fn the_your_themes_header_wraps_its_actions_below_its_text(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let ring = cx.read(appearance::button_ring_room);
+        let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
+        // Each row's title, its control and the row the control wraps in.
+        let rows = [
+            (
+                "Your themes",
+                "custom-themes-actions",
+                "custom-themes-header",
+            ),
+            (
+                "Interface text size",
+                "text-size-controls-interface",
+                "text-size-row-interface",
+            ),
+            (
+                "Code text size",
+                "text-size-controls-code",
+                "text-size-row-code",
+            ),
+        ];
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width, height) in [
+            (13, 410., 490.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ] {
+            let at = format!("{interface} pt at {width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let gap = rem() * 0.75;
+            let line = cx.update(|window, _| title_line(window));
+            for (title, control, row) in rows {
+                let (Some(heading), Some(detail), Some(control), Some(row)) = (
+                    drawn(cx, format!("setting-title: {title}")),
+                    drawn(cx, format!("setting-detail: {title}")),
+                    drawn(cx, control.to_owned()),
+                    drawn(cx, row.to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {title}'s row is not drawn whole"));
+                    continue;
+                };
+                // The text's column, which the description fills.
+                let text = detail.size.width;
+                if text + slack < appearance::ui_size(180.) && (text - row.size.width).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: {title}'s text is {text:?} wide in a {:?} row",
+                        row.size.width
+                    ));
+                }
+                if control.top() + slack < detail.bottom() {
+                    // Beside the text, centred on the title's first line.
+                    let expected =
+                        heading.top() + beside_title(line, control.size.height, rem() - ring);
+                    if control.left() + slack < detail.right() + gap
+                        || (control.top() - expected).abs() > slack
+                    {
+                        failures.push(format!(
+                            "{at}: {title}'s control {control:?} beside its text {detail:?} \
+                             does not start at {expected:?}, centred on its title's line"
+                        ));
+                    }
+                    continue;
+                }
+                wrapped.push(format!("{title} at {at}"));
+                if (control.left() - heading.left()).abs() > slack
+                    || (control.top() - detail.bottom() - gap).abs() > slack
+                    || (text - row.size.width).abs() > slack
+                    || (control.bottom() - row.bottom()).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: {title}'s control {control:?} on its own line does not start \
+                         at its title's left edge {:?} {gap:?} below its description \
+                         {detail:?}, ending its row {row:?}",
+                        heading.left()
+                    ));
+                }
+            }
+            if width > 1000. {
+                continue;
+            }
+            // Each action's ring, focused from the keyboard, which reveals it.
+            for action in ["custom-themes-new", "custom-themes-import"] {
+                cx.simulate_keystrokes("f13");
+                settle(cx);
+                let focus = cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus(action, cx)));
+                cx.update(|window, cx| window.focus(&focus, cx));
+                settle(cx);
+                let (Some(button), Some(card), Some(view)) = (
+                    drawn(cx, action.to_owned()),
+                    drawn(cx, "custom-themes-card".to_owned()),
+                    drawn(cx, "settings-scroll".to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {action} is not drawn"));
+                    continue;
+                };
+                let Some(drawn_ring) = ring_around(cx, button) else {
+                    failures.push(format!("{at}: {action} draws no ring"));
+                    continue;
+                };
+                let inside = |outer: Bounds<Pixels>| {
+                    drawn_ring.left() + slack >= outer.left()
+                        && drawn_ring.top() + slack >= outer.top()
+                        && drawn_ring.right() <= outer.right() + slack
+                        && drawn_ring.bottom() <= outer.bottom() + slack
+                };
+                if !inside(card) || !inside(view) {
+                    failures.push(format!(
+                        "{at}: {action}'s ring {drawn_ring:?} leaves the card {card:?} or the \
+                         page's view {view:?}"
+                    ));
+                }
+            }
+        }
+        for (size, width) in [(13, 410), (18, 461)] {
+            let header = format!("Your themes at {size} pt at {width} × 490");
+            assert!(
+                wrapped.contains(&header),
+                "the header wraps at {size} pt in {width} px: {wrapped:?}"
+            );
+        }
+        assert!(
+            wrapped.contains(&"Interface text size at 18 pt at 461 × 490".to_owned()),
+            "the interface text size's controls wrap at 18 pt in 461 px: {wrapped:?}"
+        );
+        assert!(
+            !wrapped.iter().any(|row| row.contains("1480")),
+            "every control stays beside its text at 1,480 px: {wrapped:?}"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// A press on a switch's row, its title or its description, toggles the
