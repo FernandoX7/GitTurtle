@@ -1363,7 +1363,21 @@ impl GitTurtle {
             return false;
         }
         if self.repository_tabs.tabs.len() >= MAX_TABS {
-            self.refuse_in_tab_strip(TAB_LIMIT_REFUSAL, cx);
+            // Said where the person asked: an Open from the Projects page in
+            // its feedback line, which also ends the Open the hub waits for
+            // (its actions stayed refused, "Opening project…"), and any
+            // other in the tab strip's. Neither replaces what the window
+            // shows, as the window's error did.
+            let from_projects = self.page == AppPage::Projects
+                && self
+                    .hub
+                    .update(cx, |hub, cx| hub.refuse_open(TAB_LIMIT_REFUSAL, cx));
+            if from_projects {
+                // One refusal line at a time: an earlier strip refusal goes.
+                self.repository_tabs.refusal = None;
+            } else {
+                self.refuse_in_tab_strip(TAB_LIMIT_REFUSAL, cx);
+            }
             return true;
         }
         if !self.retain_active_tab(window, cx) {
@@ -3418,6 +3432,85 @@ mod tests {
                 "added to the library, in Team"
             );
         });
+    }
+
+    /// A ninth tab asked for from the Projects page is refused there,
+    /// beside the project the person chose, in the tab strip's words and
+    /// announced at once as the page's other feedback is, and the page's
+    /// actions are available again. Refused in the window's error alone,
+    /// which the page does not show, the hub stayed busy, every action
+    /// refused under "Opening project…", with nothing to say why.
+    #[gpui::test]
+    async fn a_ninth_tab_refused_from_projects_says_so_on_the_page(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        app.update(cx, |app, _| {
+            for held in 0..MAX_TABS - 1 {
+                app.repository_tabs.tabs.push(Tab {
+                    path: fixture.path().join(format!("held-{held}")),
+                    saved: Bookmark::default(),
+                    warm: None,
+                    error: None,
+                });
+            }
+        });
+        let hub = app.read_with(cx, |app, _| app.hub.clone());
+        cx.update(|window, cx| {
+            hub.update(cx, |hub, cx| {
+                hub.set_recent(vec![other.path().to_owned()], cx)
+            });
+            app.update(cx, |app, cx| {
+                app.show_projects(window, cx);
+                // An earlier refusal of the strip's, which the page's own
+                // replaces: one refusal line at a time.
+                app.refuse_in_tab_strip("An earlier refusal.", cx);
+            });
+        });
+        crate::views::tests::draw(cx);
+        let mut nodes = Vec::new();
+        for refusal in ["first", "second"] {
+            let project = cx
+                .debug_bounds("recent-project-0")
+                .expect("the recent project");
+            cx.simulate_click(project.center(), gpui::Modifiers::default());
+            written::forget();
+            crate::views::tests::settle(&app, cx).await;
+            app.read_with(cx, |app, _| {
+                assert_eq!(
+                    app.repository_tabs.tabs.len(),
+                    MAX_TABS,
+                    "{refusal}: refused"
+                );
+                assert_eq!(app.page, AppPage::Projects);
+                assert_eq!(app.error, None, "{refusal}: not in the window's error");
+            });
+            hub.read_with(cx, |hub, _| {
+                assert_eq!(
+                    hub.shown_error(),
+                    Some(TAB_LIMIT_REFUSAL),
+                    "{refusal}: the page says why"
+                );
+                assert!(
+                    !hub.shown_busy(),
+                    "{refusal}: and its actions are available again"
+                );
+            });
+            let announced = written::announced_from("project-hub-error");
+            assert!(
+                announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+                "{refusal}: announced at once: {announced:?}"
+            );
+            nodes.push(announced[0].0.clone());
+            assert!(
+                cx.debug_bounds("repository-tab-refusal").is_none(),
+                "{refusal}: said once, where the person acted"
+            );
+        }
+        assert_ne!(
+            nodes[0], nodes[1],
+            "the same refusal again is a fresh node, announced again"
+        );
     }
 
     #[gpui::test]

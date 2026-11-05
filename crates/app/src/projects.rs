@@ -63,6 +63,10 @@ pub struct ProjectHub {
     picker_pending: bool,
     can_go_back: bool,
     error: Option<String>,
+    /// Errors the feedback line has been given, which gives each its own
+    /// node, so the same refusal asked for again is announced again, as
+    /// `native_accessibility::refusal_line` does.
+    errors_shown: usize,
     recent_scroll: UniformListScrollHandle,
     /// The page body's scroll, which reveals the form control focus moves
     /// onto.
@@ -119,6 +123,7 @@ impl ProjectHub {
             picker_pending: false,
             can_go_back: false,
             error: None,
+            errors_shown: 0,
             recent_scroll: UniformListScrollHandle::new(),
             body: FocusReveal::new(Trigger::AnyFocus),
             action_tabs_focus: cx.focus_handle(),
@@ -216,6 +221,9 @@ impl ProjectHub {
     }
 
     pub fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        if error.is_some() {
+            self.errors_shown = self.errors_shown.wrapping_add(1);
+        }
         self.error = error;
         cx.notify();
     }
@@ -227,6 +235,33 @@ impl ProjectHub {
             self.error = None;
             cx.notify();
         }
+    }
+
+    /// Ends an Open the hub asked for that the window refused before reading
+    /// anything, as at the eight-tab limit, saying why in the hub's
+    /// feedback line, announced at once as its failures are, and returns
+    /// whether the hub had asked for one. Left busy, the hub kept every
+    /// action refused under "Opening project…", and only the window's
+    /// error, which the hub does not show, said why.
+    pub fn refuse_open(&mut self, reason: &str, cx: &mut Context<Self>) -> bool {
+        if !(self.busy && self.pending_mode == Some(ProjectMode::Open)) {
+            return false;
+        }
+        self.set_busy(false, cx);
+        self.set_error(Some(reason.to_owned()), cx);
+        true
+    }
+
+    /// Test-only: the hub's feedback line, as other modules' tests read it.
+    #[cfg(test)]
+    pub(crate) fn shown_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Test-only: whether the hub waits on an operation it asked for.
+    #[cfg(test)]
+    pub(crate) fn shown_busy(&self) -> bool {
+        self.busy
     }
 
     pub fn set_can_go_back(&mut self, can_go_back: bool, cx: &mut Context<Self>) {
@@ -377,7 +412,7 @@ impl ProjectHub {
                         }
                     }
                     Ok(None) => {}
-                    Err(error) => this.error = Some(error),
+                    Err(error) => this.set_error(Some(error), cx),
                 }
                 cx.notify();
             });
@@ -424,10 +459,7 @@ impl ProjectHub {
         })();
         match operation {
             Ok(event) => self.emit_operation(event, cx),
-            Err(error) => {
-                self.error = Some(error);
-                cx.notify();
-            }
+            Err(error) => self.set_error(Some(error), cx),
         }
     }
 
@@ -451,6 +483,7 @@ impl ProjectHub {
         let rename_path = path.clone();
         let rename_name = name.clone();
         let row = Button::new(("recent-project", index))
+            .debug_selector(move || format!("recent-project-{index}"))
             .ghost()
             .h(crate::appearance::ui_size(76.))
             .w_full()
@@ -1009,7 +1042,9 @@ impl ProjectHub {
             .when_some(self.error.as_ref(), |panel, error| {
                 panel.child(
                     div()
-                        .id("project-hub-error")
+                        // A fresh node for each error, heard again however
+                        // often the same one is given.
+                        .id(("project-hub-error", self.errors_shown))
                         .alert(error.clone())
                         .max_h(px(110.))
                         .overflow_y_scroll()
@@ -2239,10 +2274,10 @@ mod tests {
             error,
             "and so does the window"
         );
-        assert_eq!(
-            written::announced("project-hub-error"),
-            Some(written::Announced::ASSERTIVE),
-            "announced at once"
+        let announced = written::announced_from("project-hub-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "announced at once: {announced:?}"
         );
     }
 

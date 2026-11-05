@@ -1609,8 +1609,8 @@ mod tests {
             "the Projects page is drawn"
         );
         assert_eq!(
-            written::announced("project-hub-error"),
-            None,
+            written::announced_from("project-hub-error"),
+            Vec::new(),
             "with no error alert"
         );
     }
