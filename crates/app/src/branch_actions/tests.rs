@@ -513,3 +513,57 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
     cx.simulate_keystrokes("escape");
     draw(cx);
 }
+
+/// In a 461 × 490 half tile, at 13 and 18 pt, Tab from the branch chooser's
+/// filter through its 30 rows and Shift+Tab back shows each row whole with
+/// its ring, inside every clip around it, the dialog's among them. Laid out
+/// at full height in the dialog's scrolling body, the list ran below the
+/// dialog's fold: a row inside the list's view but past the fold took focus
+/// where nothing showed it.
+#[gpui::test]
+async fn a_half_tile_reveals_every_branch_chooser_row(cx: &mut TestAppContext) {
+    use crate::tags::tests::{content_mask, holds, set_interface_text_size};
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, list, cx) = open_branch_chooser(cx, fixture.path(), 29).await;
+    let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+    let rows: Vec<_> = (0..30)
+        .map(|index| control("branch-choice", index))
+        .collect();
+    let shown = |cx: &mut VisualTestContext, key: &str, (id, row): &(ElementId, &'static str)| {
+        assert_eq!(
+            cx.update(|window, _| list.focused(window)).as_ref(),
+            Some(id),
+            "{key} focuses {row}"
+        );
+        let mask = content_mask(cx, row);
+        let ring = rendered(cx, row).dilate(room);
+        assert!(
+            holds(mask, ring),
+            "after {key}, {row} and its ring {ring:?} lie outside what the dialog shows, {mask:?}"
+        );
+    };
+    // The half tile at both sizes, then shorter windows at 18 pt, where the
+    // detail line, the filter and the list's two-row floor come nearest the
+    // dialog's cap.
+    for (height, text) in [(490., 13), (490., 18), (400., 18), (360., 18)] {
+        cx.simulate_resize(size(px(461.), px(height)));
+        draw(cx);
+        set_interface_text_size(cx, &app, text);
+        let text = format!("{text} pt in 461 × {height}");
+        focus_filter(cx, &list, &rows[0]);
+        for row in &rows {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            shown(cx, &format!("tab at {text}"), row);
+        }
+        for row in rows.iter().rev().skip(1) {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            shown(cx, &format!("shift-tab at {text}"), row);
+        }
+        // Back onto the filter, for the next size.
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+    }
+    set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+}

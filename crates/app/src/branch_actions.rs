@@ -708,16 +708,21 @@ impl GitTurtle {
                 }
                 window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let chooser_ok = chooser.clone();
-                    // The dialog clips its body to the body's bounds, and the
-                    // chooser keeps the focus ring's room inside them below
-                    // its last control. The footer's gap gives the room back,
-                    // so the footer stays put.
+                    let shown = chooser.clone();
+                    // The chooser lies in the dialog's content rather than
+                    // its scrolling body, whose scroller lays what it holds
+                    // out at full height: its list takes what the dialog's
+                    // cap leaves it, so a row the list reveals is shown. The
+                    // dialog clips its content, and the chooser keeps the
+                    // focus ring's room inside it below its last control.
+                    // The footer's gap gives the room back, so the footer
+                    // stays put.
                     dialog
                         .title(title.clone())
                         .width(appearance::dialog_width(px(540.), window))
                         .max_h(appearance::dialog_max_height(window))
                         .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
-                        .child(chooser.clone())
+                        .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                         .footer(crate::tags::dialog_footer(
                             "Use first match",
                             Some("Cancel"),
@@ -1119,6 +1124,8 @@ struct BranchChooser {
     query: Entity<InputState>,
     /// The list's scroll, which reveals the row Tab moves onto.
     list: FocusReveal,
+    /// The content's scroll, which shows the list when a row takes focus.
+    content: FocusReveal,
     _subscription: Subscription,
 }
 
@@ -1148,6 +1155,7 @@ impl BranchChooser {
             choices,
             query,
             list: FocusReveal::new(Trigger::Keyboard),
+            content: FocusReveal::new(Trigger::Keyboard),
             _subscription: subscription,
         }
     }
@@ -1204,6 +1212,7 @@ impl Render for BranchChooser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A row focus has moved onto scrolls into view in this frame.
         self.list.reveal(window, cx);
+        self.content.reveal(window, cx);
         let p = palette(cx);
         let matching = self.matching(cx);
         let detail = match &self.purpose {
@@ -1238,12 +1247,32 @@ impl Render for BranchChooser {
         let reveal = self
             .list
             .items(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
-        // Past its height the list cues the rest with its scrollbar.
+        // Past its height the list cues the rest with its scrollbar. It
+        // shrinks to what the dialog's cap leaves it, though no shorter than
+        // two whole rows, or the one there is, and keeps its whole
+        // explanation when nothing matches: in a 461 × 490 half tile, laid
+        // out at full height in the dialog's scrolling body, it ran below
+        // the dialog's fold, where a row Tab moved onto took focus unseen.
+        let shown = matching.len().min(CHOICE_LIMIT).clamp(1, 2) as f32;
+        let floor = appearance::ui_size(34.) * shown
+            + rems(0.25).to_pixels(window.rem_size()) * (shown - 1.);
         let cue = tags::ScrollCue::revealing(&self.list, room);
-        div().flex().flex_col().gap_3().pb(room)
+        // Where the detail, the filter and the list's floor exceed what the
+        // cap leaves, as at 18 pt in a 461 × 400 window, the chooser's
+        // content scrolls, cued by its scrollbar beside it in the dialog's
+        // side padding as Worktrees' is, and a row Tab moves onto brings the
+        // whole list into view, so the row the list reveals stays whole
+        // (the dialog once clipped the list's foot there, and the row with
+        // it). It keeps the focus ring's room at its sides, given back
+        // through its margin, and below its last control.
+        let query = self.query.read(cx).focus_handle(cx);
+        let show_list = self
+            .content
+            .group(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
+        let content = div().on_children_prepainted(self.content.observe()).id("branch-chooser-content").debug_selector(|| "branch-chooser-content".into()).flex().flex_col().gap_3().min_h_0().overflow_y_scroll().track_scroll(self.content.scroll()).px(room).mx(-room).pb(room)
             .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
-            .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
-            .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_1()
+            .child(div().on_children_prepainted(self.content.control(query, room)).py(room).my(-room).child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.)))))
+            .child(div().on_children_prepainted(show_list).flex().flex_col().min_h_0().map(|entries| if matching.is_empty() { entries.flex_shrink_0() } else { entries.min_h(floor) }).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).min_h_0().p(room).m(-room).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_1()
                 .children(rows.into_iter().map(|(index, focus)| {
                     let choice = &self.choices[index];
                     Button::new(("branch-choice", index)).track_focus(&focus).debug_selector(move || format!("branch-choice-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.))
@@ -1254,8 +1283,29 @@ impl Render for BranchChooser {
                         .tooltip(format!("{} · {}", choice.reference, short_oid(&choice.oid)))
                         .on_click(cx.listener(move |this, _, window, cx| this.activate(index, window, cx)))
                 }))
-                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))), "branch-chooser-scrollbar"))
-            .when(matching.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another branch.")))
+                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))), "branch-chooser-scrollbar").min_h_0()))
+            .when(matching.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another branch.")));
+        div()
+            .relative()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(crate::native_accessibility::clips_children(content))
+            .child(
+                div()
+                    .debug_selector(|| "branch-chooser-content-scrollbar".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(-gpui_kit::component::scroll::Scrollbar::width() - room)
+                    .w(gpui_kit::component::scroll::Scrollbar::width())
+                    .child(
+                        gpui_kit::component::scroll::Scrollbar::vertical(self.content.scroll())
+                            .id("branch-chooser-content-scrollbar")
+                            .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            )
     }
 }
 
