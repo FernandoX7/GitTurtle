@@ -404,6 +404,10 @@ impl GitTurtle {
             let owner = cx.entity().downgrade();
             window.on_next_frame(move |window, cx| {
                 let _ = owner.update(cx, |this, cx| {
+                    if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+                        this.keep_closing_modal_return(previous, replaced);
+                        return;
+                    }
                     if window.focused(cx).map(|focus| focus.downgrade()) != left {
                         return;
                     }
@@ -426,6 +430,30 @@ impl GitTurtle {
             }
         }
         self.modal_was_open = modal_open;
+    }
+
+    /// Hands a closing modal's return to a modal opened before its focus
+    /// came back, in the frame after the close: focus then rests where the
+    /// close left it, the control the toolkit captured as the first modal
+    /// opened, which the new one captures as its opener, while the control
+    /// the first returns to, `previous`, can be another one, as the GitHub
+    /// panel's recorded opener or a restore's control under the modal
+    /// (`return_modal_to`) are. So focus returns there as the last modal
+    /// closes, and a modal opened over another keeps the first's return
+    /// as before. The return was taken as the first closed, so the new
+    /// modal returned to whatever focus the close had left, the replaced
+    /// page's control among them.
+    fn keep_closing_modal_return(
+        &mut self,
+        previous: Option<FocusHandle>,
+        replaced: Option<FocusHandle>,
+    ) {
+        if previous.is_some() {
+            self.modal_return_focus = previous;
+        }
+        if self.modal_replaced_focus.is_none() {
+            self.modal_replaced_focus = replaced;
+        }
     }
 
     /// Repairs focus a closing modal left on nothing drawn, or on the
@@ -4279,6 +4307,48 @@ mod tests {
         click_an_empty_spot(&app, cx);
         animation(cx);
         assert_eq!(focused(cx), Some(root), "before the repair, kept");
+    }
+
+    /// A dialog opened while another closes, before the window's repair
+    /// gives the first one's focus back, keeps the first one's return: a
+    /// dialog over History's changed files, whose return a restore under it
+    /// made the commit list (`return_modal_to`), closes by Escape, and the
+    /// command palette, opened by its shortcut in the frame after, closes
+    /// by Escape onto the commit list. The first one's return was taken as
+    /// it closed, so the palette closed onto the changed files, the control
+    /// the toolkit had captured as the first opened.
+    #[gpui::test]
+    async fn a_dialog_opened_as_another_closes_keeps_its_return(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let (commits, files) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && !app.files.is_empty());
+            (app.focus.clone(), app.file_focus.clone())
+        });
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        app.update(cx, |app, _| app.return_modal_to(Some(commits.clone())));
+        cx.simulate_keystrokes("escape");
+        // The frame that sees the dialog gone asks for the repair; the
+        // palette opens before the next frame runs it.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor().run_until_parked();
+        assert!(!dialog_open(cx), "Escape closes the dialog");
+        cx.simulate_keystrokes(&primary("shift-p"));
+        draw(cx);
+        assert!(dialog_open(cx), "the palette opens");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.modal_return_focus.clone()),
+            Some(commits.clone()),
+            "the palette keeps the first dialog's return"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!dialog_open(cx), "Escape closes the palette");
+        assert_eq!(focused(cx), Some(commits), "the commit list");
     }
 
     /// Opens Settings with nothing focused and the window naming `pane`,
