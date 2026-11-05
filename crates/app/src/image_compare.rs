@@ -2646,10 +2646,14 @@ fn cut_word(word: &str, room: Pixels, width: &impl Fn(&str) -> Pixels) -> String
 }
 
 /// `words` ending in the ellipsis, less the spaces and a clause's
-/// punctuation (`.,;:`) they end in, which the ellipsis stands for. Other
-/// punctuation is part of a word, as in "100%" and "C++".
+/// punctuation (`.,;:`) they end in, which the ellipsis stands for, taken
+/// as whole grapheme clusters (`text_cut::trim_end_clusters`): a cluster
+/// that ends in a full stop but holds more, as a prepended mark and the
+/// stop it joins do, stays whole. Other punctuation is part of a word, as
+/// in "100%" and "C++".
 fn ended(words: &str) -> String {
-    let words = words.trim_end_matches(|c: char| c.is_whitespace() || ".,;:".contains(c));
+    let words =
+        crate::text_cut::trim_end_clusters(words, |c| c.is_whitespace() || ".,;:".contains(c));
     format!("{words}{ELLIPSIS}")
 }
 
@@ -3279,6 +3283,31 @@ mod tests {
                 one_line(text, room),
                 (vec!["Not decoded…".to_owned()], true),
                 "{text:?}"
+            );
+        }
+    }
+
+    /// A clause's punctuation gives way to the ellipsis as whole grapheme
+    /// clusters: a full stop joined to the prepended mark before it, an
+    /// Arabic number sign (U+0600), is one cluster with it, which trimming
+    /// characters split, leaving the mark alone before the ellipsis. A word
+    /// that ends in a letter with combining marks, a ZWJ emoji sequence or
+    /// a flag keeps it whole before the stop that goes. Every character
+    /// here is 6 px wide.
+    #[test]
+    fn an_ellipsis_trims_punctuation_by_whole_clusters() {
+        let width = |text: &str| px(6. * text.chars().count() as f32);
+        let room = px(6. * 12.);
+        let text = "Number \u{600}. not decoded";
+        assert_eq!(
+            clamped_lines(&word_lines(text, room, &width), 1, room, &width),
+            (vec!["Number \u{600}.…".to_owned()], true)
+        );
+        for (case, cluster) in crate::text_cut::tests::CLUSTERS {
+            assert_eq!(
+                super::ended(&format!("Not {cluster}. ")),
+                format!("Not {cluster}…"),
+                "{case}"
             );
         }
     }

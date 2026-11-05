@@ -657,11 +657,13 @@ fn blame_source(index: usize, cx: &App) -> Stateful<Div> {
 
 use crate::native_accessibility::text as static_text;
 
-/// Cap text shaping for unusually long source lines. Exact source stays in the
-/// bounded result and is used by Copy, independently of the displayed excerpt.
+/// Cap text shaping for unusually long source lines, at the longest prefix
+/// of whole grapheme clusters within `limit` characters
+/// (`text_cut::within_characters`). Exact source stays in the bounded result
+/// and is used by Copy, independently of the displayed excerpt.
 fn display_excerpt(source: &str, limit: usize) -> String {
-    match source.char_indices().nth(limit) {
-        Some((boundary, _)) => format!("{}…", &source[..boundary]),
+    match crate::text_cut::within_characters(source, limit) {
+        Some(end) => format!("{}…", &source[..end]),
         None => source.to_owned(),
     }
 }
@@ -722,6 +724,21 @@ mod tests {
     use gitturtle_core::BlameTarget;
     use gpui_kit::{IntoElement as _, ParentElement as _};
     use std::path::Path;
+
+    /// A long line's excerpt ends between whole grapheme clusters: a letter
+    /// with its combining marks, a ZWJ emoji sequence or a flag at the cut is
+    /// left out whole rather than split, the excerpt still within its count.
+    #[test]
+    fn a_long_lines_excerpt_keeps_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            let source = format!("{}{cluster}tail", "a".repeat(9));
+            let excerpt = super::display_excerpt(&source, 10);
+            let kept = excerpt.strip_suffix('…').expect("an excerpt");
+            assert_whole_prefix(&source, kept, case);
+            assert_eq!(kept, "a".repeat(9), "{case}");
+        }
+    }
 
     /// Blame's two commit hash buttons draw the short ID and are named by what they copy, as
     /// the inspector's Hash is: they were named by the short ID alone.

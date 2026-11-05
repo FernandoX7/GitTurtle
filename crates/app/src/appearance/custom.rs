@@ -628,7 +628,7 @@ pub const THEME_DOCUMENT_VERSION: u64 = 1;
 /// key 16, a quoted token value 9).
 pub const MAX_MESSAGE_FRAGMENT_CHARS: usize = 64;
 
-/// One document-derived fragment, clamped for a message on a character
+/// One document-derived fragment, clamped for a message on a grapheme-cluster
 /// boundary and marked with an ellipsis when anything was dropped. Theme
 /// names are bounded at 128 bytes, not 64 characters, so the import notice
 /// clamps the two it interpolates through this as well: two full-length names
@@ -637,11 +637,11 @@ pub fn fragment(text: &str) -> std::borrow::Cow<'_, str> {
     fragment_within(text, MAX_MESSAGE_FRAGMENT_CHARS)
 }
 
-/// `fragment` with an explicit allowance: `allowance` characters, then an
-/// ellipsis when anything was dropped.
+/// `fragment` with an explicit allowance: the whole grapheme clusters within
+/// `allowance` characters, then an ellipsis when anything was dropped.
 fn fragment_within(text: &str, allowance: usize) -> std::borrow::Cow<'_, str> {
-    match text.char_indices().nth(allowance) {
-        Some((end, _)) => std::borrow::Cow::Owned(format!("{}…", &text[..end])),
+    match crate::text_cut::within_characters(text, allowance) {
+        Some(end) => std::borrow::Cow::Owned(format!("{}…", &text[..end])),
         None => std::borrow::Cow::Borrowed(text),
     }
 }
@@ -1254,6 +1254,28 @@ mod tests {
     use crate::appearance::ThemeChoice;
     use ReadabilityBackground::SelectedRowHover;
     use TokenKind::*;
+
+    /// A document's fragment is clamped between whole grapheme clusters: a
+    /// letter with its combining marks, a ZWJ emoji sequence or a flag at
+    /// the cut is left out whole rather than split.
+    #[test]
+    fn a_fragment_is_clamped_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            let text = format!(
+                "{}{cluster}zz",
+                "a".repeat(super::MAX_MESSAGE_FRAGMENT_CHARS - 1)
+            );
+            let shown = super::fragment(&text);
+            let kept = shown.strip_suffix('…').expect("a clamped fragment");
+            assert_whole_prefix(&text, kept, case);
+            assert_eq!(
+                kept,
+                "a".repeat(super::MAX_MESSAGE_FRAGMENT_CHARS - 1),
+                "{case}"
+            );
+        }
+    }
 
     type Pair = (ReadabilityForeground, ReadabilityBackground, f64);
 

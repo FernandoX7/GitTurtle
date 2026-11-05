@@ -255,7 +255,8 @@ pub(crate) fn error_tooltip(report: &str) -> SharedString {
         .join("\n");
     let mut more = lines.next().is_some();
     if shown.len() > ERROR_TOOLTIP_BYTES {
-        shown.truncate(shown.floor_char_boundary(ERROR_TOOLTIP_BYTES));
+        // Cut between whole grapheme clusters.
+        shown.truncate(crate::text_cut::floor_cluster(&shown, ERROR_TOOLTIP_BYTES));
         more = true;
     }
     if more {
@@ -1385,6 +1386,26 @@ pub(crate) mod tests {
     use ::core::prelude::v1::test;
     use gpui_kit::component::{FocusRing, Root, Theme};
     use std::{cell::RefCell, rc::Rc};
+
+    /// A long error tooltip is cut between whole grapheme clusters, at each
+    /// byte inside a letter with its combining marks, a ZWJ emoji sequence
+    /// or a flag, still within its byte bound.
+    #[test]
+    fn an_error_tooltip_is_cut_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            for inside in 1..cluster.len() {
+                let report = format!(
+                    "{}{cluster}tail",
+                    "a".repeat(super::ERROR_TOOLTIP_BYTES - inside)
+                );
+                let shown = super::error_tooltip(&report);
+                let kept = shown.strip_suffix('…').expect("a cut tooltip");
+                assert_whole_prefix(&report, kept, case);
+                assert_eq!(kept.len(), super::ERROR_TOOLTIP_BYTES - inside, "{case}");
+            }
+        }
+    }
 
     /// Runs Git in `path` with no configuration beyond the fixture identity.
     pub(crate) fn git(path: &std::path::Path, args: &[&str]) {

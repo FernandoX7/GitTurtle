@@ -83,6 +83,7 @@ mod tags;
 #[cfg(test)]
 mod test_support;
 mod text;
+mod text_cut;
 mod text_review;
 mod theme_editor;
 mod views;

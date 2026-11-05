@@ -607,10 +607,11 @@ fn written_path_text(path: &std::path::Path) -> String {
     if characters <= custom::MAX_MESSAGE_FRAGMENT_CHARS {
         return text;
     }
+    // Starts between whole grapheme clusters.
     let start = text
         .char_indices()
         .nth(characters - custom::MAX_MESSAGE_FRAGMENT_CHARS)
-        .map_or(0, |(index, _)| index);
+        .map_or(0, |(index, _)| crate::text_cut::ceil_cluster(&text, index));
     format!("…{}", &text[start..])
 }
 
@@ -2860,6 +2861,25 @@ pub(crate) mod tests {
     use appearance::custom::{ReadabilityBackground, ReadabilityForeground, ReadabilityMeasure};
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
+
+    /// An export notice's path, clamped from the front, starts between whole
+    /// grapheme clusters: a letter with its combining marks, a ZWJ emoji
+    /// sequence or a flag at the cut is left out whole rather than split.
+    #[test]
+    fn a_written_path_starts_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_suffix};
+        let most = custom::MAX_MESSAGE_FRAGMENT_CHARS;
+        for (case, cluster) in CLUSTERS {
+            for inside in 1..cluster.chars().count() {
+                let tail = "s".repeat(most - inside);
+                let text = format!("/home/{cluster}{tail}");
+                let shown = super::written_path_text(std::path::Path::new(&text));
+                let kept = shown.strip_prefix('…').expect("a clamped path");
+                assert_whole_suffix(&text, kept, case);
+                assert_eq!(kept, tail, "{case}");
+            }
+        }
+    }
 
     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.

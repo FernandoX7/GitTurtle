@@ -84,8 +84,12 @@ fn failure(picker: Picker, error: &anyhow::Error) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let detail = match detail.char_indices().nth(MAX_DETAIL_CHARS) {
-        Some((end, _)) => format!("{}…", detail[..end].trim_end()),
+    // Cut between whole grapheme clusters, less the spaces it ends in.
+    let detail = match crate::text_cut::within_characters(&detail, MAX_DETAIL_CHARS) {
+        Some(end) => format!(
+            "{}…",
+            crate::text_cut::trim_end_clusters(&detail[..end], char::is_whitespace)
+        ),
         None => detail,
     };
     format!("{}{DETAIL}{detail}", guidance(picker.failure(), picker))
@@ -134,6 +138,25 @@ fn guidance(message: &str, picker: Picker) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure's quoted detail is cut between whole grapheme clusters: a
+    /// letter with its combining marks, a ZWJ emoji sequence or a flag at
+    /// the cut is left out whole rather than split.
+    #[test]
+    fn a_failures_detail_is_cut_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            let message = format!("{}{cluster} more", "a".repeat(super::MAX_DETAIL_CHARS - 1));
+            let shown = super::failure(super::Picker::File, &anyhow::anyhow!(message.clone()));
+            let detail = shown
+                .split_once(super::DETAIL)
+                .map(|(_, detail)| detail)
+                .expect("the detail is marked as such");
+            let kept = detail.strip_suffix('…').expect("a cut detail");
+            assert_whole_prefix(&message, kept, case);
+            assert_eq!(kept, "a".repeat(super::MAX_DETAIL_CHARS - 1), "{case}");
+        }
+    }
 
     #[test]
     fn picker_cancellation_is_quiet_but_service_failures_are_actionable() {

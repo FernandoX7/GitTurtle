@@ -2397,8 +2397,8 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
 const ACCESSIBLE_TEXT_BYTES: usize = 16 * 1024;
 
 /// `text` as an accessible name or value carries it: whole up to 16 KiB,
-/// otherwise cut between characters to end in an ellipsis within that
-/// bound. Text it borrows is copied only as far as it keeps it, once, into
+/// otherwise cut between grapheme clusters to end in an ellipsis within
+/// that bound. Text it borrows is copied only as far as it keeps it, once, into
 /// the shared string itself; made an owned string first, every frame that
 /// drew a borrowed status line copied it twice. A failure's report, which
 /// Git's output can make megabytes long, or a model's details would
@@ -2411,7 +2411,7 @@ pub(crate) fn bounded_accessible_text<'a>(
     if text.len() <= ACCESSIBLE_TEXT_BYTES {
         return SharedString::from(text);
     }
-    let end = text.floor_char_boundary(ACCESSIBLE_TEXT_BYTES - '…'.len_utf8());
+    let end = crate::text_cut::floor_cluster(&text, ACCESSIBLE_TEXT_BYTES - '…'.len_utf8());
     format!("{}…", &text[..end]).into()
 }
 
@@ -4251,6 +4251,30 @@ mod state_tests;
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+
+    /// A long accessible text is cut between whole grapheme clusters, at
+    /// each byte inside a letter with its combining marks, a ZWJ emoji
+    /// sequence or a flag, still within its byte bound with the ellipsis.
+    #[test]
+    fn a_long_accessible_text_is_cut_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        let bound = super::ACCESSIBLE_TEXT_BYTES - '…'.len_utf8();
+        for (case, cluster) in CLUSTERS {
+            for inside in 1..cluster.len() {
+                let text = format!("{}{cluster}{}", "a".repeat(bound - inside), "z".repeat(64));
+                let shown = super::bounded_accessible_text(text.as_str());
+                let kept = shown.strip_suffix('…').expect("a cut text");
+                assert_whole_prefix(&text, kept, case);
+                assert_eq!(kept.len(), bound - inside, "{case}");
+            }
+        }
+        // One cluster past the bound keeps the bound's text, cut between
+        // characters, rather than the ellipsis alone.
+        let marks = format!("e{}", "\u{301}".repeat(50_000));
+        let shown = super::bounded_accessible_text(marks.as_str());
+        let kept = shown.strip_suffix('…').expect("a cut text");
+        assert_eq!(kept, &marks[..marks.floor_char_boundary(bound)]);
+    }
     #[gpui::test]
     fn rendered_buttons_report_disabled_and_tab_selection(cx: &mut TestAppContext) {
         use gpui::Element as _;

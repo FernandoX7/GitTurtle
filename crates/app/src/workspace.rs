@@ -1614,19 +1614,36 @@ fn committed_length(text: &str, marked: Option<std::ops::Range<usize>>) -> usize
 }
 
 /// `full`, or where it is wider than `room` at `size`, the most of it that
-/// fits with an ellipsis, cut at a character boundary after any spaces and
-/// ellipsis it ends with; empty where not even its first character does, so
+/// fits with an ellipsis, cut at a grapheme-cluster boundary after any spaces
+/// and ellipsis it ends with; empty where not even its first cluster does, so
 /// no lone ellipsis shows.
 fn ellipsized(full: &str, room: Pixels, size: Pixels, window: &Window) -> SharedString {
     let weight = window.text_style().font_weight;
-    let fits = |text: &str| crate::views::shaped_width(text, size, weight, window) <= room;
+    cut_to_fit(full, |text| {
+        crate::views::shaped_width(text, size, weight, window) <= room
+    })
+}
+
+/// [`ellipsized`]'s cut, with `fits` saying whether a text fits its room: a
+/// longer text never fits where a shorter one does not, so a binary search
+/// of the grapheme-cluster boundaries finds the longest cut that fits.
+fn cut_to_fit(full: &str, fits: impl Fn(&str) -> bool) -> SharedString {
+    use unicode_segmentation::UnicodeSegmentation as _;
     if fits(full) {
         return SharedString::from(full.to_owned());
     }
-    let stem = full.trim_end_matches('…');
-    // The byte ends of `stem`'s first one, two, … characters, short of all.
-    let ends: Vec<usize> = stem.char_indices().skip(1).map(|(end, _)| end).collect();
-    let cut = |characters: usize| format!("{}…", stem[..ends[characters]].trim_end());
+    let stem = crate::text_cut::trim_end_clusters(full, |c| c == '…');
+    // The byte ends of `stem`'s first one, two, … grapheme clusters, short
+    // of all, so a cut keeps a letter's marks, an emoji sequence or a flag.
+    let ends: Vec<usize> = stem
+        .grapheme_indices(true)
+        .skip(1)
+        .map(|(end, _)| end)
+        .collect();
+    let cut = |clusters: usize| {
+        let kept = crate::text_cut::trim_end_clusters(&stem[..ends[clusters]], char::is_whitespace);
+        format!("{kept}…")
+    };
     let (mut fitting, mut low, mut high) = (SharedString::default(), 0, ends.len());
     while low < high {
         let middle = (low + high) / 2;
@@ -6015,6 +6032,24 @@ mod tests {
     };
     use core::prelude::v1::test;
     use gitturtle_core::ChangeArea;
+
+    /// A placeholder too wide for its field is cut between whole grapheme
+    /// clusters: a letter with its combining marks, a ZWJ emoji sequence or
+    /// a flag that does not fit whole beside the ellipsis is left out whole,
+    /// as is the space before it. Every character here is one unit wide.
+    #[test]
+    fn a_cut_placeholder_keeps_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            let full = format!("Commit to {cluster}feature");
+            for room in 11..=10 + cluster.chars().count() {
+                let shown = super::cut_to_fit(&full, |text| text.chars().count() <= room);
+                let kept = shown.strip_suffix('…').expect("a cut placeholder");
+                assert_whole_prefix(&full, kept, case);
+                assert_eq!(kept, "Commit to", "{case} in a room of {room}");
+            }
+        }
+    }
 
     #[test]
     fn small_working_inspector_reserves_files_after_wrapping_controls() {

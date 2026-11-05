@@ -255,11 +255,8 @@ struct Signals {
 fn bounded_error(error: impl std::fmt::Display) -> String {
     let mut message = error.to_string();
     if message.len() > MAX_ERROR_BYTES {
-        let mut end = MAX_ERROR_BYTES;
-        while !message.is_char_boundary(end) {
-            end -= 1;
-        }
-        message.truncate(end);
+        // Cut between whole grapheme clusters.
+        message.truncate(crate::text_cut::floor_cluster(&message, MAX_ERROR_BYTES));
         message.push('…');
     }
     message
@@ -1217,6 +1214,26 @@ mod tests {
     use futures::{FutureExt, StreamExt};
     use notify::event::{AccessKind, AccessMode, DataChange};
     use std::process::{Command, Output};
+
+    /// A long local-watch error is cut between whole grapheme clusters, at
+    /// each byte inside a letter with its combining marks, a ZWJ emoji
+    /// sequence or a flag, still within its byte bound.
+    #[test]
+    fn a_long_error_is_cut_between_whole_grapheme_clusters() {
+        use crate::text_cut::tests::{CLUSTERS, assert_whole_prefix};
+        for (case, cluster) in CLUSTERS {
+            for inside in 1..cluster.len() {
+                let error = format!(
+                    "{}{cluster}tail",
+                    "a".repeat(super::MAX_ERROR_BYTES - inside)
+                );
+                let shown = super::bounded_error(&error);
+                let kept = shown.strip_suffix('…').expect("a cut error");
+                assert_whole_prefix(&error, kept, case);
+                assert_eq!(kept.len(), super::MAX_ERROR_BYTES - inside, "{case}");
+            }
+        }
+    }
 
     struct Fixture {
         _directory: tempfile::TempDir,
