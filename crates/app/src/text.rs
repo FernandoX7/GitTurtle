@@ -160,11 +160,15 @@ pub fn refresh_theme(
 
 /// The patch's decorations in the applied palette. Under More contrast a changed word also draws
 /// a rule along its highlight box's bottom edge (`EditorHighlights::added_rule`), on a decoration
-/// of its own over the word's range: Find rebuilds every decoration that sets a background
-/// around its matches from its range and style alone (`editor_find`'s
-/// `without_match_backgrounds`), and keeps one without a background whole, while its matches'
-/// own backgrounds hide the rule under them. Each run of adjacent changed lines of one side, a
-/// removed or an added block, also fills its lines' whole rows in its line tint
+/// of its own over the word's range. Under Find's matches the patch layer splits a decoration
+/// around each match, copying it whole and clearing one property on the pieces under it
+/// (`editor_find`'s `split_under_matches`): where Find draws its matches with backgrounds, the
+/// background (`without_match_backgrounds`), so the rule stays under the other matches and the
+/// current match's underline, on Find's earlier collection, hides it; on an editor past the ones
+/// that keep a Find collection of their own, where Find underlines every match without a
+/// background, the rule (`without_match_rules`), so the patch keeps its backgrounds and no match
+/// draws two strokes. Each run of adjacent changed lines of one side, a removed or an added
+/// block, also fills its lines' whole rows in its line tint
 /// (`TextDecoration::with_row_background`), on one decoration of its own without a background,
 /// which Find keeps whole, so a hunk's changed lines read as one block with a straight right
 /// edge and a blank changed line is tinted across its row, not under its `-` or `+` alone

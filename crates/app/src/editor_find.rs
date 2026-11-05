@@ -64,9 +64,12 @@ pub fn reserve_highlight_layer(editor: &Entity<EditorState>, cx: &mut App) {
     }
     let mut layers = std::mem::take(&mut cx.default_global::<ReservedLayers>().0);
     layers.retain(|layer| layer.editor.upgrade().is_some());
-    // Keep the editors' collections bounded if a future caller retains more
-    // groups. Find's fallback still has a visible underline without competing
-    // backgrounds; a listed editor holds only weak handles.
+    // The reserved collections stay bounded at `RETAINED_PANELS` if a future
+    // caller retains more groups; Find's fallback still has a visible
+    // underline without competing backgrounds. The list itself is not bounded
+    // there: it holds one entry per live editor that reserved, each of weak
+    // handles alone, an editor past the bound listed without a collection so
+    // Find can mask its patch layer, and released editors are dropped above.
     let reserved = layers
         .iter()
         .filter(|layer| layer.decorations.is_some())
