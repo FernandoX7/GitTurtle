@@ -210,18 +210,30 @@ pub(crate) fn align_rows(sources: &[Vec<&str>; 2], patch: &PatchPresentation) ->
     rows
 }
 
-/// Each side's changed-line tint and changed-word tint, old side first, from the applied
-/// palette and its fitted editor highlights.
-fn side_tints(cx: &App) -> [(u32, u32); 2] {
+/// Each side's changed-line tint, changed-word tint and, under More contrast, the rule a changed
+/// word draws along its box's bottom edge, old side first, from the applied palette and its
+/// fitted editor highlights.
+fn side_tints(cx: &App) -> [(u32, u32, Option<u32>); 2] {
     let (colors, highlights) = (palette(cx), crate::appearance::editor_highlights(cx));
     [
-        (colors.removed_background, highlights.removed_word),
-        (colors.added_background, highlights.added_word),
+        (
+            colors.removed_background,
+            highlights.removed_word,
+            highlights.removed_rule,
+        ),
+        (
+            colors.added_background,
+            highlights.added_word,
+            highlights.added_rule,
+        ),
     ]
 }
 
 impl SplitSide {
-    fn decorations(&self, (line, word): (u32, u32)) -> Vec<TextDecoration> {
+    /// The side's changed lines in `line` and its emphasized words in `word`, each word with a
+    /// `rule` along its box's bottom edge where there is one, on a decoration of its own, as
+    /// `text::theme_decorations` gives a unified patch's words theirs.
+    fn decorations(&self, (line, word, rule): (u32, u32, Option<u32>)) -> Vec<TextDecoration> {
         let style = HighlightStyle {
             background_color: Some(rgb(line).into()),
             ..Default::default()
@@ -243,6 +255,12 @@ impl SplitSide {
                     result.push(TextDecoration::new(cursor..word.start, style));
                 }
                 result.push(TextDecoration::new(word.clone(), emphasized));
+                if let Some(rule) = rule {
+                    result.push(
+                        TextDecoration::new(word.clone(), HighlightStyle::default())
+                            .with_bottom_rule(rgb(rule).into()),
+                    );
+                }
                 cursor = word.end;
             }
             if cursor < range.end {
@@ -776,6 +794,94 @@ mod tests {
             assert_eq!(split.scroll.applied, [px(-23. * 546.); 2]);
             assert_eq!(split.scroll.pending, [None; 2]);
         });
+    }
+
+    /// Under More contrast each side's emphasized words in Split draw a rule inside their
+    /// highlight box's bottom edge, a 1 px stroke as wide as the box, in the side's fitted
+    /// colour, removed on Before and added on After, at 13 and 18 pt, in a dark palette, one
+    /// whose removed words nearly vanish in colour-blind models, and a light one; no other quad
+    /// of a rule's colour and height is painted, so a whole changed line and unchanged text draw
+    /// none. Off, no word draws one, and each side's decorations carry no rule.
+    #[gpui::test]
+    fn more_contrast_rules_each_emphasized_word_in_split(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::DENSE_HUNK;
+        let presentation = Arc::new(prepare(before, after, patch));
+        let words = presentation.sides.each_ref().map(|side| side.words.len());
+        assert_eq!(words, [4, 4], "four changed words a side");
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let split = cx.read(|cx| root.read(cx).0.clone());
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::SolarizedDark,
+            ThemeChoice::Daylight,
+        ] {
+            for code in [13, 18] {
+                for more in [true, false] {
+                    let at = format!("{choice:?} at {code} pt, More contrast {more}");
+                    let highlights = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        choice.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, code, window, cx);
+                        split.update(cx, |split, cx| split.refresh_theme(cx));
+                        editor_highlights(cx)
+                    });
+                    cx.update(|window, cx| window.draw(cx).clear(cx));
+                    // Old side first: removed words on Before, added on After.
+                    let sides = [
+                        (highlights.removed_word, highlights.removed_rule),
+                        (highlights.added_word, highlights.added_rule),
+                    ];
+                    let rules = sides.iter().filter_map(|side| side.1).collect::<Vec<_>>();
+                    let (drawn, stray) = cx.update(|window, _| {
+                        crate::text::painted_word_rules(window, &sides.map(|side| side.0), &rules)
+                    });
+                    assert_eq!(stray, 0, "{at}: a rule off every emphasized word's box");
+                    for (side, (tint, rule)) in sides.into_iter().enumerate() {
+                        let boxes = drawn
+                            .iter()
+                            .filter(|(_, drawn, _)| *drawn == tint)
+                            .collect::<Vec<_>>();
+                        assert_eq!(boxes.len(), words[side], "{at}: side {side}'s word boxes");
+                        let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                        for (bounds, _, along) in boxes {
+                            assert_eq!(
+                                along, &want,
+                                "{at}: side {side}'s word box {bounds:?} draws {want:?} inside its bottom edge"
+                            );
+                        }
+                    }
+                    if !more {
+                        let tints = cx.read(side_tints);
+                        assert!(
+                            (0..2)
+                                .flat_map(|side| presentation.sides[side].decorations(tints[side]))
+                                .all(|decoration| decoration.bottom_rule.is_none()),
+                            "{at}: no decoration has a rule"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

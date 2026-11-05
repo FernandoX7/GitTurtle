@@ -158,54 +158,143 @@ pub fn refresh_theme(
     collection.set(theme_decorations(presentation, cx), cx);
 }
 
+/// The patch's decorations in the applied palette. Under More contrast a changed word also draws
+/// a rule along its highlight box's bottom edge (`EditorHighlights::added_rule`), on a decoration
+/// of its own over the word's range: Find rebuilds every decoration that sets a background
+/// around its matches from its range and style alone (`editor_find`'s
+/// `without_match_backgrounds`), and keeps one without a background whole, while its matches'
+/// own backgrounds hide the rule under them. Off, there is one decoration a prepared range.
 fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDecoration> {
     let palette = palette(cx);
     let highlights = crate::appearance::editor_highlights(cx);
-    presentation
-        .ranges
-        .iter()
-        .map(|decoration| {
-            let style = match decoration.kind {
-                Kind::Added | Kind::AddedWord => HighlightStyle {
-                    color: Some(rgb(palette.added).into()),
-                    background_color: Some(
-                        rgb(if decoration.kind == Kind::AddedWord {
-                            highlights.added_word
-                        } else {
-                            palette.added_background
-                        })
-                        .into(),
-                    ),
-                    ..Default::default()
-                },
-                Kind::Removed | Kind::RemovedWord => HighlightStyle {
-                    color: Some(rgb(palette.removed).into()),
-                    background_color: Some(
-                        rgb(if decoration.kind == Kind::RemovedWord {
-                            highlights.removed_word
-                        } else {
-                            palette.removed_background
-                        })
-                        .into(),
-                    ),
-                    ..Default::default()
-                },
-                Kind::Hunk => HighlightStyle {
-                    color: Some(rgb(palette.hunk).into()),
-                    font_weight: Some(FontWeight::MEDIUM),
-                    ..Default::default()
-                },
-                // No color of its own: a file header draws in the editor foreground, `text`,
-                // which follows a theme change in the patch views that never redecorate.
-                Kind::Header => HighlightStyle {
-                    font_weight: Some(FontWeight::MEDIUM),
-                    ..Default::default()
-                },
-            };
-            TextDecoration::new(decoration.range.clone(), style)
-        })
-        .collect()
+    let mut decorations = Vec::with_capacity(presentation.ranges.len());
+    for decoration in presentation.ranges.iter() {
+        let rule = match decoration.kind {
+            Kind::AddedWord => highlights.added_rule,
+            Kind::RemovedWord => highlights.removed_rule,
+            _ => None,
+        };
+        let style = match decoration.kind {
+            Kind::Added | Kind::AddedWord => HighlightStyle {
+                color: Some(rgb(palette.added).into()),
+                background_color: Some(
+                    rgb(if decoration.kind == Kind::AddedWord {
+                        highlights.added_word
+                    } else {
+                        palette.added_background
+                    })
+                    .into(),
+                ),
+                ..Default::default()
+            },
+            Kind::Removed | Kind::RemovedWord => HighlightStyle {
+                color: Some(rgb(palette.removed).into()),
+                background_color: Some(
+                    rgb(if decoration.kind == Kind::RemovedWord {
+                        highlights.removed_word
+                    } else {
+                        palette.removed_background
+                    })
+                    .into(),
+                ),
+                ..Default::default()
+            },
+            Kind::Hunk => HighlightStyle {
+                color: Some(rgb(palette.hunk).into()),
+                font_weight: Some(FontWeight::MEDIUM),
+                ..Default::default()
+            },
+            // No color of its own: a file header draws in the editor foreground, `text`,
+            // which follows a theme change in the patch views that never redecorate.
+            Kind::Header => HighlightStyle {
+                font_weight: Some(FontWeight::MEDIUM),
+                ..Default::default()
+            },
+        };
+        decorations.push(TextDecoration::new(decoration.range.clone(), style));
+        if let Some(rule) = rule {
+            decorations.push(
+                TextDecoration::new(decoration.range.clone(), HighlightStyle::default())
+                    .with_bottom_rule(rgb(rule).into()),
+            );
+        }
+    }
+    decorations
 }
+
+/// A changed word's highlight box as painted, its tint, and the rule colour, where it is one
+/// asked for, of each quad inside its bottom edge ([`painted_word_rules`]).
+#[cfg(test)]
+pub(crate) type PaintedWord = (
+    gpui_kit::Bounds<gpui_kit::ScaledPixels>,
+    u32,
+    Vec<Option<u32>>,
+);
+
+/// What the last frame painted for each changed word, read for the rule under More contrast:
+/// each highlight box painted in one of the word `tints`, with its tint and the colour, where it
+/// is one of `rules`, of each quad laid inside its bottom edge, a 1 px stroke tall on its device
+/// pixels and as wide as the box; and how many quads of that height in one of `rules` lie along
+/// no word's box, as under a whole changed line or a hunk header.
+#[cfg(test)]
+pub(crate) fn painted_word_rules(
+    window: &Window,
+    tints: &[u32],
+    rules: &[u32],
+) -> (Vec<PaintedWord>, usize) {
+    let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
+    let painted = |quad: &gpui_kit::Quad, colors: &[u32]| {
+        colors
+            .iter()
+            .copied()
+            .find(|&color| quad.background == fill(color))
+    };
+    let quads = window.painted_quads();
+    // A 1 px stroke on its device pixels, halves toward zero, as GPUI snaps one.
+    let stroke = (window.scale_factor() - 0.5).ceil().max(1.);
+    let words = quads
+        .iter()
+        .filter_map(|quad| Some((quad.bounds, painted(quad, tints)?)))
+        .collect::<Vec<_>>();
+    let along = |word: &gpui_kit::Bounds<gpui_kit::ScaledPixels>, quad: &gpui_kit::Quad| {
+        (
+            quad.bounds.left(),
+            quad.bounds.right(),
+            quad.bounds.bottom(),
+        ) == (word.left(), word.right(), word.bottom())
+            && quad.bounds.size.height.0 == stroke
+    };
+    let stray = quads
+        .iter()
+        .filter(|quad| {
+            quad.bounds.size.height.0 == stroke
+                && painted(quad, rules).is_some()
+                && !words.iter().any(|(word, _)| along(word, quad))
+        })
+        .count();
+    let words = words
+        .iter()
+        .map(|&(word, tint)| {
+            let rules = quads
+                .iter()
+                .filter(|quad| along(&word, quad))
+                .map(|quad| painted(quad, rules))
+                .collect();
+            (word, tint, rules)
+        })
+        .collect();
+    (words, stray)
+}
+
+/// A dense hunk for a test of the changed-word rule, its old source, new source and patch: four
+/// short changed words a side on adjacent lines, a whole added line, a hunk header and unchanged
+/// text.
+#[cfg(test)]
+pub(crate) const DENSE_HUNK: [&str; 3] = [
+    "keep(a, b);\nlet x = old + one;\ncall(red, blue, 7);\n}\n",
+    "keep(a, b);\nlet y = new + one;\ncall(green, blue, 8);\nwhole_added_line();\n}\n",
+    "@@ -1,4 +1,5 @@ fn dense() {\n keep(a, b);\n-let x = old + one;\n-call(red, blue, 7);\n+let y = new + one;\n+call(green, blue, 8);\n+whole_added_line();\n }\n",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -851,5 +940,189 @@ mod tests {
         assert_eq!(language, "text");
         let unprepared = asked[1].borrow().first().cloned();
         assert_eq!(unprepared.as_deref(), Some("text"));
+    }
+
+    /// Under More contrast every changed word in the Diff view draws a rule inside its highlight
+    /// box's bottom edge, a 1 px stroke as wide as the box, in its side's fitted colour, at 13
+    /// and 18 pt, in a dark palette, one whose removed words nearly vanish in colour-blind
+    /// models, and a light one; no other quad of a rule's colour and height is painted, so a
+    /// whole changed line, the hunk header and unchanged text draw none. Off, no word draws one,
+    /// and the decorations are one a prepared range, none with a rule, as before the rule
+    /// existed.
+    #[gpui_kit::test]
+    fn more_contrast_rules_each_changed_word_in_the_diff_view(cx: &mut gpui_kit::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use gpui_kit::{Context, IntoElement, ParentElement, Render, Styled, div, px};
+
+        struct Root(
+            Entity<crate::diff_view::DiffView>,
+            crate::editor_find::PatchDecorations,
+        );
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(900.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let patch = DENSE_HUNK[2];
+        let presentation = PatchPresentation::prepare(patch);
+        let words = presentation
+            .ranges
+            .iter()
+            .filter(|range| matches!(range.kind, Kind::AddedWord | Kind::RemovedWord))
+            .count();
+        assert_eq!(words, 8, "four changed words a side");
+        cx.update(gpui_kit::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let (editor, decorations) =
+                editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
+            let view = crate::diff_view::new(editor, &presentation, window, cx);
+            Root(view, decorations.expect("a prepared patch is decorated"))
+        });
+        for choice in [
+            ThemeChoice::Midnight,
+            ThemeChoice::SolarizedDark,
+            ThemeChoice::Daylight,
+        ] {
+            for code in [13, 18] {
+                for more in [true, false] {
+                    let at = format!("{choice:?} at {code} pt, More contrast {more}");
+                    let (highlights, decorations) = cx.update(|window, cx| {
+                        set_more_contrast(more, cx);
+                        choice.apply(Some(&mut *window), cx);
+                        apply_text_sizes(13, code, window, cx);
+                        let decorations = root.read(cx).1.clone();
+                        refresh_theme(&decorations, &presentation, cx);
+                        (editor_highlights(cx), theme_decorations(&presentation, cx))
+                    });
+                    cx.update(|window, cx| window.draw(cx).clear(cx));
+                    let tints = [highlights.added_word, highlights.removed_word];
+                    let rules = [highlights.added_rule, highlights.removed_rule];
+                    let (drawn, stray) = cx.update(|window, _| {
+                        painted_word_rules(
+                            window,
+                            &tints,
+                            &rules.iter().flatten().copied().collect::<Vec<_>>(),
+                        )
+                    });
+                    assert_eq!(drawn.len(), words, "{at}: a box a changed word");
+                    assert_eq!(stray, 0, "{at}: a rule off every changed word's box");
+                    for (bounds, tint, along) in drawn {
+                        let rule = rules[usize::from(tint != highlights.added_word)];
+                        let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                        assert_eq!(
+                            along, want,
+                            "{at}: the word box {bounds:?} in #{tint:06x} draws {want:?} inside its bottom edge"
+                        );
+                    }
+                    if !more {
+                        assert_eq!(rules, [None, None], "{at}");
+                        assert_eq!(decorations.len(), presentation.ranges.len(), "{at}");
+                        assert!(
+                            decorations
+                                .iter()
+                                .all(|decoration| decoration.bottom_rule.is_none()),
+                            "{at}: no decoration has a rule"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Under More contrast, Find over changed words: a changed word's rule stays under Find's
+    /// other matches, which take the word's tint, so a matched changed word still reads as
+    /// changed, and gives way under its current match, whose accent underline would run about
+    /// 2.6 px above it. "re" matches the removed "red" and the added "green".
+    #[gpui_kit::test]
+    fn find_hides_a_changed_word_s_rule_only_under_its_current_match(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use gpui_kit::{Context, Focusable, IntoElement, ParentElement, Render, Styled, div, px};
+
+        /// The view, and the decorations' handle kept for the window's life, as Compare keeps it.
+        struct Root {
+            view: Entity<crate::diff_view::DiffView>,
+            _decorations: crate::editor_find::PatchDecorations,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(900.)).h(px(600.)).child(self.view.clone())
+            }
+        }
+
+        let patch = DENSE_HUNK[2];
+        let presentation = PatchPresentation::prepare(patch);
+        cx.update(gpui_kit::init);
+        let mut patch_editor = None;
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            set_more_contrast(true, cx);
+            ThemeChoice::Midnight.apply(Some(&mut *window), cx);
+            apply_text_sizes(13, 13, window, cx);
+            let (editor, decorations) =
+                editor_with_decorations(patch, "diff", Some(&presentation), window, cx);
+            patch_editor = Some(editor.clone());
+            Root {
+                view: crate::diff_view::new(editor, &presentation, window, cx),
+                _decorations: decorations.expect("a prepared patch is decorated"),
+            }
+        });
+        let editor = patch_editor.expect("the patch editor");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let focus = cx.update(|_, cx| editor.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&focus, cx));
+        cx.dispatch_action(gpui_kit::component::input::Search);
+        cx.simulate_input("re");
+        cx.run_until_parked();
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let highlights = cx.update(|_, cx| editor_highlights(cx));
+        let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
+        let rules = [highlights.added_rule, highlights.removed_rule]
+            .map(|rule| fill(rule.expect("More contrast is on")));
+        let (quads, stroke) = cx.update(|window, _| {
+            let stroke = (window.scale_factor() - 0.5).ceil().max(1.);
+            (window.painted_quads(), stroke)
+        });
+        let painted = |color: u32| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == fill(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (current, others) = (
+            painted(highlights.find_current),
+            painted(highlights.find_match),
+        );
+        assert_eq!(
+            (current.len(), others.len()),
+            (1, 1),
+            "one current match and one other: {current:?}, {others:?}"
+        );
+        let ruled = quads
+            .iter()
+            .filter(|quad| quad.bounds.size.height.0 == stroke && rules.contains(&quad.background))
+            .map(|quad| quad.bounds)
+            .collect::<Vec<_>>();
+        let (current, other) = (current[0], others[0]);
+        assert!(
+            ruled.iter().any(|rule| rule.bottom() == other.bottom()
+                && rule.left() <= other.left()
+                && rule.right() >= other.right()),
+            "the other match {other:?} keeps its changed word's rule: {ruled:?}"
+        );
+        assert!(
+            !ruled.iter().any(|rule| rule.bottom() == current.bottom()
+                && rule.left() < current.right()
+                && rule.right() > current.left()),
+            "the current match {current:?} hides its changed word's rule: {ruled:?}"
+        );
     }
 }

@@ -3165,6 +3165,12 @@ pub struct EditorHighlights {
     pub find_current: u32,
     pub added_word: u32,
     pub removed_word: u32,
+    /// The 1 px rule an added word draws along its highlight box's bottom edge under More
+    /// contrast ([`Self::word_rule`]), so a changed word is marked by more than colour; `None`
+    /// with More contrast off.
+    pub added_rule: Option<u32>,
+    /// The removed word's rule, as [`Self::added_rule`].
+    pub removed_rule: Option<u32>,
 }
 
 impl Global for EditorHighlights {}
@@ -3277,6 +3283,8 @@ impl EditorHighlights {
                 palette.removed,
                 palette.removed_background,
             ),
+            added_rule: None,
+            removed_rule: None,
         }
     }
 
@@ -3328,7 +3336,31 @@ impl EditorHighlights {
             find_current,
             added_word,
             removed_word,
+            added_rule: Some(Self::word_rule(palette, palette.added, added_word)),
+            removed_rule: Some(Self::word_rule(palette, palette.removed, removed_word)),
         }
+    }
+
+    /// The rule a changed word draws along its highlight box's bottom edge under More contrast:
+    /// its side's diff colour, `diff`, as applied, where that reads [`MORE_CONTRAST_EDGE`] on the
+    /// word's tint, `word`, otherwise the first of 256 even steps from it toward black in a light
+    /// palette or white in a dark one that does, as [`Palette::resting_edge`] is fitted.
+    ///
+    /// Why a rule: a changed line carries cues beyond colour, its `+` or `-` and Split's filler
+    /// rows, and a changed word carried none; in colour-blind models some words nearly vanish
+    /// (Solarized Dark's removed words), and WCAG 1.4.1 asks for a cue beyond colour. Why 3:1:
+    /// the rule is a graphic, held to the non-text contrast every other edge under More contrast
+    /// holds. Why every palette and both sides: marking only some would read as a difference in
+    /// meaning.
+    fn word_rule(palette: Palette, diff: u32, word: u32) -> u32 {
+        let extreme = if palette.is_light() {
+            0x000000
+        } else {
+            0xffffff
+        };
+        toward_extreme_in(256, diff, extreme, |rule| {
+            custom::contrast(rule, word) >= MORE_CONTRAST_EDGE
+        })
     }
 
     /// The selection and current match [`Self::fit_raised`] draws: `selection` is raised from
@@ -7863,6 +7895,122 @@ mod tests {
                     contrast(was, off)
                 )
             })
+    }
+
+    /// Why `rule` is not the rule a changed word whose tint is `word` draws
+    /// for the diff colour `diff` in a light or dark palette
+    /// ([`EditorHighlights::word_rule`]), or `None` where it is: it reads
+    /// [`MORE_CONTRAST_EDGE`] on the tint, it is `diff` where `diff` already
+    /// reads so, and otherwise it is one of 256 even steps from `diff`
+    /// toward black in a light palette or white in a dark one, the step
+    /// before it reading under 3:1.
+    fn word_rule_misses(light: bool, diff: u32, word: u32, rule: u32) -> Option<String> {
+        let (ratio, diff_ratio) = (contrast(rule, word), contrast(diff, word));
+        if ratio < MORE_CONTRAST_EDGE {
+            return Some(format!(
+                "#{rule:06x} reads {ratio:.3}:1 on its word #{word:06x}"
+            ));
+        }
+        if diff_ratio >= MORE_CONTRAST_EDGE {
+            return (rule != diff).then(|| {
+                format!(
+                    "#{rule:06x} leaves its diff colour #{diff:06x}, which reads \
+                     {diff_ratio:.3}:1 on its word #{word:06x}"
+                )
+            });
+        }
+        let extreme = if light { 0x000000 } else { 0xffffff };
+        let step = |k: u32| {
+            [16, 8, 0].into_iter().fold(0, |color, shift| {
+                let (from, to) = ((diff >> shift) & 0xff, (extreme >> shift) & 0xff);
+                color | (((from * (256 - k) + to * k) / 256) << shift)
+            })
+        };
+        let first = (1..=256)
+            .find(|&k| step(k) == rule)
+            .is_some_and(|k| contrast(step(k - 1), word) < MORE_CONTRAST_EDGE);
+        (!first).then(|| {
+            format!(
+                "#{rule:06x} is not the first step from #{diff:06x} toward #{extreme:06x} that \
+                 reads 3:1 on its word #{word:06x}"
+            )
+        })
+    }
+
+    /// Under More contrast every changed word, in every palette and on both
+    /// sides, draws a rule along its highlight box's bottom edge
+    /// ([`EditorHighlights::word_rule`]) that reads [`MORE_CONTRAST_EDGE`]
+    /// on the word's tint as applied, its side's diff colour where that
+    /// already reads so ([`word_rule_misses`]). Off, no word draws one, so the
+    /// decorations are those drawn before the rule existed. Every shipped
+    /// palette's diff colours read 3:1 on their word tints, which are fitted
+    /// for them as text (the least, Kanagawa Wave's removed `#ff5d62` on
+    /// `#5c0c1c`, 4.59:1, measured on 2026-11-05), so each draws its diff
+    /// colour; `a_word_rule_steps_from_a_diff_colour_under_three_to_one`
+    /// reads the step where one would not.
+    #[gpui::test]
+    fn more_contrast_rules_every_changed_word_at_three_to_one(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, chosen) in more_contrast_palettes() {
+            let off = cx.update(|cx| {
+                set_more_contrast(false, cx);
+                chosen.apply(chosen.is_light(), None, cx);
+                editor_highlights(cx)
+            });
+            if off.added_rule.is_some() || off.removed_rule.is_some() {
+                failures.push(format!(
+                    "{name} rules a changed word with More contrast off"
+                ));
+            }
+            let (applied, on) = cx.update(|cx| {
+                set_more_contrast(true, cx);
+                chosen.apply(chosen.is_light(), None, cx);
+                (palette(cx), editor_highlights(cx))
+            });
+            for (side, diff, word, rule) in [
+                ("added", applied.added, on.added_word, on.added_rule),
+                ("removed", applied.removed, on.removed_word, on.removed_rule),
+            ] {
+                match rule {
+                    None => failures.push(format!("{name}'s {side} word draws no rule")),
+                    Some(rule) => failures.extend(
+                        word_rule_misses(applied.is_light(), diff, word, rule)
+                            .map(|miss| format!("{name}'s {side} rule {miss}")),
+                    ),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A diff colour that reads under 3:1 on its word's tint gives the rule
+    /// the first of 256 steps from it toward white in a dark palette or black
+    /// in a light one that reads 3:1 there, and one that reads 3:1 is kept.
+    /// No shipped palette has such a pair, so these are made: Midnight's
+    /// removed word tint under a dim rose, and Daylight's added word tint
+    /// under a pale green.
+    #[test]
+    fn a_word_rule_steps_from_a_diff_colour_under_three_to_one() {
+        for (choice, diff, word) in [
+            (ThemeChoice::Midnight, 0x8a4a5c, 0x5f3241),
+            (ThemeChoice::Midnight, 0xff95a8, 0x5f3241),
+            (ThemeChoice::Daylight, 0x9fd8a8, 0xd6f5da),
+            (ThemeChoice::Daylight, 0x1a7f37, 0xd6f5da),
+        ] {
+            let palette = choice.palette();
+            let rule = EditorHighlights::word_rule(palette, diff, word);
+            assert_eq!(
+                word_rule_misses(palette.is_light(), diff, word, rule),
+                None,
+                "{choice:?}: #{diff:06x} on #{word:06x}"
+            );
+            assert_eq!(
+                rule == diff,
+                contrast(diff, word) >= MORE_CONTRAST_EDGE,
+                "{choice:?}: #{diff:06x} on #{word:06x} moves only where it misses 3:1"
+            );
+        }
     }
 
     /// Under More contrast a changed word that cannot stand
