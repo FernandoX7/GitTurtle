@@ -166,7 +166,14 @@ impl DiffView {
         self.rows = rows;
         self.column_width = column_width;
         self.pending_scroll = Rc::default();
-        self.gutter_origin = Rc::default();
+        // The gutter keeps the origin it last painted at: the partial
+        // actions are placed from it ([`Self::render_partial_controls`]).
+        // Forgotten here, a view refreshed while hidden, as a text review
+        // released as Quick Open's inspection covers it, drew
+        // its first frame back with each action above its row (8 px at the
+        // default size), where it stayed until something else drew, and the
+        // pointer's arrival drew it in place, from under the pointer: Stage
+        // looked enabled and its first press started nothing.
         cx.notify();
     }
 }
@@ -315,7 +322,16 @@ impl Render for DiffView {
                         // Editor has painted and applied its deferred offset.
                         // Notifications alone do not mark that boundary.
                         painted_scroll.clear();
-                        gutter_origin.set(Some(bounds.origin));
+                        // The partial actions are placed from this origin
+                        // as the view renders, before this paint, so a paint
+                        // that finds it moved, the first one or one after the
+                        // view was laid out anew, asks for the frame that
+                        // draws them in place.
+                        if gutter_origin.replace(Some(bounds.origin)) != Some(bounds.origin)
+                            && action_width > 0.
+                        {
+                            window.request_animation_frame();
+                        }
                         #[cfg(test)]
                         painted_rows::record(&editor, cx);
                         if action_width > 0. {
@@ -456,9 +472,13 @@ impl DiffView {
         ) else {
             return Vec::new();
         };
+        // Placed from where the gutter last painted. Before its first paint
+        // they fall back to the text's origin, which lies below the gutter's
+        // (8 px at the default size), and that paint, finding the origin
+        // moved, asks for the frame that draws them in place.
         let input = state.input_bounds();
-        let top = bounds.origin.y - input.origin.y;
         let origin = self.gutter_origin.get().unwrap_or(input.origin);
+        let top = bounds.origin.y - input.origin.y;
         let action = if partial.diff.area == ChangeArea::Staged {
             "Unstage"
         } else {
@@ -480,6 +500,7 @@ impl DiffView {
                             .h(line_height - px(2.))
                             .child(
                                 Button::new(("partial-hunk", row))
+                                    .debug_selector(move || format!("partial-hunk-{row}"))
                                     .small()
                                     .w_full()
                                     .h(line_height - px(2.))

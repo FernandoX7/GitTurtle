@@ -321,7 +321,7 @@ impl GitTurtle {
         }
         // The comparison stays in the inspection's context for Back, so a
         // review being prepared for it ends here with its read.
-        self.release_text_review(window, cx);
+        self.release_text_review(cx);
         self.invalidate_read();
         let context = self.take_inspection_context(window, cx);
         let lineage = std::mem::take(&mut self.file_history);

@@ -946,7 +946,7 @@ impl GitTurtle {
         self.repository_tabs.document_restore = None;
         // The comparison stays warm with the tab for its return, so a review
         // being prepared for it ends here with its read.
-        self.release_text_review(window, cx);
+        self.release_text_review(cx);
         self.invalidate_read();
         self.worker.release_history();
         self.work_generation = self.work_generation.wrapping_add(1);

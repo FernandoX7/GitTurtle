@@ -390,7 +390,6 @@ impl GitTurtle {
         self.zoom = retained.zoom;
         self.text_mode = retained.text_mode;
         self.review = retained.review;
-        self.rebind_text_partial(window, cx);
         self.mode = retained.mode;
         self.pane = retained.pane;
         self.sidebar = retained.sidebar;

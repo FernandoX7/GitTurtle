@@ -1244,7 +1244,7 @@ impl GitTurtle {
                         "Repository read was interrupted. Open the repository again to retry."
                     )),
                     Err(_) => {
-                        this.release_text_review(window, cx);
+                        this.release_text_review(cx);
                         this.try_automatic_refresh(window, cx);
                         cx.notify();
                         return;
@@ -1263,7 +1263,7 @@ impl GitTurtle {
                         this.receive(output, window, cx);
                     }
                     Err(error) => {
-                        this.release_text_review(window, cx);
+                        this.release_text_review(cx);
                         this.error = Some(format!("{error:#}"));
                         if let Some(index) = this.repository_tabs.active
                             && let Some(tab) = this.repository_tabs.tabs.get_mut(index)
@@ -1732,33 +1732,7 @@ impl GitTurtle {
             } else {
                 diff_view::new(editor.clone(), presentation, window, cx)
             };
-            let generation = self.generation;
-            let path = self.path.clone();
-            self.partial_subscription =
-                Some(
-                    cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
-                        if this.generation != generation
-                            || this.path != path
-                            || this.mode != WorkspaceMode::Working
-                        {
-                            return;
-                        }
-                        let diff_view::DiffViewEvent::ApplyPartial { diff, selection } = event;
-                        this.write(
-                            gitturtle_core::WriteCommand::ApplyPartial {
-                                diff: Arc::clone(diff),
-                                selection: selection.clone(),
-                            },
-                            if diff.area == gitturtle_core::ChangeArea::Unstaged {
-                                "Staging selected changes…"
-                            } else {
-                                "Unstaging selected changes…"
-                            },
-                            window,
-                            cx,
-                        );
-                    }),
-                );
+            self.bind_text_partial(&view, window, cx);
             self.patch_view = Some(view);
         }
     }
