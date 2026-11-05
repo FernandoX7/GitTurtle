@@ -414,7 +414,11 @@ impl GitTurtle {
         if self.content.is_none() && self.mode != WorkspaceMode::History {
             if self.mode == WorkspaceMode::Working {
                 if let Some((index, area)) = self.working_selected {
-                    self.select_working(index, area, window, cx);
+                    // Closed under a dialog or sheet, as by a write
+                    // confirmed there, the row's list becomes where the
+                    // modal returns, in place of this inspection's control
+                    // it was opened from.
+                    self.select_restored_working(index, area, window, cx);
                 }
             } else {
                 self.read_selected_preview(window, cx);

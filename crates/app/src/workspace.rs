@@ -2529,6 +2529,32 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select_working_row(index, area, false, window, cx);
+    }
+
+    /// [`Self::select_working`] for a revision inspection's close, which
+    /// restores Changes with this row selected and no preview: under an
+    /// open dialog or sheet, the row's list becomes the modal's return
+    /// target (`return_modal_to`), as the modal's captured opener belonged
+    /// to the inspection that closed.
+    pub(super) fn select_restored_working(
+        &mut self,
+        index: usize,
+        area: ChangeArea,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_working_row(index, area, true, window, cx);
+    }
+
+    fn select_working_row(
+        &mut self,
+        index: usize,
+        area: ChangeArea,
+        restored: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.operation_busy.is_some() {
             return;
         }
@@ -2589,9 +2615,18 @@ impl GitTurtle {
             // A status read landing while Settings or Projects shows selects
             // the row again for its preview, and leaves focus on that page:
             // it once moved to the hidden list, away from the control the
-            // page opened on.
+            // page opened on. Under a dialog or sheet focus stays in the
+            // modal, which it once left for the list behind it: a read
+            // landing there leaves the modal returning to the control it
+            // was opened from, and only a revision inspection closed there,
+            // whose restore replaced that control, returns to the list
+            // (`select_restored_working`).
             if self.page == AppPage::Repository {
-                window.focus(&self.file_focus, cx);
+                if !(window.has_active_dialog(cx) || window.has_active_sheet(cx)) {
+                    window.focus(&self.file_focus, cx);
+                } else if restored {
+                    self.return_modal_to(Some(self.file_focus.clone()));
+                }
             }
         }
         self.request(

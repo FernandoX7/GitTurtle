@@ -338,6 +338,11 @@ struct GitTurtle {
     window_handle: AnyWindowHandle,
     modal_was_open: bool,
     modal_return_focus: Option<FocusHandle>,
+    /// The control the open modal would give focus back to as it opened,
+    /// where the page behind it was restored while it showed: a control of
+    /// the replaced page, which its close gives way to `modal_return_focus`
+    /// (`GitTurtle::return_modal_to`).
+    modal_replaced_focus: Option<FocusHandle>,
     modal_focus_generation: u64,
     settings_editor: Entity<InputState>,
     /// The Settings page's own view, embedded cached by `render`
@@ -835,6 +840,7 @@ impl GitTurtle {
             window_handle: window.window_handle(),
             modal_was_open: false,
             modal_return_focus: None,
+            modal_replaced_focus: None,
             modal_focus_generation: 0,
             settings_editor,
             settings_page,

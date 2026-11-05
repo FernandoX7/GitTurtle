@@ -390,14 +390,17 @@ impl GitTurtle {
         }
         if self.modal_was_open && !modal_open {
             let previous = self.modal_return_focus.take();
+            let replaced = self.modal_replaced_focus.take();
             let generation = self.modal_focus_generation;
             let owner = cx.entity().downgrade();
             let immediate_previous = previous.clone();
+            let immediate_replaced = replaced.clone();
             window.on_next_frame(move |window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     this.restore_detached_modal_focus(
                         generation,
                         immediate_previous.as_ref(),
+                        immediate_replaced.as_ref(),
                         window,
                         cx,
                     );
@@ -411,35 +414,76 @@ impl GitTurtle {
                     .timer(std::time::Duration::from_millis(300))
                     .await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.restore_detached_modal_focus(generation, previous.as_ref(), window, cx);
+                    this.restore_detached_modal_focus(
+                        generation,
+                        previous.as_ref(),
+                        replaced.as_ref(),
+                        window,
+                        cx,
+                    );
                 });
             })
             .detach();
-        } else if !modal_open && self.app_focus.contains_focused(window, cx) {
-            self.modal_return_focus = window.focused(cx);
+        } else if !modal_open {
+            // A modal opened and closed with no frame between, a restore
+            // run under it, leaves its replaced control behind, which a
+            // later modal would keep as its own (`return_modal_to`).
+            self.modal_replaced_focus = None;
+            if self.app_focus.contains_focused(window, cx) {
+                self.modal_return_focus = window.focused(cx);
+            }
         }
         self.modal_was_open = modal_open;
     }
 
     /// Repairs focus a closing modal left on nothing drawn, or on the
     /// window's root, which the toolkit gives back to a modal opened after
-    /// a click on an empty spot of the window and which shows no focus.
+    /// a click on an empty spot of the window and which shows no focus, or
+    /// on `replaced`, the control the toolkit captured as the modal opened
+    /// where the page behind it was restored meanwhile
+    /// ([`Self::return_modal_to`]): that control belongs to the page the
+    /// restore replaced, drawn or not.
     fn restore_detached_modal_focus(
         &mut self,
         generation: u64,
         previous: Option<&FocusHandle>,
+        replaced: Option<&FocusHandle>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.modal_focus_generation != generation
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
-            || (!window.context_stack().is_empty() && !self.app_focus.is_focused(window))
+        {
+            return;
+        }
+        let on_replaced = replaced.is_some_and(|replaced| replaced.is_focused(window));
+        if !on_replaced && !window.context_stack().is_empty() && !self.app_focus.is_focused(window)
         {
             return;
         }
         self.modal_return_target(previous, window).focus(window, cx);
         window.refresh();
+    }
+
+    /// Makes `focus` the control the open dialog or sheet gives focus back
+    /// to as it closes, for a restore of the page behind it, which moves no
+    /// focus out of the modal (`restore_inspection_context`): focus on a
+    /// control behind a modal is drawn nowhere a person can see and sends
+    /// the next key there. The control the toolkit captured as the modal
+    /// opened belonged to the page the restore replaced; one still drawn,
+    /// as File history's list is Compare's file list too, would otherwise
+    /// keep focus as the modal closed, so the repair gives way from it
+    /// (`restore_detached_modal_focus`). `None`, as for the window's root,
+    /// returns to the shown mode's own list (`modal_return_target`).
+    pub(super) fn return_modal_to(&mut self, focus: Option<FocusHandle>) {
+        let replaced = std::mem::replace(&mut self.modal_return_focus, focus);
+        // A second restore under the same modal, as `close_inspections`
+        // closes one inspection after another, keeps the first's: only that
+        // control is the one the toolkit captured.
+        if self.modal_replaced_focus.is_none() {
+            self.modal_replaced_focus = replaced;
+        }
     }
 
     /// `focus` as a place to give focus back to: none where it is the
@@ -4455,6 +4499,400 @@ mod tests {
         assert!(
             moved.is_some() && moved != first,
             "Down moves the working selection"
+        );
+    }
+
+    /// Focuses History's commit list, naming its pane, and opens File
+    /// history for the selected commit's first file, which takes focus to
+    /// its own list, the changed-file list's handle.
+    async fn file_history_from_the_commit_list(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.pane = Pane::History;
+                window.focus(&app.focus, cx);
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+        settle(app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        assert!(
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window)),
+            "File history's list holds focus"
+        );
+    }
+
+    /// File history closed behind Settings, as the write Settings' identity
+    /// Save starts closes it, leaves focus on Settings, and Back lands on
+    /// the control File history was opened from, as File history closed on
+    /// the shown page lands there at once. The restore once focused that
+    /// control behind Settings, where nothing drew it and the next key
+    /// reached it.
+    #[gpui::test]
+    async fn file_history_closed_behind_settings_leaves_focus_there_until_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let commits = app.read_with(cx, |app, _| app.focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+
+        // Closed on the shown page, it lands on the commit list at once.
+        file_history_from_the_commit_list(&app, cx).await;
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.file_history.is_active()));
+        assert_lands_on(&app, &commits, Pane::History, cx, "File history closed");
+
+        // Closed behind Settings by the write its identity Save starts.
+        file_history_from_the_commit_list(&app, cx).await;
+        cx.simulate_keystrokes(&primary(","));
+        draw(cx);
+        let opened = focused(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Settings));
+        assert!(
+            opened.is_some() && opened != Some(commits.clone()),
+            "Settings has focus"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::SetIdentity {
+                        name: "GitTurtle QA".into(),
+                        email: "qa@example.invalid".into(),
+                    },
+                    "Saving repository identity…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| !app.file_history.is_active()),
+            "the write closes File history"
+        );
+        assert_eq!(focused(cx), opened, "focus stays on Settings");
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Settings
+            && app.operation_busy.is_none()));
+        assert_eq!(focused(cx), opened, "focus stays on Settings as it ends");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository
+            && app.mode == WorkspaceMode::History));
+        assert_lands_on(&app, &commits, Pane::History, cx, "Back from Settings");
+    }
+
+    /// File history restored while a dialog covers the page leaves focus in
+    /// the dialog, and the dialog's close lands on the control File history
+    /// was opened from: not on File history's list, which the dialog was
+    /// opened from and the toolkit gives focus back to, and which History
+    /// still draws as its changed-file list. The restore once focused that
+    /// control behind the dialog, where nothing drew it and the next key
+    /// reached it.
+    #[gpui::test]
+    async fn file_history_restored_under_a_dialog_lands_on_its_control_as_it_closes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let (commits, files) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        file_history_from_the_commit_list(&app, cx).await;
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        let in_dialog = focused(cx);
+        assert!(
+            in_dialog.is_some() && in_dialog != Some(files.clone()),
+            "the dialog has focus"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.close_file_history(window, cx), "File history closes")
+            })
+        });
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::History));
+        assert!(drawn(&app, &files, cx), "History draws its file list");
+        assert_eq!(focused(cx), in_dialog, "focus stays in the dialog");
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(commits), "the dialog closes onto it");
+        assert!(
+            app.read_with(cx, |app, _| app.pane == Pane::History),
+            "the window names History's pane"
+        );
+    }
+
+    /// A revision inspection opened from Changes over a row whose preview
+    /// had not landed, closed by a write started while a dialog covers the
+    /// page, selects the row again for its preview
+    /// (`select_restored_working`) and leaves focus in the dialog, whose
+    /// close lands on Changes' file list. Selecting the row once focused
+    /// that list behind the dialog. The dialog is opened from that list, so
+    /// this checks only that the selection moves no focus under a modal;
+    /// `a_dialog_opened_in_quick_open_closes_onto_the_list_its_close_selects`
+    /// tells the list's retarget apart.
+    #[gpui::test]
+    async fn an_inspection_a_write_closes_under_a_dialog_leaves_the_rows_focus_to_its_close(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        select_unstaged(&app, "draft.txt", cx).await;
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        // The row's preview gone, as one that failed or still reads leaves
+        // it, and Quick Open's tracked source shown over it.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_preview();
+                let repo = app.repository.clone().expect("a repository");
+                let paths = repo
+                    .search_tracked_paths(
+                        &PathScope::Worktree,
+                        "notes",
+                        &HistoryCancellation::default(),
+                    )
+                    .expect("tracked paths");
+                let entry = paths.entries.first().expect("the file").clone();
+                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+            })
+        });
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.revision_inspection.is_active()));
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        let in_dialog = focused(cx);
+        assert!(
+            in_dialog.is_some() && in_dialog != Some(files.clone()),
+            "the dialog has focus"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::SetIdentity {
+                        name: "GitTurtle QA".into(),
+                        email: "qa@example.invalid".into(),
+                    },
+                    "Saving repository identity…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        app.read_with(cx, |app, _| {
+            assert!(!app.revision_inspection.is_active(), "the write closes it");
+            assert!(app.mode == WorkspaceMode::Working && app.working_selected.is_some());
+        });
+        assert_eq!(focused(cx), in_dialog, "focus stays in the dialog");
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(focused(cx), in_dialog, "focus stays as the write ends");
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(files), "the dialog closes onto the list");
+    }
+
+    /// A status read landing under a dialog opened from a control other
+    /// than Changes' file list selects the row again for its preview and
+    /// leaves the dialog returning to that control: only a restore, whose
+    /// inspection the dialog was opened from, returns it to the list. The
+    /// read once focused the list behind the dialog.
+    #[gpui::test]
+    async fn a_status_read_under_a_dialog_leaves_it_returning_to_its_opener(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        select_unstaged(&app, "draft.txt", cx).await;
+        let filter = app.read_with(cx, |app, cx| app.working_filter.read(cx).focus_handle(cx));
+        open_probe_dialog(&app, cx, &filter, Pane::Files);
+        let in_dialog = focused(cx);
+        assert!(
+            in_dialog.is_some() && in_dialog != Some(filter.clone()),
+            "the dialog has focus"
+        );
+        std::fs::write(fixture.path().join("narrow").join("later.txt"), "later\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        draw(cx);
+        assert!(
+            entries(&app, cx).is_some_and(|entries| entries.contains(&"later.txt".to_owned())),
+            "the read landed"
+        );
+        assert!(app.read_with(cx, |app, _| app.working_selected.is_some()));
+        assert_eq!(focused(cx), in_dialog, "focus stays in the dialog");
+        close_probe_dialog(cx);
+        assert_eq!(
+            focused(cx),
+            Some(filter),
+            "the dialog closes onto its opener"
+        );
+    }
+
+    /// The focus handle of the editor the text pane shows.
+    fn shown_editor(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FocusHandle {
+        app.read_with(cx, |app, cx| match app.shown_text() {
+            Some(crate::views::ShownText::Editor(editor)) => editor.read(cx).focus_handle(cx),
+            _ => panic!("the text pane shows an editor"),
+        })
+    }
+
+    /// Starts the identity write Settings' Save starts, which closes the
+    /// open inspections, and lets it end.
+    async fn write_identity(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::SetIdentity {
+                        name: "GitTurtle QA".into(),
+                        email: "qa@example.invalid".into(),
+                    },
+                    "Saving repository identity…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(app, cx).await;
+    }
+
+    /// A dialog opened from Quick Open's tracked source, whose editor goes
+    /// with the inspection, closes onto Changes' file list where a write
+    /// closes the inspection under it and Changes selects its row again:
+    /// not onto the filter field the inspection was opened from, which the
+    /// restore saved, as the list takes focus there on the shown page.
+    #[gpui::test]
+    async fn a_dialog_opened_in_quick_open_closes_onto_the_list_its_close_selects(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        select_unstaged(&app, "draft.txt", cx).await;
+        let (files, filter) = app.read_with(cx, |app, cx| {
+            (
+                app.file_focus.clone(),
+                app.working_filter.read(cx).focus_handle(cx),
+            )
+        });
+        // The row's preview gone, focus on the filter field, and Quick
+        // Open's tracked source shown from there.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_preview();
+                window.focus(&filter, cx);
+                let repo = app.repository.clone().expect("a repository");
+                let paths = repo
+                    .search_tracked_paths(
+                        &PathScope::Worktree,
+                        "notes",
+                        &HistoryCancellation::default(),
+                    )
+                    .expect("tracked paths");
+                let entry = paths.entries.first().expect("the file").clone();
+                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+            })
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        let source = shown_editor(&app, cx);
+        open_probe_dialog(&app, cx, &source, Pane::Files);
+        let in_dialog = focused(cx);
+        write_identity(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(!app.revision_inspection.is_active(), "the write closes it");
+            assert!(app.mode == WorkspaceMode::Working && app.working_selected.is_some());
+        });
+        draw(cx);
+        assert!(drawn(&app, &filter, cx), "Changes draws the filter field");
+        assert_eq!(focused(cx), in_dialog, "focus stays in the dialog");
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(files), "the dialog closes onto the list");
+    }
+
+    /// A dialog opened from File history's preview, whose editor goes with
+    /// File history, closes onto History's changed-file list that File
+    /// history was opened from where a write closes File history under it:
+    /// not onto History's commit list, where a closing modal falls back
+    /// when the control it was opened from is gone.
+    #[gpui::test]
+    async fn a_dialog_opened_in_file_history_closes_onto_its_saved_control(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.file_history.is_active()));
+        let preview = shown_editor(&app, cx);
+        open_probe_dialog(&app, cx, &preview, Pane::Files);
+        let in_dialog = focused(cx);
+        write_identity(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| !app.file_history.is_active()
+            && app.mode == WorkspaceMode::History));
+        draw(cx);
+        assert_eq!(focused(cx), in_dialog, "focus stays in the dialog");
+        close_probe_dialog(cx);
+        assert_eq!(focused(cx), Some(files), "the dialog closes onto the list");
+        assert!(
+            app.read_with(cx, |app, _| app.pane == Pane::Files),
+            "the window names the file pane"
+        );
+    }
+
+    /// A dialog opened and closed with no frame between, with a restore run
+    /// under it, leaves nothing for a later modal: the next frame that shows
+    /// no modal forgets the control the restore replaced, which a later
+    /// modal would otherwise keep as its own and give way from as it closes.
+    #[gpui::test]
+    async fn a_frame_without_a_modal_forgets_the_control_a_restore_replaced(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        file_history_from_the_commit_list(&app, cx).await;
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| dialog.title("Probe"));
+            app.update(cx, |app, cx| {
+                assert!(app.close_file_history(window, cx), "File history closes");
+                assert!(
+                    app.modal_replaced_focus.is_some(),
+                    "the restore replaced it"
+                );
+            });
+            window.close_dialog(cx);
+        });
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.modal_replaced_focus.is_none()),
+            "the frame forgets it"
         );
     }
 

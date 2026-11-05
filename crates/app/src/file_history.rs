@@ -402,13 +402,23 @@ impl GitTurtle {
         // focus goes to the shown mode's own list, which the window names as
         // its pane. Given back, the root left File history's close on
         // nothing a person could see, where Down moved nothing.
-        match self.saved_focus(retained.focus) {
-            Some(focus) => window.focus(&focus, cx),
-            None if self.page == AppPage::Repository => {
-                let list = self.take_mode_list();
-                window.focus(&list, cx);
-            }
-            None => {}
+        let focus = self.saved_focus(retained.focus);
+        if self.page != AppPage::Repository {
+            // Restored behind Settings or Projects, as a write Settings
+            // saves closes File history, focus stays on that page, and Back
+            // returns it where the restore would have, or to the shown
+            // mode's own list where it had nothing to return to
+            // (`resume_repository_page`). Given at once, focus rested on a
+            // control behind the page, which drew it nowhere and took the
+            // next key.
+            self.page_return_focus = focus;
+        } else if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            // Behind a dialog or sheet, focus stays in it, and its close
+            // lands where the restore would have put it (`return_modal_to`).
+            self.return_modal_to(focus);
+        } else {
+            let focus = focus.unwrap_or_else(|| self.take_mode_list());
+            window.focus(&focus, cx);
         }
     }
 
