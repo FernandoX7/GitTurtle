@@ -232,7 +232,11 @@ fn side_tints(cx: &App) -> [(u32, u32, Option<u32>); 2] {
 impl SplitSide {
     /// The side's changed lines in `line` and its emphasized words in `word`, each word with a
     /// `rule` along its box's bottom edge where there is one, on a decoration of its own, as
-    /// `text::theme_decorations` gives a unified patch's words theirs.
+    /// `text::theme_decorations` gives a unified patch's words theirs. Each run of adjacent
+    /// changed source lines also fills its lines' whole rows in `line`, on one decoration of
+    /// its own, as a unified patch's changed blocks do, blank lines included; a filler row,
+    /// which holds no source line, stays out of every run and draws nothing (decision,
+    /// 2026-11-05).
     fn decorations(&self, (line, word, rule): (u32, u32, Option<u32>)) -> Vec<TextDecoration> {
         let style = HighlightStyle {
             background_color: Some(rgb(line).into()),
@@ -244,7 +248,27 @@ impl SplitSide {
         };
         let mut result = Vec::new();
         let mut words = self.words.iter().peekable();
+        // A changed row holds a source line where a source span starts with it.
+        let mut spans = self.source_spans.iter().peekable();
+        let mut block: Option<Range<usize>> = None;
+        let fill = |block: Option<Range<usize>>, result: &mut Vec<TextDecoration>| {
+            if let Some(block) = block {
+                result.push(
+                    TextDecoration::new(block, HighlightStyle::default())
+                        .with_row_background(rgb(line).into()),
+                );
+            }
+        };
         for range in &self.changes {
+            while spans.next_if(|span| span.start < range.start).is_some() {}
+            let source = spans.peek().is_some_and(|span| span.start == range.start);
+            match &mut block {
+                Some(block) if source && block.end == range.start => block.end = range.end,
+                _ => fill(
+                    std::mem::replace(&mut block, source.then(|| range.clone())),
+                    &mut result,
+                ),
+            }
             let mut cursor = range.start;
             while let Some(word) = words.peek() {
                 if word.start >= range.end {
@@ -267,6 +291,7 @@ impl SplitSide {
                 result.push(TextDecoration::new(cursor..range.end, style));
             }
         }
+        fill(block, &mut result);
         result
     }
 
@@ -882,6 +907,155 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Each side of Split carries a changed line's tint across its editor's whole row, so a
+    /// replacement reads as one block a side with a straight right edge (decision, 2026-11-05):
+    /// a short changed line, a blank one, which drew no tint at all, and one wider than the view
+    /// carry it from the text's left edge, where it always started, to the side's visible right
+    /// edge, also scrolled to the far right, where the long lines' text ends short of that edge;
+    /// at 13 and 18 pt, More contrast off and on, in Midnight and in Tokyo Night, whose More
+    /// contrast moves its added line tint. Unchanged lines and Before's filler rows beside the
+    /// extra added lines draw no line tint, and each emphasized word drawn keeps its box, with
+    /// its rule under More contrast.
+    #[gpui::test]
+    fn a_changed_line_s_tint_spans_its_row_on_each_split_side(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use crate::text::RowTint;
+
+        struct Root(Entity<SplitView>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(1200.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        let [before, after, patch] = crate::text::row_tint_hunk();
+        let presentation = Arc::new(prepare(&before, &after, &patch));
+        assert_eq!(
+            numbers(&presentation, 0),
+            [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                None,
+                None,
+                Some(5),
+                None
+            ],
+            "Before pads the extra added lines with two filler rows"
+        );
+        cx.update(gpui::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            Root(new(
+                Arc::clone(&presentation),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ))
+        });
+        let split = cx.read(|cx| root.read(cx).0.clone());
+        let editors = cx.read(|cx| split.read(cx).editors.clone());
+        let mut moved = false;
+        for choice in [ThemeChoice::Midnight, ThemeChoice::TokyoNight] {
+            let chosen = cx.update(|window, cx| {
+                set_more_contrast(false, cx);
+                choice.apply(Some(&mut *window), cx);
+                palette(cx).added_background
+            });
+            for code in [13, 18] {
+                for more in [false, true] {
+                    for far_right in [false, true] {
+                        let at = format!(
+                            "{choice:?} at {code} pt, More contrast {more}, scrolled to the {}",
+                            if far_right { "far right" } else { "start" }
+                        );
+                        let (colors, highlights) = cx.update(|window, cx| {
+                            set_more_contrast(more, cx);
+                            choice.apply(Some(&mut *window), cx);
+                            apply_text_sizes(13, code, window, cx);
+                            split.update(cx, |split, cx| split.refresh_theme(cx));
+                            (palette(cx), editor_highlights(cx))
+                        });
+                        moved |= colors.added_background != chosen;
+                        let x = if far_right { -100_000. } else { 0. };
+                        for _ in 0..2 {
+                            cx.update(|window, cx| {
+                                for editor in &editors {
+                                    editor.update(cx, |state, cx| {
+                                        state.set_scroll_offset(point(px(x), px(0.)), cx)
+                                    });
+                                }
+                                window.draw(cx).clear(cx);
+                            });
+                        }
+                        let (removed, added) = (colors.removed_background, colors.added_background);
+                        // Scrolled to the far right, the long lines end short of the edge.
+                        let long = |tint| {
+                            if far_right {
+                                RowTint::ToEdge(tint)
+                            } else {
+                                RowTint::PastEdge(tint)
+                            }
+                        };
+                        let sides = [
+                            [
+                                RowTint::Untinted,
+                                RowTint::ToEdge(removed),
+                                RowTint::ToEdge(removed),
+                                long(removed),
+                                RowTint::Untinted,
+                                RowTint::Untinted,
+                                RowTint::Untinted,
+                            ],
+                            [
+                                RowTint::Untinted,
+                                RowTint::ToEdge(added),
+                                RowTint::ToEdge(added),
+                                long(added),
+                                RowTint::ToEdge(added),
+                                RowTint::ToEdge(added),
+                                RowTint::Untinted,
+                            ],
+                        ];
+                        for (side, rows) in sides.iter().enumerate() {
+                            cx.update(|window, cx| {
+                                crate::text::assert_row_tints(
+                                    &format!("{at}, side {side}"),
+                                    window,
+                                    editors[side].read(cx),
+                                    [removed, added],
+                                    rows,
+                                )
+                            });
+                        }
+                        let words = [
+                            (highlights.removed_word, highlights.removed_rule),
+                            (highlights.added_word, highlights.added_rule),
+                        ];
+                        let rules = words.iter().filter_map(|word| word.1).collect::<Vec<_>>();
+                        let (drawn, stray) = cx.update(|window, _| {
+                            crate::text::painted_word_rules(
+                                window,
+                                &words.map(|word| word.0),
+                                &rules,
+                            )
+                        });
+                        assert_eq!(stray, 0, "{at}: a rule off every emphasized word's box");
+                        for (bounds, tint, along) in drawn {
+                            let rule = words[usize::from(tint == highlights.added_word)].1;
+                            let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                            assert_eq!(along, want, "{at}: the word box {bounds:?}'s rule");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(moved, "More contrast moves Tokyo Night's added line tint");
     }
 
     #[test]

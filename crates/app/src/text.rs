@@ -163,12 +163,63 @@ pub fn refresh_theme(
 /// of its own over the word's range: Find rebuilds every decoration that sets a background
 /// around its matches from its range and style alone (`editor_find`'s
 /// `without_match_backgrounds`), and keeps one without a background whole, while its matches'
-/// own backgrounds hide the rule under them. Off, there is one decoration a prepared range.
+/// own backgrounds hide the rule under them. Each run of adjacent changed lines of one side, a
+/// removed or an added block, also fills its lines' whole rows in its line tint
+/// (`TextDecoration::with_row_background`), on one decoration of its own without a background,
+/// which Find keeps whole, so a hunk's changed lines read as one block with a straight right
+/// edge and a blank changed line is tinted across its row, not under its `-` or `+` alone
+/// (decision, 2026-11-05). Off, there is one decoration a prepared range and one a block.
 fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDecoration> {
     let palette = palette(cx);
     let highlights = crate::appearance::editor_highlights(cx);
-    let mut decorations = Vec::with_capacity(presentation.ranges.len());
+    // A range's line tint, which a block of adjacent ranges in one tint shares.
+    let line_tint = |kind: Kind| match kind {
+        Kind::Added | Kind::AddedWord => Some(palette.added_background),
+        Kind::Removed | Kind::RemovedWord => Some(palette.removed_background),
+        Kind::Hunk | Kind::Header => None,
+    };
+    // One decoration a range, one a block and one a changed word's rule, counted first so the
+    // list is allocated once.
+    let (mut extra, mut end) = (0, None);
     for decoration in presentation.ranges.iter() {
+        let tint = line_tint(decoration.kind);
+        extra +=
+            usize::from(tint.is_some() && end != tint.map(|tint| (tint, decoration.range.start)))
+                + usize::from(match decoration.kind {
+                    Kind::AddedWord => highlights.added_rule.is_some(),
+                    Kind::RemovedWord => highlights.removed_rule.is_some(),
+                    _ => false,
+                });
+        end = tint.map(|tint| (tint, decoration.range.end));
+    }
+    let mut decorations = Vec::with_capacity(presentation.ranges.len() + extra);
+    // The block of changed lines being gathered: its line tint and its bytes, line breaks
+    // included, as `diff_ranges` gives them.
+    let mut block: Option<(u32, Range<usize>)> = None;
+    let fill = |block: Option<(u32, Range<usize>)>, decorations: &mut Vec<TextDecoration>| {
+        if let Some((tint, range)) = block {
+            decorations.push(
+                TextDecoration::new(range, HighlightStyle::default())
+                    .with_row_background(rgb(tint).into()),
+            );
+        }
+    };
+    for decoration in presentation.ranges.iter() {
+        let tint = line_tint(decoration.kind);
+        match (&mut block, tint) {
+            (Some((current, range)), Some(tint))
+                if *current == tint && range.end == decoration.range.start =>
+            {
+                range.end = decoration.range.end
+            }
+            _ => fill(
+                std::mem::replace(
+                    &mut block,
+                    tint.map(|tint| (tint, decoration.range.clone())),
+                ),
+                &mut decorations,
+            ),
+        }
         let rule = match decoration.kind {
             Kind::AddedWord => highlights.added_rule,
             Kind::RemovedWord => highlights.removed_rule,
@@ -219,6 +270,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
             );
         }
     }
+    fill(block, &mut decorations);
     decorations
 }
 
@@ -295,6 +347,131 @@ pub(crate) const DENSE_HUNK: [&str; 3] = [
     "keep(a, b);\nlet y = new + one;\ncall(green, blue, 8);\nwhole_added_line();\n}\n",
     "@@ -1,4 +1,5 @@ fn dense() {\n keep(a, b);\n-let x = old + one;\n-call(red, blue, 7);\n+let y = new + one;\n+call(green, blue, 8);\n+whole_added_line();\n }\n",
 ];
+
+/// A hunk for a test of the line tint's extent, its old source, new source and patch: after an
+/// unchanged line, a short changed line with a changed word, a blank changed line and a changed
+/// line wider than any test view on each side, then a short added line and a blank one, so
+/// Split's Before draws two filler rows beside them, and an unchanged line.
+#[cfg(test)]
+pub(crate) fn row_tint_hunk() -> [String; 3] {
+    let long = |word: &str| format!("let long = [{}{word}];", "item, ".repeat(60));
+    let (old, new) = (long("old"), long("new"));
+    [
+        format!("keep(a, b);\ncall(red, 7);\n\n{old}\ntail();\n"),
+        format!("keep(a, b);\ncall(green, 7);\n\n{new}\nadded();\n\ntail();\n"),
+        format!(
+            "@@ -1,5 +1,7 @@ fn rows() {{\n keep(a, b);\n-call(red, 7);\n-\n-{old}\n+call(green, 7);\n+\n+{new}\n+added();\n+\n tail();\n"
+        ),
+    ]
+}
+
+/// What one editor row draws in a line tint, for [`assert_row_tints`].
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RowTint {
+    /// No line tint: an unchanged line, a hunk header or a filler row.
+    Untinted,
+    /// The tint from the text's left edge to the editor's visible right edge, the line's text
+    /// ending inside the view.
+    ToEdge(u32),
+    /// The tint from the text's left edge to the editor's visible right edge or past it, the
+    /// line's text running past the view.
+    PastEdge(u32),
+}
+
+/// Assert what the last frame painted in the line `tints` across `editor`'s first rows, each as
+/// `rows` expects it: a tinted row carries a quad in its tint over the row's whole height from
+/// the text's left edge, where the editor lays out each line's first glyph and a line's tint
+/// has always started, to the editor's visible right edge (past it where the line runs past the
+/// view), and no quad in its tint reaches further where the line ends inside the view; an
+/// untinted row overlaps no quad in either tint. Only quads painting inside the editor count,
+/// not Split's other side. Edges compare within half a device pixel, as GPUI rounds a quad's
+/// edges to device pixels.
+#[cfg(test)]
+pub(crate) fn assert_row_tints(
+    at: &str,
+    window: &Window,
+    editor: &EditorState,
+    tints: [u32; 2],
+    rows: &[RowTint],
+) {
+    let scale = window.scale_factor();
+    let text = editor.text_bounds().expect("the editor is laid out");
+    let line_height = editor
+        .line_height()
+        .expect("the editor is laid out")
+        .as_f32()
+        * scale;
+    let left = (text.origin.x + gpui_kit::base::input::LINE_NUMBER_RIGHT_MARGIN).as_f32() * scale;
+    let (start, right) = (
+        editor.input_bounds().left().as_f32() * scale,
+        editor.input_bounds().right().as_f32() * scale,
+    );
+    let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
+    let near = |a: f32, b: f32| (a - b).abs() <= 0.51;
+    let quads = window.painted_quads();
+    // Every row's failure, so one frame reports each row it draws wrongly.
+    let mut failures = Vec::new();
+    for (row, want) in rows.iter().enumerate() {
+        let top = text.origin.y.as_f32() * scale + line_height * row as f32;
+        let bottom = top + line_height;
+        // Each quad in a line tint that paints over this row inside this editor (not beside
+        // it, as Split's other side): its tint, its horizontal edges and whether it covers the
+        // row's whole height.
+        let drawn = quads
+            .iter()
+            .filter(|quad| {
+                let painted = quad.bounds.intersect(&quad.content_mask.bounds);
+                painted.top().0 < bottom - 0.51
+                    && painted.bottom().0 > top + 0.51
+                    && painted.left().0 < right - 0.51
+                    && painted.right().0 > start + 0.51
+            })
+            .filter_map(|quad| {
+                let tint = tints
+                    .iter()
+                    .copied()
+                    .find(|&tint| quad.background == fill(tint))?;
+                let whole = near(quad.bounds.top().0, top) && near(quad.bounds.bottom().0, bottom);
+                Some((tint, quad.bounds.left().0, quad.bounds.right().0, whole))
+            })
+            .collect::<Vec<_>>();
+        let (tint, past) = match *want {
+            RowTint::Untinted => {
+                if !drawn.is_empty() {
+                    failures.push(format!("row {row} draws no line tint: {drawn:?}"));
+                }
+                continue;
+            }
+            RowTint::ToEdge(tint) => (tint, false),
+            RowTint::PastEdge(tint) => (tint, true),
+        };
+        let mine = drawn
+            .iter()
+            .filter(|drawn| drawn.0 == tint)
+            .collect::<Vec<_>>();
+        if !mine.iter().any(|&&(_, from, to, whole)| {
+            whole
+                && near(from, left)
+                && if past {
+                    to >= right - 0.51
+                } else {
+                    near(to, right)
+                }
+        }) {
+            failures.push(format!(
+                "row {row} carries #{tint:06x} over its height from the text's left edge {left} \
+                 to the editor's visible right edge {right}: {drawn:?}"
+            ));
+        }
+        if !past && mine.iter().any(|&&(_, _, to, _)| to > right + 0.51) {
+            failures.push(format!(
+                "row {row}'s tint ends at the editor's visible right edge {right}: {drawn:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{at}:\n{}", failures.join("\n"));
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -947,8 +1124,8 @@ mod tests {
     /// and 18 pt, in a dark palette, one whose removed words nearly vanish in colour-blind
     /// models, and a light one; no other quad of a rule's colour and height is painted, so a
     /// whole changed line, the hunk header and unchanged text draw none. Off, no word draws one,
-    /// and the decorations are one a prepared range, none with a rule, as before the rule
-    /// existed.
+    /// and the decorations are one a prepared range and one filling each changed block's rows,
+    /// none with a rule, as before the rule existed.
     #[gpui_kit::test]
     fn more_contrast_rules_each_changed_word_in_the_diff_view(cx: &mut gpui_kit::TestAppContext) {
         use crate::appearance::{
@@ -1019,7 +1196,8 @@ mod tests {
                     }
                     if !more {
                         assert_eq!(rules, [None, None], "{at}");
-                        assert_eq!(decorations.len(), presentation.ranges.len(), "{at}");
+                        // One a prepared range, and one filling each changed block's rows.
+                        assert_eq!(decorations.len(), presentation.ranges.len() + 2, "{at}");
                         assert!(
                             decorations
                                 .iter()
@@ -1124,5 +1302,125 @@ mod tests {
                 && rule.right() > current.left()),
             "the current match {current:?} hides its changed word's rule: {ruled:?}"
         );
+    }
+
+    /// A changed line's tint spans the editor's whole row in the Diff view, so a hunk's changed
+    /// lines read as one block with a straight right edge (decision, 2026-11-05): a short changed
+    /// line, a blank one, whose tint lay under its `-` or `+` alone, and one wider than the view
+    /// carry their tint from the text's left edge, where it always started, to the editor's
+    /// visible right edge, also scrolled to the far right, where the long lines' text ends short
+    /// of that edge; at 13 and 18 pt, More contrast off and on, in Midnight and in Tokyo Night,
+    /// whose More contrast moves its added line tint. The `---` and `+++` file header lines, the
+    /// hunk header and unchanged lines draw no line tint, and each changed word drawn keeps its
+    /// box, with its rule under More contrast.
+    #[gpui_kit::test]
+    fn a_changed_line_s_tint_spans_its_row_in_the_diff_view(cx: &mut gpui_kit::TestAppContext) {
+        use crate::appearance::{
+            ThemeChoice, apply_text_sizes, editor_highlights, set_more_contrast,
+        };
+        use gpui_kit::{Context, IntoElement, ParentElement, Render, Styled, div, point, px};
+
+        struct Root(
+            Entity<crate::diff_view::DiffView>,
+            crate::editor_find::PatchDecorations,
+        );
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(900.)).h(px(600.)).child(self.0.clone())
+            }
+        }
+
+        // The file header lines before the hunk read as body text, untinted.
+        let patch = format!("--- a/x\n+++ b/x\n{}", row_tint_hunk()[2]);
+        let presentation = PatchPresentation::prepare(&patch);
+        cx.update(gpui_kit::init);
+        let mut patch_editor = None;
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let (editor, decorations) =
+                editor_with_decorations(&patch, "diff", Some(&presentation), window, cx);
+            patch_editor = Some(editor.clone());
+            let view = crate::diff_view::new(editor, &presentation, window, cx);
+            Root(view, decorations.expect("a prepared patch is decorated"))
+        });
+        let editor = patch_editor.expect("the patch editor");
+        let mut moved = false;
+        for choice in [ThemeChoice::Midnight, ThemeChoice::TokyoNight] {
+            let chosen = cx.update(|window, cx| {
+                set_more_contrast(false, cx);
+                choice.apply(Some(&mut *window), cx);
+                palette(cx).added_background
+            });
+            for code in [13, 18] {
+                for more in [false, true] {
+                    for far_right in [false, true] {
+                        let at = format!(
+                            "{choice:?} at {code} pt, More contrast {more}, scrolled to the {}",
+                            if far_right { "far right" } else { "start" }
+                        );
+                        let (colors, highlights) = cx.update(|window, cx| {
+                            set_more_contrast(more, cx);
+                            choice.apply(Some(&mut *window), cx);
+                            apply_text_sizes(13, code, window, cx);
+                            let decorations = root.read(cx).1.clone();
+                            refresh_theme(&decorations, &presentation, cx);
+                            (palette(cx), editor_highlights(cx))
+                        });
+                        moved |= colors.added_background != chosen;
+                        let x = if far_right { -100_000. } else { 0. };
+                        for _ in 0..2 {
+                            cx.update(|window, cx| {
+                                editor.update(cx, |state, cx| {
+                                    state.set_scroll_offset(point(px(x), px(0.)), cx)
+                                });
+                                window.draw(cx).clear(cx);
+                            });
+                        }
+                        let (removed, added) = (colors.removed_background, colors.added_background);
+                        // Scrolled to the far right, the long lines end short of the edge.
+                        let long = |tint| {
+                            if far_right {
+                                RowTint::ToEdge(tint)
+                            } else {
+                                RowTint::PastEdge(tint)
+                            }
+                        };
+                        let rows = [
+                            RowTint::Untinted,
+                            RowTint::Untinted,
+                            RowTint::Untinted,
+                            RowTint::Untinted,
+                            RowTint::ToEdge(removed),
+                            RowTint::ToEdge(removed),
+                            long(removed),
+                            RowTint::ToEdge(added),
+                            RowTint::ToEdge(added),
+                            long(added),
+                            RowTint::ToEdge(added),
+                            RowTint::ToEdge(added),
+                            RowTint::Untinted,
+                        ];
+                        cx.update(|window, cx| {
+                            assert_row_tints(&at, window, editor.read(cx), [removed, added], &rows)
+                        });
+                        let tints = [highlights.added_word, highlights.removed_word];
+                        let rules = [highlights.added_rule, highlights.removed_rule];
+                        let (drawn, stray) = cx.update(|window, _| {
+                            painted_word_rules(
+                                window,
+                                &tints,
+                                &rules.iter().flatten().copied().collect::<Vec<_>>(),
+                            )
+                        });
+                        assert_eq!(stray, 0, "{at}: a rule off every changed word's box");
+                        for (bounds, tint, along) in drawn {
+                            let rule = rules[usize::from(tint != highlights.added_word)];
+                            let want = rule.map(|rule| vec![Some(rule)]).unwrap_or_default();
+                            assert_eq!(along, want, "{at}: the word box {bounds:?}'s rule");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(moved, "More contrast moves Tokyo Night's added line tint");
     }
 }
