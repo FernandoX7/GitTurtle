@@ -77,6 +77,12 @@ fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut
     });
 }
 
+/// The series list's key context, where Return is the list's own
+/// (`interactive_rebase::init`): it inspects the selected commit's files
+/// rather than taking the review dialog's default action, which closed the
+/// review.
+pub(crate) const SERIES_CONTEXT: &str = "RewriteSeries";
+
 pub(crate) struct SeriesBrowser {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
@@ -92,6 +98,11 @@ pub(crate) struct SeriesBrowser {
     review: Option<Arc<RewriteReview>>,
     selected: usize,
     focus: FocusHandle,
+    /// Back to series, which takes focus as the inspector replaces the
+    /// series list: left on the list, focus rested on a control no longer
+    /// drawn, so keys reached the window's root and Escape never reached
+    /// the review.
+    back: FocusHandle,
     rows_scroll: UniformListScrollHandle,
     files_scroll: UniformListScrollHandle,
     inspecting: bool,
@@ -148,6 +159,7 @@ impl SeriesBrowser {
             review: None,
             selected: 0,
             focus: cx.focus_handle().tab_stop(true),
+            back: cx.focus_handle().tab_stop(true),
             rows_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
             inspecting: false,
@@ -339,6 +351,7 @@ impl SeriesBrowser {
         self.cancel_read();
         self.clear_content();
         self.inspecting = true;
+        self.back.focus(window, cx);
         self.messages = None;
         self.files.clear();
         self.error = None;
@@ -360,6 +373,17 @@ impl SeriesBrowser {
         }));
         cx.notify();
     }
+    /// Return's inspection: the selected row's rewritten commit, or its
+    /// original where the row has none, as a dropped commit has only its
+    /// original side, so Return always inspects the row's commit.
+    fn inspect_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let original = self
+            .review
+            .as_ref()
+            .and_then(|review| review.rows.get(self.selected))
+            .is_some_and(|row| row.rewritten.is_none());
+        self.inspect(original, window, cx);
+    }
     fn inspect_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(review) = &self.review else {
             return;
@@ -376,6 +400,7 @@ impl SeriesBrowser {
         self.cancel_read();
         self.clear_content();
         self.inspecting = true;
+        self.back.focus(window, cx);
         self.inspect_label = "Original and rewritten commit messages".into();
         self.messages = Some(messages.map(|message| {
             message.map(|message| text::editor(&message, "text", None, window, cx))
@@ -761,8 +786,10 @@ impl Render for SeriesBrowser {
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
-                .child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
+                .child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects its rewritten files, or the original's where it has no rewritten commit.")
+                    // Return inspects as it goes down, never on a held key's
+                    // repeats, as the dialog's own Enter acts.
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" if !event.is_held && gpui_kit::base::enter_press_began_on(&this.focus, window, cx) => this.inspect_selected(window, cx), "enter" => {}, _ => return } cx.stop_propagation(); }))
                     .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll))))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("inspect-series-messages", "Review messages", "", false).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
@@ -782,8 +809,8 @@ impl Render for SeriesBrowser {
                         .child(button("cancel-publication-review", "Cancel publication review", "", false).on_click(cx.listener(|this, _, _, cx| { this.publication = None; cx.notify(); }))))))
             )
             .when(self.inspecting, |element| element
-                .child(div().flex().flex_wrap().items_center().gap_2().child(button("back-rewrite-series", "Back to series", "arrow-left", false).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
-                .when(self.messages.is_none(), |element| element.child(div().h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
+                .child(div().flex().flex_wrap().items_center().gap_2().child(button("back-rewrite-series", "Back to series", "arrow-left", false).track_focus(&self.back).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
+                .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
@@ -1275,5 +1302,262 @@ mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The rewritten series' review, opened with the app's series keys on a
+    /// disposable repository of three commits whose last two a rebase's
+    /// start captured, as it captures them, before `rewrite` (Git argument
+    /// lists, run in order) rewrote them, its series read.
+    async fn rewritten_review<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        rewrite: &[&[&str]],
+    ) -> (
+        tempfile::TempDir,
+        Entity<SeriesBrowser>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        use crate::focus_ring::sweep::Opened as _;
+        use crate::tags::tests::{draw, git};
+        use gitturtle_core::InteractiveRebaseCommand;
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 2))
+                .await;
+        cx.update(|_, cx| crate::interactive_rebase::init(cx));
+        let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+        git(repo.path(), &["reset", "--quiet", "--hard", "main"]);
+        let plan = repo.interactive_rebase_plan("main~2").unwrap();
+        let steps = plan.steps();
+        let command = WriteCommand::InteractiveRebase(Arc::new(InteractiveRebaseCommand::Start {
+            plan,
+            steps,
+            acknowledge_published: false,
+        }));
+        let mut saved = app
+            .update(cx, |app, _| app.prepare_rewrite_capture(&command))
+            .expect("a rebase start captures its series");
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        assert!(
+            matches!(saved.try_recv(), Ok(Some(Ok(())))),
+            "the series is captured"
+        );
+        for args in rewrite {
+            git(repo.path(), args);
+        }
+        let review =
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_series_review(window, cx)));
+        review.clone().finish(cx);
+        let review = review.expect("the review opens");
+        draw(cx);
+        (fixture, review, cx)
+    }
+
+    /// A key-down of Enter, not marked held, with no key-up after it: a
+    /// fresh press, or under X11 each repeat of a held one; with `down`
+    /// false, its key-up.
+    fn enter(cx: &mut gpui::VisualTestContext, down: bool) {
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        if down {
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: false,
+            });
+        } else {
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        }
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Return on a commit row of a rewritten series inspects that commit's
+    /// files, as Return on a History commit loads its files, and the review
+    /// stays open: the review dialog took the key for its default action,
+    /// which closed the review before the series list's own Return was
+    /// reached. Back to series takes the keys from the list the inspector
+    /// replaces, so Escape goes back to the series, keeping the row, and
+    /// closes the review from there: left on the list, which is no longer
+    /// drawn, focus sent Escape to the window's root, where the review never
+    /// saw it. Driven by the route a person takes: a
+    /// series captured before its rewrite, the review opened on it, the row
+    /// chosen with Down and Return and Escape dispatched as keys.
+    #[gpui::test]
+    async fn return_on_a_series_row_inspects_its_files_and_escape_closes_the_review(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        // The newest commit reworded.
+        let (_fixture, review, cx) = rewritten_review(
+            cx,
+            &[&[
+                "commit",
+                "--quiet",
+                "--amend",
+                "-m",
+                "fixture notes 2, reworded",
+            ]],
+        )
+        .await;
+        let rows = review.read_with(cx, |review, _| {
+            review.review.as_ref().map_or(0, |review| review.rows.len())
+        });
+        assert_eq!(rows, 2, "the rewritten series' two commits");
+        assert!(
+            cx.update(|window, cx| review.read(cx).focus.is_focused(window)),
+            "the loaded series takes the keys"
+        );
+
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(review.read_with(cx, |review, _| review.selected), 1);
+        cx.simulate_keystrokes("enter");
+        review.read_with(cx, |review, _| review.worker.wait_idle());
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Return leaves the review open"
+        );
+        let (inspecting, label, files) = review.read_with(cx, |review, _| {
+            (
+                review.inspecting,
+                review.inspect_label.clone(),
+                review
+                    .files
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert!(inspecting, "Return inspects the selected commit");
+        assert!(
+            cx.update(|window, cx| review.read(cx).back.is_focused(window)),
+            "Back to series takes the keys from the series list it replaces"
+        );
+        assert!(
+            label.starts_with("Rewritten ") && label.ends_with("· fixture notes 2, reworded"),
+            "the selected row's rewritten commit: {label:?}"
+        );
+        assert_eq!(files, ["notes.txt"], "its changed files are listed");
+        assert!(
+            cx.debug_bounds("series-files").is_some(),
+            "the inspector draws its file list"
+        );
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape in the inspector goes back to the series"
+        );
+        assert_eq!(
+            review.read_with(cx, |review, _| (review.inspecting, review.selected)),
+            (false, 1),
+            "the series keeps its row"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape on the series closes the review"
+        );
+    }
+
+    /// A held Return on a series row inspects once. Under X11 a held key's
+    /// repeats arrive as fresh presses, not marked held: the first inspected
+    /// and moved focus to Back to series, the next pressed it, which focused
+    /// the list again, the next inspected again, so the review toggled and
+    /// started and cancelled a changed-files read with every repeat. Back to
+    /// series acts on a press of its own, once the held one comes up.
+    #[gpui::test]
+    async fn a_held_return_on_a_series_row_inspects_once(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, review, cx) = rewritten_review(
+            cx,
+            &[&[
+                "commit",
+                "--quiet",
+                "--amend",
+                "-m",
+                "fixture notes 2, reworded",
+            ]],
+        )
+        .await;
+        enter(cx, true);
+        let generation = review.read_with(cx, |review, _| review.generation);
+        assert!(
+            review.read_with(cx, |review, _| review.inspecting),
+            "the press inspects"
+        );
+        for repeat in 1..=4 {
+            enter(cx, true);
+            assert_eq!(
+                review.read_with(cx, |review, _| (review.inspecting, review.generation)),
+                (true, generation),
+                "repeat {repeat} of the held Return leaves the inspection as it is"
+            );
+        }
+        enter(cx, false);
+        review.read_with(cx, |review, _| review.worker.wait_idle());
+        draw(cx);
+        assert_eq!(
+            review.read_with(cx, |review, _| review.files.len()),
+            1,
+            "the one read lands"
+        );
+        enter(cx, true);
+        assert!(
+            !review.read_with(cx, |review, _| review.inspecting),
+            "a press of its own on Back to series goes back to the series"
+        );
+        enter(cx, true);
+        assert!(
+            !review.read_with(cx, |review, _| review.inspecting),
+            "and its repeats on the series list inspect nothing"
+        );
+    }
+
+    /// Return on a row whose commit the rewrite dropped, which has only its
+    /// original side, inspects that original commit's files: it inspected
+    /// only a rewritten side, so Return there did nothing.
+    #[gpui::test]
+    async fn return_on_a_dropped_commits_row_inspects_its_original(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        // The newest commit dropped.
+        let (_fixture, review, cx) =
+            rewritten_review(cx, &[&["reset", "--quiet", "--hard", "main~1"]]).await;
+        let dropped = review.read_with(cx, |review, _| {
+            review.review.as_ref().and_then(|review| {
+                review
+                    .rows
+                    .iter()
+                    .position(|row| row.rewritten.is_none() && row.original.is_some())
+            })
+        });
+        let dropped = dropped.expect("a row with only its original side");
+        for _ in 0..dropped {
+            cx.simulate_keystrokes("down");
+        }
+        draw(cx);
+        assert_eq!(review.read_with(cx, |review, _| review.selected), dropped);
+        cx.simulate_keystrokes("enter");
+        review.read_with(cx, |review, _| review.worker.wait_idle());
+        draw(cx);
+        let (inspecting, label, files) = review.read_with(cx, |review, _| {
+            (
+                review.inspecting,
+                review.inspect_label.clone(),
+                review
+                    .files
+                    .iter()
+                    .map(|file| file.path().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert!(inspecting, "Return inspects the dropped commit");
+        assert!(
+            label.starts_with("Original ") && label.ends_with("· fixture notes 2"),
+            "its original side: {label:?}"
+        );
+        assert_eq!(files, ["notes.txt"], "its changed files are listed");
     }
 }

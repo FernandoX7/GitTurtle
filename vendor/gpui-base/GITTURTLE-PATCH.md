@@ -1028,3 +1028,63 @@ and `_in_its_dialogs_place`,
 `appearance::tests::a_repeat_that_looks_fresh_waits_for_the_enter_that_opened_the_dialog`
 and `appearance::tests::a_dialog_opened_with_no_enter_down_confirms_on_the_first_press`,
 which also holds Space on a body Button.
+
+The same patch keeps a held Enter on the control its press began on
+(decided by the coordinator, owner-delegated, 2026-11-05: a held Enter that
+moves focus acts once, and a Button never acts on an Enter whose press
+began while another control had focus). A held Enter on a Button that keeps
+focus still presses it on every repeat under X11, as the dialog-button part
+above says, since nothing tells those repeats from fresh presses. Under X11
+a held key's repeats arrive as fresh presses,
+so a press that moved focus to a Button, as Return on the application's
+rewritten-series list moves it to Back to series, had the next repeat press
+that Button, which moved focus back, and the next act again: the review
+toggled, starting and cancelling a read, with every repeat. The keystroke
+interceptor also records, in each window, the focus where its Enter press
+began, at the press's first key-down since that window's last Enter key-up
+(`note_key_up`) or any other key, which ends a held key's repeats as it
+does on every platform; the Button presses only on an Enter whose press
+began on it (`enter_press_began_on`, exported from `src/lib.rs` so an
+application's own Enter handlers ask the same, as the series list does). An
+Enter pressed with Shift, Control, Alt, Fn or, off macOS, Super held is an
+Enter press as a plain one is, for this record and for the `down` mark
+above, since its key-up arrives (decided by the coordinator,
+owner-delegated, 2026-11-05, after the security re-check): under X11 each
+repeat of a held key carries the modifiers held as it repeats, so a held
+Shift- or Control-Enter left unrecorded (a one-line field takes either for
+Enter) opened a reviewed write's confirmation that did not wait for its
+key-up, and the plain repeat after the modifier came up confirmed it, or
+pressed the Button focus had moved to. Only on macOS is a Command-Enter (a
+list's, menu's or combobox's secondary Enter) such another key, marking
+nothing (`key_up_withheld`): Cocoa sends no key-up for a key pressed with
+Command held, and a recorded one stayed down and took the next Return on
+another control for its repeat. One residual remains there, unverified
+without a Mac: Enter pressed alone, then Command, then Enter released while
+Command is held, a key-up Cocoa may drop as well; the press then stays
+recorded, and the next plain Return presses no Button but the one the press
+began on, nor confirms a dialog opened meanwhile, until its own key-up ends
+the press: one Return swallowed, as by a press whose key-up never arrives
+(below), which fails safe. A press whose key-up
+never arrives, as where the window lost focus while it was held, counts as
+held until another key or an Enter key-up, so a Button focused by a pointer
+meanwhile takes one press before it acts. Under X11 a repeat's synthetic
+release can also end the press: the backend holds a key release back to
+pair it with the press of an autorepeat, but sends one still unpaired at
+the end of a poll batch (`vendor/gpui-pre-linux/src/linux/x11/client.rs`,
+after its event loop), which `note_key_up` takes for the key coming up, so
+a rare repeat can still begin a fresh press on the control focus moved to.
+On macOS and Wayland repeats are marked held, so nothing else changes
+there. The kit tests are
+`dialog::tests::enter_on_a_focused_button_presses_it_once`, which moves
+focus to the Button while a press is held and then presses it with a press
+of its own, and on macOS presses it with a Return after a Command-Enter
+that never came up, or elsewhere only after a Super-Enter's key-up;
+`dialog::tests::a_dialog_opened_by_a_held_shift_enter_waits_for_its_key_up`
+and `_control_enter_`,
+`dialog::tests::a_button_in_a_dialog_opened_by_a_held_shift_enter_takes_no_repeat`
+and
+`dialog::tests::a_control_tap_during_a_held_enter_lets_no_repeat_press_the_button`
+send a modified Enter's repeats as X11 delivers them; and the application's
+is `rewrite_review::tests::a_held_return_on_a_series_row_inspects_once`.
+Remove this part with the rest of the patch when upstream leaves Enter on a
+focused Button to the Button.

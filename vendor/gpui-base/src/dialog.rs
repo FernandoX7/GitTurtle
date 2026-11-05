@@ -1,14 +1,14 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 
 use gpui::{
     AnyElement, App, ClickEvent, FocusHandle, Global, InteractiveElement as _, IntoElement,
     KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, NoAction, ParentElement, Pixels,
-    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, WindowId,
-    actions, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, WeakFocusHandle,
+    Window, WindowId, actions, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 use smallvec::SmallVec;
 
@@ -141,17 +141,49 @@ pub fn init(cx: &mut App) {
             Some(&format!("{CONTEXT} > {BUTTON_CONTEXT}")),
         ),
     ]);
-    // GitTurtle patch: every Enter that goes down, whatever then takes it.
+    // GitTurtle patch: every Enter that goes down, whatever then takes it,
+    // and what had focus as its press began; any other key ends that press.
+    // On macOS a Command-Enter (a list's, menu's or combobox's secondary
+    // Enter) is such another key and records nothing: Cocoa sends no key-up
+    // for a key pressed with Command held, so a recorded one stayed down and
+    // took the next Return on another control for its repeat. Every other
+    // Enter, with Shift, Control, Alt, Fn or, off macOS, Super held, records
+    // as a plain one, since its key-up arrives: under X11 each repeat of a
+    // held key carries the modifiers held as it repeats, so an unrecorded
+    // Shift- or Control-Enter that opened a confirmation, or moved focus to
+    // a Button, had the plain repeat after the modifier came up confirm it
+    // or press that Button. Residual, unverified without a Mac: Enter pressed
+    // alone, then Command, then Enter released; if Cocoa drops that key-up
+    // too, the press stays recorded, and the next plain Return presses no
+    // Button but the one the press began on, nor confirms a dialog opened
+    // meanwhile, until its own key-up ends the press: one Return swallowed,
+    // which fails safe.
     cx.intercept_keystrokes(|event, window, cx| {
-        if event.keystroke.key == ENTER {
-            let window = window.window_handle().window_id();
-            cx.default_global::<EnterPress>().down.insert(window);
+        let id = window.window_handle().window_id();
+        if event.keystroke.key == ENTER && !key_up_withheld(&event.keystroke.modifiers) {
+            let focused = window.focused(cx).map(|focus| focus.downgrade());
+            let press = cx.default_global::<EnterPress>();
+            press.down.insert(id);
+            press.began.entry(id).or_insert(focused);
+        } else if cx
+            .try_global::<EnterPress>()
+            .is_some_and(|press| press.began.contains_key(&id))
+        {
+            cx.global_mut::<EnterPress>().began.remove(&id);
         }
     })
     .detach();
 }
 
 const ENTER: &str = "enter";
+
+/// GitTurtle patch: whether a key pressed with `modifiers` held sends no
+/// key-up, as Cocoa sends none for a key pressed with Command held on macOS.
+/// A key pressed with any other modifier sends one, and off macOS so does a
+/// key pressed with Super, the platform modifier there.
+fn key_up_withheld(modifiers: &gpui::Modifiers) -> bool {
+    cfg!(target_os = "macos") && modifiers.platform
+}
 
 /// GitTurtle patch: Enter's state in each window, so a dialog opened by an
 /// Enter press takes no Enter until that press comes up: under X11 a held
@@ -162,6 +194,11 @@ struct EnterPress {
     down: HashSet<WindowId>,
     /// The windows where a dialog opened while Enter was down.
     blocked: HashSet<WindowId>,
+    /// What had focus in each window as its Enter press began: at its first
+    /// key-down since that window's last Enter key-up or other key, which
+    /// under X11 is the one key-down of a held Enter that is not a repeat
+    /// ([`enter_press_began_on`]).
+    began: HashMap<WindowId, Option<WeakFocusHandle>>,
 }
 
 impl Global for EnterPress {}
@@ -188,12 +225,28 @@ pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
     }
     let window = window.window_handle().window_id();
     if let Some(press) = cx.try_global::<EnterPress>()
-        && (press.down.contains(&window) || press.blocked.contains(&window))
+        && (press.down.contains(&window)
+            || press.blocked.contains(&window)
+            || press.began.contains_key(&window))
     {
         let press = cx.global_mut::<EnterPress>();
         press.down.remove(&window);
         press.blocked.remove(&window);
+        press.began.remove(&window);
     }
+}
+
+/// GitTurtle patch: whether the Enter press going down in `window` began
+/// with `focus` focused, or no press is recorded. A control that acts on
+/// Enter as the key goes down asks this, so a held Enter acts once, on the
+/// control it began on: under X11 a held key's repeats arrive as fresh
+/// presses, not marked held, so a press that moved focus to a Button had
+/// the next repeat press that Button. The press ends at its key-up or at
+/// any other key, as a held key's repeats do.
+pub fn enter_press_began_on(focus: &FocusHandle, window: &Window, cx: &App) -> bool {
+    cx.try_global::<EnterPress>()
+        .and_then(|press| press.began.get(&window.window_handle().window_id()))
+        .is_none_or(|began| began.as_ref().is_some_and(|began| began == focus))
 }
 
 /// GitTurtle patch: whether `window`'s dialogs wait for an Enter press that
@@ -871,7 +924,12 @@ mod tests {
     /// run. On the dialog itself and on a focused element that is not a
     /// Button, Enter is the dialog's [`Confirm`], as before. Bound to
     /// [`Confirm`] in the dialog, Enter on the Button ran the default action
-    /// and pressed nothing.
+    /// and pressed nothing. A press that began on another control presses
+    /// the Button nothing once focus moves to it, as a press that opens or
+    /// focuses a control moves it: under X11 the held press's repeats arrive
+    /// not marked held, and the first pressed the Button. On macOS a
+    /// Command-Enter, whose key-up Cocoa never sends, begins no press; off
+    /// macOS a Super-Enter, whose key-up arrives, begins one as Enter does.
     #[gpui::test]
     fn enter_on_a_focused_button_presses_it_once(cx: &mut gpui::TestAppContext) {
         use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
@@ -953,6 +1011,64 @@ mod tests {
         focus(cx, |harness| harness.field.clone());
         down(cx, false);
         assert_eq!((presses.get(), confirms.get()), (1, 2), "beside the Button, Confirm");
+
+        focus(cx, |harness| harness.button.clone());
+        down(cx, false);
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 2),
+            "a press that began beside the Button presses nothing"
+        );
+        cx.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        down(cx, false);
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (2, 2),
+            "a press of its own presses it"
+        );
+
+        // On macOS a Command-Enter is no press of Enter's: Cocoa sends no
+        // key-up for a key pressed with Command held, and a recorded
+        // secondary Enter took the next Return on another control for its
+        // repeat. Off macOS the same keystroke is Super-Enter, whose key-up
+        // arrives, so begun beside the Button it presses that Button nothing
+        // until it comes up.
+        cx.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        focus(cx, |harness| harness.field.clone());
+        cx.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("cmd-enter").unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        focus(cx, |harness| harness.button.clone());
+        down(cx, false);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (3, 2),
+            "a Return after a Command-Enter that never came up presses the Button"
+        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(
+                (presses.get(), confirms.get()),
+                (2, 2),
+                "a repeat of a Super-Enter begun beside the Button presses nothing"
+            );
+            cx.simulate_event(KeyUpEvent {
+                keystroke: enter.clone(),
+            });
+            down(cx, false);
+            assert_eq!(
+                (presses.get(), confirms.get()),
+                (3, 2),
+                "a press of its own after the Super-Enter's key-up presses it"
+            );
+        }
     }
 
     /// A probe of two dialogs: A, focused on its Button, which opens B over
@@ -1073,5 +1189,184 @@ mod tests {
         enter(cx, None);
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 1, "a fresh press after it confirms");
+    }
+
+    /// A dialog with a field and a Button inside it, as a reviewed write's
+    /// confirmation holds its own, and a control outside it.
+    struct ButtonDialog {
+        dialog: FocusHandle,
+        field: FocusHandle,
+        outside: FocusHandle,
+        button: FocusHandle,
+        open: Rc<Cell<bool>>,
+        presses: Rc<Cell<usize>>,
+        confirms: Rc<Cell<usize>>,
+    }
+
+    impl Render for ButtonDialog {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let (presses, confirms) = (self.presses.clone(), self.confirms.clone());
+            div()
+                .child(div().track_focus(&self.outside).size(px(20.)))
+                .child(
+                    Dialog::new(cx)
+                        .open(self.open.get())
+                        .focus_handle(self.dialog.clone())
+                        .on_ok(move |_, _, _| {
+                            confirms.set(confirms.get() + 1);
+                            false
+                        })
+                        .child(div().track_focus(&self.field).size(px(20.)))
+                        .child(
+                            crate::Button::new("write")
+                                .track_focus(&self.button)
+                                .size(px(20.))
+                                .on_click(move |_, _, _| presses.set(presses.get() + 1)),
+                        ),
+                )
+        }
+    }
+
+    fn button_dialog(
+        cx: &mut gpui::TestAppContext,
+        open: bool,
+    ) -> (gpui::Entity<ButtonDialog>, &mut gpui::VisualTestContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(move |_, cx| ButtonDialog {
+            dialog: cx.focus_handle(),
+            field: cx.focus_handle(),
+            outside: cx.focus_handle(),
+            button: cx.focus_handle(),
+            open: Rc::new(Cell::new(open)),
+            presses: Rc::new(Cell::new(0)),
+            confirms: Rc::new(Cell::new(0)),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (view, cx)
+    }
+
+    /// A key-down of `keys` not marked held, as each X11 repeat arrives.
+    fn key_down(cx: &mut gpui::VisualTestContext, keys: &str) {
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse(keys).unwrap(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn focus_on(cx: &mut gpui::VisualTestContext, handle: &FocusHandle) {
+        cx.update(|window, cx| {
+            window.focus(handle, cx);
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// A held Shift- or Control-Enter that opens a confirmation, as a
+    /// one-line field's Enter (which takes either as Enter) opens a reviewed
+    /// write's, is an Enter press: under X11, once the modifier comes up,
+    /// the held key's next repeat arrives as a plain Enter not marked held,
+    /// and the confirmation takes none until the key-up.
+    fn a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(
+        cx: &mut gpui::TestAppContext,
+        opener: &str,
+    ) {
+        let (view, cx) = pair(cx);
+        let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
+            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+        });
+        focus_on(cx, &a);
+        key_down(cx, opener);
+        cx.update(|window, cx| {
+            b_open.set(true);
+            dialog_opened(window, cx);
+        });
+        focus_on(cx, &b);
+        enter(cx, Some(false));
+        enter(cx, Some(false));
+        assert_eq!(
+            confirms.get(),
+            0,
+            "{opener}: a confirmation opened while Enter is held took a repeat of that press"
+        );
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "{opener}: a fresh press after its key-up confirms");
+    }
+
+    /// GitTurtle patch: a confirmation opened by a held Shift-Enter waits for
+    /// its key-up. Left unrecorded, as every modified Enter once was, the
+    /// plain repeat after Shift came up confirmed it.
+    #[gpui::test]
+    fn a_dialog_opened_by_a_held_shift_enter_waits_for_its_key_up(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(cx, "shift-enter");
+    }
+
+    /// GitTurtle patch: as a Shift-Enter, a Control-Enter.
+    #[gpui::test]
+    fn a_dialog_opened_by_a_held_control_enter_waits_for_its_key_up(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        a_dialog_opened_by_a_held_modified_enter_waits_for_its_key_up(cx, "ctrl-enter");
+    }
+
+    /// GitTurtle patch: a Button focused in a dialog a held Shift-Enter
+    /// opened takes no plain repeat of that press, nor does the dialog.
+    #[gpui::test]
+    fn a_button_in_a_dialog_opened_by_a_held_shift_enter_takes_no_repeat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = button_dialog(cx, false);
+        let (outside, button, open, presses, confirms) = view.read_with(cx, |dialog, _| {
+            (
+                dialog.outside.clone(),
+                dialog.button.clone(),
+                dialog.open.clone(),
+                dialog.presses.clone(),
+                dialog.confirms.clone(),
+            )
+        });
+        focus_on(cx, &outside);
+        key_down(cx, "shift-enter");
+        cx.update(|window, cx| {
+            open.set(true);
+            dialog_opened(window, cx);
+        });
+        focus_on(cx, &button);
+        enter(cx, Some(false));
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (0, 0),
+            "a Button in a dialog opened while Enter is held took a repeat of that press"
+        );
+    }
+
+    /// GitTurtle patch: Control going down and up while an Enter that moved
+    /// focus to a Button stays held, so that under X11 its repeats arrive as
+    /// a Control-Enter and then a plain Enter, none marked held, lets no
+    /// repeat press that Button: the Control-Enter does not end the press.
+    #[gpui::test]
+    fn a_control_tap_during_a_held_enter_lets_no_repeat_press_the_button(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = button_dialog(cx, true);
+        let (field, button, presses) = view.read_with(cx, |dialog, _| {
+            (dialog.field.clone(), dialog.button.clone(), dialog.presses.clone())
+        });
+        focus_on(cx, &field);
+        enter(cx, Some(false));
+        focus_on(cx, &button);
+        enter(cx, Some(false));
+        assert_eq!(presses.get(), 0, "a repeat on the Button focus moved to presses nothing");
+        key_down(cx, "ctrl-enter");
+        enter(cx, Some(false));
+        assert_eq!(
+            presses.get(),
+            0,
+            "a Control tap during the held press let its next repeat press the Button"
+        );
     }
 }

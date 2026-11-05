@@ -227,6 +227,9 @@ impl StatefulInteractiveElement for Button {}
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.focus_handle(window, cx);
+        // GitTurtle patch: the Button's own focus, which an Enter press must
+        // begin on to press it (`crate::dialog::enter_press_began_on`).
+        let enter_focus = focus_handle.clone();
         let disabled = self.disabled;
         let selected = self.selected;
         let style = self.resolved_style();
@@ -287,11 +290,16 @@ impl RenderOnce for Button {
             // press it a second time.
             .when_some(enter, |this, on_click| {
                 let bounds = bounds.clone();
+                let focus = enter_focus;
                 this.capture_key_down(move |event, window, cx| {
                     if !crate::dialog::enter_presses_button(event, window) {
                         return;
                     }
-                    if !event.is_held {
+                    // Never on a held key's repeats, nor on an Enter whose
+                    // press began on another control, as a press that moved
+                    // focus here does under X11, where repeats are not
+                    // marked held.
+                    if !event.is_held && crate::dialog::enter_press_began_on(&focus, window, cx) {
                         let click = ClickEvent::Keyboard(KeyboardClickEvent {
                             button: KeyboardButton::Enter,
                             bounds: bounds.get(),

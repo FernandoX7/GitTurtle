@@ -15,6 +15,15 @@ pub(super) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("alt-up", MoveCommitUp, Some("RebaseSequence")),
         KeyBinding::new("alt-down", MoveCommitDown, Some("RebaseSequence")),
+        // Return on a rewritten series' commit row is the list's own, which
+        // inspects that commit's files as Return does in History: bound to no
+        // action here, the review dialog's default action never takes the
+        // key, which closed the review before the list saw it.
+        KeyBinding::new(
+            "enter",
+            gpui_kit::NoAction,
+            Some(crate::rewrite_review::SERIES_CONTEXT),
+        ),
     ]);
 }
 
