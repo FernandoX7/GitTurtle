@@ -1965,7 +1965,7 @@ impl GitTurtle {
                 let resizable = !(narrow
                     && matches!(id, columns::ColumnId::Graph | columns::ColumnId::Subject));
                 let title =
-                    !(narrow && id == columns::ColumnId::Graph) || graph_title_fits(width, window);
+                    !(narrow && id == columns::ColumnId::Graph) || graph_title_fits(width, metrics);
                 div()
                     .debug_selector(move || format!("history-column-{}", id as usize))
                     .relative()
@@ -2192,7 +2192,11 @@ impl GitTurtle {
         let spacing = self.lane_spacing();
         let compact = graph::compact_spacing(spacing);
         let metrics = self.history_metrics.get();
-        self.settings.columns.history_layout(
+        // The SHA column keeps seven characters whole, whatever width was
+        // saved; the saved width itself is untouched.
+        let mut chosen = self.settings.columns.clone();
+        chosen.sha.width = chosen.sha.width.max(metrics.sha_cell);
+        chosen.history_layout(
             self.history_width - metrics.insets(),
             graph::required_width(self.graph_lanes, spacing),
             columns::NarrowHistory {
@@ -6622,21 +6626,39 @@ pub(super) struct HistoryMetrics {
     /// What the table keeps after its last column: a row's `px_3` inset and
     /// the list's edge.
     trailing: f32,
+    /// The SHA cell at its narrowest (`sha_cell_width`): Git's default short
+    /// form, seven hex characters, whole in the code font at the current
+    /// size, with the cell's insets.
+    sha_cell: f32,
+    /// The header cell narrow History's Graph title needs whole
+    /// (`graph_title_fits`).
+    graph_title: f32,
 }
 
 impl HistoryMetrics {
     /// The metrics for `window`'s font and sizes, with `references` the
-    /// most any loaded commit shows.
+    /// most any loaded commit shows. The line key is read once for all of
+    /// them: History's frame callback runs outside the root render, where
+    /// each read builds the window's text style, an allocation, and every
+    /// width below is measured again only when that key changes.
     fn current(window: &Window, references: usize) -> Self {
+        let key = LineKey::current(window);
         let rem = f32::from(window.rem_size());
         let inset = rem * 0.75;
         Self {
-            subject_floor: f32::from(subject_floor(window)),
+            subject_floor: f32::from(subject_floor(&key, window)),
             subject_insets: 10. + inset,
             pill_gap: rem * 0.25,
-            compact_pill: compact_pill_width(references, window),
+            compact_pill: compact_pill_width(references, &key, window),
             leading: 3. + inset,
             trailing: inset + 1.,
+            sha_cell: f32::from(sha_cell_width(&key, window)),
+            graph_title: f32::from(header_cell_width(
+                &GRAPH_TITLE,
+                ColumnId::Graph.label(),
+                &key,
+                window,
+            )),
         }
     }
 
@@ -6692,13 +6714,13 @@ struct Pill {
 /// Narrow History's compact pill at its widest for `references` on one
 /// commit: its `px_1` insets, the branch glyph, its `gap_0p5` and the count
 /// at the badge's 10 pt, measured as eights, among the widest figures, once
-/// per font, size and number of digits. Zero without references.
-fn compact_pill_width(references: usize, window: &Window) -> f32 {
+/// per font, size (`key`) and number of digits. Zero without references.
+fn compact_pill_width(references: usize, key: &LineKey, window: &Window) -> f32 {
     if references == 0 {
         return 0.;
     }
     let digits = ["8", "88", "888"][(references.ilog10() as usize).min(2)];
-    let count = cached_text_width(&COMPACT_COUNT, digits, window, || {
+    let count = cached_text_width_for(&COMPACT_COUNT, digits, key, || {
         line_widths(&[(digits, appearance::ui_text(10.))], window)
     });
     let rem = f32::from(window.rem_size());
@@ -6730,14 +6752,15 @@ pub(super) struct HistoryRows {
 /// What a History column header cell needs for its whole `title` at the
 /// header's 11 pt medium at the interface size: the title and the cell's
 /// 10 px and `pr_3` insets. The title is measured from the interface font,
-/// and again only when the font or the sizes change, so a steady render asks
-/// the text system nothing.
+/// and again only when the font or the sizes, `key`, change, so a steady
+/// render asks the text system nothing.
 fn header_cell_width(
     cache: &'static std::thread::LocalKey<RefCell<Option<(LineKey, Pixels)>>>,
     title: &str,
+    key: &LineKey,
     window: &Window,
 ) -> Pixels {
-    let title = cached_width(cache, &LineKey::current(window), || {
+    let title = cached_width(cache, key, || {
         shaped_width(title, appearance::ui_text(11.), FontWeight::MEDIUM, window).ceil()
     });
     px(10.) + window.rem_size() * 0.75 + title
@@ -6750,14 +6773,43 @@ fn header_cell_width(
 /// about 85.5 px at the default size and 117.5 px at 18 pt in IBM Plex Sans
 /// on Linux, and about 93 and 128 px, cells of about 113 and 152 px, in the
 /// unit tests' text system.
-pub(super) fn subject_floor(window: &Window) -> Pixels {
-    header_cell_width(&SUBJECT_TITLE, ColumnId::Subject.label(), window)
+fn subject_floor(key: &LineKey, window: &Window) -> Pixels {
+    header_cell_width(&SUBJECT_TITLE, ColumnId::Subject.label(), key, window)
+}
+
+/// History's SHA cell at its narrowest: seven hex characters, Git's
+/// default short form, at the cell's 11 pt in the code font it draws them in,
+/// and its 10 px and `pr_3` insets. The column is never narrower, at any text
+/// size or density, whatever width was saved: at 18 pt the default 84 px cell
+/// cut a commit's seven characters to five and an ellipsis. Each character is
+/// measured as the widest hex digit, since a fallback for the code font need
+/// not be monospaced, and again only when the font or the sizes, `key`,
+/// change.
+fn sha_cell_width(key: &LineKey, window: &Window) -> Pixels {
+    let digits = cached_width(&SHA_DIGITS, key, || {
+        let mut style = window.text_style();
+        style.font_family = mono().into();
+        let size = appearance::ui_text(11.);
+        let widest = (b'0'..=b'9')
+            .chain(b'a'..=b'f')
+            .map(|digit| {
+                let digit = [digit];
+                let digit = std::str::from_utf8(&digit).unwrap_or_default();
+                window
+                    .text_system()
+                    .layout_line(digit, size, &[style.to_run(digit.len())], None)
+                    .width
+            })
+            .fold(px(0.), Pixels::max);
+        (widest * 7.).ceil()
+    });
+    px(10.) + window.rem_size() * 0.75 + digits
 }
 
 /// Whether narrow History's Graph title fits whole in its `width`-wide
-/// header cell.
-fn graph_title_fits(width: f32, window: &Window) -> bool {
-    px(width) >= header_cell_width(&GRAPH_TITLE, ColumnId::Graph.label(), window)
+/// header cell, as this frame's `metrics` measured it.
+fn graph_title_fits(width: f32, metrics: HistoryMetrics) -> bool {
+    width >= metrics.graph_title
 }
 
 /// What a line of interface text is laid out with besides its text: the
@@ -6937,6 +6989,7 @@ thread_local! {
     static TEXT_MODE_WIDEST: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static SHA_DIGITS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
     /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`),
     /// kept as [`STATUS_TEXT`] keeps the line's whole text, for each
@@ -7678,14 +7731,24 @@ pub(crate) fn cached_text_width(
     window: &Window,
     width: impl FnOnce() -> Pixels,
 ) -> Pixels {
-    let key = LineKey::current(window);
+    cached_text_width_for(cache, text, &LineKey::current(window), width)
+}
+
+/// `width` of `text` for the font and sizes `key` was read with, computed
+/// again only when either changes.
+fn cached_text_width_for(
+    cache: &'static std::thread::LocalKey<TextWidth>,
+    text: &str,
+    key: &LineKey,
+    width: impl FnOnce() -> Pixels,
+) -> Pixels {
     cache.with(|cache| {
         let mut cache = cache.borrow_mut();
         match &*cache {
-            Some((cached, cached_text, width)) if *cached == key && cached_text == text => *width,
+            Some((cached, cached_text, width)) if cached == key && cached_text == text => *width,
             _ => {
                 let width = width();
-                *cache = Some((key, text.to_owned(), width));
+                *cache = Some((key.clone(), text.to_owned(), width));
                 width
             }
         }
@@ -31252,6 +31315,114 @@ pub(crate) mod tests {
                 }
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// History's metrics, which its frame callback takes outside the root
+    /// render, read the window's line key once for all of them, in a wide
+    /// window and in narrow History, and allocate nothing else: each read
+    /// builds the window's text style, an allocation, and the SHA cell's
+    /// floor once added a third read every frame, the narrow header's Graph
+    /// title a fourth. Under an unchanged key no width is measured again.
+    #[gpui::test]
+    async fn history_metrics_read_the_line_key_once_a_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let references = app.read_with(cx, |app, _| app.widest_references());
+        assert!(
+            references > 0,
+            "a row shows a pill, so its width is measured"
+        );
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            cx.update(|window, _| {
+                // History's frame callback runs outside the root render, as
+                // this does: each read builds the window's text style.
+                let before = crate::test_support::allocations();
+                let _ = LineKey::current(window);
+                let read = crate::test_support::allocations() - before;
+                assert!(read > 0, "a read outside the root render allocates");
+                line_key_reads::watch("views.rs");
+                let before = crate::test_support::allocations();
+                let metrics = HistoryMetrics::current(window, references);
+                let made = crate::test_support::allocations() - before;
+                let reads = line_key_reads::take();
+                line_key_reads::stop();
+                assert_eq!(
+                    reads.shared + reads.read,
+                    1,
+                    "in {width} × {height} the metrics read the line key once: {reads:?}"
+                );
+                assert_eq!(
+                    made, read,
+                    "in {width} × {height} the metrics allocate only their one read, measuring \
+                     nothing again under an unchanged key"
+                );
+                assert!(metrics.sha_cell > 0. && metrics.graph_title > 0.);
+            });
+        }
+    }
+
+    /// History's SHA column shows a commit's seven hex characters whole at
+    /// every interface text size and density, in a wide window and in narrow
+    /// History: the row's cell, inside its 10 px and `pr_3` insets, holds the
+    /// short id as the code font lays it out, and the header's cell is as
+    /// wide. The saved width is untouched. At 18 pt the default 84 px cell
+    /// showed five characters and an ellipsis.
+    #[gpui::test]
+    async fn history_sha_column_shows_seven_characters_at_every_size(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let row = commit_index(&app, cx, MERGE_SUBJECT);
+        let oid = app.read_with(cx, |app, _| short_oid(&app.commits[row].oid));
+        assert_eq!(oid.len(), 7);
+        let saved = app.read_with(cx, |app, _| app.settings.columns.clone());
+        for density in appearance::Density::ALL {
+            app.update(cx, |app, cx| {
+                app.settings.density = density;
+                cx.notify();
+            });
+            for text in appearance::INTERFACE_TEXT_RANGE {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for (width, height) in [(1480., 980.), (461., 490.)] {
+                    cx.simulate_resize(size(px(width), px(height)));
+                    draw(cx);
+                    let at = format!("{density:?} at {text} pt in {width} × {height}");
+                    let cell =
+                        bounds_of(cx, format!("history-cell-{row}-{}", ColumnId::Sha as usize))
+                            .unwrap_or_else(|| panic!("the SHA cell is laid out {at}"));
+                    let header =
+                        bounds_of(cx, format!("history-column-{}", ColumnId::Sha as usize))
+                            .unwrap_or_else(|| panic!("the SHA header is laid out {at}"));
+                    let (needed, insets) = cx.update(|window, _| {
+                        let mut style = window.text_style();
+                        style.font_family = mono().into();
+                        let needed = window
+                            .text_system()
+                            .layout_line(
+                                &oid,
+                                appearance::ui_text(11.),
+                                &[style.to_run(oid.len())],
+                                None,
+                            )
+                            .width;
+                        (needed, px(10.) + window.rem_size() * 0.75)
+                    });
+                    assert!(
+                        needed <= cell.size.width - insets + px(0.01),
+                        "{at}: {oid} takes {needed:?} in a {:?} cell less {insets:?}",
+                        cell.size.width
+                    );
+                    assert!(
+                        (header.size.width - cell.size.width).abs() <= px(0.01),
+                        "{at}: the header's {header:?} matches the row's {cell:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            app.read_with(cx, |app, _| app.settings.columns.clone()),
+            saved
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
