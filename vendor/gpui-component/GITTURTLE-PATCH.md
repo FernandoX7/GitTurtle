@@ -561,6 +561,42 @@ built-in and embedded Omarchy palette and reads the edge each dialog draws.
 Remove this part of the patch when upstream lets a theme set a dialog's border
 apart from `border`, and those tests pass without it.
 
+The dialog-bounds patch (2026-11-05) modifies `src/theme/mod.rs` and
+`src/dialog/dialog.rs`. Upstream gives a dialog that sets no width of its
+own 448 px at every window width, centred, so in a 461 px half tile it stood
+6.5 px from either side, where GitTurtle's dialogs with a width of their own
+keep 24 px (`appearance::dialog_width`). `Theme::dialog_margin`, `None` by
+default, set in code and skipped by theme files, is the room such a dialog
+keeps from the window's sides inside a client-decorated frame's padding:
+set, the default width is 448 px or the window less that margin on either
+side, whichever is narrower; unset, it is 448 px, as upstream. A width the
+caller sets is its own, as before (the props now hold it as an `Option`).
+Upstream also opens each nested dialog 16 px lower than the one beneath it
+and keeps the caller's height cap, so a nested dialog under the same cap as
+the first ran 16 px further down, past the margin GitTurtle keeps above its
+status bar (`appearance::dialog_max_height`). A nested dialog's absolute
+height cap now gives up its layer's offset, so its foot stays where the cap
+puts the first dialog's; the first dialog, a cap given as a fraction or
+none, are unchanged. The app sets the margin to `appearance::DIALOG_MARGIN`
+beside the dialog edge. The consumers are the dialogs with no width of their
+own (a custom theme's delete confirmation, Delete saved profile, the Markdown
+link dialog and the repository picker's failure) and every dialog opened
+over another. `cargo test --locked -p gitturtle width_walk::` opens the
+delete confirmation in a 461 × 490 window at 13 and 18 pt and fails it
+closer than 24 px to a side
+(`dialogs_keep_inside_a_narrow_window_at_13_pt` and `_18_pt`), and opens an
+error's details over the Reflog and fails its foot off the cap or closer
+than 24 px to the status bar
+(`a_nested_dialog_keeps_its_foot_above_the_status_bar_at_13_pt` and
+`_18_pt`). The kit tests are
+`dialog::dialog::tests::the_default_width_keeps_the_dialog_margin`, 448 px
+unset, 24 px set, and a caller's 440 px kept, and
+`dialog::dialog::tests::a_nested_dialog_gives_its_offset_up_from_its_cap`
+(`scripts/vendor-crate-test.sh vendor/gpui-component dialog::dialog::tests`).
+Remove this part of the patch when upstream lets an application
+bound a dialog's default width and keeps a nested dialog's foot under its
+cap, and those tests pass without it.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,

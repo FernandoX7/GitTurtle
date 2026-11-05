@@ -1,9 +1,9 @@
 use std::{rc::Rc, sync::LazyLock, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Edges, FocusHandle, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, WindowControlArea, anchored, div, hsla, point,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, DefiniteLength, Edges,
+    FocusHandle, Hsla, InteractiveElement, IntoElement, Length, ParentElement, Pixels, RenderOnce,
+    SharedString, StyleRefinement, Styled, Window, WindowControlArea, anchored, div, hsla, point,
     prelude::FluentBuilder, px,
 };
 use gpui_base::{ElementExt as _, TextSelectionScopeId};
@@ -136,9 +136,17 @@ impl DialogButtonProps {
 
 type ContentBuilderFn = Rc<dyn Fn(DialogContent, &mut Window, &mut App) -> DialogContent + 'static>;
 
+/// A dialog's width where its caller sets none.
+const DEFAULT_WIDTH: Pixels = px(448.);
+
+/// How much lower each dialog opens than the one beneath it.
+const LAYER_OFFSET: Pixels = px(16.);
+
 #[derive(Clone)]
 pub(crate) struct DialogProps {
-    width: Pixels,
+    // GitTurtle patch: `None` until the caller sets a width, for
+    // [`DEFAULT_WIDTH`] narrowed by the theme's `dialog_margin`.
+    width: Option<Pixels>,
     max_width: Option<Pixels>,
     margin_top: Option<Pixels>,
     close_button: bool,
@@ -155,7 +163,7 @@ impl Default for DialogProps {
     fn default() -> Self {
         Self {
             margin_top: None,
-            width: px(448.),
+            width: None,
             max_width: None,
             overlay: true,
             keyboard: true,
@@ -386,13 +394,13 @@ impl Dialog {
     ///
     /// See also [`Self::width`]
     pub fn w(mut self, width: impl Into<Pixels>) -> Self {
-        self.props.width = width.into();
+        self.props.width = Some(width.into());
         self
     }
 
     /// Sets the width of the dialog, defaults to 448px.
     pub fn width(mut self, width: impl Into<Pixels>) -> Self {
-        self.props.width = width.into();
+        self.props.width = Some(width.into());
         self
     }
 
@@ -509,11 +517,31 @@ impl RenderOnce for Dialog {
                 window_paddings.left + window_paddings.right,
                 window_paddings.top + window_paddings.bottom,
             );
-        let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + px(layer_ix as f32 * 16.);
-        let x = view_size.width / 2. - self.props.width / 2.;
+        let offset = LAYER_OFFSET * layer_ix as f32;
+        let y = self.props.margin_top.unwrap_or(view_size.height / 10.) + offset;
+        // GitTurtle patch: a dialog that sets no width of its own keeps the
+        // theme's `dialog_margin` from the window's sides, as a 461 px half
+        // tile is narrower than the default width and its margins.
+        let width = self.props.width.unwrap_or_else(|| {
+            cx.theme().dialog_margin.map_or(DEFAULT_WIDTH, |margin| {
+                DEFAULT_WIDTH
+                    .min(view_size.width - margin * 2.)
+                    .max(Pixels::ZERO)
+            })
+        });
+        let x = view_size.width / 2. - width / 2.;
 
         let base_size = window.text_style().font_size;
         let rem_size = window.rem_size();
+        // GitTurtle patch: a nested dialog opens `offset` lower than the
+        // first; its caller's height cap gives that offset up, so its foot
+        // stays where the cap puts the first dialog's.
+        let max_height = match self.style.max_size.height {
+            Some(Length::Definite(DefiniteLength::Absolute(cap))) if layer_ix > 0 => {
+                Some((cap.to_pixels(rem_size) - offset).max(Pixels::ZERO))
+            }
+            _ => None,
+        };
 
         let mut paddings = Edges::all(px(16.));
         if let Some(pl) = self.style.padding.left {
@@ -606,8 +634,9 @@ impl RenderOnce for Dialog {
                                     .relative()
                                     .left(x)
                                     .top(y)
-                                    .w(self.props.width)
+                                    .w(width)
                                     .when_some(self.props.max_width, |this, w| this.max_w(w))
+                                    .when_some(max_height, |this, cap| this.max_h(cap))
                                     .child(
                                         v_flex()
                                             .flex_1()
@@ -706,5 +735,101 @@ impl RenderOnce for Dialog {
                     .with_animation("fade-in", animation, move |this, delta| this.opacity(delta)),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, Context, Render, VisualTestContext, size};
+
+    /// A view that draws the window's dialog layer.
+    struct Layer;
+
+    impl Render for Layer {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .children(Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    /// A 461 × 490 window, as a half tile, with dialogs drawn at rest.
+    fn half_tile(cx: &mut gpui::TestAppContext) -> &mut VisualTestContext {
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Layer);
+            Root::new(view, window, cx).bordered(false)
+        });
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn bounds(cx: &mut VisualTestContext, selector: &'static str) -> gpui::Bounds<Pixels> {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+    }
+
+    /// GitTurtle patch: a dialog that sets no width of its own keeps the
+    /// theme's `dialog_margin` from a window too narrow for 448 px, and 448 px
+    /// without it; a width its caller sets is its own. Its content starts
+    /// inside the panel's 1 px edge and 16 px padding.
+    #[gpui::test]
+    fn the_default_width_keeps_the_dialog_margin(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let open = |cx: &mut VisualTestContext, width: Option<Pixels>| {
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    let dialog = match width {
+                        Some(width) => dialog.width(width),
+                        None => dialog,
+                    };
+                    dialog.child(
+                        div()
+                            .w_full()
+                            .h(px(10.))
+                            .debug_selector(|| "content".into()),
+                    )
+                })
+            });
+            draw(cx);
+            let content = bounds(cx, "content");
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            content.left() - px(17.)
+        };
+        assert_eq!(open(cx, None), px(6.5), "unset, upstream's 448 px");
+        cx.update(|_, cx| crate::Theme::global_mut(cx).dialog_margin = Some(px(24.)));
+        assert_eq!(open(cx, None), px(24.), "set, the margin");
+        assert_eq!(open(cx, Some(px(440.))), px(10.5), "a caller's width is its own");
+    }
+
+    /// GitTurtle patch: a dialog opened over another opens 16 px lower, and
+    /// its caller's height cap gives that offset up, so its foot ends where
+    /// the cap puts the first dialog's: a tenth of the window down, plus the
+    /// cap. With the cap as given, its foot ran 16 px further down.
+    #[gpui::test]
+    fn a_nested_dialog_gives_its_offset_up_from_its_cap(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| dialog.child(div().h(px(40.))));
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog
+                    .max_h(px(300.))
+                    .child(div().h(px(1000.)))
+                    .footer(div().h(px(20.)).debug_selector(|| "nested-foot".into()))
+            });
+        });
+        draw(cx);
+        // The panel's foot lies its 16 px padding and 1 px edge below the
+        // footer's.
+        let foot = bounds(cx, "nested-foot").bottom() + px(17.);
+        assert_eq!(foot, px(49.) + px(300.), "the first dialog's top plus the cap");
     }
 }

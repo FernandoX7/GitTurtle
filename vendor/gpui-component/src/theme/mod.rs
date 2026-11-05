@@ -174,6 +174,14 @@ pub struct Theme {
     /// against both: the page's `border` is fitted against the page.
     #[serde(skip)]
     pub dialog_edge: Option<Hsla>,
+    /// GitTurtle patch: the room a dialog that sets no width of its own
+    /// keeps from either side of a window too narrow for the default width,
+    /// or `None` for upstream's 448 px at every width.
+    ///
+    /// Set in code, not read from theme files, so an application can give
+    /// such a dialog the margin its own dialogs keep.
+    #[serde(skip)]
+    pub dialog_margin: Option<Pixels>,
     /// GitTurtle patch: the 1 px edge a bordered secondary Button draws at
     /// rest, hovered, pressed and selected, or `None` for the shared
     /// `border`, as upstream draws it. Disabled, an outline secondary Button
@@ -852,6 +860,7 @@ impl From<&ThemeColor> for Theme {
             ghost_active: None,
             popover_edge: None,
             dialog_edge: None,
+            dialog_margin: None,
             secondary_edge: None,
             disabled_edge: None,
             resting_edge: None,
