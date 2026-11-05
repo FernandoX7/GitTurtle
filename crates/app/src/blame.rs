@@ -179,6 +179,12 @@ impl GitTurtle {
             return false;
         }
         self.invalidate_read();
+        // The read moves on here, and a Working diff kept behind the
+        // attribution takes a partial action only while bound at the read it
+        // shows: bound again, its Stage and Unstage act. Left bound to the
+        // read before, a press after any attribution round trip started
+        // nothing and said nothing.
+        self.rebind_text_partial(window, cx);
         if let Some((mode, pane, sidebar, focus)) = self.blame.return_context.take() {
             self.mode = mode;
             self.pane = pane;
@@ -232,6 +238,9 @@ impl GitTurtle {
         if self.blame.repository.as_deref() != Some(repo.path()) {
             return;
         }
+        // The comparison stays behind the attribution for its return, so a
+        // review being prepared for it ends here with its read.
+        self.release_text_review(window, cx);
         self.invalidate_read();
         let generation = self.generation;
         let repository = repo.path().to_owned();

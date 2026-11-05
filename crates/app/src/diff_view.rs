@@ -94,6 +94,13 @@ impl DiffView {
     pub fn focus_handle(&self, cx: &App) -> gpui_kit::FocusHandle {
         gpui_kit::Focusable::focus_handle(self.editor.read(cx), cx)
     }
+    /// Whether the partial actions are suspended, as while a text review
+    /// or a partial write runs.
+    #[cfg(test)]
+    pub(crate) fn partial_suspended(&self) -> bool {
+        self.partial_busy
+    }
+
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
         self.selection = LineSelection::default();

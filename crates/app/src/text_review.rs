@@ -346,6 +346,43 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Ends a text review whose preparation will not land while the
+    /// comparison it was for stays shown or kept for the return: a read
+    /// that fails, as past the review's limits, or is dropped unanswered,
+    /// and one abandoned as Blame opens over the comparison, as Quick Open
+    /// inspects a tracked file, or as another repository tab is shown, each
+    /// of which keeps the comparison for its return (file history cannot
+    /// open from Working Changes, and a Compare diff has no partial
+    /// actions). Its options are dropped and the shown diff's partial
+    /// actions, suspended while it was prepared, act again, since that diff
+    /// is the one they act on. Left suspended, they stayed refused, a hunk's
+    /// Stage or Unstage disabled and a click on a line selecting nothing,
+    /// until another file was chosen. Back drops the comparison instead
+    /// (`clear_preview`). The diff's partial actions are bound again to the
+    /// read now under way (`rebind_text_partial`).
+    pub(super) fn release_text_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.review.pending.take().is_none() {
+            return;
+        }
+        if let (
+            Some(view),
+            Some(Content::Text {
+                presentation,
+                partial,
+                ..
+            }),
+        ) = (&self.patch_view, self.content.as_deref())
+        {
+            view.update(cx, |view, cx| {
+                view.refresh(presentation, partial.clone(), cx)
+            });
+        }
+        // The review's request moved the window's read on, and a partial
+        // action is taken only from a diff bound at the read it shows:
+        // refreshed alone, Stage looked enabled and a press started nothing.
+        self.rebind_text_partial(window, cx);
+    }
+
     pub(super) fn rebind_text_partial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(view) = self.patch_view.clone() {
             let generation = self.generation;
@@ -793,6 +830,7 @@ pub(crate) fn next_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpui;
 
     /// The collapsed Options menu carries each full-row button's state and
     /// chooses what that button would.
@@ -1194,6 +1232,292 @@ mod tests {
             .contains("100,000")
         );
     }
+    /// Working Changes showing a modified file's unified diff, whose
+    /// partial actions are offered and not suspended.
+    async fn working_diff(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+    ) {
+        use crate::views::tests::{fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.text_mode = TextMode::Unified;
+                app.select_working(0, gitturtle_core::ChangeArea::Unstaged, window, cx);
+            })
+        });
+        settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(matches!(
+                app.content.as_deref(),
+                Some(Content::Text {
+                    partial: Some(_),
+                    ..
+                })
+            ));
+        });
+        assert_eq!(suspended(&app, cx), (false, false));
+        (fixture, app, cx)
+    }
+
+    /// Whether the shown unified diff's partial actions are suspended, and
+    /// whether a text review is pending.
+    fn suspended(app: &gpui::Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) -> (bool, bool) {
+        app.read_with(cx, |app, cx| {
+            let view = app.patch_view.as_ref().expect("the unified diff");
+            (
+                view.read(cx).partial_suspended(),
+                app.review.pending.is_some(),
+            )
+        })
+    }
+
+    /// Presses Stage on the shown diff's first hunk, as its partial action
+    /// asks for it, and answers the write that started, if any, once it has
+    /// landed.
+    async fn press_stage(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<&'static str> {
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                let Some(Content::Text {
+                    partial: Some(partial),
+                    ..
+                }) = app.content.as_deref()
+                else {
+                    panic!("the diff offers its partial actions");
+                };
+                let diff = Arc::clone(&partial.diff);
+                let view = app.patch_view.clone().expect("the unified diff");
+                view.update(cx, |_, cx| {
+                    cx.emit(crate::diff_view::DiffViewEvent::ApplyPartial {
+                        diff,
+                        selection: gitturtle_core::PartialSelection::Hunks(vec![0]),
+                    })
+                });
+            })
+        });
+        let started = app.read_with(cx, |app, _| app.operation_busy);
+        crate::views::tests::settle(app, cx).await;
+        started
+    }
+
+    /// Starts a review of the shown diff, holding the reader so that its
+    /// preparation is still under way as `then` runs, then releases it.
+    async fn while_a_review_is_prepared(
+        app: &gpui::Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        then: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+    ) {
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(true);
+                let options = Options {
+                    hide_whitespace: true,
+                    ..Options::default()
+                };
+                app.set_text_review(options, window, cx);
+                assert_eq!(app.loading, Some("Preparing text review…"));
+                then(app, window, cx);
+            })
+        });
+        drop(held);
+        crate::views::tests::settle(app, cx).await;
+    }
+
+    const STAGING: Option<&str> = Some("Staging selected changes…");
+
+    /// A text review whose read fails (here an unsupported context size;
+    /// past the review's limits in practice) gives the shown diff's partial
+    /// actions back, and a press of Stage then stages: the actions are
+    /// bound again to the read the review moved on to. Left suspended,
+    /// they stayed refused, a hunk's Stage disabled and a line click
+    /// selecting nothing, until another file was chosen; released but
+    /// bound to the read before the review, Stage looked enabled and a
+    /// press started nothing. Back drops the comparison instead
+    /// (`late_preview_tests::back_cancels_a_preview_read_under_any_label`).
+    #[gpui::test]
+    async fn a_review_ended_unprepared_gives_the_partial_actions_back(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_diff(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let options = Options {
+                    hide_whitespace: false,
+                    context: 5,
+                };
+                app.set_text_review(options, window, cx);
+            })
+        });
+        assert_eq!(
+            suspended(&app, cx),
+            (true, true),
+            "suspended while prepared"
+        );
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.error.as_deref(),
+                Some("Choose a supported context size.")
+            );
+        });
+        assert_eq!(
+            suspended(&app, cx),
+            (false, false),
+            "a failed review gives them back"
+        );
+        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+    }
+
+    /// Blame opened over the shown diff while a review of it is prepared
+    /// ends the review with its read and gives the partial actions back,
+    /// and once Blame closes a press of Stage stages.
+    #[gpui::test]
+    async fn blame_during_a_review_gives_the_partial_actions_back(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) = working_diff(cx).await;
+        let held = app.read_with(cx, |app, _| {
+            app.worker.wait_idle();
+            app.worker.hold()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(true);
+                let options = Options {
+                    hide_whitespace: true,
+                    ..Options::default()
+                };
+                app.set_text_review(options, window, cx);
+                assert_eq!(app.loading, Some("Preparing text review…"));
+                app.open_blame(0, window, cx);
+                assert!(app.blame.is_visible());
+            })
+        });
+        assert_eq!(suspended(&app, cx), (false, false), "Blame gives them back");
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.close_blame(window, cx));
+                app.automatic.hold_quiet_reads(false);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            suspended(&app, cx),
+            (false, false),
+            "and so does its return"
+        );
+        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+    }
+
+    /// Blame opened from Working Changes and closed again, with no review,
+    /// keeps the diff's partial actions working: closing it moves the
+    /// window's read on, and the actions are bound again to the read it
+    /// moved on to. Bound to the read before, a press of Stage or Unstage
+    /// after any attribution round trip started nothing and said nothing.
+    #[gpui::test]
+    async fn a_blame_round_trip_keeps_the_partial_actions_working(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) = working_diff(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_blame(0, window, cx);
+                assert!(app.blame.is_visible());
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| assert!(app.close_blame(window, cx))));
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(suspended(&app, cx), (false, false));
+        assert_eq!(press_stage(&app, cx).await, STAGING, "Stage stages");
+    }
+
+    /// Quick Open's inspection of a tracked file, opened while a review of
+    /// the shown diff is prepared, keeps that diff for Back: the review
+    /// ends with its read, and the diff Back brings back offers its
+    /// partial actions, which stage. It came back with them suspended.
+    #[gpui::test]
+    async fn quick_open_during_a_review_gives_the_partial_actions_back(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        let (_fixture, app, cx) = working_diff(cx).await;
+        while_a_review_is_prepared(&app, cx, |app, window, cx| {
+            let repo = app.repository.clone().expect("a repository");
+            let paths = repo
+                .search_tracked_paths(
+                    &PathScope::Worktree,
+                    "notes",
+                    &HistoryCancellation::default(),
+                )
+                .expect("tracked paths");
+            let entry = paths.entries.first().expect("the file").clone();
+            app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+            assert!(app.revision_inspection.is_active());
+        })
+        .await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.close_revision_inspection(window, cx));
+                let view = app.patch_view.as_ref().expect("the diff kept for Back");
+                assert!(
+                    !view.read(cx).partial_suspended(),
+                    "the diff comes back with its partial actions"
+                );
+                app.automatic.hold_quiet_reads(false);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(suspended(&app, cx), (false, false));
+        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+    }
+
+    /// Another repository tab, opened while a review of the shown diff is
+    /// prepared, keeps this tab's diff warm for its return: the review ends
+    /// with its read, and the diff the tab comes back with offers its
+    /// partial actions, which stage. It came back with them suspended.
+    #[gpui::test]
+    async fn a_tab_switch_during_a_review_gives_the_partial_actions_back(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_diff(cx).await;
+        let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
+        let second = second.path().to_owned();
+        while_a_review_is_prepared(&app, cx, |app, window, cx| {
+            app.open_repository_tab(second, window, cx);
+            assert_eq!(app.repository_tabs.active, Some(1));
+        })
+        .await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.switch_repository_tab(0, window, cx);
+                let view = app.patch_view.as_ref().expect("the warm tab's diff");
+                assert!(
+                    !view.read(cx).partial_suspended(),
+                    "the tab comes back with its partial actions"
+                );
+                app.automatic.hold_quiet_reads(false);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(suspended(&app, cx), (false, false));
+        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+    }
+
     #[test]
     fn change_navigation_wraps_and_accumulates_before_layout() {
         assert_eq!(next_change(&[], None, 0, true), None);

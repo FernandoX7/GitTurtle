@@ -1244,6 +1244,7 @@ impl GitTurtle {
                         "Repository read was interrupted. Open the repository again to retry."
                     )),
                     Err(_) => {
+                        this.release_text_review(window, cx);
                         this.try_automatic_refresh(window, cx);
                         cx.notify();
                         return;
@@ -1262,6 +1263,7 @@ impl GitTurtle {
                         this.receive(output, window, cx);
                     }
                     Err(error) => {
+                        this.release_text_review(window, cx);
                         this.error = Some(format!("{error:#}"));
                         if let Some(index) = this.repository_tabs.active
                             && let Some(tab) = this.repository_tabs.tabs.get_mut(index)
