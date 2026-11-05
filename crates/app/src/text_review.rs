@@ -1610,7 +1610,13 @@ mod tests {
     /// there. Emitted into the diff view instead, as this helper once did,
     /// a press could not see a button drawn off its hit area, as QA-101 F1's
     /// Stage was, 8 px above its row until the pointer's arrival drew it in
-    /// place.
+    /// place. The write the press starts waits on the operation executor
+    /// until the helper has read that it started: the click's own
+    /// `run_until_parked` takes any reply that has arrived, and on a loaded
+    /// host the frame the press draws once outlasted `git apply`, so the
+    /// write had ended, its status read already running, before the helper
+    /// read `operation_busy`, and a press that staged read as one that
+    /// started nothing.
     async fn press_drawn_stage(
         app: &gpui::Entity<GitTurtle>,
         cx: &mut gpui::VisualTestContext,
@@ -1642,8 +1648,11 @@ mod tests {
             Some(stage),
             "the pointer's arrival leaves Stage where the frame shown drew it"
         );
+        let write_held = app.read_with(cx, |app, _| app.operations.hold());
         cx.simulate_click(stage.center(), Modifiers::default());
         let started = app.read_with(cx, |app, _| app.operation_busy);
+        drop(write_held);
+        app.read_with(cx, |app, _| app.operations.drain());
         crate::views::tests::settle(app, cx).await;
         started
     }
@@ -1989,13 +1998,17 @@ mod tests {
         let press = gpui::point(stage.center().x, stage.top() + stage.size.height / 4.);
         cx.simulate_mouse_move(press, None, Modifiers::default());
         native_frames(cx);
+        // The write waits until its start is read, as in `press_drawn_stage`.
+        let write_held = app.read_with(cx, |app, _| app.operations.hold());
         cx.simulate_click(press, Modifiers::default());
         assert_eq!(
             app.read_with(cx, |app, _| app.operation_busy),
             STAGING,
             "the first press stages, the passive read still held"
         );
+        drop(write_held);
         drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
         crate::views::tests::settle(&app, cx).await;
     }
 
