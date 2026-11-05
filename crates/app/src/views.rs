@@ -13996,6 +13996,86 @@ pub(crate) mod tests {
         }
     }
 
+    /// A long search typed in History's search field comes back after a tab
+    /// switch with its caret where it was, at the end, in view: the second
+    /// tab of [`two_history_tabs`] left with a query far wider than the
+    /// field typed into it, the first tab shown and the second shown again,
+    /// the frames the return draws show the field's caret where the
+    /// tab left it, inside the field, with the text scrolled as it was. The
+    /// return gives the field its text, which a single-line field shows
+    /// from its start, and then its caret, whose scroll measured against
+    /// the text from before: the field showed its start and the caret was
+    /// clipped past its end until the next key (QA-87 #7; the kit's
+    /// `set_selected_range`, `vendor/gpui-base`).
+    #[gpui::test]
+    async fn a_long_search_keeps_its_caret_and_scroll_across_a_tab_switch(cx: &mut TestAppContext) {
+        let (_fixtures, app, cx, _tabs) = two_history_tabs(cx).await;
+        // The caret is drawn only in the active window.
+        cx.update(|window, _| window.activate_window());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |search, cx| search.focus(window, cx))
+            })
+        });
+        draw(cx);
+        let query = "a search for the words a commit message might hold, typed until it runs far past the end of the field";
+        cx.simulate_input(query);
+        settle(&app, cx).await;
+        draw(cx);
+        // The field's caret as drawn, and the text's scroll.
+        let caret = |cx: &mut VisualTestContext| {
+            let color = cx.read(|cx| {
+                gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).caret)
+            });
+            let carets: Vec<_> = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let width = if cfg!(target_os = "macos") { 1.5 } else { 2. } * scale;
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        quad.background == color
+                            && (quad.bounds.size.width.as_f32() - width).abs() < 0.01
+                    })
+                    .map(|quad| quad.bounds.origin.x.as_f32() / scale)
+                    .collect()
+            });
+            let scroll = app.read_with(cx, |app, cx| app.search.read(cx).scroll_offset().x);
+            (carets, scroll)
+        };
+        let window_width = cx.update(|window, _| f32::from(window.viewport_size().width));
+        let (left, scrolled) = caret(cx);
+        assert_eq!(left.len(), 1, "the focused field draws its caret: {left:?}");
+        assert!(
+            scrolled < px(0.),
+            "the query runs past the field, which scrolls to its caret: {scrolled:?}"
+        );
+        assert!(
+            left[0] > 0. && left[0] < window_width,
+            "the caret {left:?} lies in the window as the tab is left"
+        );
+        let away = switch_warm_tab(&app, 0, cx).await;
+        drop(away);
+        settle(&app, cx).await;
+        let back = switch_warm_tab(&app, 1, cx).await;
+        let (carets, scroll) = caret(cx);
+        assert_eq!(
+            app.read_with(cx, |app, cx| {
+                let search = app.search.read(cx);
+                (search.value().to_string(), search.cursor())
+            }),
+            (query.to_owned(), query.len()),
+            "the field reads the query, its caret at the end"
+        );
+        assert_eq!(carets.len(), 1, "the return draws the caret: {carets:?}");
+        assert!(
+            (carets[0] - left[0]).abs() < 0.5 && (scroll - scrolled).abs() < px(0.5),
+            "the caret at {carets:?} and the scroll {scroll:?} are where the tab left them, at \
+             {left:?} and {scrolled:?}"
+        );
+        drop(back);
+    }
+
     /// A warm tab left while an input method composes in a field gives the
     /// field back its text with the caret after it and nothing selected:
     /// the second tab of [`two_history_tabs`] left with "fix" in History's
