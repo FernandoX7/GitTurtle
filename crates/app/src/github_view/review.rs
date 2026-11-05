@@ -28,7 +28,8 @@ pub(super) fn init(cx: &mut App) {
         return;
     }
     cx.set_global(ReviewBindings);
-    // Let GPUI's button key-up activation run instead of Dialog's default Confirm.
+    // Enter on a focused Button is the Button's own: bound to no action here, the dialog's
+    // default Confirm never takes the key, and the Button acts as the key goes down.
     cx.bind_keys([KeyBinding::new(
         "enter",
         gpui_kit::NoAction,
