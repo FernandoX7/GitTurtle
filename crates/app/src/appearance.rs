@@ -1110,27 +1110,42 @@ impl Palette {
 
     /// [`Self::with_more_contrast`] with the changed-word tints decided beside its
     /// line tints: the one place that decides the diff's tints under More
-    /// contrast. Each word tint is the one drawn with More contrast off, lifted
-    /// from its line in OKLab lightness where it stands faintest
+    /// contrast. Each word tint drawn with More contrast off that lies beyond
+    /// its line from the canvas ([`lightness_beyond`]) is lifted from its line
+    /// in OKLab lightness where it stands faintest
     /// ([`EditorHighlights::lifted_word_tint`]), measured on the line tints as
-    /// chosen with the syntax raised on them. Where a word tint still stands
-    /// nearer its line than [`WORD_LIGHTNESS_GAP`], that side's line tint moves
-    /// away from it ([`line_moves`]), the added side first, through the steps on
-    /// which every color drawn on the diff's lines and words reads at least as
-    /// it does with More contrast off, with secondary text, gutter numbers and
-    /// syntax raised on the moved line ([`Self::diff_reads_as_off`]), the
-    /// selection and Find's matches stand apart from it as they do off
+    /// chosen with the syntax raised on them. Where such a word tint still
+    /// stands nearer its line than [`WORD_LIGHTNESS_GAP`], that side's line
+    /// tint moves away from it ([`line_moves`]), the added side first, through
+    /// the steps on which every color drawn on the diff's lines and words reads
+    /// at least as it does with More contrast off, with secondary text, gutter
+    /// numbers and syntax raised on the moved line ([`Self::diff_reads_as_off`]),
+    /// the selection and Find's matches stand apart from it as they do off
     /// ([`EditorHighlights::stay_apart_from`]), and the word stands from it in
     /// colour-blind vision at least as far as from the line drawn off
     /// ([`keeps_colour_blind_gaps`]): to the step before the first that would
     /// not, never past it. Every line of that side draws the moved
     /// tint: whole added or removed lines, changed lines around their words,
-    /// in Diff and Split, and the gutter beside them.
+    /// in Diff and Split, and the gutter beside them. Last, a word tint that
+    /// does not stand beyond its line from the canvas ([`stands_beyond`]),
+    /// one drawn off on the line's canvas side, which keeps its line, or one
+    /// the lift and the line's move leave nearer its line than
+    /// [`HIGHLIGHT_DISTANCE`], steps to the line's far side
+    /// ([`EditorHighlights::crossed_word_tint`]).
     ///
     /// Why the line: a word tint between its line and the text on it can only
-    /// lift toward that text, which lowers the text's contrast, and one that
-    /// lifts toward the canvas stops at half its line's gap from it, so where
-    /// the word has no room left the line may still have some.
+    /// lift toward that text, which lowers the text's contrast, so where the
+    /// word has no room left the line may still have some. Why a word on the
+    /// canvas side keeps its line: the line would move away from it toward the
+    /// text, lowering the text's contrast, and leave the word stepping across
+    /// further. Why the step across: the order canvas, line, word is what makes
+    /// a changed word read as emphasis of its line, and a word lifted toward
+    /// the canvas reads as a hole in it (Omarchy flexoki-light's added word
+    /// `#f7ffdf` at 1.005:1 against its canvas, Solarized Dark's `#0c2f00` at
+    /// 1.017:1, apart by hue alone; decision, 2026-11-05: strictly, in every
+    /// palette, where with More contrast off 29 palettes drew a word on its
+    /// line's canvas side, Braden's removed word `#fcf6f7` on its line
+    /// `#f9e5eb`).
     fn more_contrast_fit(self) -> (Self, Chosen) {
         let own = self.syntax_roles(None);
         let raised = self.with_raised_floors();
@@ -1141,9 +1156,16 @@ impl Palette {
         ];
         let highlights = EditorHighlights::fit(self, own, None);
         let off = [highlights.added_word, highlights.removed_word];
+        // A word drawn off on its line's canvas side neither lifts nor moves its line: it steps
+        // across the line last.
+        let beyond = [0, 1].map(|side| lightness_beyond(off[side], sides[side].1, self) > 0.);
         let words = [0, 1].map(|side| {
             let (diff, line) = sides[side];
-            EditorHighlights::lifted_word_tint(roles, own, off[side], diff, line, self.canvas)
+            if beyond[side] {
+                EditorHighlights::lifted_word_tint(roles, own, off[side], diff, line)
+            } else {
+                off[side]
+            }
         });
         let with_lines = |[added_background, removed_background]: [u32; 2]| {
             Self {
@@ -1154,7 +1176,7 @@ impl Palette {
             .with_raised_floors()
         };
         let mut lines = sides.map(|(_, line)| line);
-        for side in 0..2 {
+        for side in (0..2).filter(|&side| beyond[side]) {
             let off_pair = (off[side], sides[side].1);
             let moved = line_moves(lines[side], words[side], off_pair, self.canvas)
                 .into_iter()
@@ -1175,6 +1197,21 @@ impl Palette {
         } else {
             with_lines(lines)
         };
+        let roles = palette.syntax_roles(Some(self));
+        let patch = [roles.string, roles.removed];
+        let words = [0, 1].map(|side| {
+            let (diff, line) = (sides[side].0, lines[side]);
+            if stands_beyond(words[side], line, self) {
+                words[side]
+            } else {
+                EditorHighlights::crossed_word_tint(
+                    roles,
+                    [diff, patch[side]],
+                    (line, off[side]),
+                    self,
+                )
+            }
+        });
         let chosen = Chosen {
             palette: self,
             off: highlights,
@@ -3256,6 +3293,25 @@ const HIGHLIGHT_DISTANCE: f64 = 0.04;
 /// just-noticeable differences as [`HIGHLIGHT_DISTANCE`], here in lightness alone.
 const WORD_LIGHTNESS_GAP: f64 = 0.04;
 
+/// The least gap in OKLab lightness the highlights drawn beside one another keep under More
+/// contrast, besides [`HIGHLIGHT_DISTANCE`] in ΔEOK: Find's current match from the selection,
+/// and Find's other matches from the selection, the current match and the changed-word tints
+/// ([`HighlightFit::apart_from`]), and a word stepped across its line from the line
+/// ([`EditorHighlights::crossed_word_tint`]).
+///
+/// Why lightness: two highlights can stand [`HIGHLIGHT_DISTANCE`] apart through chroma alone,
+/// which colour-blind vision loses (with More contrast off, One Dark's selection and current
+/// match stand 0.044 apart and 0.0001 in lightness), and a distance met by saturation alone
+/// failed a review before. Why this gap: one just-noticeable difference in OKLab, so the
+/// lightness step alone is visible while hue and chroma carry the rest of the distance. The
+/// five highlights share the lightness band in which every colour on them still reads, and two
+/// differences between each pair exhausted it: Alucard's other matches found no colour that
+/// reads and stands 0.04 in lightness from the selection, the current match and both word
+/// tints, and fell back to the selection's, 0 apart from it, while other palettes' matches were
+/// pushed to the band's edges (Kanagawa Lotus's other matches `#f2f6f8`, beside its canvas,
+/// Rosé Pine Dawn's a saturated `#ffabff`; measured 2026-11-05).
+const HIGHLIGHT_LIGHTNESS_GAP: f64 = 0.02;
+
 impl EditorHighlights {
     /// Fit each highlight to this palette.
     ///
@@ -3281,14 +3337,18 @@ impl EditorHighlights {
     /// matches too where it can; its accent underline marks it where it cannot.
     ///
     /// Under More contrast, `palette` is the adjusted palette, `roles` are fitted at
-    /// [`MORE_CONTRAST_TEXT`] and `chosen` is the palette as chosen, and every highlight starts
-    /// from the one `chosen` draws off, so no color reads worse on it and it stands from its
-    /// lines on the same side, no nearer and with no less luminance contrast than it does with
-    /// More contrast off: the selection and Find's matches raised ([`Self::raised`],
-    /// [`Self::fit_raised`]), the current match no nearer the other matches than off, and each
-    /// word tint lifted from its line in lightness where it stands nearer than
-    /// [`WORD_LIGHTNESS_GAP`] ([`Self::lifted_word_tint`]), which [`Palette::more_contrast_fit`]
-    /// decides beside the line tints and hands in `chosen`. Off, `chosen` is `None`.
+    /// [`MORE_CONTRAST_TEXT`] and `chosen` is the palette as chosen, and the selection, Find's
+    /// current match and the word tints start from the ones `chosen` draws off, so no color
+    /// reads worse on them and they stand from their lines on the same side, no nearer and with
+    /// no less luminance contrast than with More contrast off, where the rules beside allow it:
+    /// the selection and the current match raised ([`Self::raised`], [`Self::fit_raised`]), the
+    /// current match and the other matches apart from the selection and from one another in
+    /// lightness too, the other matches in a colour of their own, fitted by the text rule, and
+    /// each word tint lifted from its line in lightness where it stands
+    /// nearer than [`WORD_LIGHTNESS_GAP`] ([`Self::lifted_word_tint`]), or stepped beyond its
+    /// line where it lies on the canvas side ([`Self::crossed_word_tint`]), which
+    /// [`Palette::more_contrast_fit`] decides beside the line tints and hands in `chosen`. Off,
+    /// `chosen` is `None`, and none of those rules runs.
     fn fit(palette: Palette, roles: SyntaxRoles, chosen: Option<Chosen>) -> Self {
         if let Some(chosen) = chosen {
             return Self::fit_raised(palette, roles, chosen);
@@ -3330,22 +3390,42 @@ impl EditorHighlights {
 
     /// [`Self::fit`] under More contrast. The selection and current match are raised from the
     /// ones `chosen` draws with More contrast off ([`Self::raised`]), or else are those: the
-    /// selection, which Find's other matches share, from `selected`, and the current match from
-    /// `selected` a quarter of the way to `accent`. Each word tint is the one `chosen` carries,
-    /// the one drawn off lifted from its line where it stands faintest
-    /// ([`Self::lifted_word_tint`], [`Palette::more_contrast_fit`]). Fitted only to
-    /// the text rule against the raised syntax, the selection and Find's matches settled
-    /// lighter, nearer their seeds, and the colors on them read worse than off (Midnight's
-    /// strings on the current match 6.18:1 where they read 6.63:1).
+    /// selection from `selected`, and the current match from `selected` a quarter of the way to
+    /// `accent`. Each word tint is the one `chosen` carries, the one drawn off lifted from its
+    /// line where it stands faintest, or stepped beyond its line where it lies on the canvas side
+    /// ([`Self::lifted_word_tint`], [`Self::crossed_word_tint`], [`Palette::more_contrast_fit`]).
+    /// Fitted only to the text rule against the raised syntax, the selection and Find's matches
+    /// settled lighter, nearer their seeds, and the colors on them read worse than off
+    /// (Midnight's strings on the current match 6.18:1 where they read 6.63:1).
     ///
-    /// The current match stands from the other matches at least as far as the off current
-    /// match stands from the off ones, and at least [`HIGHLIGHT_DISTANCE`] where it can. Held
-    /// to its own distance from the raised selection, it found no candidate wherever the
-    /// selection had moved, and settled beside the other matches (Omarchy alacritty-dark 0.040
-    /// to 0.024), or kept its off highlight beside a selection that had moved toward it
-    /// (Omarchy ristretto 0.090 to 0.039). Where no current match stands that far from the
-    /// raised selection and the off one stands nearer it than off, both keep their off
-    /// highlights.
+    /// The current match stands from the selection at least [`HIGHLIGHT_DISTANCE`] and
+    /// [`HIGHLIGHT_LIGHTNESS_GAP`] in lightness, and at least as far as the off current match
+    /// stands from it off wherever a candidate can ([`Self::current_beside`]). Held to its own
+    /// distance from the raised
+    /// selection, it found no candidate wherever the selection had moved, and settled beside the
+    /// other matches (Omarchy alacritty-dark 0.040 to 0.024), or kept its off highlight beside a
+    /// selection that had moved toward it (Omarchy ristretto 0.090 to 0.039).
+    ///
+    /// Find's other matches take a colour of their own, where with More contrast off they share
+    /// the selection's: the candidate nearest that one that reads by the text rule as
+    /// [`Self::fit`] fits and stands [`HIGHLIGHT_DISTANCE`] and [`HIGHLIGHT_LIGHTNESS_GAP`] from
+    /// the selection, the current match and both word tints, and from the current match at least
+    /// as far as the current match drawn off stands from them off, searched toward black or white
+    /// as it searches and then toward the text, where a light palette's pale highlights have
+    /// room left (searched one way only, seven light palettes found none), and then the same only
+    /// [`HIGHLIGHT_DISTANCE`] from the current match. Where none fits, they keep the one drawn
+    /// off, which reads, never the selection as More contrast draws it; since the one drawn off
+    /// is the selection's colour drawn off, beside a selection that keeps that colour, as every
+    /// palette's measured does, they still draw the selection's colour (decision, 2026-11-05
+    /// evening; no shipped palette reaches it). They are not raised from the one drawn off
+    /// as the selection is: in no built-in or Omarchy palette did a raised candidate stand so
+    /// apart (none of the 45 [`Palette::more_contrast_fit`]'s tests read, 2026-11-05 evening);
+    /// a custom theme in which one does takes the text-rule fit, which drew the same colour as
+    /// the raised one in the 4 of 476 synthetic custom palettes where one stood apart (Midnight
+    /// and Graphite with their text dimmed toward the canvas, or Graphite's selection taken to
+    /// its canvas; 2026-11-05 night). Why: drawn in the selection's colour, they stood 0 from
+    /// the selection in every palette, so a match could not be told from selected text
+    /// (decision, 2026-11-05).
     fn fit_raised(palette: Palette, roles: SyntaxRoles, chosen: Chosen) -> Self {
         let Chosen {
             palette: chosen,
@@ -3360,19 +3440,47 @@ impl EditorHighlights {
             .map(|(color, _)| color)
             .collect();
         let raised = |off: u32| Self::raised(&patch, &own, off, &lines);
+        // A highlight fitted by the text rule where none is raised, under the colours drawn on
+        // it as text under More contrast, `text` and every role on every line (the patch's
+        // text is `string`, `removed` and `function`, [`PatchText`]): toward `away`, which
+        // raises the text's contrast, and else toward the text, where a light palette's pale
+        // highlights have room left.
+        let as_text: Vec<(u32, &[u32])> = roles.colors().map(|color| (color, &lines[..])).into();
+        let readable = |seed: u32, fit: &dyn Fn(HighlightFit) -> HighlightFit| {
+            let fit = fit(HighlightFit::new(&as_text, &lines));
+            fit.search(seed, away, palette.accent)
+                .or_else(|| fit.search(seed, away ^ 0xffffff, palette.accent))
+        };
         let selection = raised(off.selection)
             .raise(palette.selected, away, palette.accent)
             .unwrap_or(off.selection);
         let current = mix(palette.selected, palette.accent, 64);
-        let (selection, find_current) =
-            Self::current_beside(off.selection, off.find_current, selection, |distance| {
+        let (selection, find_current) = Self::current_beside(
+            (off.selection, off.find_current),
+            selection,
+            |distance| {
                 raised(off.find_current)
                     .apart_from(selection, distance)
                     .raise(current, away, palette.accent)
-            });
+            },
+            |selection, distance| readable(current, &|fit| fit.apart_from(selection, distance)),
+        );
+        // Find's other matches: apart from the selection, the current match, at least as far as
+        // the current match drawn off stands from them, and the word tints.
+        let from_current =
+            oklab_distance(oklab(off.find_current), oklab(off.find_match)).max(HIGHLIGHT_DISTANCE);
+        let beside = |fit: HighlightFit, from_current: f64| {
+            fit.apart_from(selection, HIGHLIGHT_DISTANCE)
+                .apart_from(find_current, from_current)
+                .apart_from(added_word, HIGHLIGHT_DISTANCE)
+                .apart_from(removed_word, HIGHLIGHT_DISTANCE)
+        };
+        let find_match = readable(off.find_match, &|fit| beside(fit, from_current))
+            .or_else(|| readable(off.find_match, &|fit| beside(fit, HIGHLIGHT_DISTANCE)))
+            .unwrap_or(off.find_match);
         Self {
             selection,
-            find_match: selection,
+            find_match,
             find_current,
             added_word,
             removed_word,
@@ -3410,33 +3518,53 @@ impl EditorHighlights {
 
     /// The selection and current match [`Self::fit_raised`] draws: `selection` is raised from
     /// `off_selection`, the selection drawn with More contrast off (or is it, where none is
-    /// raised), and `beside(distance)` raises the current match from `off_current`, the one
-    /// drawn off, to stand at least `distance` from `selection`, or is `None` where none does.
-    /// The current match keeps the distance `apart` it stands from the other matches off: it is
-    /// raised to stand at least `apart` and at least [`HIGHLIGHT_DISTANCE`] from the selection,
-    /// or only `apart` where `apart` is less, and the raised selection stays beside it. Where
-    /// none is raised, the off current match stays beside the raised selection if it stands at
-    /// least `apart` from it, and otherwise both keep their off highlights.
+    /// raised), `beside(distance)` raises the current match from `off_current`, the one drawn
+    /// off, to stand at least `distance` and [`HIGHLIGHT_LIGHTNESS_GAP`] in lightness from
+    /// `selection`, or is `None` where none does, and `fitted(selection, distance)` fits one by
+    /// the text rule, as [`Self::fit`] fits, that stands `distance` and that gap from
+    /// `selection`, or is `None`. The current match stands from the selection at least `apart`,
+    /// as far as off and at least [`HIGHLIGHT_DISTANCE`], with that gap: raised beside the raised
+    /// selection; or the off current match beside it, or beside the off selection, where it
+    /// stands so; or else fitted beside the raised selection, or beside the off one, `apart` from
+    /// it where a fitted candidate stands so, and where none does, only [`HIGHLIGHT_DISTANCE`]
+    /// with the gap. Raised only as far as off where that was less, the current match stood 0.003
+    /// from the selection in Sandstone, and 0.044 in One Dark by chroma alone, 0.0001 in
+    /// lightness; fitted only [`HIGHLIGHT_DISTANCE`] from it, One Dark's `#104266` stood 0.041
+    /// from its selection, nearer than the pair drawn off stand apart through chroma (0.044),
+    /// where fitted as far as off it is `#13406d`, 0.045 from it.
     fn current_beside(
-        off_selection: u32,
-        off_current: u32,
+        (off_selection, off_current): (u32, u32),
         selection: u32,
         beside: impl Fn(f64) -> Option<u32>,
+        fitted: impl Fn(u32, f64) -> Option<u32>,
     ) -> (u32, u32) {
-        let apart = oklab_distance(oklab(off_current), oklab(off_selection));
-        let raised = beside(apart.max(HIGHLIGHT_DISTANCE)).or_else(|| {
-            if apart < HIGHLIGHT_DISTANCE {
-                beside(apart)
-            } else {
-                None
-            }
-        });
-        match raised {
-            Some(current) => (selection, current),
-            None if oklab_distance(oklab(off_current), oklab(selection)) >= apart => {
-                (selection, off_current)
-            }
-            None => (off_selection, off_current),
+        let apart =
+            oklab_distance(oklab(off_current), oklab(off_selection)).max(HIGHLIGHT_DISTANCE);
+        let stands = |current: u32, selection: u32| {
+            let (current, selection) = (oklab(current), oklab(selection));
+            oklab_distance(current, selection) >= apart
+                && (current[0] - selection[0]).abs() >= HIGHLIGHT_LIGHTNESS_GAP
+        };
+        if let Some(current) = beside(apart) {
+            (selection, current)
+        } else if stands(off_current, selection) {
+            (selection, off_current)
+        } else if stands(off_current, off_selection) {
+            (off_selection, off_current)
+        } else {
+            // As far as off where a fitted candidate stands so, else the floor; beside the raised
+            // selection, else the off one (each tried once where they are the same).
+            let distances = [apart, HIGHLIGHT_DISTANCE];
+            let distances = &distances[..if apart > HIGHLIGHT_DISTANCE { 2 } else { 1 }];
+            let selections = [selection, off_selection];
+            let selections = &selections[..if selection != off_selection { 2 } else { 1 }];
+            distances
+                .iter()
+                .flat_map(|&distance| selections.iter().map(move |&beside| (beside, distance)))
+                .find_map(|(beside, distance)| {
+                    fitted(beside, distance).map(|current| (beside, current))
+                })
+                .unwrap_or((off_selection, off_current))
         }
     }
 
@@ -3554,8 +3682,10 @@ impl EditorHighlights {
             })
     }
 
-    /// The changed-word tint for `diff` on its line tint `line` under More contrast: `off`, the
-    /// tint drawn with More contrast off, where it stands at least [`WORD_LIGHTNESS_GAP`] from
+    /// The changed-word tint for `diff` on its line tint `line` under More contrast, for a word
+    /// whose tint drawn with More contrast off, `off`, lies beyond `line` from the canvas
+    /// ([`Palette::more_contrast_fit`]; a word on the line's canvas side steps across it instead,
+    /// [`Self::crossed_word_tint`]): `off` where it stands at least [`WORD_LIGHTNESS_GAP`] from
     /// `line` in OKLab lightness, and otherwise `off` lifted away from `line`, on the side of it
     /// `off` lies, lighter or darker, until it does ([`lightness_lifts`]), or as far toward that
     /// as the colors drawn on it allow: each of `roles`, fitted at [`MORE_CONTRAST_TEXT`], but
@@ -3566,15 +3696,7 @@ impl EditorHighlights {
     /// reads worse than that, never past it, even where a step beyond would read well again;
     /// where the first step reads worse, `off` stays. A lift that runs out of lightness, where
     /// white or black stands nearer `line` than [`WORD_LIGHTNESS_GAP`], stops at the last step
-    /// before it. A lift never brings the tint nearer `canvas`, the editor background, in OKLab
-    /// lightness than half `line`'s own gap from it, nor past it: it stops at the last step that
-    /// keeps that far on its side of `canvas`, and a tint drawn off already nearer does not lift
-    /// toward it. A lift away from `canvas` is not bound by it.
-    ///
-    /// The canvas bound keeps the order canvas, line, word: lifted onto the canvas, a changed
-    /// word reads as a hole in its line rather than a mark on it (Omarchy flexoki-light's added
-    /// word #f7ffdf at 1.005:1 against its canvas, Solarized Dark's #0c2f00 at 1.017:1, apart by
-    /// hue alone).
+    /// before it.
     ///
     /// More contrast lifts only the faintest tints because their lightness gap is what
     /// colour-blind vision keeps of them; a tint already that far keeps `off` exactly. A lift
@@ -3583,13 +3705,15 @@ impl EditorHighlights {
     /// its line from its text lifts, and the text reads better for it. Raised instead toward
     /// 7:1 for every color on it and held no nearer its line in luminance, a tint between its
     /// line and its text could only gain by moving toward the line, so it kept `off` as well.
+    /// A word on its line's canvas side once lifted toward the canvas, held at half its line's
+    /// gap from it, which left it on that side, short of the order canvas, line, word that the
+    /// step across now always restores.
     fn lifted_word_tint(
         roles: SyntaxRoles,
         own: SyntaxRoles,
         off: u32,
         diff: u32,
         line: u32,
-        canvas: u32,
     ) -> u32 {
         let targets: Vec<_> = roles
             .word_colors()
@@ -3599,20 +3723,152 @@ impl EditorHighlights {
             .map(|(color, own)| (color, custom::contrast(own, off)))
             .collect();
         let reads = HighlightFit::targeted(&targets, &[]);
-        let canvas = oklab(canvas)[0];
-        let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
-        let side = |color: u32| oklab(color)[0].total_cmp(&canvas);
-        let bound = (from_canvas(line) / 2.).min(from_canvas(off));
-        // Measured on the tint's own side of the canvas: a step past it lifted toward it.
-        let keeps_off_canvas = |lift: u32| {
-            from_canvas(lift) >= bound && (side(off).is_eq() || side(lift) == side(off))
-        };
         lightness_lifts(off, line)
             .into_iter()
-            .take_while(|&lift| keeps_off_canvas(lift) && reads.reading(lift) == Reading::Target)
+            .take_while(|&lift| reads.reading(lift) == Reading::Target)
             .last()
             .unwrap_or(off)
     }
+
+    /// The changed-word tint under More contrast for a word whose tint does not stand beyond its
+    /// line tint `line` from the canvas of `chosen`, the palette as chosen ([`stands_beyond`]):
+    /// one drawn with More contrast off on the line's canvas side, or one lifted
+    /// ([`Self::lifted_word_tint`]) and its line moved short of [`HIGHLIGHT_DISTANCE`] from it.
+    /// It is the step beyond `line`
+    /// ([`beyond_line`]), in the hue and chroma of the word's seed ([`Self::word_seed`]), else
+    /// halfway to its diff color's, else the diff color's own, that
+    /// stands at least [`HIGHLIGHT_DISTANCE`] from `line` and [`WORD_LIGHTNESS_GAP`] from it in
+    /// OKLab lightness, or where the colors drawn on the word bind first, the last step before
+    /// one on which some color would not read that stands apart: [`HIGHLIGHT_DISTANCE`] from
+    /// `line` and [`HIGHLIGHT_LIGHTNESS_GAP`] beyond it in lightness. The
+    /// colors are those drawn on the word as text under More contrast: `text` and every syntax
+    /// role in `roles` but `removed`, as raised on the line, and `patch`, the patch text the Diff
+    /// view draws on the word ([`PatchText`]); `diff`, the side's diff color, lends the seed its
+    /// hue and is drawn on the word only as its rule, fitted to it afterward
+    /// ([`Self::word_rule`]). Each reads [`MORE_CONTRAST_TEXT`], or its own contrast on `line`
+    /// where that is lower; where no step that stands apart lets every color do so, each reads
+    /// the text rule with its rasterization margin, or its own contrast on `line` where lower,
+    /// and then the text rule alone. Where no step that stands so apart reads the text rule,
+    /// the last step on which every color does that stands [`HIGHLIGHT_DISTANCE`] from `line`,
+    /// beyond it but short of the lightness gap, since the text rule is the floor every color
+    /// keeps (One Dark's added word, stepped 0.02 beyond its line, drew the raised keyword
+    /// `#e090f7` at 4.39:1, and Kanagawa Lotus's removed word drew its strings at 4.49:1). With
+    /// no step beyond `line` that both reads the text rule and stands [`HIGHLIGHT_DISTANCE`] from
+    /// it, `off`, the word's tint drawn with More contrast off, which reads: the nearest step
+    /// that stood apart, or the line's own colour, broke the text floor or drew the word as its
+    /// line (decision, 2026-11-05 evening; no shipped palette reaches it).
+    ///
+    /// Why the seed's hue: the word tint is its line tint a quarter of the way to its diff color,
+    /// the tint origin/main drew, and the one drawn off lay on the canvas side because it read
+    /// better there. Why it may read worse than off: the text on a word lies on the line's far
+    /// side from the canvas, so a word stepped across nears it; the order canvas, line, word is
+    /// the decided rule (decision, 2026-11-05), and More contrast's 7:1 is kept wherever the step
+    /// allows it. Held also to the diff color, which reads about 4.75:1 on its line by the off
+    /// fit, a word stepped across had no room and fell under 4.5:1 (Braden's removed 4.42:1).
+    /// Why the lightness gap: held to [`HIGHLIGHT_DISTANCE`] alone, a step stood apart through
+    /// its seed's chroma with almost no lightness beyond its line (Solarized Dark's added word
+    /// `#2d3500`, 0.0004 beyond), a mark colour-blind vision loses; one just-noticeable
+    /// difference beyond, the order canvas, line, word holds in lightness too (decision,
+    /// 2026-11-05 afternoon).
+    fn crossed_word_tint(
+        roles: SyntaxRoles,
+        [diff, patch]: [u32; 2],
+        (line, off): (u32, u32),
+        chosen: Palette,
+    ) -> u32 {
+        let on_line = [line];
+        let colors: Vec<u32> = roles.word_colors().into_iter().chain([patch]).collect();
+        let seed = Self::word_seed(diff, line);
+        // The seed's hue and chroma first, then halfway to the diff color's and the diff
+        // color's own, which stand apart from the line with less lightness to spend.
+        let rows = [seed, mix(seed, diff, 128), diff].map(|hue| beyond_line(hue, line, chosen));
+        let line_lab = oklab(line);
+        let from_line = |step: u32| oklab_distance(oklab(step), line_lab) >= HIGHLIGHT_DISTANCE;
+        let apart = |step: u32| {
+            from_line(step) && lightness_beyond(step, line, chosen) >= HIGHLIGHT_LIGHTNESS_GAP
+        };
+        // The last step of the first row on which every color reads `rule` that stands `apart`.
+        let reading = |rule: f64, apart: &dyn Fn(u32) -> bool| {
+            let targets: Vec<_> = colors
+                .iter()
+                .map(|&color| (color, drawn_target(color, &on_line, rule)))
+                .collect();
+            let reads = HighlightFit::targeted(&targets, &[]);
+            rows.iter().find_map(|steps| {
+                steps
+                    .iter()
+                    .copied()
+                    .take_while(|&step| reads.reading(step) == Reading::Target)
+                    .filter(|&step| apart(step))
+                    .last()
+            })
+        };
+        [MORE_CONTRAST_TEXT, LABEL_RULE + LABEL_MARGIN, LABEL_RULE]
+            .into_iter()
+            .find_map(|rule| reading(rule, &apart))
+            .or_else(|| reading(LABEL_RULE, &from_line))
+            .unwrap_or(off)
+    }
+}
+
+/// Whether `word`, a changed-word tint, stands beyond `line`, its line tint, from the canvas of
+/// `chosen` under More contrast: further from the canvas than `line` in OKLab lightness, on the
+/// same side of it ([`lightness_beyond`]), and at least [`HIGHLIGHT_DISTANCE`] from `line`. The
+/// order canvas, line, word is what makes a changed word read as emphasis of its line.
+fn stands_beyond(word: u32, line: u32, chosen: Palette) -> bool {
+    lightness_beyond(word, line, chosen) > 0.
+        && oklab_distance(oklab(word), oklab(line)) >= HIGHLIGHT_DISTANCE
+}
+
+/// How far `color` lies beyond `line`, a line tint, from the canvas of `chosen` in OKLab
+/// lightness ([`away_from_canvas`]): positive where it stands further from the canvas than
+/// `line`, on the same side, and negative on the line's canvas side.
+fn lightness_beyond(color: u32, line: u32, chosen: Palette) -> f64 {
+    let line = oklab(line)[0];
+    (oklab(color)[0] - line) * away_from_canvas(line, chosen.canvas, chosen.is_light())
+}
+
+/// The direction in OKLab lightness that leads from the canvas past a line of lightness
+/// `line`: `1.` where the line is lighter than `canvas`, `-1.` where darker, and where level,
+/// toward the text, lighter in a dark palette and darker in a light one (`light`).
+fn away_from_canvas(line: f64, canvas: u32, light: bool) -> f64 {
+    match line.total_cmp(&oklab(canvas)[0]) {
+        std::cmp::Ordering::Greater => 1.,
+        std::cmp::Ordering::Less => -1.,
+        std::cmp::Ordering::Equal if light => -1.,
+        std::cmp::Ordering::Equal => 1.,
+    }
+}
+
+/// The steps beyond `line` from the canvas of `chosen` ([`away_from_canvas`]), nearest first: OKLab
+/// lightness moves from `line`'s a thousandth at a time, in `seed`'s hue and chroma, or where
+/// sRGB cannot hold that chroma at that lightness, the most of it sRGB holds, in the same hue.
+/// Each step is rounded to sRGB and listed only where it stands further beyond `line` in
+/// lightness than the last one listed; the last is the first that stands at least
+/// [`HIGHLIGHT_DISTANCE`] from `line` and [`WORD_LIGHTNESS_GAP`] from it in lightness, or the
+/// last before lightness runs out.
+fn beyond_line(seed: u32, line: u32, chosen: Palette) -> Vec<u32> {
+    let ([_, a, b], line_lab) = (oklab(seed), oklab(line));
+    let direction = away_from_canvas(line_lab[0], chosen.canvas, chosen.is_light());
+    let beyond = |lab: [f64; 3]| (lab[0] - line_lab[0]) * direction;
+    let (mut steps, mut last) = (Vec::new(), 0.);
+    for step in 1..=1000 {
+        let lab = [line_lab[0] + direction * f64::from(step) / 1000., a, b];
+        if !(0. ..=1.).contains(&lab[0]) {
+            break;
+        }
+        let color = from_linear(linear_in_gamut(lab));
+        let color_lab = oklab(color);
+        if beyond(color_lab) <= last {
+            continue;
+        }
+        last = beyond(color_lab);
+        steps.push(color);
+        if last >= WORD_LIGHTNESS_GAP && oklab_distance(color_lab, line_lab) >= HIGHLIGHT_DISTANCE {
+            break;
+        }
+    }
+    steps
 }
 
 /// What [`EditorHighlights::fit`] fits from under More contrast, from
@@ -3833,6 +4089,10 @@ struct Apart {
     /// The distance, in ΔEOK, the highlight stands from it at least: [`HIGHLIGHT_DISTANCE`], or
     /// more for a raised highlight ([`HighlightFit::at_least_as_apart_as`]).
     distance: f64,
+    /// The gap in OKLab lightness the highlight keeps from it at least: none from a background,
+    /// and [`HIGHLIGHT_LIGHTNESS_GAP`] from another highlight drawn beside it under More contrast
+    /// ([`HighlightFit::apart_from`]), so that distance never comes from chroma alone.
+    lightness: f64,
     /// The side of it, in OKLab lightness, the highlight keeps, lighter (`Greater`) or darker
     /// (`Less`), or `None` for either: a raised highlight keeps the side of the one drawn with
     /// More contrast off ([`HighlightFit::at_least_as_apart_as`]).
@@ -3880,6 +4140,7 @@ impl HighlightFit {
                     oklab: oklab(line),
                     luminance: custom::luminance(line),
                     distance: HIGHLIGHT_DISTANCE,
+                    lightness: 0.,
                     side: None,
                     beyond: None,
                 })
@@ -3944,13 +4205,15 @@ impl HighlightFit {
     }
 
     /// This fit for a highlight that also stands at least `distance` from `color`, another
-    /// highlight drawn beside it, on either side of it: Find's current match from its other
-    /// matches.
+    /// highlight drawn beside it, on either side of it, and at least [`HIGHLIGHT_LIGHTNESS_GAP`]
+    /// from it in OKLab lightness: under More contrast, Find's current match from the selection,
+    /// and Find's other matches from the selection, the current match and the changed-word tints.
     fn apart_from(mut self, color: u32, distance: f64) -> Self {
         self.lines.push(Apart {
             oklab: oklab(color),
             luminance: custom::luminance(color),
             distance,
+            lightness: HIGHLIGHT_LIGHTNESS_GAP,
             side: None,
             beyond: None,
         });
@@ -3965,12 +4228,13 @@ impl HighlightFit {
     }
 
     /// Whether `color` stands from every line at least its distance ([`HIGHLIGHT_DISTANCE`]
-    /// unless [`Self::at_least_as_apart_as`] raised it), on its side where it keeps one, and
-    /// beyond the luminance it keeps there, if any.
+    /// unless [`Self::at_least_as_apart_as`] raised it) and its lightness gap, on its side where
+    /// it keeps one, and beyond the luminance it keeps there, if any.
     fn distinct(&self, color: u32) -> bool {
         let (lab, luminance) = (oklab(color), custom::luminance(color));
         self.lines.iter().all(|apart| {
             oklab_distance(lab, apart.oklab) >= apart.distance
+                && (lab[0] - apart.oklab[0]).abs() >= apart.lightness
                 && apart
                     .side
                     .is_none_or(|side| lab[0].total_cmp(&apart.oklab[0]) == side)
@@ -7834,9 +8098,8 @@ mod tests {
             text: color,
         };
         let line = 0x30343a;
-        // A canvas level with the line sets no canvas bound.
         let lifted = |(raised, own): (u32, u32), off: u32, diff: u32| {
-            EditorHighlights::lifted_word_tint(all(raised), all(own), off, diff, line, line)
+            EditorHighlights::lifted_word_tint(all(raised), all(own), off, diff, line)
         };
         let hue = |color: u32| oklab(color)[2].atan2(oklab(color)[1]);
         let chroma = |color: u32| oklab(color)[1].hypot(oklab(color)[2]);
@@ -7900,8 +8163,7 @@ mod tests {
         // Black text reads on #1d362c at least as #000302 reads off, and
         // not on the next step.
         let (raised, own) = (0x000000, 0x000302);
-        let tint =
-            EditorHighlights::lifted_word_tint(all(raised), all(own), off, 0xffffff, line, line);
+        let tint = EditorHighlights::lifted_word_tint(all(raised), all(own), off, 0xffffff, line);
         assert_eq!(tint, off, "#{tint:06x}, off #{off:06x}");
         let path = lightness_lifts(off, line);
         assert!(!path.is_empty() && !path.contains(&near));
@@ -7967,7 +8229,7 @@ mod tests {
             removed: text,
             text,
         };
-        let tint = EditorHighlights::lifted_word_tint(roles, roles, off, text, line, line);
+        let tint = EditorHighlights::lifted_word_tint(roles, roles, off, text, line);
         assert_eq!(lightness_lifts(off, line).last(), Some(&tint));
         let gap = lightness_gap(tint, line);
         assert!(
@@ -8014,22 +8276,23 @@ mod tests {
     /// lightness stays exactly; a nearer one stands at least that far from
     /// the line drawn off, or is the last step of its lift
     /// ([`lightness_lifts`]) before one on which some color would read worse
-    /// than off, or before one nearer the canvas than half the line's gap
-    /// from it, or before lightness runs out, or has no lift, lying on one
-    /// side of its line in lightness and on the other in luminance. No
-    /// lifted tint stands nearer the canvas than half its line's gap from
-    /// it, nor past it, unless it lifted away from the canvas, and a tint
-    /// drawn off already nearer that does not lift toward it. Re-fitted at
-    /// 4.75:1
+    /// than off, or before lightness runs out, or has no lift, lying on one
+    /// side of its line in lightness and on the other in luminance. These
+    /// hold for every word drawn off beyond its line from the canvas
+    /// ([`lightness_beyond`]); a word drawn off on its line's canvas side
+    /// steps across the line instead, and its place is read in
+    /// `more_contrast_keeps_the_highlight_rules_in_every_palette`. Re-fitted
+    /// at 4.75:1
     /// against syntax raised to 7:1, the added word tint grew heavier, and
     /// the added text on it read 5.81:1 where it read 6.45:1 (Midnight);
     /// held only to the readings, it drew nearer its line (Midnight's added
     /// words 0.077 to 0.041 from it, removed 0.094 to 0.056); held to the
     /// distance alone, it could cross to the line's other side (Midnight's
     /// added words #0f1d19, darker than their line #19322d, where the tint
-    /// drawn off is lighter); lifted without the canvas bound, Omarchy
+    /// drawn off is lighter); lifted toward the canvas, Omarchy
     /// flexoki-light's added word reached #f7ffdf, 1.005:1 against its
-    /// canvas.
+    /// canvas, and held at half its line's gap from the canvas, 31 words
+    /// stayed on their line's canvas side.
     #[gpui::test]
     fn more_contrast_never_reads_worse_on_a_changed_word(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -8039,7 +8302,7 @@ mod tests {
         ];
         let mut failures = Vec::new();
         let (mut lifted, mut bound, mut level, mut edged, mut kept) = (0, 0, 0, 0, 0);
-        let (mut canvased, mut held_off) = (0, 0);
+        let mut crossed = 0;
         for (name, chosen) in more_contrast_palettes() {
             let [off, on] = [false, true].map(|more| {
                 cx.update(|cx| {
@@ -8057,8 +8320,6 @@ mod tests {
             // The syntax the lift is judged under: raised on the line tints
             // as chosen, before any line moves.
             let lift_roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
-            let canvas = oklab(chosen.canvas)[0];
-            let from_canvas = |tint: u32| (oklab(tint)[0] - canvas).abs();
             for (tint, diff, (off_line, on_line), off_tint, on_tint) in [
                 (
                     "added",
@@ -8075,6 +8336,12 @@ mod tests {
                     on_tints.removed_word,
                 ),
             ] {
+                // A word drawn off on its line's canvas side steps across the
+                // line instead ([`EditorHighlights::crossed_word_tint`]).
+                if lightness_beyond(off_tint, off_line, chosen) <= 0. {
+                    crossed += 1;
+                    continue;
+                }
                 let colors = |roles: SyntaxRoles| on_a_word(roles, diff);
                 for ((role, was), is) in ROLES.iter().zip(colors(off_roles)).zip(colors(on_roles)) {
                     let (off_ratio, on_ratio) = (contrast(was, off_tint), contrast(is, on_tint));
@@ -8082,37 +8349,6 @@ mod tests {
                         failures.push(format!(
                             "{name} {role} on the {tint} word #{on_tint:06x} {on_ratio:.3}:1, \
                              off #{off_tint:06x} {off_ratio:.3}:1"
-                        ));
-                    }
-                }
-                // The canvas bound: half the line's gap from the canvas, or
-                // the tint's own where it stands nearer.
-                let half = from_canvas(off_line) / 2.;
-                let canvas_bound = half.min(from_canvas(off_tint));
-                let toward_canvas = lightness_gap(off_tint, off_line).signum()
-                    == (canvas - oklab(off_tint)[0]).signum();
-                let canvas_side = |tint: u32| oklab(tint)[0].total_cmp(&canvas);
-                // Nearer the canvas than the bound, or past it.
-                let inside = |tint: u32| {
-                    from_canvas(tint) < canvas_bound
-                        || (canvas_side(off_tint).is_ne()
-                            && canvas_side(tint) != canvas_side(off_tint))
-                };
-                if on_tint != off_tint && inside(on_tint) {
-                    failures.push(format!(
-                        "{name} {tint} word #{on_tint:06x} {:.4} from the canvas, half its \
-                         line's gap {half:.4}, off #{off_tint:06x} {:.4}",
-                        from_canvas(on_tint),
-                        from_canvas(off_tint)
-                    ));
-                }
-                if from_canvas(off_tint) < half && toward_canvas {
-                    held_off += 1;
-                    if on_tint != off_tint {
-                        failures.push(format!(
-                            "{name} {tint} word #{on_tint:06x} lifted toward the canvas, off \
-                             #{off_tint:06x} {:.4} from it, inside half its line's gap {half:.4}",
-                            from_canvas(off_tint)
                         ));
                     }
                 }
@@ -8130,8 +8366,7 @@ mod tests {
                     lifted += 1;
                 } else {
                     // Short of the gap, the next step of the lift would read
-                    // some color worse than off, or stand nearer the canvas
-                    // than the bound; or the tint has no lift: it lies on one
+                    // some color worse than off; or the tint has no lift: it lies on one
                     // side of its line in lightness and on the other in
                     // luminance, so any step away in lightness would near the
                     // line in luminance or cross it; or the lift ran out of
@@ -8151,7 +8386,6 @@ mod tests {
                     };
                     let ran_out = path.last() == Some(&on_tint) && gap(edge) < WORD_LIGHTNESS_GAP;
                     match next {
-                        Some(&next) if inside(next) => canvased += 1,
                         Some(&next)
                             if reads_worse_on_a_word(
                                 (lift_roles, next),
@@ -8169,8 +8403,8 @@ mod tests {
                         _ => failures.push(format!(
                             "{name} {tint} word #{on_tint:06x} {:.4} from its line #{off_line:06x} \
                              in lightness, off #{off_tint:06x} {:.4}, short of the gap, not \
-                             where the text or the canvas binds and not at the end of lightness \
-                             (next step {next:x?})",
+                             where the text binds and not at the end of lightness (next step \
+                             {next:x?})",
                             gap(on_tint),
                             gap(off_tint)
                         )),
@@ -8226,14 +8460,16 @@ mod tests {
         }
         cx.update(|cx| set_more_contrast(false, cx));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-        // Every case is reached: tints kept, lifted to the gap, stopped where
-        // the text binds and where the canvas does, and held off inside the
-        // canvas bound.
+        // Every case a palette reaches is reached: tints kept, stopped where
+        // the text binds, with no lift, and stepped across their lines. No
+        // palette's word drawn off beyond its line lifts to the gap or to
+        // the end of lightness (every lift that reached the gap went toward
+        // the canvas); `a_faint_word_tint_lifts_from_its_line_in_lightness`
+        // and `a_word_tint_lift_stops_where_lightness_runs_out` read those.
         assert!(
-            kept > 0 && lifted > 0 && bound > 0 && canvased > 0 && held_off > 0,
-            "word tints kept {kept}, lifted {lifted}, at the text's bound {bound}, at the \
-             canvas bound {canvased} ({held_off} held off inside it), with no lift {level}, at \
-             the end of lightness {edged}"
+            kept > 0 && bound > 0 && level > 0 && crossed > 0,
+            "word tints kept {kept}, lifted {lifted}, at the text's bound {bound}, with no lift \
+             {level}, at the end of lightness {edged}, stepped across {crossed}"
         );
     }
 
@@ -8390,9 +8626,14 @@ mod tests {
     /// Under More contrast a changed word that cannot stand
     /// [`WORD_LIGHTNESS_GAP`] from its line in OKLab lightness moves its line
     /// instead, in every palette ([`Palette::more_contrast_fit`]). A side
-    /// whose word stands that far from the line drawn off keeps that line,
-    /// and where the word's lift alone reaches the gap within the canvas
-    /// bound, the word is the lift the canvas bound never limited. Every
+    /// whose word is drawn off on its line's canvas side keeps its line, and
+    /// its word steps across it (read in
+    /// `more_contrast_keeps_the_highlight_rules_in_every_palette`). On every
+    /// other side the line moves for the word's lift
+    /// ([`EditorHighlights::lifted_word_tint`]), which is the word drawn, or
+    /// where it does not stand beyond the moved line, steps across it too. A
+    /// side whose lift stands that far from the line drawn off keeps that
+    /// line. Every
     /// other side stands that far from its moved line, or has its line at a
     /// bound: the next step of its move ([`line_moves`]) would stand nearer
     /// the selection or Find's matches drawn off than they allow, narrow the
@@ -8401,8 +8642,8 @@ mod tests {
     /// ended at the line's 0.04 from the canvas, or has no step, the line
     /// standing within 0.04 of the canvas on the side it would move toward,
     /// or the word lying on one side of it in lightness and the other in
-    /// luminance. On every side every color drawn on line and word reads at
-    /// least as off (the word's own place is read in
+    /// luminance. On every side every color drawn on line and the word the
+    /// line moves for reads at least as off (the word's own place is read in
     /// `more_contrast_never_reads_worse_on_a_changed_word`). A moved line
     /// stands 0.04 from the canvas in lightness, or no nearer than off, the
     /// selection and Find's current match drawn off stand 0.04 from it, or as
@@ -8416,7 +8657,7 @@ mod tests {
         let mut failures = Vec::new();
         let (mut full, mut floored, mut within, mut text_bound, mut apart_bound, mut level) =
             (0, 0, 0, 0, 0, 0);
-        let mut colour_blind_bound = 0;
+        let (mut colour_blind_bound, mut kept_by_crossing) = (0, 0);
         for (name, chosen) in more_contrast_palettes() {
             let [off, on] = [false, true].map(|more| {
                 cx.update(|cx| {
@@ -8431,8 +8672,6 @@ mod tests {
                 })
             });
             let ((before, off_tints, off_roles), (after, on_tints, on_roles)) = (off, on);
-            let own = chosen.syntax_roles(None);
-            let lift_roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
             let canvas = oklab(chosen.canvas)[0];
             let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
             let off_words = [off_tints.added_word, off_tints.removed_word];
@@ -8449,6 +8688,9 @@ mod tests {
                     (before.removed_background, after.removed_background),
                 ),
             ];
+            let fit_words = words_lines_move_for(chosen);
+            let crossing = [0, 1]
+                .map(|index| lightness_beyond(off_words[index], sides[index].2.0, chosen) <= 0.);
             let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
             let drawn = |palette: Palette, roles: SyntaxRoles, line: u32, word: u32| {
                 (palette, roles, line, word)
@@ -8468,9 +8710,9 @@ mod tests {
                         oklab_distance(highlight, oklab(step))
                             < HIGHLIGHT_DISTANCE.min(oklab_distance(highlight, off_line_lab))
                     });
-                let narrows = colour_blind_gaps(on_words[index], step)
+                let narrows = colour_blind_gaps(fit_words[index], step)
                     .into_iter()
-                    .zip(colour_blind_gaps(on_words[index], off_line))
+                    .zip(colour_blind_gaps(fit_words[index], off_line))
                     .any(|(moved, off)| moved.abs() < off.abs());
                 let mut lines = [after.added_background, after.removed_background];
                 if index == 0 {
@@ -8487,7 +8729,7 @@ mod tests {
                 let worse = || {
                     sides.iter().enumerate().any(|(at, &(_, diff, (off, _)))| {
                         diff_side_reads_worse(
-                            drawn(candidate, roles, lines[at], on_words[at]),
+                            drawn(candidate, roles, lines[at], fit_words[at]),
                             drawn(before, off_roles, off, off_words[at]),
                             diff,
                         )
@@ -8505,7 +8747,7 @@ mod tests {
                 }
             };
             for (index, &(side, diff, (off_line, on_line))) in sides.iter().enumerate() {
-                let (off_word, on_word) = (off_words[index], on_words[index]);
+                let (off_word, on_word) = (off_words[index], fit_words[index]);
                 if let Some(worse) = diff_side_reads_worse(
                     drawn(after, on_roles, on_line, on_word),
                     drawn(before, off_roles, off_line, off_word),
@@ -8513,22 +8755,23 @@ mod tests {
                 ) {
                     failures.push(format!("{name} {side}: {worse}"));
                 }
-                // The lift a canvas level with the line leaves unbounded.
-                let unbounded = EditorHighlights::lifted_word_tint(
-                    lift_roles, own, off_word, diff, off_line, off_line,
-                );
-                let canvas_bound = (from_canvas(off_line) / 2.).min(from_canvas(off_word));
-                let canvas_side = |color: u32| oklab(color)[0].total_cmp(&canvas);
-                let keeps_off_canvas = from_canvas(unbounded) >= canvas_bound
-                    && (canvas_side(off_word).is_eq()
-                        || canvas_side(unbounded) == canvas_side(off_word));
-                if gap(unbounded, off_line) >= WORD_LIGHTNESS_GAP
-                    && keeps_off_canvas
-                    && (on_word, on_line) != (unbounded, off_line)
-                {
+                if crossing[index] {
+                    if on_line != off_line {
+                        failures.push(format!(
+                            "{name} {side} line #{off_line:06x} moved to #{on_line:06x} for a \
+                             word on its canvas side #{off_word:06x}"
+                        ));
+                    }
+                    kept_by_crossing += 1;
+                    continue;
+                }
+                // The word drawn is the lift, or steps across a line it does
+                // not stand beyond.
+                let drawn_word = on_words[index];
+                if drawn_word != on_word && stands_beyond(on_word, on_line, chosen) {
                     failures.push(format!(
-                        "{name} {side} word #{on_word:06x} on #{on_line:06x}, its lift \
-                         #{unbounded:06x} on #{off_line:06x} stands apart within the canvas bound"
+                        "{name} {side} word #{drawn_word:06x}, its lift #{on_word:06x} stands \
+                         beyond its line #{on_line:06x}"
                     ));
                 }
                 if gap(on_word, off_line) >= WORD_LIGHTNESS_GAP && on_line != off_line {
@@ -8652,18 +8895,22 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         // Each bound is reached by a built-in palette but the selection's,
         // which the Omarchy palettes and a synthetic case reach
-        // (`a_moved_line_stops_at_its_bounds`); the colour-blind gaps stop One
-        // Dark's and Dracula's removed lines.
+        // (`a_moved_line_stops_at_its_bounds`), and the text's: a line moves
+        // away from its word, toward the canvas, where its text reads better,
+        // and the text stopped only lines that would move toward it, for
+        // words on their canvas side, which keep their lines now. The
+        // colour-blind gaps stop One Dark's and Dracula's removed lines.
         assert!(
             full > 0
                 && floored > 0
                 && within > 0
-                && text_bound > 0
                 && colour_blind_bound > 0
-                && level > 0,
+                && level > 0
+                && kept_by_crossing > 0,
             "lines moved to the gap {full}, at the canvas floor {floored}, within it {within}, \
              at the text's bound {text_bound}, the highlights' {apart_bound}, the colour-blind \
-             gaps' {colour_blind_bound}, with no move {level}"
+             gaps' {colour_blind_bound}, with no move {level}, kept for a word that steps \
+             across {kept_by_crossing}"
         );
     }
 
@@ -8676,70 +8923,260 @@ mod tests {
         (adjusted, fit.words, [off.added_word, off.removed_word])
     }
 
+    /// The word tints [`Palette::more_contrast_fit`] moves `chosen`'s line
+    /// tints for, added then removed: each drawn with More contrast off
+    /// beyond its line from the canvas lifted
+    /// ([`EditorHighlights::lifted_word_tint`]), and one on its line's
+    /// canvas side as drawn off, since it steps across its line afterward.
+    fn words_lines_move_for(chosen: Palette) -> [u32; 2] {
+        let (_, _, off) = diff_tints(chosen);
+        let roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
+        let own = chosen.syntax_roles(None);
+        [
+            (chosen.added, chosen.added_background),
+            (chosen.removed, chosen.removed_background),
+        ]
+        .into_iter()
+        .zip(off)
+        .map(|((diff, line), off)| {
+            if lightness_beyond(off, line, chosen) > 0. {
+                EditorHighlights::lifted_word_tint(roles, own, off, diff, line)
+            } else {
+                off
+            }
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("two sides")
+    }
+
+    /// Whether the text rule keeps a word that steps across `line` short of
+    /// [`HIGHLIGHT_LIGHTNESS_GAP`] beyond it: in each hue
+    /// [`EditorHighlights::crossed_word_tint`] steps in, the seed's of `diff`
+    /// on `line`, halfway to `diff`'s and `diff`'s own, the first step that
+    /// stands [`HIGHLIGHT_DISTANCE`] from the line and the gap beyond it
+    /// reads some color in `colors` under the text rule, or there is none.
+    fn the_gap_cannot_read(colors: &[u32], diff: u32, line: u32, chosen: Palette) -> bool {
+        let seed = EditorHighlights::word_seed(diff, line);
+        [seed, mix(seed, diff, 128), diff].into_iter().all(|hue| {
+            beyond_line(hue, line, chosen)
+                .into_iter()
+                .find(|&step| {
+                    lightness_beyond(step, line, chosen) >= HIGHLIGHT_LIGHTNESS_GAP
+                        && oklab_distance(oklab(step), oklab(line)) >= HIGHLIGHT_DISTANCE
+                })
+                .is_none_or(|step| {
+                    colors
+                        .iter()
+                        .any(|&color| contrast(color, step) < LABEL_RULE)
+                })
+        })
+    }
+
     /// A color's OKLab lightness gap from `palette`'s canvas.
     fn from_canvas(palette: Palette, color: u32) -> f64 {
         (oklab(color)[0] - oklab(palette.canvas)[0]).abs()
     }
 
-    /// Under More contrast a word tint's lift toward the canvas stops at
-    /// half its line's own lightness gap from the canvas, in built-in
-    /// palettes. One Dark's added word, lifted unbounded, reaches the gap at
-    /// #223820, 0.022 from the canvas where half its line's gap is 0.031; it
-    /// stops at the last step that keeps 0.031, short of the gap, the next
-    /// step nearer. Rosé Pine Dawn's removed word, drawn off 0.001 from its
-    /// canvas, inside the bound, keeps the tint drawn off, where unbounded it
-    /// lifted past the canvas. Daylight's removed word, lighter than its
-    /// canvas, lifts away from it to the gap, unbounded.
+    /// Under More contrast a word tint drawn off on its line's canvas side
+    /// never lifts toward the canvas: its line keeps its tint and the word
+    /// steps across it ([`EditorHighlights::crossed_word_tint`]), in
+    /// built-in palettes. It stands beyond the line from the canvas, at least
+    /// [`HIGHLIGHT_DISTANCE`] from it and [`HIGHLIGHT_LIGHTNESS_GAP`] beyond
+    /// it in lightness, and every color drawn on it as text reads the text
+    /// rule; One Dark's added word and Kanagawa Lotus's removed word stop
+    /// short of the gap, beyond their lines, since at the gap One Dark's
+    /// raised keyword would read 4.39:1 and Lotus's strings 4.49:1, under the
+    /// text rule. It is the furthest such step in its row of steps
+    /// ([`beyond_line`]): the next step in the row reads some color below
+    /// the rule the word keeps, or the row ends there (Solarized Dark's added
+    /// `#214514`, One Dark's added `#2f491d`, Kanagawa Lotus's removed
+    /// `#ffbdb4`). One Dark's added word, drawn off darker than its line, once
+    /// lifted toward the canvas and stopped at half its line's gap from it
+    /// (#253b23), still on the canvas side; Rosé Pine Dawn's removed word,
+    /// drawn off 0.001 from its canvas, kept the tint drawn off; Braden's
+    /// removed word (#fcf6f7 on #f9e5eb), lighter than its canvas, lifted
+    /// away from it, past the canvas from its line. Solarized Dark's added
+    /// word, held to the distance from its line alone, stepped across
+    /// through its seed's chroma to #2d3500, 0.0004 beyond its line in
+    /// lightness.
     #[test]
-    fn a_word_tint_lift_stops_at_half_its_lines_gap_from_the_canvas() {
-        let unbounded = |chosen: Palette, off: u32, diff: u32, line: u32| {
-            let roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
-            let own = chosen.syntax_roles(None);
-            EditorHighlights::lifted_word_tint(roles, own, off, diff, line, line)
-        };
-        let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
+    fn a_word_on_its_lines_canvas_side_steps_across_it() {
+        for (case, theme, side, at_gap, pinned) in [
+            (
+                "One Dark added",
+                ThemeChoice::OneDark,
+                0,
+                false,
+                Some(0x2f491d),
+            ),
+            (
+                "Rosé Pine Dawn removed",
+                ThemeChoice::RosePineDawn,
+                1,
+                true,
+                None,
+            ),
+            ("Braden removed", ThemeChoice::Daylight, 1, true, None),
+            (
+                "Solarized Dark added",
+                ThemeChoice::SolarizedDark,
+                0,
+                true,
+                Some(0x214514),
+            ),
+            (
+                "Kanagawa Lotus removed",
+                ThemeChoice::KanagawaLotus,
+                1,
+                false,
+                Some(0xffbdb4),
+            ),
+        ] {
+            let chosen = theme.palette();
+            let (adjusted, words, off) = diff_tints(chosen);
+            let roles = adjusted.syntax_roles(Some(chosen));
+            let ((diff, line, moved), patch) = if side == 0 {
+                (
+                    (
+                        chosen.added,
+                        chosen.added_background,
+                        adjusted.added_background,
+                    ),
+                    roles.string,
+                )
+            } else {
+                (
+                    (
+                        chosen.removed,
+                        chosen.removed_background,
+                        adjusted.removed_background,
+                    ),
+                    roles.removed,
+                )
+            };
+            let word = words[side];
+            assert!(
+                lightness_beyond(off[side], line, chosen) < 0.,
+                "{case}: #{:06x} drawn off on its line's canvas side",
+                off[side]
+            );
+            assert_eq!(moved, line, "{case}: the line keeps its tint");
+            assert_eq!(
+                word,
+                EditorHighlights::crossed_word_tint(
+                    roles,
+                    [diff, patch],
+                    (line, off[side]),
+                    chosen
+                ),
+                "{case}: the word steps across"
+            );
+            let beyond = lightness_beyond(word, line, chosen);
+            let apart = oklab_distance(oklab(word), oklab(line));
+            let colors: Vec<u32> = roles.word_colors().into_iter().chain([patch]).collect();
+            assert!(
+                beyond > 0. && apart >= HIGHLIGHT_DISTANCE,
+                "{case}: #{word:06x} {beyond:+.4} beyond its line #{line:06x}, {apart:.4} from it"
+            );
+            assert_eq!(
+                beyond >= HIGHLIGHT_LIGHTNESS_GAP,
+                at_gap,
+                "{case}: #{word:06x} {beyond:+.4} beyond its line"
+            );
+            assert_eq!(
+                the_gap_cannot_read(&colors, diff, line, chosen),
+                !at_gap,
+                "{case}: whether the text rule keeps the word short of the gap"
+            );
+            for &color in &colors {
+                assert!(
+                    contrast(color, word) >= LABEL_RULE,
+                    "{case}: #{color:06x} {:.3}:1 on #{word:06x}",
+                    contrast(color, word)
+                );
+            }
+            if let Some(pinned) = pinned {
+                assert_eq!(word, pinned, "{case}: #{word:06x}, not #{pinned:06x}");
+            }
+            // The furthest step: the next one in the word's row reads some
+            // color below the rule the word keeps, or the row ends.
+            let seed = EditorHighlights::word_seed(diff, line);
+            let rows = [seed, mix(seed, diff, 128), diff].map(|hue| beyond_line(hue, line, chosen));
+            let (row, at) = rows
+                .iter()
+                .find_map(|row| {
+                    row.iter()
+                        .position(|&step| step == word)
+                        .map(|at| (row, at))
+                })
+                .unwrap_or_else(|| panic!("{case}: #{word:06x} is a step beyond its line"));
+            let keeps = |step: u32, rule: f64| {
+                colors
+                    .iter()
+                    .all(|&color| contrast(color, step) >= drawn_target(color, &[line], rule))
+            };
+            let rule = [MORE_CONTRAST_TEXT, LABEL_RULE + LABEL_MARGIN, LABEL_RULE]
+                .into_iter()
+                .find(|&rule| keeps(word, rule))
+                .unwrap_or_else(|| panic!("{case}: #{word:06x} reads the text rule"));
+            if let Some(&next) = row.get(at + 1) {
+                assert!(
+                    !keeps(next, rule),
+                    "{case}: the next step #{next:06x} beyond #{word:06x} also reads {rule}:1"
+                );
+            }
+        }
+    }
 
-        let chosen = ThemeChoice::OneDark.palette();
-        let (_, words, off) = diff_tints(chosen);
-        let (line, word, half) = (
-            chosen.added_background,
-            words[0],
-            from_canvas(chosen, chosen.added_background) / 2.,
-        );
-        let free = unbounded(chosen, off[0], chosen.added, line);
-        assert!(gap(free, line) >= WORD_LIGHTNESS_GAP && from_canvas(chosen, free) < half);
-        assert_ne!(word, off[0], "One Dark's added word lifts");
+    /// Under More contrast a word drawn off on its line's canvas side keeps
+    /// its tint drawn off where no step beyond its line both reads the text
+    /// rule and stands [`HIGHLIGHT_DISTANCE`] from it: a custom theme on
+    /// Midnight whose added lines are pale, `#607372`, so the text on a word
+    /// stepped across them reads under 4.5:1 by the step that stands apart.
+    /// The nearest step that stood apart, `#588177`, broke the text floor.
+    #[test]
+    fn a_crossed_word_with_no_readable_step_keeps_its_tint_drawn_off() {
+        let mut custom = CustomTheme::from_base(1, "Pale lines", ThemeChoice::Midnight);
+        custom.palette.set(TokenKind::AddedBackground, 0x607372);
+        let chosen = custom.palette;
+        let (adjusted, words, off) = diff_tints(chosen);
+        let roles = adjusted.syntax_roles(Some(chosen));
+        let (diff, line) = (chosen.added, chosen.added_background);
         assert!(
-            from_canvas(chosen, word) >= half && gap(word, line) < WORD_LIGHTNESS_GAP,
-            "#{word:06x} {:.4} from the canvas, half the line's gap {half:.4}",
-            from_canvas(chosen, word)
+            lightness_beyond(off[0], line, chosen) < 0.,
+            "#{:06x} drawn off on its line's canvas side",
+            off[0]
         );
-        let path = lightness_lifts(off[0], line);
-        let next = path[path.iter().position(|&lift| lift == word).unwrap() + 1];
-        assert!(
-            from_canvas(chosen, next) < half,
-            "#{next:06x} keeps the bound"
-        );
-
-        let chosen = ThemeChoice::RosePineDawn.palette();
-        let (_, words, off) = diff_tints(chosen);
-        let line = chosen.removed_background;
-        assert!(from_canvas(chosen, off[1]) < from_canvas(chosen, line) / 2.);
-        let free = unbounded(chosen, off[1], chosen.removed, line);
-        let side = |color: u32| oklab(color)[0].total_cmp(&oklab(chosen.canvas)[0]);
-        assert_ne!(
-            side(free),
-            side(off[1]),
-            "unbounded, #{free:06x} lifts past the canvas"
-        );
-        assert_eq!(words[1], off[1], "Rosé Pine Dawn's removed word");
-
-        let chosen = ThemeChoice::Daylight.palette();
-        let (_, words, off) = diff_tints(chosen);
-        let line = chosen.removed_background;
-        assert!(oklab(off[1])[0] > oklab(chosen.canvas)[0]);
-        assert_eq!(words[1], unbounded(chosen, off[1], chosen.removed, line));
-        assert!(gap(words[1], line) >= WORD_LIGHTNESS_GAP);
+        assert_eq!(adjusted.added_background, line, "the line keeps its tint");
+        let colors: Vec<u32> = roles
+            .word_colors()
+            .into_iter()
+            .chain([roles.string])
+            .collect();
+        // Along each row the word steps in, every step that stands apart
+        // reads some color under the text rule.
+        let seed = EditorHighlights::word_seed(diff, line);
+        for hue in [seed, mix(seed, diff, 128), diff] {
+            for step in beyond_line(hue, line, chosen) {
+                assert!(
+                    oklab_distance(oklab(step), oklab(line)) < HIGHLIGHT_DISTANCE
+                        || colors
+                            .iter()
+                            .any(|&color| contrast(color, step) < LABEL_RULE),
+                    "#{step:06x} reads and stands apart"
+                );
+            }
+        }
+        assert_eq!(words[0], off[0], "#{:06x}, not #{:06x}", words[0], off[0]);
+        for &color in &colors {
+            assert!(
+                contrast(color, words[0]) >= LABEL_RULE,
+                "#{color:06x} {:.3}:1 on #{:06x}",
+                contrast(color, words[0]),
+                words[0]
+            );
+        }
     }
 
     /// Under More contrast a word that cannot lift moves its line, in
@@ -8840,10 +9277,10 @@ mod tests {
     /// built-in palettes and one built from Tokyo Night. Nord's added line
     /// stands 0.025 from its canvas, within 0.04, so though its word stands
     /// 0.032 from it between the line and the text, the line keeps its tint.
-    /// One Dark's added word, its lift stopped by the canvas bound, lies on
-    /// the canvas side of its line, which would move toward the text: the
-    /// first step reads `text` worse than the line drawn off, so the line
-    /// keeps its tint. Tokyo Night with a selected row #002c28 near its
+    /// One Dark's added word, drawn off on the canvas side of its line,
+    /// steps across it, and its line keeps its tint: moved away from the
+    /// word, the line would step toward the text, and its first step reads
+    /// `text` worse than the line drawn off. Tokyo Night with a selected row #002c28 near its
     /// added line's path stops the line where the next step would stand
     /// nearer the selection than 0.04, short of the gap it reaches with its
     /// own selection.
@@ -8861,10 +9298,16 @@ mod tests {
         let chosen = ThemeChoice::OneDark.palette();
         let (adjusted, words, off) = diff_tints(chosen);
         let line = chosen.added_background;
-        assert!(oklab(words[0])[0] < oklab(line)[0] && gap(words[0], line) < WORD_LIGHTNESS_GAP);
-        let moves = line_moves(line, words[0], (off[0], line), chosen.canvas);
+        assert!(
+            lightness_beyond(off[0], line, chosen) < 0. && gap(off[0], line) < WORD_LIGHTNESS_GAP
+        );
+        let moves = line_moves(line, off[0], (off[0], line), chosen.canvas);
         assert!(contrast(chosen.text, moves[0]) < contrast(chosen.text, line));
         assert_eq!(adjusted.added_background, line, "One Dark's added line");
+        assert!(
+            stands_beyond(words[0], line, chosen),
+            "One Dark's added word steps across"
+        );
 
         let tokyo = ThemeChoice::TokyoNight.palette();
         let chosen = Palette {
@@ -8900,7 +9343,8 @@ mod tests {
     #[test]
     fn a_moved_line_never_passes_a_step_that_fails_a_bound() {
         let chosen = faint_custom_palette();
-        let (adjusted, words, off) = diff_tints(chosen);
+        let (adjusted, _, off) = diff_tints(chosen);
+        let words = words_lines_move_for(chosen);
         let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(None), None);
         let (line, word) = (chosen.removed_background, words[1]);
         let holds = |step: u32| {
@@ -9009,22 +9453,32 @@ mod tests {
     }
 
     /// [`EditorHighlights::current_beside`] in literal greys, each way it
-    /// can place the current match beside a raised selection: raised to
-    /// stand from it as far as the off current match stands from the off
-    /// selection, or where the two drawn off stand nearer than
-    /// [`HIGHLIGHT_DISTANCE`], raised to stand only that far; and where none
-    /// is raised, the off current match beside a raised selection that
-    /// stands from it at least as far, or else both highlights drawn off.
-    /// Held to its distance from the raised selection alone, the current
-    /// match settled beside the other matches (Omarchy alacritty-dark 0.040
-    /// to 0.024), and the raised selection beside the off current match
-    /// (Omarchy ristretto 0.090 to 0.039).
+    /// can place the current match beside the selection, always at least
+    /// [`HIGHLIGHT_DISTANCE`] and [`HIGHLIGHT_LIGHTNESS_GAP`] in lightness
+    /// from it: raised to stand from the raised selection as far as the off
+    /// current match stands from the off selection, or at least that floor
+    /// where the two drawn off stand nearer; where none is raised, the off
+    /// current match beside the raised selection, or beside the off one,
+    /// where it stands so; or else fitted by the text rule beside the raised
+    /// selection, or beside the off one. Raised only as far as off where
+    /// that was less, the current match stood 0.003 from the selection in
+    /// Sandstone; kept beside a selection it stood 0.044 from by chroma
+    /// alone, 0.0001 in lightness in One Dark. Held to its distance from the
+    /// raised selection alone, the current match settled beside the other
+    /// matches (Omarchy alacritty-dark 0.040 to 0.024), and the raised
+    /// selection beside the off current match (Omarchy ristretto 0.090 to
+    /// 0.039).
     #[test]
     fn the_current_match_stands_from_a_raised_selection_as_far_as_off() {
         let apart = |a: u32, b: u32| oklab_distance(oklab(a), oklab(b));
         let (off_selection, near, far) = (0x404040, 0x434343, 0x707070);
         assert!(apart(off_selection, near) < HIGHLIGHT_DISTANCE);
         assert!(apart(off_selection, far) >= HIGHLIGHT_DISTANCE);
+        // The selection's lightness at 0.05 of chroma: apart by chroma alone.
+        let [lightness, ..] = oklab(off_selection);
+        let tinted = from_linear(linear_in_gamut([lightness, 0.05, 0.]));
+        assert!(apart(off_selection, tinted) >= HIGHLIGHT_DISTANCE);
+        assert!((oklab(tinted)[0] - lightness).abs() < HIGHLIGHT_LIGHTNESS_GAP);
         let asked = std::cell::RefCell::new(Vec::new());
         let raised = |current: u32, from: f64| {
             let asked = &asked;
@@ -9033,54 +9487,182 @@ mod tests {
                 (distance <= from).then_some(current)
             }
         };
+        let none = || raised(0x000000, f64::NEG_INFINITY);
+        let fits = std::cell::RefCell::new(Vec::new());
+        // A fitted candidate beside `beside` (or any selection) that stands
+        // at most `reach` from it.
+        let fitted = |current: Option<u32>, beside: Option<u32>, reach: f64| {
+            let fits = &fits;
+            move |selection: u32, distance: f64| {
+                fits.borrow_mut().push((selection, distance));
+                current.filter(|_| {
+                    beside.is_none_or(|beside| beside == selection) && distance <= reach
+                })
+            }
+        };
+        let never = || fitted(None, None, 0.);
 
         // Raised as far from the raised selection as off.
         let off_apart = apart(off_selection, far);
         assert_eq!(
-            EditorHighlights::current_beside(off_selection, far, 0x383838, raised(0xaa2222, 1.)),
+            EditorHighlights::current_beside(
+                (off_selection, far),
+                0x383838,
+                raised(0xaa2222, 1.),
+                never()
+            ),
             (0x383838, 0xaa2222),
             "raised"
         );
         assert_eq!(asked.take(), [off_apart], "asked as far as off");
+        assert!(fits.take().is_empty(), "none fitted");
 
-        // Drawn off nearer than the floor: raised only as far as off.
-        let off_apart = apart(off_selection, near);
+        // Drawn off nearer than the floor: raised to the floor, never only
+        // as far as off.
         assert_eq!(
             EditorHighlights::current_beside(
-                off_selection,
-                near,
+                (off_selection, near),
                 0x383838,
-                raised(0x454545, off_apart)
+                raised(0x505050, 1.),
+                never()
             ),
-            (0x383838, 0x454545),
-            "raised as far as off, under the floor"
+            (0x383838, 0x505050),
+            "raised to the floor"
         );
-        assert_eq!(
-            asked.take(),
-            [HIGHLIGHT_DISTANCE, off_apart],
-            "asked at the floor, then as far as off"
-        );
+        assert_eq!(asked.take(), [HIGHLIGHT_DISTANCE], "asked at the floor");
 
-        // None raised: the off current match stays beside a raised selection
-        // that stands from it at least as far as off, and otherwise both
-        // highlights drawn off stay. Drawn off at least the floor apart, the
-        // current match is searched for once, as far as off, never again.
-        let off_apart = apart(off_selection, far);
-        let none = || raised(0x000000, f64::NEG_INFINITY);
+        // None raised: the off current match beside the raised selection
+        // that stands from it as far as off, with the lightness gap.
         assert!(apart(far, 0x202020) >= off_apart);
         assert_eq!(
-            EditorHighlights::current_beside(off_selection, far, 0x202020, none()),
+            EditorHighlights::current_beside((off_selection, far), 0x202020, none(), never()),
             (0x202020, far),
             "the off current match beside the raised selection"
         );
         assert_eq!(asked.take(), [off_apart], "asked once, as far as off");
+        // Nearer the raised selection than off: both drawn off.
         assert!(apart(far, 0x606060) < off_apart);
         assert_eq!(
-            EditorHighlights::current_beside(off_selection, far, 0x606060, none()),
+            EditorHighlights::current_beside((off_selection, far), 0x606060, none(), never()),
             (off_selection, far),
             "both drawn off"
         );
-        assert_eq!(asked.take(), [off_apart], "asked once, as far as off");
+        assert!(
+            fits.take().is_empty(),
+            "none fitted while the off pair stands apart"
+        );
+        asked.take();
+
+        // Drawn off nearer than the floor, or apart by chroma alone: fitted
+        // beside the raised selection, else beside the off one, as far as
+        // the pair drawn off stand apart, at least the floor.
+        for off_current in [near, tinted] {
+            let as_off = apart(off_selection, off_current).max(HIGHLIGHT_DISTANCE);
+            assert_eq!(
+                EditorHighlights::current_beside(
+                    (off_selection, off_current),
+                    0x3c3c3c,
+                    none(),
+                    fitted(Some(0x606060), None, 1.)
+                ),
+                (0x3c3c3c, 0x606060),
+                "fitted beside the raised selection, #{off_current:06x} drawn off"
+            );
+            assert_eq!(
+                fits.take(),
+                [(0x3c3c3c, as_off)],
+                "fitted beside the raised selection, as far as off"
+            );
+            assert_eq!(
+                EditorHighlights::current_beside(
+                    (off_selection, off_current),
+                    0x3c3c3c,
+                    none(),
+                    fitted(Some(0x606060), Some(off_selection), 1.)
+                ),
+                (off_selection, 0x606060),
+                "fitted beside the off selection, #{off_current:06x} drawn off"
+            );
+            assert_eq!(
+                fits.take(),
+                [(0x3c3c3c, as_off), (off_selection, as_off)],
+                "then beside the off one"
+            );
+        }
+        // Where no fitted candidate stands as far as off, beside either
+        // selection, the floor: beside the raised selection first.
+        let as_off = apart(off_selection, tinted);
+        assert!(as_off > HIGHLIGHT_DISTANCE);
+        assert_eq!(
+            EditorHighlights::current_beside(
+                (off_selection, tinted),
+                0x3c3c3c,
+                none(),
+                fitted(Some(0x606060), None, HIGHLIGHT_DISTANCE)
+            ),
+            (0x3c3c3c, 0x606060),
+            "fitted at the floor"
+        );
+        assert_eq!(
+            fits.take(),
+            [
+                (0x3c3c3c, as_off),
+                (off_selection, as_off),
+                (0x3c3c3c, HIGHLIGHT_DISTANCE)
+            ],
+            "as far as off beside both selections, then the floor"
+        );
+        asked.take();
+    }
+
+    /// Fitted by the text rule, Find's current match keeps the distance the
+    /// pair drawn off stand apart wherever a fitted candidate can: here a
+    /// grey selection and a current match drawn off 0.10 apart through
+    /// chroma, under [`HIGHLIGHT_LIGHTNESS_GAP`] apart in lightness, so the
+    /// current match drawn off cannot stay, and none is raised. Fitted only
+    /// [`HIGHLIGHT_DISTANCE`] from the selection, as before, the current
+    /// match stood nearer it than the pair drawn off (One Dark's `#104266`,
+    /// 0.041 from its selection, where the pair drawn off stand 0.044 apart
+    /// through chroma).
+    #[test]
+    fn a_fitted_current_match_keeps_its_off_distance_where_it_can() {
+        let apart = |a: u32, b: u32| oklab_distance(oklab(a), oklab(b));
+        let (canvas, text, accent) = (0x202020, 0xe0e0e0, 0xc8553d);
+        let off_selection = 0x404040;
+        let [lightness, ..] = oklab(off_selection);
+        let off_current = from_linear(linear_in_gamut([lightness, 0.102, 0.]));
+        let off_apart = apart(off_selection, off_current);
+        assert!(off_apart >= 0.1, "{off_apart:.4}");
+        assert!((oklab(off_current)[0] - lightness).abs() < HIGHLIGHT_LIGHTNESS_GAP);
+        // As [`EditorHighlights::fit_raised`] fits one: the text rule, toward
+        // black and then toward white.
+        let seed = mix(off_selection, accent, 64);
+        let fitted = |selection: u32, distance: f64| {
+            let fit = HighlightFit::new(&[(text, &[canvas][..])], &[canvas])
+                .apart_from(selection, distance);
+            fit.search(seed, 0x000000, accent)
+                .or_else(|| fit.search(seed, 0xffffff, accent))
+        };
+        let floor = fitted(off_selection, HIGHLIGHT_DISTANCE).expect("one at the floor");
+        assert!(
+            apart(floor, off_selection) < off_apart,
+            "at the floor #{floor:06x} {:.4} from the selection",
+            apart(floor, off_selection)
+        );
+        let (selection, current) = EditorHighlights::current_beside(
+            (off_selection, off_current),
+            off_selection,
+            |_| None,
+            fitted,
+        );
+        assert_eq!(selection, off_selection);
+        assert!(
+            apart(current, selection) >= off_apart
+                && (oklab(current)[0] - oklab(selection)[0]).abs() >= HIGHLIGHT_LIGHTNESS_GAP,
+            "#{current:06x} {:.4} from the selection, off {off_apart:.4}",
+            apart(current, selection)
+        );
+        assert!(contrast(text, current) >= LABEL_RULE);
     }
 
     /// Find's current match keeps the distance it stands from the other
@@ -9088,9 +9670,12 @@ mod tests {
     /// built-in palettes, so a run without the Omarchy palettes covers it:
     /// Midnight and Graphite with a grey selected row and a warm accent, in
     /// which the current match drawn off stands at least
-    /// [`HIGHLIGHT_DISTANCE`] from the other matches. Both keep the highlights
-    /// drawn off, so the current match stands from the other matches as far
-    /// as off. Held only to its distance from its lines, the selection alone
+    /// [`HIGHLIGHT_DISTANCE`] from the other matches. The selection keeps the
+    /// one drawn off, and the current match stands as far as off from the
+    /// selection and from the other matches, which take a colour of their
+    /// own, and [`HIGHLIGHT_LIGHTNESS_GAP`] from the selection in lightness
+    /// (the pair drawn off stand 0.05 apart, under 0.02 in lightness, so the
+    /// current match moves). Held only to its distance from its lines, the selection alone
     /// was once raised toward the current match drawn off here (Midnight's
     /// #44251e to #551205, 0.012 from the current match #591509, where the
     /// selection drawn off stands 0.053 from it); held also to its luminance
@@ -9119,24 +9704,35 @@ mod tests {
             );
 
             assert_eq!(
-                [on.selection, on.find_match, on.find_current],
-                [off.selection, off.find_match, off.find_current],
-                "{case}: the selection, other matches and current match drawn off"
+                on.selection, off.selection,
+                "{case}: the selection drawn off"
             );
+            for (others, color) in [
+                ("selection", on.selection),
+                ("other matches", on.find_match),
+            ] {
+                assert!(
+                    apart(on.find_current, color) >= off_apart,
+                    "{case}: the current match #{:06x} {:.3} from the {others} #{color:06x}, off \
+                     {off_apart:.3}",
+                    on.find_current,
+                    apart(on.find_current, color),
+                );
+            }
+            let lightness = (oklab(on.find_current)[0] - oklab(on.selection)[0]).abs();
             assert!(
-                apart(on.find_current, on.find_match) >= off_apart,
-                "{case}: the current match #{:06x} {:.3} from the other matches #{:06x}, off \
-                 {off_apart:.3}",
-                on.find_current,
-                apart(on.find_current, on.find_match),
-                on.find_match
+                lightness >= HIGHLIGHT_LIGHTNESS_GAP,
+                "{case}: the current match #{:06x} {lightness:.4} from the selection in lightness",
+                on.find_current
             );
         }
     }
 
-    /// With More contrast on, no color reads worse on the text selection or on
-    /// Find's other and current matches than it does with More contrast off,
-    /// in every palette: `text`, every syntax role and the patch's `added`,
+    /// With More contrast on, no color reads worse on the text selection than
+    /// it does with More contrast off, nor on Find's current match where it
+    /// keeps or raises the one drawn off, in every palette (Find's other
+    /// matches are fitted by the text rule, never raised):
+    /// `text`, every syntax role and the patch's `added`,
     /// `removed` and `hunk`, the colors those highlights are fitted under, each
     /// read on the highlight drawn on at least the contrast it reads on the
     /// one drawn off, and where the highlight moved, 7:1 or its own contrast
@@ -9146,7 +9742,13 @@ mod tests {
     /// turns darker than its darkest line where the one drawn off is lighter;
     /// and wherever the current match drawn off stands
     /// [`HIGHLIGHT_DISTANCE`] from the other matches, the current match
-    /// stands from them at least as far. Fitted only to the text rule against
+    /// stands from them at least as far. Where the current match or the
+    /// other matches can do neither and stand apart as the rules of
+    /// 2026-11-05 afternoon ask (the current match [`HIGHLIGHT_DISTANCE`]
+    /// and [`HIGHLIGHT_LIGHTNESS_GAP`] from the selection, the other matches
+    /// in a colour of their own), each is fitted by the text rule instead:
+    /// every color on it reads 4.5:1 and it stands [`HIGHLIGHT_DISTANCE`]
+    /// from every editor line. Fitted only to the text rule against
     /// the raised syntax, they settled lighter and nearer their seeds, and
     /// 213 colors read worse on them across the palettes (Midnight's strings
     /// on the current match 6.18:1 where they read 6.63:1); held to the
@@ -9174,6 +9776,7 @@ mod tests {
         ];
         let mut failures = Vec::new();
         let (mut raised, mut kept, mut separated) = (0, 0, 0);
+        let (mut current_as_off, mut current_fitted, mut matches_fitted) = (0, 0, 0);
         for (name, chosen) in more_contrast_palettes() {
             let [off, on] = [false, true].map(|more| {
                 cx.update(|cx| {
@@ -9211,11 +9814,14 @@ mod tests {
                     on_tints.find_current,
                 ),
             ] {
+                // How the highlight reads worse or stands nearer than off, if
+                // it does.
+                let mut worse = Vec::new();
                 for ((color, (was, _)), (is, on)) in DRAWN.iter().zip(&was).zip(&is) {
                     let (was, is) = (*was, *is);
                     let (off_ratio, on_ratio) = (contrast(was, off_tint), contrast(is, on_tint));
                     if on_ratio < off_ratio {
-                        failures.push(format!(
+                        worse.push(format!(
                             "{name} {color} #{is:06x} on the {highlight} #{on_tint:06x} \
                              {on_ratio:.3}:1, off #{was:06x} on #{off_tint:06x} {off_ratio:.3}:1"
                         ));
@@ -9226,7 +9832,7 @@ mod tests {
                         .fold(MORE_CONTRAST_TEXT, f64::min)
                         .max(LABEL_RULE);
                     if on_tint != off_tint && on_ratio < floor {
-                        failures.push(format!(
+                        worse.push(format!(
                             "{name} {color} on the moved {highlight} #{on_tint:06x} \
                              {on_ratio:.3}:1, needs {floor:.3}"
                         ));
@@ -9235,7 +9841,7 @@ mod tests {
                 for line in lines {
                     let apart = |tint: u32| oklab_distance(oklab(tint), oklab(line));
                     if apart(on_tint) < apart(off_tint) {
-                        failures.push(format!(
+                        worse.push(format!(
                             "{name} {highlight} #{on_tint:06x} {:.3} from the line #{line:06x}, \
                              off #{off_tint:06x} {:.3}",
                             apart(on_tint),
@@ -9244,7 +9850,7 @@ mod tests {
                     }
                     let side = |tint: u32| oklab(tint)[0].total_cmp(&oklab(line)[0]);
                     if side(on_tint) != side(off_tint) {
-                        failures.push(format!(
+                        worse.push(format!(
                             "{name} {highlight} #{on_tint:06x} {:?} the line #{line:06x} in \
                              lightness, off #{off_tint:06x} {:?}",
                             side(on_tint),
@@ -9252,17 +9858,42 @@ mod tests {
                         ));
                     }
                     if let Some(failure) = fainter_on_its_line(on_tint, off_tint, line) {
-                        failures.push(format!("{name} {highlight} {failure}"));
+                        worse.push(format!("{name} {highlight} {failure}"));
                     }
                 }
                 if !chosen.is_light()
                     && oklab(off_tint)[0] > darkest
                     && oklab(on_tint)[0] <= darkest
                 {
-                    failures.push(format!(
+                    worse.push(format!(
                         "{name} {highlight} #{on_tint:06x} darker than the darkest line, off \
                          #{off_tint:06x} lighter"
                     ));
+                }
+                if worse.is_empty() {
+                    current_as_off += usize::from(highlight == "current Find match");
+                    continue;
+                }
+                // The selection is always raised or drawn off; the current
+                // match and the other matches may be fitted by the text rule.
+                // Under More contrast the patch draws its text in the fitted
+                // roles ([`PatchText`]), so the diff colors are not text there.
+                let fitted = highlight != "selection"
+                    && is
+                        .iter()
+                        .zip(DRAWN)
+                        .filter(|(_, color)| !matches!(*color, "added" | "removed lines" | "hunk"))
+                        .all(|(&(color, _), _)| contrast(color, on_tint) >= LABEL_RULE)
+                    && lines.iter().all(|&line| {
+                        oklab_distance(oklab(on_tint), oklab(line)) >= HIGHLIGHT_DISTANCE
+                    });
+                if fitted {
+                    match highlight {
+                        "current Find match" => current_fitted += 1,
+                        _ => matches_fitted += 1,
+                    }
+                } else {
+                    failures.extend(worse);
                 }
             }
             let beside = |tints: EditorHighlights| {
@@ -9291,8 +9922,14 @@ mod tests {
         // current match is placed beside a raised selection is read in
         // `the_current_match_stands_from_a_raised_selection_as_far_as_off`.
         assert!(
-            kept > 0 && separated > 0,
-            "selections raised {raised}, kept {kept}; current matches apart off {separated}"
+            kept > 0
+                && separated > 0
+                && current_as_off > 0
+                && current_fitted > 0
+                && matches_fitted > 0,
+            "selections raised {raised}, kept {kept}; current matches apart off {separated}, \
+             kept or raised {current_as_off}, fitted {current_fitted}; other matches fitted \
+             {matches_fitted}"
         );
     }
 
@@ -10264,5 +10901,207 @@ mod tests {
             ThemeChoice::Midnight.apply(Some(window), cx);
         });
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Under More contrast the editor highlights keep the rules decided on
+    /// 2026-11-05, in every palette and in [`faint_custom_palette`], a
+    /// palette made from a built-in; a word steps across its line on each
+    /// side outside the Omarchy palettes, so a run without them (macOS)
+    /// reads the step on both sides. Each changed-word tint stands beyond
+    /// its line tint from the canvas: further from it in OKLab lightness, on
+    /// the same side, and at least [`HIGHLIGHT_DISTANCE`] from the line, with
+    /// every color drawn on it as text (`text`, every syntax role but
+    /// `removed` and the patch text the Diff view draws on it) reading the
+    /// text rule; a word that stepped across, one that does not stand beyond
+    /// its line as lifted ([`stands_beyond`]: drawn off on its canvas side, or
+    /// left nearer it than [`HIGHLIGHT_DISTANCE`] by its line's move), stands
+    /// [`HIGHLIGHT_LIGHTNESS_GAP`] beyond its line in lightness, or short of it only where no step that
+    /// far reads the text rule ([`the_gap_cannot_read`]: One Dark's added
+    /// word, whose raised keyword would read 4.39:1, and Kanagawa Lotus's
+    /// removed word, its strings 4.49:1).
+    /// Find's other matches stand [`HIGHLIGHT_DISTANCE`] and
+    /// [`HIGHLIGHT_LIGHTNESS_GAP`] in lightness from the selection, the
+    /// current match and both word tints, [`HIGHLIGHT_DISTANCE`] from every
+    /// editor line, and every color drawn on them as text (`text` and every
+    /// role, the patch text among them) reads the text rule; and
+    /// the selection and the current match stand as far apart, with the
+    /// gap. With More contrast off, 31 word tints across the palettes lay on
+    /// their line's canvas side (Braden's removed word `#fdf7f8` on its line
+    /// `#f9e5eb`), Find's other matches drew the selection's colour in every
+    /// palette, and the selection and current match stood 0.003 apart in
+    /// Sandstone and 0.044 apart in One Dark by chroma alone; held to its
+    /// distance from its line alone, Solarized Dark's added word stepped
+    /// across to 0.0004 beyond it.
+    #[gpui::test]
+    fn more_contrast_keeps_the_highlight_rules_in_every_palette(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let distance = |a: u32, b: u32| oklab_distance(oklab(a), oklab(b));
+        let lightness = |a: u32, b: u32| (oklab(a)[0] - oklab(b)[0]).abs();
+        let mut failures = Vec::new();
+        let mut crossed_in = [Vec::new(), Vec::new()];
+        for (name, chosen) in more_contrast_palettes() {
+            let (applied, on) = cx.update(|cx| {
+                set_more_contrast(true, cx);
+                chosen.apply(chosen.is_light(), None, cx);
+                (palette(cx), editor_highlights(cx))
+            });
+            let roles = applied.syntax_roles(Some(chosen));
+            // The words as lifted, or drawn off on the canvas side, before
+            // any steps across.
+            let lifted = words_lines_move_for(chosen);
+            for (index, side, (diff, line), word, drawn) in [
+                (
+                    0,
+                    "added",
+                    (chosen.added, applied.added_background),
+                    on.added_word,
+                    [on.patch_text.added],
+                ),
+                (
+                    1,
+                    "removed",
+                    (chosen.removed, applied.removed_background),
+                    on.removed_word,
+                    [on.patch_text.removed],
+                ),
+            ] {
+                // Short of standing beyond its line as the line was moved
+                // for it, drawn off on its canvas side or left nearer it than
+                // [`HIGHLIGHT_DISTANCE`] by its line's move, the word stepped
+                // across.
+                let crossed = !stands_beyond(lifted[index], line, chosen);
+                let beyond = lightness_beyond(word, line, chosen);
+                let colors: Vec<u32> = roles.word_colors().into_iter().chain(drawn).collect();
+                let short = crossed
+                    && beyond < HIGHLIGHT_LIGHTNESS_GAP
+                    && !the_gap_cannot_read(&colors, diff, line, chosen);
+                if beyond <= 0. || short {
+                    failures.push(format!(
+                        "{name} {side} word #{word:06x} {beyond:+.4} beyond its line \
+                         #{line:06x}{}",
+                        if crossed { ", stepped across" } else { "" }
+                    ));
+                }
+                if distance(word, line) < HIGHLIGHT_DISTANCE {
+                    failures.push(format!(
+                        "{name} {side} word #{word:06x} {:.4} from its line #{line:06x}",
+                        distance(word, line)
+                    ));
+                }
+                for color in colors {
+                    if contrast(color, word) < LABEL_RULE {
+                        failures.push(format!(
+                            "{name} #{color:06x} on the {side} word #{word:06x} {:.3}:1",
+                            contrast(color, word)
+                        ));
+                    }
+                }
+                if crossed {
+                    crossed_in[index].push(name.clone());
+                }
+            }
+            for (other, color) in [
+                ("selection", on.selection),
+                ("current match", on.find_current),
+                ("added word", on.added_word),
+                ("removed word", on.removed_word),
+            ] {
+                if distance(on.find_match, color) < HIGHLIGHT_DISTANCE
+                    || lightness(on.find_match, color) < HIGHLIGHT_LIGHTNESS_GAP
+                {
+                    failures.push(format!(
+                        "{name} Find match #{:06x} {:.4} from the {other} #{color:06x}, {:.4} in \
+                         lightness",
+                        on.find_match,
+                        distance(on.find_match, color),
+                        lightness(on.find_match, color)
+                    ));
+                }
+            }
+            let lines = EditorHighlights::lines(applied);
+            for line in lines {
+                if distance(on.find_match, line) < HIGHLIGHT_DISTANCE {
+                    failures.push(format!(
+                        "{name} Find match #{:06x} {:.4} from the line #{line:06x}",
+                        on.find_match,
+                        distance(on.find_match, line)
+                    ));
+                }
+            }
+            for color in roles.colors() {
+                if contrast(color, on.find_match) < LABEL_RULE {
+                    failures.push(format!(
+                        "{name} #{color:06x} on the Find match #{:06x} {:.3}:1",
+                        on.find_match,
+                        contrast(color, on.find_match)
+                    ));
+                }
+            }
+            if distance(on.selection, on.find_current) < HIGHLIGHT_DISTANCE
+                || lightness(on.selection, on.find_current) < HIGHLIGHT_LIGHTNESS_GAP
+            {
+                failures.push(format!(
+                    "{name} current match #{:06x} {:.4} from the selection #{:06x}, {:.4} in \
+                     lightness",
+                    on.find_current,
+                    distance(on.selection, on.find_current),
+                    on.selection,
+                    lightness(on.selection, on.find_current)
+                ));
+            }
+        }
+        cx.update(|cx| set_more_contrast(false, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        // Words drawn off on their line's canvas side step across on both
+        // sides, in the built-in palettes and the palette made from one.
+        for (side, names) in ["added", "removed"].into_iter().zip(&crossed_in) {
+            assert!(
+                names.iter().any(|name| !name.starts_with("Omarchy ")),
+                "no {side} word drawn off on its line's canvas side outside the Omarchy \
+                 palettes: {names:?}"
+            );
+        }
+    }
+
+    /// With More contrast off, the selection, Find's other and current
+    /// matches and the changed-word tints draw exactly the colours they drew
+    /// before More contrast's highlight rules (a dark and a light palette),
+    /// and no changed word draws a rule: Off is the palette's tuned look and
+    /// runs none of those rules.
+    #[gpui::test]
+    fn more_contrast_off_draws_the_highlights_as_before(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for (choice, drawn) in [
+            (
+                ThemeChoice::Midnight,
+                [0x0b3e3e, 0x0b3e3e, 0x004836, 0x114939, 0x5f3241],
+            ),
+            (
+                ThemeChoice::Daylight,
+                [0xbff6e7, 0xbff6e7, 0x93fde6, 0xc3f5de, 0xfcf6f7],
+            ),
+        ] {
+            let highlights = cx.update(|cx| {
+                set_more_contrast(false, cx);
+                choice.apply(None, cx);
+                editor_highlights(cx)
+            });
+            assert_eq!(
+                [
+                    highlights.selection,
+                    highlights.find_match,
+                    highlights.find_current,
+                    highlights.added_word,
+                    highlights.removed_word,
+                ],
+                drawn,
+                "{choice:?}: selection, Find match, current match, added and removed words"
+            );
+            assert_eq!(
+                (highlights.added_rule, highlights.removed_rule),
+                (None, None),
+                "{choice:?}: no changed-word rule"
+            );
+        }
     }
 }
