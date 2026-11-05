@@ -471,6 +471,7 @@ impl FocusReveal {
         self.next_focus.set(false);
         #[cfg(test)]
         self.painted.borrow_mut().push(tests::Painted {
+            focus: window.focused(cx),
             control: self.focused_bounds(window, cx),
             viewport: self.scroll.bounds(),
             offset: self.scroll.offset().y,
@@ -595,10 +596,12 @@ pub(crate) mod tests {
     use gpui_kit::component::Theme;
 
     /// One frame the container was prepainted and painted in, as it ended:
-    /// where the control holding focus was drawn, if the container drew it,
-    /// the container's visible bounds, and its offset and reach.
-    #[derive(Clone, Copy, Debug)]
+    /// the window's focus, where the control holding focus was drawn, if the
+    /// container drew it, the container's visible bounds, and its offset and
+    /// reach.
+    #[derive(Clone, Debug)]
     pub(crate) struct Painted {
+        pub(crate) focus: Option<FocusHandle>,
         pub(crate) control: Option<Bounds<Pixels>>,
         pub(crate) viewport: Bounds<Pixels>,
         pub(crate) offset: Pixels,

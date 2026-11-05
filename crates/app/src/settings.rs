@@ -7945,6 +7945,25 @@ mod display_row_tests {
         shown(cx, leaked).unwrap_or_else(|| panic!("{selector} is drawn"))
     }
 
+    /// Presses a key no binding takes, so that the window takes keyboard
+    /// input before a walk's first key whose frames are checked. The first
+    /// key after pointer input, or after none, switches the window to
+    /// keyboard input, which leaves it to be drawn again, and GPUI draws a
+    /// window left so inside the key's dispatch, before acting on the key
+    /// (`Window::dispatch_event`, then `dispatch_key_event`): a frame that
+    /// still holds focus on the previous control, now with its keyboard
+    /// ring, at the page's offset before the key, which the page's record
+    /// of painted frames counts. No platform presents that frame: the frame
+    /// request draws again once the key has moved focus and presents only
+    /// that frame, so no one sees the ring on the previous control or the
+    /// page at its old offset. A probe found that frame drawn inside the
+    /// dispatch for such a first key only, again after a pointer move, and
+    /// never after a key no binding takes.
+    fn keyboard_input(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("f13");
+        settle(cx);
+    }
+
     /// Interface text at `size` points.
     fn text_size(app: &Entity<GitTurtle>, size: u8, cx: &mut VisualTestContext) {
         cx.update(|window, cx| {
@@ -8143,11 +8162,12 @@ mod display_row_tests {
         );
     }
 
-    /// From List density's last segment, Tab reaches Reduce motion's three
-    /// segments and then Increase contrast's, in order, in a 461 × 490 window
-    /// at 18 pt, and every frame painted after each key shows the focused
-    /// segment's row, which fits the page's view, with the focus ring's room
-    /// inside that view.
+    /// From List density's first segment, focused in code below the page's
+    /// view, Tab reaches its last and then Reduce motion's three segments
+    /// and Increase contrast's, in order, in a 461 × 490 window at 18 pt,
+    /// and every frame painted after each key, the first key's included,
+    /// shows the focused segment's row, which fits the page's view, with the
+    /// focus ring's room inside that view.
     #[gpui::test]
     fn tab_reaches_the_six_segments_in_order_and_keeps_each_in_view(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -8158,47 +8178,147 @@ mod display_row_tests {
         settle(cx);
         let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
         let room = cx.read(appearance::button_ring_room);
-        // List density's first segment, then Tab to its second, which the
-        // keyboard's focus scrolls into view.
+        // List density's first segment, focused in code before any key, so
+        // the page leaves it below its view; then a key no binding takes,
+        // which moves no focus and so reveals nothing, and Tab to the
+        // segment's neighbour, which the keyboard's focus scrolls into view
+        // in the first frame after that Tab. Focused in code after a key,
+        // the segment was revealed at once, and the walk's first Tab began
+        // inside the view.
         let density = |index: usize, cx: &mut VisualTestContext| {
             cx.update(|_, cx| page.focus(("settings-density", index), cx))
         };
         let first = density(0, cx);
         cx.update(|window, cx| window.focus(&first, cx));
         settle(cx);
-        cx.simulate_keystrokes("tab");
-        draw(cx);
-        let second = density(1, cx);
-        assert!(cx.update(|window, _| second.is_focused(window)));
+        keyboard_input(cx);
+        let view = page.scroll().bounds();
+        let below = drawn(cx, "settings-density-0".into());
+        assert!(
+            cx.update(|window, _| first.is_focused(window)) && below.top() > view.bottom(),
+            "List density's first segment, {below:?}, holds focus below the page's view, \
+             {view:?}, before the first Tab"
+        );
         let slack = px(0.01);
+        let mut steps = vec![("List density's segment 1".to_owned(), density(1, cx))];
         for setting in DisplaySetting::ALL {
             for index in 0..DisplayChoice::ALL.len() {
                 let at = format!("{}'s segment {index}", setting.title());
-                let expected = segment_focus(&app, setting, index, cx);
-                page.take_painted();
-                cx.simulate_keystrokes("tab");
-                draw(cx);
+                steps.push((at, segment_focus(&app, setting, index, cx)));
+            }
+        }
+        for (at, expected) in steps {
+            page.take_painted();
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| expected.is_focused(window)),
+                "Tab reaches {at}"
+            );
+            let frames = page.take_painted();
+            assert!(!frames.is_empty(), "{at}: Tab paints the page");
+            for (frame, painted) in frames.iter().enumerate() {
+                let ring = painted
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused row"))
+                    .dilate(room);
                 assert!(
-                    cx.update(|window, _| expected.is_focused(window)),
-                    "Tab reaches {at}"
-                );
-                let frames = page.take_painted();
-                assert!(!frames.is_empty(), "{at}: Tab paints the page");
-                for (frame, painted) in frames.iter().enumerate() {
-                    let ring = painted
-                        .control
-                        .unwrap_or_else(|| panic!("{at}: frame {frame} draws the focused row"))
-                        .dilate(room);
-                    assert!(
-                        ring.top() + slack >= painted.viewport.top()
-                            && ring.bottom() <= painted.viewport.bottom() + slack,
-                        "{at}: frame {frame} paints the segment's row with its ring's room, \
+                    ring.top() + slack >= painted.viewport.top()
+                        && ring.bottom() <= painted.viewport.bottom() + slack,
+                    "{at}: frame {frame} paints the segment's row with its ring's room, \
                          {ring:?}, outside the page, {:?}",
+                    painted.viewport
+                );
+            }
+        }
+    }
+
+    /// The first key after pointer input. A click on an empty spot of the
+    /// page focuses the window's root, and the key after it, Tab or
+    /// Shift+Tab, paints one stale frame first, drawn inside its dispatch
+    /// ([`keyboard_input`]), with the root still focused and the page at its
+    /// offset before the key; every frame after it holds the focus the key
+    /// moved to and, where that is a control of the page, shows it with its
+    /// ring's room inside the page's view, and otherwise leaves the page
+    /// where it was. From the root Tab reaches the window's first control,
+    /// in the header above the page, and Shift+Tab its last, a control of
+    /// the page above the view of a page scrolled to its foot, which the
+    /// page scrolls to.
+    #[gpui::test]
+    fn the_first_key_after_a_click_paints_one_stale_frame_then_its_focus(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        let root = cx.read(|cx| app.read(cx).app_focus.clone());
+        let mut revealed = false;
+        for key in ["tab", "shift-tab"] {
+            let foot = page.scroll().max_offset().y;
+            page.scroll().set_offset(point(px(0.), -foot));
+            settle(cx);
+            // Beside the page's columns, where no control lies.
+            let view = page.scroll().bounds();
+            cx.simulate_click(
+                point(view.right() - px(24.), view.bottom() - px(24.)),
+                Modifiers::default(),
+            );
+            settle(cx);
+            assert!(
+                cx.update(|window, _| root.is_focused(window)),
+                "the click focuses the window's root"
+            );
+            let before = page.scroll().offset().y;
+            page.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let focus = cx.update(|window, cx| window.focused(cx));
+            assert!(
+                focus.as_ref().is_some_and(|focus| *focus != root),
+                "{key} moves focus from the root"
+            );
+            let frames = page.take_painted();
+            let Some((stale, after)) = frames.split_first().filter(|(_, after)| !after.is_empty())
+            else {
+                panic!("{key} paints a stale frame and then more: {frames:?}");
+            };
+            assert!(
+                stale.focus.as_ref() == Some(&root) && stale.offset == before,
+                "{key}'s first frame is drawn before focus moves, at the page's offset \
+                 {before:?}: {stale:?}"
+            );
+            let in_page = cx.update(|window, _| page.focused(window)).is_some();
+            for (index, painted) in after.iter().enumerate() {
+                let frame = index + 1;
+                assert!(
+                    painted.focus == focus,
+                    "{key}: frame {frame} holds the focus the key moved to: {painted:?}"
+                );
+                if in_page {
+                    let control = painted.control.unwrap_or_else(|| {
+                        panic!("{key}: frame {frame} draws the focused control")
+                    });
+                    assert!(
+                        within(control.dilate(room), painted.viewport),
+                        "{key}: frame {frame} paints the focused control, {control:?}, with its \
+                         ring's room outside the page's view, {:?}",
                         painted.viewport
+                    );
+                } else {
+                    assert_eq!(
+                        painted.offset, before,
+                        "{key}: frame {frame} leaves the page"
                     );
                 }
             }
+            revealed |= in_page && page.scroll().offset().y > before;
         }
+        assert!(
+            revealed,
+            "Shift+Tab from the root scrolls the page to its last control"
+        );
     }
 
     /// List density's, Reduce motion's and Increase contrast's rows: each
@@ -8287,6 +8407,10 @@ mod display_row_tests {
         let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
         let room = cx.read(appearance::button_ring_room);
         let rows = segment_rows(&app, cx);
+        // Without it the first step's frames began with one holding focus on
+        // the control before List density's first segment, passed only
+        // because the page showed it just above that row.
+        keyboard_input(cx);
         let mut failures = Vec::new();
         let mut steps = 0;
         for (width, height) in [(1480., 973.), (461., 490.)] {
@@ -8361,13 +8485,10 @@ mod display_row_tests {
         let room = cx.read(appearance::button_ring_room);
         let rows = segment_rows(&app, cx);
         text_size(&app, 18, cx);
-        // A key before the walk, so every step's Tab comes from the
-        // keyboard. As the test's first key, the first step's Tab painted
-        // one frame that still held focus on the control before the segment,
-        // at the page's offset before the key, which says nothing of the
-        // segment.
-        cx.simulate_keystrokes("tab");
-        draw(cx);
+        // As the test's first key, the first step's Tab painted one frame
+        // that still held focus on the control before the segment, at the
+        // page's offset before the key, a frame no platform presents.
+        keyboard_input(cx);
         let mut failures = Vec::new();
         let mut steps = 0;
         for width in [461., 1480.] {
