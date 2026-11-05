@@ -83,11 +83,17 @@ impl State {
     pub(crate) fn quiet_read_requested(&self) -> bool {
         !self.pending.is_empty() || self.inflight.is_some()
     }
+    /// Forgets the repository's watch and quiet reads, as opening another
+    /// repository does. A test's hold on quiet reads stays. It belongs to
+    /// the write the test holds them across, not to this state, and cleared
+    /// here it would let that write's reload start before the test acts.
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {
             epoch,
             backend: self.backend,
+            #[cfg(test)]
+            held: self.held,
             ..Default::default()
         };
     }
@@ -734,6 +740,29 @@ mod tests {
         assert!(!state.can_start(true, false, true, false));
         assert!(!state.can_start(true, false, false, true));
         assert!(!State::default().can_start(true, false, false, false));
+    }
+    /// A test's hold on quiet reads outlasts a reset, as opening another
+    /// repository or subscribing again (`GitTurtle::watch_through`) resets
+    /// the state: the hold is the held write's, and only the test lifts it.
+    #[::core::prelude::v1::test]
+    fn a_reset_keeps_a_tests_hold_on_quiet_reads() {
+        let worktree = || LocalChange {
+            worktree: true,
+            ..Default::default()
+        };
+        let mut state = State::default();
+        state.hold_quiet_reads(true);
+        state.reset();
+        state.pending.merge(worktree());
+        assert!(
+            !state.can_start(true, false, false, false),
+            "the hold outlasts the reset"
+        );
+        state.hold_quiet_reads(false);
+        assert!(
+            state.can_start(true, false, false, false),
+            "lifted, it starts"
+        );
     }
     #[::core::prelude::v1::test]
     fn late_results_require_repository_and_both_read_generations() {
