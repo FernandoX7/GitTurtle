@@ -4634,19 +4634,53 @@ pub(crate) mod tests {
         fits(cx);
     }
 
+    /// Under reduce motion the editor's alert opens at rest: the first
+    /// frame draws it where it stays, and nothing asks for a frame once its
+    /// side column has laid itself out. GPUI's animation element gives a
+    /// oneshot its end at once under reduce motion, reading no clock.
+    #[gpui::test]
+    fn the_alert_opens_at_rest_under_reduce_motion(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        let opening = cx
+            .debug_bounds("theme-editor-save")
+            .expect("the update that opens the editor draws its alert");
+        for _ in 0..3 {
+            if next_frame(cx) == 0 {
+                break;
+            }
+        }
+        assert_eq!(next_frame(cx), 0, "nothing asks for a frame");
+        assert_eq!(
+            bounds(cx, "theme-editor-save".into()),
+            opening,
+            "the first frame draws the alert at rest"
+        );
+    }
+
     /// Under default motion the editor's alert slides in and, once at rest,
     /// asks for no frame while nothing changes: a slide-in that kept asking
     /// would draw the window every frame for as long as the editor is open.
     /// The slide-in reads the wall clock (GPUI's animation element), which
     /// the test clock does not move, so the test lets real time pass its
-    /// duration once; only that lower bound matters, so a loaded host
-    /// changes nothing. Every other editor test opens at rest
-    /// ([`open_at_rest`]).
+    /// duration once; only that lower bound matters. Where the first frame
+    /// drew it depends on how long that frame took, so the slide is checked
+    /// by its path alone: the kit's slide-down moves the alert from at most
+    /// a tenth of the window's height above its rest down to it, never
+    /// below. Comparing the first frame with the rest needed that frame
+    /// drawn within the 250 ms slide, and a loaded host's was not; the path
+    /// alone, though, passed an alert that never slid, so the alert must
+    /// also have moved wherever that frame came within 150 ms of the
+    /// editor's opening, short of its rest, as an idle host's does. Every
+    /// other editor test opens at rest ([`open_at_rest`]).
     #[gpui::test]
     fn the_alert_asks_for_no_frame_once_it_has_slid_in(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         assert!(!cx.update(|_, cx| cx.reduce_motion()), "default motion");
         cx.simulate_resize(size(px(1440.), px(900.)));
+        let started = std::time::Instant::now();
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
         // The alert's place in the frame a test build draws of the dirty
         // window as the update that opens the editor ends, which the test
@@ -4659,6 +4693,10 @@ pub(crate) mod tests {
         let opening = cx
             .debug_bounds("theme-editor-save")
             .expect("the update that opens the editor draws its alert");
+        // Read within 150 ms of the opening, that frame came before the
+        // alert could reach its rest: 85% of its way at 150 ms along the
+        // kit's curve. A loaded host's may come later.
+        let quick = started.elapsed() < std::time::Duration::from_millis(150);
         std::thread::sleep(
             *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50),
         );
@@ -4675,10 +4713,17 @@ pub(crate) mod tests {
             "the alert asks for no frame once it is at rest"
         );
         let rested = bounds(cx, "theme-editor-save".into());
+        let travel = rested.top() - opening.top();
         assert!(
-            opening.top() < rested.top(),
-            "the alert slid in: from {opening:?} to {rested:?}"
+            travel >= px(0.) && travel <= px(900. / 10.),
+            "the alert slides down into place from at most a tenth of the window above: from {opening:?} to {rested:?}"
         );
+        if quick {
+            assert!(
+                travel > px(0.),
+                "drawn within 150 ms of opening, the alert had yet to slide: from {opening:?} to {rested:?}"
+            );
+        }
     }
 
     /// No readability warning is reachable wholly below the part of the side
