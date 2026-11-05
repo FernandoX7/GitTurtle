@@ -616,11 +616,8 @@ fn clear_of_lines(
     } else {
         (edge + height / 2., edge + height)
     };
-    let cuts = |at: Pixels| {
-        lines
-            .iter()
-            .any(|(line_top, line_bottom)| at > *line_top + within && at < *line_bottom - within)
-    };
+    let cuts = Insides::new(lines, within);
+    let cuts = |at: Pixels| cuts.contain(at);
     let lands = |at: Pixels| {
         at >= first - slack
             && at <= last + slack
@@ -676,6 +673,38 @@ fn clear_of_lines(
     // line clears both.
     let between = &mut lines.iter().flat_map(|(top, bottom)| [*top, *bottom]);
     stop(blocks).or_else(|| stop(between)).unwrap_or(edge)
+}
+
+/// The insides of a set of lines, where an edge cuts one of them ([`clear_of_lines`]): each
+/// line from `within` below its top to `within` above its foot, open at both ends, merged where
+/// they overlap and kept in order, so whether an edge cuts a line costs a binary search rather
+/// than a pass over every line. [`clear_of_lines`] asks that of four places a line, so a pass
+/// each made its stops cost the square of the lines: a long conversation's thousands of lines
+/// took millions of comparisons for one reveal. Two insides that only touch stay apart, as an
+/// edge at the foot of one line and the top of the next cuts neither.
+struct Insides(Vec<(Pixels, Pixels)>);
+impl Insides {
+    fn new(lines: &[(Pixels, Pixels)], within: Pixels) -> Self {
+        let mut insides: Vec<_> = lines
+            .iter()
+            .map(|(top, bottom)| (*top + within, *bottom - within))
+            .filter(|(top, bottom)| top < bottom)
+            .collect();
+        insides.sort_by(|a, b| a.0.as_f32().total_cmp(&b.0.as_f32()));
+        let mut merged: Vec<(Pixels, Pixels)> = Vec::with_capacity(insides.len());
+        for (top, bottom) in insides {
+            match merged.last_mut() {
+                Some(last) if top < last.1 => last.1 = last.1.max(bottom),
+                _ => merged.push((top, bottom)),
+            }
+        }
+        Self(merged)
+    }
+    /// Whether `at` lies strictly inside a line's inside.
+    fn contain(&self, at: Pixels) -> bool {
+        let after = self.0.partition_point(|(top, _)| *top < at);
+        after > 0 && at < self.0[after - 1].1
+    }
 }
 
 /// Scrolls `scroll`, the panel's body or a list inside it, to show `bounds`, the children of
@@ -2239,6 +2268,127 @@ mod tests {
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
 
+    /// [`clear_of_lines`] as it stood with a pass over every line for each place it asks
+    /// about, the reference [`Insides`] must agree with.
+    fn clear_of_lines_by_pass(
+        viewport: Bounds<Pixels>,
+        edge: Pixels,
+        (top, bottom): (Pixels, Pixels),
+        lines: &[(Pixels, Pixels)],
+        starts: &[Pixels],
+        (first, last): (Pixels, Pixels),
+    ) -> Pixels {
+        let height = viewport.size.height;
+        let slack = px(0.5);
+        let within = px(0.01);
+        let (top, bottom) = if bottom - top <= height {
+            (top, bottom)
+        } else if (edge - top).abs() <= slack {
+            (top, top + height / 2.)
+        } else {
+            (edge + height / 2., edge + height)
+        };
+        let cuts = |at: Pixels| {
+            lines.iter().any(|(line_top, line_bottom)| {
+                at > *line_top + within && at < *line_bottom - within
+            })
+        };
+        let lands = |at: Pixels| {
+            at >= first - slack
+                && at <= last + slack
+                && at <= top + slack
+                && at + height >= bottom - slack
+                && !cuts(at)
+                && !cuts(at + height)
+        };
+        if lands(edge) || edge <= first + slack {
+            return edge;
+        }
+        let from = viewport.top();
+        let less = |at: Pixels| (at > edge) == (from > edge);
+        let nearest = |candidates: Vec<Pixels>| {
+            candidates.into_iter().min_by(|a, b| {
+                (*a - edge)
+                    .abs()
+                    .as_f32()
+                    .total_cmp(&(*b - edge).abs().as_f32())
+            })
+        };
+        let stop = |candidates: &mut dyn Iterator<Item = Pixels>| {
+            let (fewer, more): (Vec<_>, Vec<_>) =
+                candidates.filter(|at| lands(*at)).partition(|at| less(*at));
+            nearest(fewer).or_else(|| nearest(more))
+        };
+        let flush = lines
+            .iter()
+            .flat_map(|(top, bottom)| [*top - height, *bottom - height]);
+        let blocks = &mut starts.iter().copied().chain([first, last]).chain(flush);
+        let between = &mut lines.iter().flat_map(|(top, bottom)| [*top, *bottom]);
+        stop(blocks).or_else(|| stop(between)).unwrap_or(edge)
+    }
+
+    /// [`clear_of_lines`], which asks [`Insides`] whether an edge cuts a line, stops where a
+    /// pass over every line stopped, so its stops are the same, on lines that overlap, touch,
+    /// lie inside a frame, run past the view and stand apart, with parts shorter and taller
+    /// than the view, scrolling either way, near the content's ends and with no line at all.
+    #[test]
+    fn insides_stop_where_a_pass_over_every_line_stopped() {
+        // A fixed linear congruential sequence, so every run checks the same cases.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |below: u32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 33) as u32) % below
+        };
+        let mut moved = 0;
+        for case in 0..4000 {
+            let height = px(60. + next(240) as f32);
+            let from = px(next(800) as f32 / 2.);
+            let viewport = Bounds::new(point(px(0.), from), size(px(300.), height));
+            let mut lines = Vec::new();
+            let mut at = px(next(40) as f32);
+            for _ in 0..next(40) {
+                let tall = px(10. + next(60) as f32 / 2.);
+                // Apart, touching or overlapping the line before, now and then within it.
+                let gap = px(next(30) as f32 / 2.) - px(5.);
+                at += gap.max(px(-tall.as_f32() + 0.5));
+                lines.push((at, at + tall));
+                at += tall;
+            }
+            // Now and then a frame around some of them, as a one-line control stands beside
+            // a text that wraps, so a line can lie wholly inside another that starts before it.
+            for _ in 0..next(3) {
+                if lines.is_empty() {
+                    break;
+                }
+                let first = next(lines.len() as u32) as usize;
+                let last = first + next((lines.len() - first) as u32) as usize;
+                let (top, bottom) = (lines[first].0, lines[last].1);
+                lines.push((
+                    top - px(next(8) as f32 / 2.),
+                    bottom + px(next(8) as f32 / 2.),
+                ));
+            }
+            let starts: Vec<Pixels> = (0..next(12)).map(|_| px(next(1600) as f32 / 2.)).collect();
+            let top = px(next(1600) as f32 / 2.);
+            let part = (top, top + px(5. + next(400) as f32 / 2.));
+            let first = px(next(60) as f32) - px(30.);
+            let range = (first, first + px(next(1400) as f32 / 2.));
+            let edge = px(next(1600) as f32 / 2.);
+            let fast = clear_of_lines(viewport, edge, part, &lines, &starts, range);
+            let pass = clear_of_lines_by_pass(viewport, edge, part, &lines, &starts, range);
+            assert_eq!(
+                fast, pass,
+                "case {case}: {viewport:?}, edge {edge:?}, part {part:?}, lines {lines:?}, \
+                 starts {starts:?}, range {range:?}"
+            );
+            moved += usize::from(fast != edge);
+        }
+        // Hundreds of cases move the edge (930 of them), so the stops, not only the
+        // landing, are compared.
+        assert!(moved > 500, "{moved} of 4000 cases move the edge");
+    }
     /// A reveal scrolling down from a view at 100..300 lands its top edge at 150, inside the
     /// line at 140..160: it stops the least less that shows the line whole where the part it
     /// shows stays whole, otherwise goes on until the line is out of view, and, where the
