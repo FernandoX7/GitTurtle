@@ -855,3 +855,83 @@ the application's are `text::tests::more_contrast_rules_each_changed_word_in_the
 and `split_diff::tests::more_contrast_rules_each_emphasized_word_in_split`.
 Remove this part when upstream decorations can draw a rule along their box's
 bottom edge.
+
+A text decoration can also fill its lines' whole rows:
+`TextDecoration::row_background`, an optional colour set with
+`TextDecoration::with_row_background`, which `src/input/editor/decorations.rs`
+adds and keeps when it clips a range, and `src/input/base/element.rs` paints.
+Upstream a decoration's background is a GPUI `HighlightStyle` property that
+the text system's `paint_line_background` fills run by run, from a run's first
+glyph to the glyph after its last, so it ends where the line's text ends; a
+line's break is never shaped, so a range that includes it paints nothing past
+the text, and a blank line, which has no glyphs, paints nothing at all. The
+editor's only full-width fill, the active line, follows the cursor in one
+theme colour and is drawn only with line numbers. GitTurtle's Diff view and
+Split carry each changed line's tint across the editor's whole row, so a
+hunk's changed lines read as one block with a straight right edge and a blank
+changed line is tinted across its row (decision, 2026-11-05): before this
+part, at 13 pt in a 900 px window the Diff view's tint ended 671.5 px short of
+the visible right edge on `-call(red, 7);` and 772.5 px short on a blank `-`
+line, under its sign alone, Split drew no tint on a blank changed line, and
+scrolled to the far right a long changed line's tint ended 10 px short of the
+edge, the editor's right margin. The application gives each run of adjacent
+changed lines of one side one decoration without a background that sets the
+row background in the side's line tint (`crates/app/src/text.rs`'s
+`theme_decorations` and `crates/app/src/split_diff.rs`'s
+`SplitSide::decorations`, which leaves Split's filler rows out); having no
+background, it passes whole through GitTurtle's Find, which rebuilds every
+decoration that sets one around its matches, and the matches' opaque tints
+are painted over it as over the line's own runs. A range reaches a line where
+it covers some of the line's text or its line break. Both compositions,
+upstream's `compose_decoration_collections` and
+`compose_ruled_decoration_collections`, read each decoration's row background
+in the pass that composes the styles, so a frame walks each decoration once,
+and keep those reaching the visible lines, one over only the last visible
+line's break included (the styles' visible range ends before that byte), with
+their collection's index, sorted once by start; a decoration without one costs
+that pass one `Option` check, and a frame with none paints as upstream. The
+element keeps them in its prepaint state, and the background pass paints, for
+each visible line one reaches, one quad before that line's
+`paint_background`: from the text area's left edge, where a left-aligned
+line's first glyph and a background on its first byte start, to the editor's
+visible right edge (the element's right edge) or the line's end where that
+lies further, over every visual row of the line, a soft-wrapped line's in one
+quad. It is drawn under the line's decoration backgrounds, its bottom rules,
+the indent guides, selections, Find's matches and text, which are painted
+after it in the same order as before, and under the line-number gutter, which
+covers the rows that run under it when the text scrolls sideways, as it covers
+the runs. Where several reach a line, the first collection's is painted, and
+within one collection the one starting first. With line numbers on, the
+active line, which the element paints before this pass, is painted again over
+a fill on its row, one quad, so its colour still shows past the text there as
+on a row without one. No current GitTurtle consumer combines line numbers with
+row fills (the diff views turn the editor's line numbers off and draw their
+own gutter); the repaint keeps the toolkit's active line visible for any
+editor that does. It allocates nothing a line,
+and the list a frame reads them into keeps eight inline, so a frame showing
+no more than eight filled blocks allocates nothing for them.
+`TextDecoration` grows by another `Option<Hsla>`, which the application's
+retained-byte accounting counts through `size_of`. A decoration without a row
+background paints exactly as before. Upstream's
+`input::element::tests::test_first_decoration_collection_has_precedence`
+passes the composition its new list, which it leaves empty. The kit tests are
+`input::element::tests::row_backgrounds_are_read_where_they_reach_the_visible_lines`,
+both compositions reading the fills that reach the visible bytes or the last
+line's break, by start, the styles as without them, and a line taking the
+first collection's fill, then the one starting first,
+`input::element::tests::a_row_background_fills_its_lines_rows_to_the_visible_right_edge`,
+at scales 2 and 1.25 and scrolled sideways, a short line's, a blank line's and
+a long line's rows from the text's left edge to the visible right edge or the
+long line's end, under the line's background, and the frame otherwise as
+without them, and
+`input::element::tests::a_wrapped_line_s_row_background_covers_each_visual_row`
+and `input::element::tests::the_active_line_shows_over_a_row_background`, the
+active line painted over its row's fill and not over another filled row's
+(`scripts/vendor-crate-test.sh vendor/gpui-base row_background`), with
+clipping in
+`input::decorations::tests::collections_are_independent_and_ranges_are_clipped`;
+the application's are
+`text::tests::a_changed_line_s_tint_spans_its_row_in_the_diff_view` and
+`split_diff::tests::a_changed_line_s_tint_spans_its_row_on_each_split_side`.
+Remove this part when upstream decorations can fill a line's whole row,
+blank lines included.

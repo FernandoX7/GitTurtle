@@ -27,6 +27,20 @@ pub struct TextDecoration {
     /// collection's background alone it is. `None`, as [`Self::new`] makes
     /// it, paints nothing.
     pub bottom_rule: Option<Hsla>,
+    /// A fill across the whole row of each buffer line the range reaches,
+    /// covering some of the line's text or its line break, so a range over a
+    /// blank line's break fills that line: from the text area's left edge,
+    /// where a left-aligned line's first glyph and a background on its first
+    /// byte start, to the editor's visible right edge, or the line's end
+    /// where that lies further (a line wider than the view), over the line's
+    /// height, every visual row of a soft-wrapped line. It is painted first
+    /// in the background pass, under that line's decoration backgrounds and
+    /// bottom rules, the indent guides, selections and text, whether or not
+    /// the decoration sets a background itself. Where several decorations'
+    /// fills reach a line, the first collection's is painted, and within one
+    /// collection the one starting first. `None`, as [`Self::new`] makes it,
+    /// paints nothing.
+    pub row_background: Option<Hsla>,
 }
 
 impl TextDecoration {
@@ -36,12 +50,19 @@ impl TextDecoration {
             range,
             style,
             bottom_rule: None,
+            row_background: None,
         }
     }
 
     /// This decoration with a [`Self::bottom_rule`] in `color`.
     pub fn with_bottom_rule(mut self, color: Hsla) -> Self {
         self.bottom_rule = Some(color);
+        self
+    }
+
+    /// This decoration with a [`Self::row_background`] in `color`.
+    pub fn with_row_background(mut self, color: Hsla) -> Self {
+        self.row_background = Some(color);
         self
     }
 }
@@ -315,6 +336,12 @@ mod tests {
             normalize(&text, vec![ruled]),
             [TextDecoration::new(1..4, first_style).with_bottom_rule(gpui::blue())],
             "clipping keeps a decoration's bottom rule"
+        );
+        let filled = TextDecoration::new(2..4, first_style).with_row_background(gpui::green());
+        assert_eq!(
+            normalize(&text, vec![filled]),
+            [TextDecoration::new(1..4, first_style).with_row_background(gpui::green())],
+            "clipping keeps a decoration's row background"
         );
         let first = collections.create(normalize(
             &text,
