@@ -684,7 +684,16 @@ impl GitTurtle {
         self.refresh_file_filter(window, cx);
         self.selected_file = None;
         self.pane = Pane::Files;
-        window.focus(&self.file_focus, cx);
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            // Under a dialog or sheet, as one opened while the first page
+            // was read, focus stays in it and the revision list becomes
+            // where its close lands (`return_modal_to`): focused at once,
+            // the list took focus from behind the modal, drawn nowhere a
+            // person could see, and the next key went to it.
+            self.return_modal_to(Some(self.file_focus.clone()));
+        } else {
+            window.focus(&self.file_focus, cx);
+        }
         self.load_file(0, window, cx);
     }
 
@@ -1476,23 +1485,7 @@ pub(crate) mod tests {
                 app.show_settings(window, cx);
             })
         });
-        // The page is read on the window's reader, a thread
-        // `run_until_parked` cannot wait for.
-        let landed = |cx: &mut VisualTestContext| {
-            app.read_with(cx, |app, _| {
-                app.file_history
-                    .lineage
-                    .as_ref()
-                    .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
-            })
-        };
-        for _ in 0..8 {
-            if landed(cx) {
-                break;
-            }
-            app.read_with(cx, |app, _| app.worker.wait_idle());
-            cx.executor().run_until_parked();
-        }
+        first_page_lands(&app, cx);
         let revision = |cx: &mut VisualTestContext| {
             app.read_with(cx, |app, _| {
                 app.file_history
@@ -1524,6 +1517,76 @@ pub(crate) mod tests {
         );
     }
 
+    /// A dialog, then a sheet, opened while File history's first page is
+    /// read keeps focus as the page lands and selects its revision, and its
+    /// close lands on the revision list (`return_modal_to`). The landing
+    /// once focused the list behind the modal, drawn nowhere a person could
+    /// see, and the next key went to it.
+    #[gpui::test]
+    async fn a_first_page_landing_under_a_dialog_moves_no_focus(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, history_script, history_window_from, settle};
+        use gpui_kit::component::WindowExt;
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        settle(&app, cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        for modal in ["dialog", "sheet"] {
+            // The page held on the reader while the modal opens.
+            let held = app.read_with(cx, |app, _| {
+                app.worker.wait_idle();
+                app.worker.hold()
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
+            draw(cx);
+            cx.update(|window, cx| {
+                if modal == "dialog" {
+                    window.open_dialog(cx, |dialog, _, _| dialog.title("Probe"));
+                } else {
+                    window.open_sheet(cx, |sheet, _, _| sheet.title("Probe"));
+                }
+            });
+            draw(cx);
+            let in_modal = focused(cx);
+            assert!(
+                in_modal.is_some() && in_modal.as_ref() != Some(&list),
+                "the {modal} takes focus"
+            );
+            drop(held);
+            first_page_lands(&app, cx);
+            settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app
+                    .file_history
+                    .lineage
+                    .as_ref()
+                    .is_some_and(|lineage| lineage.selected.is_some())),
+                "the page selected its revision under the {modal}"
+            );
+            assert_eq!(focused(cx), in_modal, "focus stays in the {modal}");
+            cx.update(|window, cx| {
+                if modal == "dialog" {
+                    window.close_dialog(cx);
+                } else {
+                    window.close_sheet(cx);
+                }
+            });
+            draw(cx);
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)
+                || window.has_active_sheet(cx)));
+            assert_eq!(
+                focused(cx),
+                Some(list.clone()),
+                "the {modal} closes onto the revision list"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.close_file_history(window, cx)));
+            settle(&app, cx).await;
+        }
+    }
+
     /// Opens File History on the selected commit's first file and waits for
     /// its first page, which the window's reader reads on a thread
     /// `run_until_parked` cannot wait for, then for the preview of the
@@ -1538,20 +1601,35 @@ pub(crate) mod tests {
     ) {
         use crate::views::tests::settle;
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
-        for _ in 0..8 {
-            let landed = app.read_with(cx, |app, _| {
+        first_page_lands(app, cx);
+        settle(app, cx).await;
+    }
+
+    /// Waits for File history's page, read on the window's reader, a thread
+    /// `run_until_parked` cannot wait for, to land, and fails the test at the
+    /// caller's line where it has not landed after eight rounds: a page that
+    /// never landed once let the test carry on without it.
+    #[track_caller]
+    pub(crate) fn first_page_lands(
+        app: &gpui_kit::Entity<GitTurtle>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) {
+        let landed = |cx: &mut gpui_kit::VisualTestContext| {
+            app.read_with(cx, |app, _| {
                 app.file_history
                     .lineage
                     .as_ref()
                     .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
-            });
-            if landed {
-                break;
+            })
+        };
+        for _ in 0..8 {
+            if landed(cx) {
+                return;
             }
             app.read_with(cx, |app, _| app.worker.wait_idle());
             cx.executor().run_until_parked();
         }
-        settle(app, cx).await;
+        assert!(landed(cx), "File history's page landed");
     }
 
     /// File History's message panel is as tall as the message and the
@@ -1656,23 +1734,7 @@ pub(crate) mod tests {
         let (_fixture, app, cx) = history_window_from(cx, history_script(4, 2)).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
         settle(&app, cx).await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_file_history(0, window, cx)));
-        // The page is read on the window's reader, a thread
-        // `run_until_parked` cannot wait for.
-        for _ in 0..8 {
-            let landed = app.read_with(cx, |app, _| {
-                app.file_history
-                    .lineage
-                    .as_ref()
-                    .is_some_and(|lineage| lineage.page.is_some() && lineage.pending.is_none())
-            });
-            if landed {
-                break;
-            }
-            app.read_with(cx, |app, _| app.worker.wait_idle());
-            cx.executor().run_until_parked();
-        }
-        settle(&app, cx).await;
+        open_landed(&app, cx).await;
         for (text, width, height) in [(18, 1000., 680.), (13, 1480., 980.)] {
             cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(height)));
