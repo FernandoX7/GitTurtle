@@ -288,6 +288,25 @@ pub(super) fn record_shown(
         };
     }
 }
+/// [`record_shown`] for the conversation list, which also forgets the focus it recorded while
+/// focus lies outside it, so focus coming back to that control reveals it again wherever the
+/// list has scrolled since: Shift+Tab from the conversations' pager back onto a conversation's
+/// last action, after the list had scrolled back to its top, left the action out of view and
+/// its ring undrawn. The body keeps its record, which the panel resets where it shows a
+/// section from its top ([`Panel::focus_visible_section`]).
+pub(super) fn record_list_shown(
+    revealed: &std::cell::RefCell<FocusObservation>,
+    scroll: &ScrollHandle,
+    inside: impl Fn(&KeyContext) -> bool,
+    window: &Window,
+    cx: &App,
+) {
+    if window.context_stack().iter().any(&inside) {
+        record_shown(revealed, scroll, inside, window, cx);
+    } else if revealed.borrow().focus.is_some() {
+        revealed.borrow_mut().focus = None;
+    }
+}
 
 /// Where the blocks of a scrolling container start: its rows, its parts and the lines a reveal
 /// may bring to its top edge, so the edge cuts no line ([`reveal`]). The container's own
@@ -2237,6 +2256,9 @@ impl Panel {
             return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").ml(super::text_inset()).into_any_element();
         };
         let p = palette(cx);
+        // The editor draws no edge of its own, so the box draws the keyboard ring on its edge,
+        // over the text, as Changes' does; Tab onto Source showed no ring at all.
+        let ringed = self.ringed(&source.read(cx).focus_handle(cx), cx);
         let laid_out = self.review.source_height.clone();
         let line = source
             .read(cx)
@@ -2258,6 +2280,7 @@ impl Panel {
         };
         div()
             .debug_selector(|| "github-source-patch".into())
+            .relative()
             .flex_1()
             .min_h_0()
             .min_w_0()
@@ -2305,6 +2328,15 @@ impl Panel {
                     .size_full(),
                 ),
             )
+            .when(ringed, |pane| {
+                pane.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .border_1()
+                        .border_color(rgb(p.accent)),
+                )
+            })
             .into_any_element()
     }
     fn render_patch(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {

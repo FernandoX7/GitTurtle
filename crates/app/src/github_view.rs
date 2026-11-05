@@ -7155,7 +7155,8 @@ mod tests {
     /// sweep, `focus_ring::sweep`): the PR list's full-width rows, whose rings
     /// the list cut at its own edges, Recover drafts at the left and Comment
     /// on selection at the right, with the body's scrollbar gutter and
-    /// without it.
+    /// without it, and Source's editor, whose box rings its edge as Changes'
+    /// does: the editor draws no edge, and Tab onto it showed no ring.
     #[gpui::test]
     async fn the_panel_keeps_its_edge_controls_rings_inside_its_clips(cx: &mut TestAppContext) {
         use crate::focus_ring::sweep;
@@ -7199,15 +7200,17 @@ mod tests {
                     "Files",
                     &["github-inline-start", "github-recovery-toggle"][..],
                 ),
+                ("Source", &["github-inline-start"][..]),
             ] {
                 cx.update(|window, cx| {
                     panel.update(cx, |panel, cx| {
-                        if view == "Files" {
+                        if view != "list" {
                             panel.pull = Some(pull.clone());
                             panel.review.files = files.clone();
                             panel.review.section = Section::Files;
                             panel.review.show_list = false;
                             panel.select_review_file(0, window, cx);
+                            panel.review_source(usize::from(view == "Source"), window, cx);
                         } else {
                             panel.pull = None;
                             panel.review.show_list = true;
@@ -7234,6 +7237,26 @@ mod tests {
                         ringed,
                         "Tab rings {control} in {surface} at {interface} pt: {bounds:?} among \
                          {rings:?}"
+                    );
+                }
+                // Source's editor draws no edge of its own; its box rings its edge, over the
+                // text, inside its border, wherever the body had scrolled it then.
+                if view == "Source" {
+                    let source = cx
+                        .debug_bounds("github-source-patch")
+                        .expect("Source's box");
+                    let inside = source.dilate(px(-1.));
+                    assert!(
+                        rings.iter().any(|ring| {
+                            [
+                                (ring.left(), inside.left()),
+                                (ring.right(), inside.right()),
+                                (ring.size.height, inside.size.height),
+                            ]
+                            .into_iter()
+                            .all(|(drawn, edge)| (drawn - edge).abs() <= px(0.5))
+                        }),
+                        "Tab rings Source's box {source:?} at {interface} pt: {rings:?}"
                     );
                 }
             }
@@ -9284,6 +9307,62 @@ mod tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Shift+Tab back onto a conversation's last action reveals it again in the conversation
+    /// list, at 13 pt in a 470 × 490 window, after Tab took focus on to the conversations'
+    /// pager and the list scrolled back to its top: the list kept the action as the focus it
+    /// had shown, so the reveal saw no change of focus, and the action stayed out of view with
+    /// its ring undrawn (FU18-F's sweep, Overview's stop 12).
+    #[gpui::test]
+    async fn a_conversation_action_focused_again_is_revealed_again(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        show_overview(&panel, &pull, (13, 470., 490.), cx);
+        let contexts = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .context_stack()
+                    .iter()
+                    .map(|context| format!("{context:?}"))
+                    .collect::<Vec<_>>()
+                    .join(" < ")
+            })
+        };
+        let list = cx.read(|cx| panel.read(cx).conversations.list_scroll.clone());
+        let mut last = String::new();
+        for _ in 0..20 {
+            cx.simulate_keystrokes("tab");
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let now = contexts(cx);
+            if now.contains("conversations-pager") {
+                break;
+            }
+            last = now;
+        }
+        assert!(
+            last.contains("GitTurtleGithubConversation=2") && list.offset().y < px(0.),
+            "Tab reached the last conversation's last action, the list scrolled to it: {last}"
+        );
+        list.set_offset(point(px(0.), px(0.)));
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        cx.simulate_keystrokes("shift-tab");
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        assert_eq!(contexts(cx), last, "Shift+Tab returns to the action");
+        let viewport = cx.debug_bounds("github-threads").expect("the list");
+        let actions = cx
+            .debug_bounds("github-thread-actions-2")
+            .expect("the actions");
+        assert!(
+            actions.top() >= viewport.top() && actions.bottom() <= viewport.bottom(),
+            "the list shows the actions {actions:?} again in {viewport:?}"
+        );
     }
 
     /// What Files' lists and clips hide is no line of the body, at 13 and 18 pt in a 461 × 490
