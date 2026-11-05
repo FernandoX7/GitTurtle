@@ -1545,32 +1545,48 @@ mod tests {
         );
     }
 
-    /// Presses Stage on the shown diff's first hunk, as its partial action
-    /// asks for it, and answers the write that started, if any, once it has
-    /// landed.
-    async fn press_stage(
+    /// Presses the Stage button of the shown diff's first hunk where the
+    /// window draws it, as a person does, and answers the write that
+    /// started, if any, once it has landed: the window draws the frames it
+    /// asks for, the pointer arrives at the button's centre in the frame
+    /// shown, the window draws what that changes, which must leave the
+    /// button where it was drawn, and the button is pressed and released
+    /// there. Emitted into the diff view instead, as this helper once did,
+    /// a press could not see a button drawn off its hit area, as QA-101 F1's
+    /// Stage was, 8 px above its row until the pointer's arrival drew it in
+    /// place.
+    async fn press_drawn_stage(
         app: &gpui::Entity<GitTurtle>,
         cx: &mut gpui::VisualTestContext,
     ) -> Option<&'static str> {
-        cx.update(|_, cx| {
-            app.update(cx, |app, cx| {
-                let Some(Content::Text {
-                    partial: Some(partial),
-                    ..
-                }) = app.content.as_deref()
-                else {
-                    panic!("the diff offers its partial actions");
-                };
-                let diff = Arc::clone(&partial.diff);
-                let view = app.patch_view.clone().expect("the unified diff");
-                view.update(cx, |_, cx| {
-                    cx.emit(crate::diff_view::DiffViewEvent::ApplyPartial {
-                        diff,
-                        selection: gitturtle_core::PartialSelection::Hunks(vec![0]),
-                    })
-                });
-            })
+        use gpui::Modifiers;
+        let row = app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            partial
+                .rows
+                .iter()
+                .position(|row| matches!(row, crate::partial_view::PartialRow::Hunk(_)))
+                .expect("a hunk")
         });
+        let selector: &'static str = format!("partial-hunk-{row}").leak();
+        native_frames(cx);
+        let stage = cx
+            .debug_bounds(selector)
+            .expect("the hunk's Stage is drawn");
+        cx.simulate_mouse_move(stage.center(), None, Modifiers::default());
+        native_frames(cx);
+        assert_eq!(
+            cx.debug_bounds(selector),
+            Some(stage),
+            "the pointer's arrival leaves Stage where the frame shown drew it"
+        );
+        cx.simulate_click(stage.center(), Modifiers::default());
         let started = app.read_with(cx, |app, _| app.operation_busy);
         crate::views::tests::settle(app, cx).await;
         started
@@ -1645,7 +1661,18 @@ mod tests {
             (false, false),
             "a failed review gives them back"
         );
-        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+        // The error replaces the diff, so no Stage is drawn until Reset
+        // review, in QA's window's full row, brings the diff back.
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
+        crate::tags::tests::draw(cx);
+        let reset = cx.debug_bounds("reset-text-review").expect("Reset review");
+        cx.simulate_click(reset.center(), gpui::Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and Stage stages"
+        );
     }
 
     /// A text review whose read the worker drops unanswered, as a cancel
@@ -1683,7 +1710,11 @@ mod tests {
             (false, false),
             "a dropped review gives them back"
         );
-        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and Stage stages"
+        );
     }
 
     /// Blame opened over the shown diff while a review of it is prepared
@@ -1724,7 +1755,11 @@ mod tests {
             (false, false),
             "and so does its return"
         );
-        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and Stage stages"
+        );
     }
 
     /// Blame opened from Working Changes and closed again, with no review,
@@ -1745,7 +1780,7 @@ mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| assert!(app.close_blame(window, cx))));
         crate::views::tests::settle(&app, cx).await;
         assert_eq!(suspended(&app, cx), (false, false));
-        assert_eq!(press_stage(&app, cx).await, STAGING, "Stage stages");
+        assert_eq!(press_drawn_stage(&app, cx).await, STAGING, "Stage stages");
     }
 
     /// Quick Open's inspection of a tracked file, opened while a review of
@@ -1785,7 +1820,11 @@ mod tests {
         });
         crate::views::tests::settle(&app, cx).await;
         assert_eq!(suspended(&app, cx), (false, false));
-        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and Stage stages"
+        );
     }
 
     /// QA-101 F1's route, every step through the window as a person takes
@@ -1946,7 +1985,11 @@ mod tests {
         });
         crate::views::tests::settle(&app, cx).await;
         assert_eq!(suspended(&app, cx), (false, false));
-        assert_eq!(press_stage(&app, cx).await, STAGING, "and Stage stages");
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and Stage stages"
+        );
     }
 
     #[test]
