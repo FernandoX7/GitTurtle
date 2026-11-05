@@ -383,9 +383,11 @@ pub(crate) enum RowTint {
 }
 
 /// Assert what the last frame painted in the line `tints` across `editor`'s first rows, each as
-/// `rows` expects it: a tinted row carries a quad in its tint over the row's whole height from
-/// the text's left edge, where the editor lays out each line's first glyph and a line's tint
-/// has always started, to the editor's visible right edge (past it where the line runs past the
+/// `rows` expects it: each quad in a line tint starts and ends on row boundaries, and every row
+/// it spans, one row or the adjacent rows the editor fills in one quad, is a listed row that
+/// expects its tint; a tinted row carries a quad in its tint over its whole height from the
+/// text's left edge, where the editor lays out each line's first glyph and a line's tint has
+/// always started, to the editor's visible right edge (past it where the line runs past the
 /// view), and no quad in its tint reaches further where the line ends inside the view; an
 /// untinted row overlaps no quad in either tint. Only quads painting inside the editor count,
 /// not Split's other side. Edges compare within half a device pixel, as GPUI rounds a quad's
@@ -406,17 +408,79 @@ pub(crate) fn assert_row_tints(
         .as_f32()
         * scale;
     let left = (text.origin.x + gpui_kit::base::input::LINE_NUMBER_RIGHT_MARGIN).as_f32() * scale;
+    let bounds = editor.input_bounds();
     let (start, right) = (
-        editor.input_bounds().left().as_f32() * scale,
-        editor.input_bounds().right().as_f32() * scale,
+        bounds.left().as_f32() * scale,
+        bounds.right().as_f32() * scale,
     );
+    let (above, below) = (
+        bounds.top().as_f32() * scale,
+        bounds.bottom().as_f32() * scale,
+    );
+    let text_top = text.origin.y.as_f32() * scale;
     let fill = |color: u32| gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color)));
     let near = |a: f32, b: f32| (a - b).abs() <= 0.51;
     let quads = window.painted_quads();
-    // Every row's failure, so one frame reports each row it draws wrongly.
+    // Every quad's and every row's failure, so one frame reports each thing it draws wrongly.
     let mut failures = Vec::new();
+    // The row boundary an edge lies on, counted from the first row's top, if it lies on one.
+    let boundary = |y: f32| {
+        let row = ((y - text_top) / line_height).round();
+        near(y, text_top + line_height * row).then_some(row as i64)
+    };
+    // Each quad in a line tint painting inside this editor (not beside it, as Split's other
+    // side): from a row boundary to a later one, over listed rows that expect its tint.
+    for quad in &quads {
+        let Some(tint) = tints
+            .iter()
+            .copied()
+            .find(|&tint| quad.background == fill(tint))
+        else {
+            continue;
+        };
+        let painted = quad.bounds.intersect(&quad.content_mask.bounds);
+        if !(painted.top().0 < below - 0.51
+            && painted.bottom().0 > above + 0.51
+            && painted.left().0 < right - 0.51
+            && painted.right().0 > start + 0.51)
+        {
+            continue;
+        }
+        let expects = |row: i64| {
+            usize::try_from(row)
+                .ok()
+                .and_then(|row| rows.get(row))
+                .is_some_and(|want| match *want {
+                    RowTint::Untinted => false,
+                    RowTint::ToEdge(want) | RowTint::PastEdge(want) => want == tint,
+                })
+        };
+        match (
+            boundary(quad.bounds.top().0),
+            boundary(quad.bounds.bottom().0),
+        ) {
+            (Some(first), Some(end)) if first < end => {
+                let strays = (first..end)
+                    .filter(|&row| !expects(row))
+                    .collect::<Vec<_>>();
+                if !strays.is_empty() {
+                    failures.push(format!(
+                        "#{tint:06x}'s quad {:?} over rows {first} to {} spans rows {strays:?}, \
+                         which are not listed rows expecting that tint",
+                        quad.bounds,
+                        end - 1
+                    ));
+                }
+            }
+            _ => failures.push(format!(
+                "#{tint:06x}'s quad {:?} starts and ends on the boundaries of rows {line_height} \
+                 tall from {text_top}",
+                quad.bounds
+            )),
+        }
+    }
     for (row, want) in rows.iter().enumerate() {
-        let top = text.origin.y.as_f32() * scale + line_height * row as f32;
+        let top = text_top + line_height * row as f32;
         let bottom = top + line_height;
         // Each quad in a line tint that paints over this row inside this editor (not beside
         // it, as Split's other side): its tint, its horizontal edges and whether it covers the
@@ -435,7 +499,10 @@ pub(crate) fn assert_row_tints(
                     .iter()
                     .copied()
                     .find(|&tint| quad.background == fill(tint))?;
-                let whole = near(quad.bounds.top().0, top) && near(quad.bounds.bottom().0, bottom);
+                // Over the row's whole height, alone or with the rows of the run it starts or
+                // ends, which the editor fills in one quad.
+                let whole =
+                    quad.bounds.top().0 <= top + 0.51 && quad.bounds.bottom().0 >= bottom - 0.51;
                 Some((tint, quad.bounds.left().0, quad.bounds.right().0, whole))
             })
             .collect::<Vec<_>>();

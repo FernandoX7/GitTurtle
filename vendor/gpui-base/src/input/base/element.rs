@@ -2537,57 +2537,92 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // frame without one paints as upstream.
         let row_backgrounds = &prepaint.row_backgrounds;
         let mut rows_from = 0;
-        for ((line, &buffer_line), &line_start) in prepaint
-            .last_layout
+        // The visible lines before this index lie in the run of filled lines
+        // already painted, whose first line began it.
+        let mut run_until = 0;
+        let layout = &prepaint.last_layout;
+        // A visible line's fill, the first row background that may reach it
+        // found from `from` on: its colour, and its right edge, the visible
+        // right edge or the line's end where that is further.
+        let fill_at = |index: usize, from: &mut usize, x: Pixels| {
+            let (line, line_start) = (&layout.lines[index], layout.visible_line_byte_offsets[index]);
+            while row_backgrounds
+                .get(*from)
+                .is_some_and(|(range, ..)| range.end <= line_start)
+            {
+                *from += 1;
+            }
+            let line_end = line_start
+                + line
+                    .wrapped_lines
+                    .iter()
+                    .map(|line| line.len)
+                    .sum::<usize>();
+            row_background_at(&row_backgrounds[*from..], line_start, line_end).map(|color| {
+                (
+                    color,
+                    input_bounds
+                        .right()
+                        .max(x + line.size(line_height).width),
+                )
+            })
+        };
+        // Ghost lines after the cursor's row open a gap no fill crosses.
+        let gap_after = |buffer_line: usize| {
+            Some(buffer_line) == prepaint.current_row && prepaint.ghost_lines_height > px(0.)
+        };
+        for (index, ((line, &buffer_line), &line_start)) in layout
             .lines
             .iter()
-            .zip(prepaint.last_layout.visible_buffer_lines.iter())
-            .zip(prepaint.last_layout.visible_line_byte_offsets.iter())
+            .zip(layout.visible_buffer_lines.iter())
+            .zip(layout.visible_line_byte_offsets.iter())
+            .enumerate()
         {
             let p = point(
-                origin.x + prepaint.last_layout.line_number_width + scroll_offset,
+                origin.x + layout.line_number_width + scroll_offset,
                 origin.y + offset_y,
             );
 
             if !row_backgrounds.is_empty() {
-                while row_backgrounds
-                    .get(rows_from)
-                    .is_some_and(|(range, ..)| range.end <= line_start)
+                if index >= run_until
+                    && let Some((color, right)) = fill_at(index, &mut rows_from, p.x)
                 {
-                    rows_from += 1;
-                }
-                let line_end = line_start
-                    + line
-                        .wrapped_lines
-                        .iter()
-                        .map(|line| line.len)
-                        .sum::<usize>();
-                if let Some(color) =
-                    row_background_at(&row_backgrounds[rows_from..], line_start, line_end)
-                {
-                    // The row from the text area's left edge to the visible
-                    // right edge, or the line's end past it, over each of
-                    // its visual rows.
-                    let extent = line.size(line_height);
-                    let right = input_bounds.right().max(p.x + extent.width);
+                    // The run of adjacent lines filled in this colour to this
+                    // right edge, as one quad from the text area's left edge,
+                    // over each of their visual rows: the pixels the lines'
+                    // own fills would paint, painted before any of the run's
+                    // backgrounds.
+                    let mut bottom = p.y + line.size(line_height).height;
+                    let (mut end, mut from) = (index + 1, rows_from);
+                    let mut gap = gap_after(buffer_line);
+                    while !gap
+                        && end < layout.lines.len()
+                        && fill_at(end, &mut from, p.x) == Some((color, right))
+                    {
+                        bottom += layout.lines[end].size(line_height).height;
+                        gap = gap_after(layout.visible_buffer_lines[end]);
+                        end += 1;
+                    }
+                    run_until = end;
                     window.paint_quad(fill(
-                        Bounds::from_corners(p, point(right, p.y + extent.height)),
+                        Bounds::from_corners(p, point(right, bottom)),
                         color,
                     ));
-                    // The active line, painted before this pass, again over
-                    // the fill, as it shows past the text on a row without one.
-                    if prepaint.line_numbers.is_some()
-                        && prepaint.current_row == Some(buffer_line)
-                        && let Some(active) = active_line_color
-                    {
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(input_bounds.origin.x, p.y),
-                                size(bounds.size.width, extent.height),
-                            ),
-                            active,
-                        ));
-                    }
+                }
+                // The active line, painted before this pass, again over the
+                // fill, as it shows past the text on a row without one.
+                if index < run_until
+                    && prepaint.line_numbers.is_some()
+                    && prepaint.current_row == Some(buffer_line)
+                    && let Some(active) = active_line_color
+                {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(input_bounds.origin.x, p.y),
+                            size(bounds.size.width, line.size(line_height).height),
+                        ),
+                        active,
+                    ));
                 }
             }
             line.paint_background(
@@ -3521,8 +3556,9 @@ mod tests {
     /// A row background fills the whole row of each line its range reaches,
     /// from the text area's left edge, where a background on the line's first
     /// byte starts, to the editor's visible right edge, a blank line's row
-    /// included, a line wider than the view to its end, and the row ends at
-    /// the visible right edge scrolled sideways too; it is painted under the
+    /// included, in one quad with the adjacent line that ends at the same
+    /// edge, a line wider than the view to its end, and the row ends at the
+    /// visible right edge scrolled sideways too; it is painted under the
     /// line's decoration backgrounds, and a decoration without one paints
     /// exactly what it painted before the field existed.
     #[gpui::test]
@@ -3621,38 +3657,34 @@ mod tests {
                 .map(|(bounds, _)| *bounds)
                 .collect::<Vec<_>>();
             rows.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
-            assert_eq!(rows.len(), 3, "{at}: a row a filled line: {rows:?}");
-            assert_eq!(
-                (rows[0].top(), rows[0].bottom()),
-                (boxes[0].top(), boxes[0].bottom()),
-                "{at}: the first row is its line's height"
-            );
-            for (line, filled) in rows.iter().enumerate() {
+            // The short and blank lines end at the same edge and share one
+            // quad; the long line's reaches its own end.
+            assert_eq!(rows.len(), 2, "{at}: a quad a run of rows: {rows:?}");
+            let height = boxes[0].size.height.0;
+            for (run, (filled, lines)) in rows.iter().zip([2., 1.]).enumerate() {
                 assert_eq!(
                     filled.left(),
                     boxes[0].left(),
-                    "{at}: line {line}'s row starts where \"short\"'s box does"
+                    "{at}: run {run}'s rows start where \"short\"'s box does"
                 );
-                if line > 0 {
-                    // As tall within the device pixel each edge is rounded to.
-                    assert!(
-                        filled.top() == rows[line - 1].bottom()
-                            && (filled.size.height.0 - rows[0].size.height.0).abs() <= 1.,
-                        "{at}: line {line}'s row {filled:?} lies under the one before, as tall: {rows:?}"
-                    );
-                }
-                if line < 2 {
-                    assert!(
-                        (filled.right().0 - visible_right).abs() <= 0.5,
-                        "{at}: line {line}'s row {filled:?} ends at the visible right edge {visible_right}"
-                    );
-                } else {
-                    assert!(
-                        filled.right().0 > visible_right + 0.5,
-                        "{at}: the long line's row {filled:?} reaches its end past the edge {visible_right}"
-                    );
-                }
+                // As tall as its lines within the device pixel each edge is
+                // rounded to, the first starting with "short"'s box.
+                assert!(
+                    filled.top() == if run == 0 { boxes[0].top() } else { rows[0].bottom() }
+                        && (filled.size.height.0 - height * lines).abs() <= 1.,
+                    "{at}: run {run}'s quad {filled:?} covers its {lines} lines' rows: {rows:?}"
+                );
             }
+            assert!(
+                (rows[0].right().0 - visible_right).abs() <= 0.5,
+                "{at}: the short and blank lines' rows {:?} end at the visible right edge {visible_right}",
+                rows[0]
+            );
+            assert!(
+                rows[1].right().0 > visible_right + 0.5,
+                "{at}: the long line's row {:?} reaches its end past the edge {visible_right}",
+                rows[1]
+            );
             let drawn = |quad: (Bounds<gpui::ScaledPixels>, Background)| {
                 with_rows.iter().position(|painted| *painted == quad).unwrap()
             };
@@ -3748,7 +3780,8 @@ mod tests {
 
     /// With line numbers on, the active line is painted again over a row
     /// background on its row, so its colour shows past the text there as on
-    /// a row without one; the other filled row keeps the fill.
+    /// a row without one, whether the caret is on the run's first line or a
+    /// later one; the other filled row, in the same quad, keeps the fill.
     #[gpui::test]
     fn the_active_line_shows_over_a_row_background(cx: &mut gpui::TestAppContext) {
         use crate::input::{EditorMode, EditorState, InputEditorStyle};
@@ -3786,7 +3819,7 @@ mod tests {
         });
         let editor = editor.unwrap();
         let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
-        // Both lines filled; the caret, at the start, makes the first active.
+        // Both lines filled, in one run.
         cx.update(|_, cx| {
             editor.update(cx, |state, cx| {
                 state.create_decorations_collection(
@@ -3798,37 +3831,222 @@ mod tests {
                 )
             })
         });
+        // The caret on the run's first line, then on its second.
+        for caret in [0, 1] {
+            let quads = cx.update(|window, cx| {
+                editor.update(cx, |state, cx| {
+                    state.set_cursor_position(lsp_types::Position::new(caret, 0), window, cx)
+                });
+                window.draw(cx).clear(cx);
+                window.painted_quads()
+            });
+            let painted = |color| {
+                quads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, quad)| quad.background == Background::from(color))
+                    .map(|(order, quad)| (order, quad.bounds))
+                    .collect::<Vec<_>>()
+            };
+            let (fills, lines) = (painted(row), painted(active));
+            assert_eq!(fills.len(), 1, "caret on line {caret}: one fill for both lines: {fills:?}");
+            let (order, fill) = fills[0];
+            // Across the fill: the active line, not the gutter's line number.
+            let across = |line: &Bounds<gpui::ScaledPixels>| {
+                line.left() <= fill.left() && line.right() >= fill.right()
+            };
+            // The active row, as the active line painted before the pass marks it.
+            let active_row = lines
+                .iter()
+                .find(|(drawn, line)| *drawn < order && across(line))
+                .map(|(_, line)| *line)
+                .expect("the active line is painted before the background pass");
+            assert!(
+                (active_row.top() == fill.top()) == (caret == 0)
+                    && (active_row.bottom() == fill.bottom()) == (caret == 1),
+                "the active row {active_row:?} is the fill's {fill:?} row {caret}"
+            );
+            assert!(
+                lines.iter().any(|(drawn, line)| *drawn > order
+                    && across(line)
+                    && (line.top(), line.bottom()) == (active_row.top(), active_row.bottom())),
+                "caret on line {caret}: the active line {lines:?} is painted over the fill \
+                 {fill:?} on its row"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .filter(|(drawn, _)| *drawn > order)
+                    .all(|(_, line)| (line.top(), line.bottom())
+                        == (active_row.top(), active_row.bottom())),
+                "caret on line {caret}: no active line over the other line's row: {lines:?}"
+            );
+        }
+    }
+
+    /// Adjacent lines filled in one colour to one edge are painted as one
+    /// quad over all their rows: three such lines one quad, and an unfilled
+    /// line between two runs two; a line filled in another colour right
+    /// after a run takes a quad of its own.
+    #[gpui::test]
+    fn adjacent_filled_lines_paint_one_quad_a_run(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let text = "a1\na2\na3\nplain\nb1\nb2\nc1\n";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(false)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let (row, other) = (gpui::green(), gpui::blue());
+        // "a1" to "a3" and "b1" to "b2" in one colour, "c1" in another.
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![
+                        TextDecoration::new(0..9, HighlightStyle::default())
+                            .with_row_background(row),
+                        TextDecoration::new(15..21, HighlightStyle::default())
+                            .with_row_background(row),
+                        TextDecoration::new(21..24, HighlightStyle::default())
+                            .with_row_background(other),
+                    ],
+                    cx,
+                )
+            })
+        });
         let quads = cx.update(|window, cx| {
             window.draw(cx).clear(cx);
             window.painted_quads()
         });
+        let line_height = cx.update(|_, cx| editor.read(cx).line_height().unwrap().as_f32() * 2.);
         let painted = |color| {
-            quads
+            let mut painted = quads
                 .iter()
-                .enumerate()
-                .filter(|(_, quad)| quad.background == Background::from(color))
-                .map(|(order, quad)| (order, quad.bounds))
-                .collect::<Vec<_>>()
+                .filter(|quad| quad.background == Background::from(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>();
+            painted.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
+            painted
         };
-        let (mut fills, lines) = (painted(row), painted(active));
-        fills.sort_by(|a, b| a.1.top().0.total_cmp(&b.1.top().0));
-        assert_eq!(fills.len(), 2, "a fill a line: {fills:?}");
-        let (first, second) = (fills[0], fills[1]);
-        let over = |(order, fill): (usize, Bounds<gpui::ScaledPixels>)| {
-            lines.iter().any(|(drawn, line)| {
-                *drawn > order
-                    && line.left() <= fill.left()
-                    && line.right() >= fill.right()
-                    && (line.top(), line.bottom()) == (fill.top(), fill.bottom())
-            })
-        };
+        let (runs, others) = (painted(row), painted(other));
+        assert_eq!(runs.len(), 2, "a quad a run of filled lines: {runs:?}");
+        assert_eq!(others.len(), 1, "another colour's line its own quad: {others:?}");
+        let rows = |quad: &Bounds<gpui::ScaledPixels>| quad.size.height.0 / line_height;
         assert!(
-            over(first),
-            "the active line {lines:?} is painted over the first line's fill {first:?}"
+            (rows(&runs[0]) - 3.).abs() < 0.05 && (rows(&runs[1]) - 2.).abs() < 0.05,
+            "the runs cover three rows and two: {runs:?} at {line_height} a row"
         );
         assert!(
-            !over(second),
-            "no active line over the second line's fill {second:?}: {lines:?}"
+            (runs[1].top().0 - runs[0].bottom().0 - line_height).abs() < 0.05,
+            "the unfilled line lies between the runs: {runs:?}"
+        );
+        assert!(
+            others[0].top() == runs[1].bottom() && (rows(&others[0]) - 1.).abs() < 0.05,
+            "\"c1\" is filled on its own row under the second run: {others:?}, {runs:?}"
+        );
+    }
+
+    /// The ghost lines an inline completion opens below the cursor's row, a
+    /// filled line between lines filled in the same colour to the same edge,
+    /// divide their run: the lines down to the cursor's take one quad and the
+    /// lines after the ghost lines another, which do not touch, the gap
+    /// between them the ghost lines' height.
+    #[gpui::test]
+    fn ghost_lines_divide_a_run_of_filled_lines(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(400.)).h(px(300.)).child(self.0.clone())
+            }
+        }
+
+        let text = "a1\na2\na3\na4\n";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(false)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let row = gpui::green();
+        // Every line filled in one colour; the caret, focused, on "a2", and
+        // a completion there of three lines, two of them ghost lines below.
+        let ghost_lines = 2.;
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![
+                        TextDecoration::new(0..text.len(), HighlightStyle::default())
+                            .with_row_background(row),
+                    ],
+                    cx,
+                );
+                state.set_cursor_position(lsp_types::Position::new(1, 2), window, cx);
+                state.extras.inline_completion.item = Some(lsp_types::InlineCompletionItem {
+                    insert_text: "x\ny\nz".into(),
+                    filter_text: None,
+                    range: None,
+                    command: None,
+                    insert_text_format: None,
+                });
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let line_height = cx.update(|_, cx| editor.read(cx).line_height().unwrap().as_f32() * 2.);
+        let mut runs = quads
+            .iter()
+            .filter(|quad| quad.background == Background::from(row))
+            .map(|quad| quad.bounds)
+            .collect::<Vec<_>>();
+        runs.sort_by(|a, b| a.top().0.total_cmp(&b.top().0));
+        assert_eq!(runs.len(), 2, "a quad each side of the ghost lines: {runs:?}");
+        let rows = |quad: &Bounds<gpui::ScaledPixels>| quad.size.height.0 / line_height;
+        assert!(
+            (rows(&runs[0]) - 2.).abs() < 0.05 && (rows(&runs[1]) - 2.).abs() < 0.05,
+            "\"a1\" and the cursor's \"a2\" one quad, \"a3\" and \"a4\" the other: {runs:?} at \
+             {line_height} a row"
+        );
+        assert!(
+            runs[0].bottom() < runs[1].top()
+                && (runs[1].top().0 - runs[0].bottom().0 - ghost_lines * line_height).abs() < 0.05,
+            "the quads lie the ghost lines' height, {ghost_lines} rows, apart: {runs:?}"
         );
     }
 

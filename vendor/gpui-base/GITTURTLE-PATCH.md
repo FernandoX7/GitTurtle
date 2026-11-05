@@ -890,13 +890,27 @@ and keep those reaching the visible lines, one over only the last visible
 line's break included (the styles' visible range ends before that byte), with
 their collection's index, sorted once by start; a decoration without one costs
 that pass one `Option` check, and a frame with none paints as upstream. The
-element keeps them in its prepaint state, and the background pass paints, for
-each visible line one reaches, one quad before that line's
-`paint_background`: from the text area's left edge, where a left-aligned
+element keeps them in its prepaint state, and the background pass fills each
+visible line one reaches from the text area's left edge, where a left-aligned
 line's first glyph and a background on its first byte start, to the editor's
 visible right edge (the element's right edge) or the line's end where that
-lies further, over every visual row of the line, a soft-wrapped line's in one
-quad. It is drawn under the line's decoration backgrounds, its bottom rules,
+lies further, over every visual row of the line. It paints a run of adjacent
+lines filled in one colour to one right edge as one quad, from the run's first
+visual row's top to its last's bottom, at the run's first line, before any of
+its lines' backgrounds, so a block of changed lines costs one quad and one
+scene entry rather than one a line; a run ends at a line filled otherwise or
+not at all, and at the gap ghost lines open below the cursor's row, and the
+pixels are those the lines' own quads painted. FU18-A measured the fills'
+cost per filled line, about 1.2 µs in release on the Asahi host, 6 to 10 % of
+a dense diff's scroll frame, which includes the composition's walk and its
+sort as well as the quad. Painting a run as one quad recovers about half of
+it: on the Asahi host, against 99cd8cb3 in
+`split_diff::tests::diff_scroll_release_benchmark`, three alternating runs
+each, the dense Diff view and Split scroll 4 to 5 % faster (the Diff view at
+13 pt 0.773 to 0.736 ms a step, Split at 13 pt with More contrast 1.858 to
+1.770 ms), and the many-blocks and crafted worst cases take as long as before
+(×0.99 to 1.00). It is
+drawn under the line's decoration backgrounds, its bottom rules,
 the indent guides, selections, Find's matches and text, which are painted
 after it in the same order as before, and under the line-number gutter, which
 covers the rows that run under it when the text scrolls sideways, as it covers
@@ -920,14 +934,21 @@ both compositions reading the fills that reach the visible bytes or the last
 line's break, by start, the styles as without them, and a line taking the
 first collection's fill, then the one starting first,
 `input::element::tests::a_row_background_fills_its_lines_rows_to_the_visible_right_edge`,
-at scales 2 and 1.25 and scrolled sideways, a short line's, a blank line's and
-a long line's rows from the text's left edge to the visible right edge or the
-long line's end, under the line's background, and the frame otherwise as
-without them, and
+at scales 2 and 1.25 and scrolled sideways, a short line's and a blank line's
+rows in one quad from the text's left edge to the visible right edge and a
+long line's to its end, under the line's background, and the frame otherwise
+as without them,
+`input::element::tests::adjacent_filled_lines_paint_one_quad_a_run`, three
+adjacent filled lines one quad, an unfilled line between two runs two, and a
+line in another colour after a run its own,
+`input::element::tests::ghost_lines_divide_a_run_of_filled_lines`, an inline
+completion's ghost lines below a filled cursor line dividing the run around
+it into two quads that do not touch, the ghost lines' height apart, and
 `input::element::tests::a_wrapped_line_s_row_background_covers_each_visual_row`
 and `input::element::tests::the_active_line_shows_over_a_row_background`, the
-active line painted over its row's fill and not over another filled row's
-(`scripts/vendor-crate-test.sh vendor/gpui-base row_background`), with
+active line painted over its row's fill, the caret on a run's first line or
+its second, and not over another filled row's
+(`scripts/vendor-crate-test.sh vendor/gpui-base row_background filled_lines`), with
 clipping in
 `input::decorations::tests::collections_are_independent_and_ranges_are_clipped`;
 the application's are
