@@ -107,6 +107,20 @@ pub(crate) fn input_style(disabled: bool, cx: &App) -> (Hsla, Hsla) {
     }
 }
 
+/// GitTurtle patch: the outline of an [`Input`]: `Theme::input`, as upstream draws it, except a
+/// disabled one's where the application derives the field's fills from a base apart from that
+/// outline (`Theme::input_fill_base`, set for a stronger outline, as a higher-contrast appearance
+/// asks) and sets the disabled edge (`Theme::disabled_edge`): then that edge, so a field that
+/// cannot act stays fainter than the stronger outline an enabled field draws, as a disabled
+/// Button does beside an enabled one. With either unset it is `input`, enabled or disabled.
+pub(crate) fn input_outline(disabled: bool, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match (disabled, theme.input_fill_base, theme.disabled_edge) {
+        (true, Some(_), Some(edge)) => edge,
+        _ => theme.input,
+    }
+}
+
 /// A text input element bind to an [`InputState`].
 #[derive(IntoElement)]
 pub struct Input {
@@ -588,7 +602,8 @@ impl RenderOnce for Input {
                 this.bg(bg)
                     .rounded(cx.theme().radius)
                     .when(self.bordered, |this| {
-                        this.border_1().border_color(cx.theme().input)
+                        this.border_1()
+                            .border_color(input_outline(presentation.is_disabled(), cx))
                     })
             })
             .items_center()
@@ -908,6 +923,100 @@ mod tests {
             *captured.lock().unwrap(),
             vec![None, Some("search.query".into())]
         );
+    }
+
+    /// GitTurtle patch: an Input's outline is the theme's `input`, enabled
+    /// and disabled, as upstream draws it, while the theme leaves either the
+    /// field-fill base or the disabled edge unset; with both set, a disabled
+    /// Input draws the disabled edge and an enabled one keeps `input`. The
+    /// outline moves nothing.
+    #[gpui::test]
+    fn a_disabled_input_takes_the_disabled_edge_beside_a_field_fill_base(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{
+            AppContext as _, Context, InteractiveElement as _, ParentElement as _, Pixels, Render,
+            VisualTestContext,
+        };
+
+        struct OutlineHarness {
+            enabled: Entity<InputState>,
+            disabled: Entity<InputState>,
+        }
+
+        impl Render for OutlineHarness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .flex()
+                    .gap_2()
+                    .p_2()
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .debug_selector(|| "enabled".into())
+                            .child(Input::new(&self.enabled)),
+                    )
+                    .child(
+                        div()
+                            .w(px(160.))
+                            .debug_selector(|| "disabled".into())
+                            .child(Input::new(&self.disabled).disabled(true)),
+                    )
+            }
+        }
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| OutlineHarness {
+            enabled: cx.new(|cx| InputState::new(window, cx)),
+            disabled: cx.new(|cx| InputState::new(window, cx)),
+        });
+        // The border colours of the quads painted inside `selector`'s bounds,
+        // to the device pixel, with a border on every side, each colour once.
+        let outlines = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let device = |logical: Pixels| logical.as_f32() * scale;
+                let mut outlines = Vec::new();
+                for quad in window.painted_quads() {
+                    let widths = quad.border_widths;
+                    if [widths.top, widths.right, widths.bottom, widths.left]
+                        .into_iter()
+                        .all(|width| width.as_f32() > 0.)
+                        && quad.bounds.left().as_f32() > device(bounds.left()) - 0.5
+                        && quad.bounds.top().as_f32() > device(bounds.top()) - 0.5
+                        && quad.bounds.right().as_f32() < device(bounds.right()) + 0.5
+                        && quad.bounds.bottom().as_f32() < device(bounds.bottom()) + 0.5
+                        && !outlines.contains(&quad.border_color)
+                    {
+                        outlines.push(quad.border_color);
+                    }
+                }
+                outlines
+            })
+        };
+        let input = cx.update(|_, cx| cx.theme().input);
+        let (base, edge) = (
+            gpui::hsla(0.6, 0.3, 0.2, 1.),
+            gpui::hsla(0.75, 0.4, 0.4, 1.),
+        );
+        let place = cx.debug_bounds("disabled");
+        for (case, fill_base, disabled_edge, disabled) in [
+            ("unset", None, None, input),
+            ("disabled edge alone", None, Some(edge), input),
+            ("field-fill base alone", Some(base), None, input),
+            ("both set", Some(base), Some(edge), edge),
+        ] {
+            cx.update(|_, cx| {
+                let theme = crate::Theme::global_mut(cx);
+                theme.input_fill_base = fill_base;
+                theme.disabled_edge = disabled_edge;
+            });
+            assert_eq!(outlines(cx, "enabled"), vec![input], "{case}: enabled");
+            assert_eq!(outlines(cx, "disabled"), vec![disabled], "{case}: disabled");
+            assert_eq!(cx.debug_bounds("disabled"), place, "{case}: moves nothing");
+        }
     }
 
     #[test]

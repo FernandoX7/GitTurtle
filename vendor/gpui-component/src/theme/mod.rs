@@ -190,6 +190,8 @@ pub struct Theme {
     /// GitTurtle patch: the 1 px edge a disabled Button that keeps a fill
     /// draws (a primary or secondary Button, or a custom variant that sets
     /// its own disabled fill), or `None` for none, as upstream draws none.
+    /// Where [`Self::input_fill_base`] is set too, a disabled Input draws it
+    /// as its outline in place of `input` (`input::input_outline`).
     ///
     /// Set in code, not read from theme files, so an application can fit the
     /// edge against the surfaces such a Button lies on: the disabled fill
@@ -214,7 +216,8 @@ pub struct Theme {
     /// fill is this base at 30% ([`Self::input_background`]; a light field
     /// rests on `background`) and a disabled field's fill this base at 80% in
     /// either mode ([`Self::disabled_input_background`]). Every outline stays
-    /// `input`.
+    /// `input`, except a disabled Input's, which takes
+    /// [`Self::disabled_edge`] where that is set too (`input::input_outline`).
     ///
     /// Set in code, not read from theme files, so an application can give a
     /// field's outline a stronger colour, as a higher-contrast appearance
