@@ -1527,10 +1527,10 @@ async fn a_changed_file_row_ends_a_line_it_cannot_hold_inside_its_room(cx: &mut 
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
 
-/// The dialogs the narrow walk opens: every one with a width of its own
-/// that opens from History on the fixture, listed by hand, so a dialog left
-/// off the list is not walked (About was not, and drew 761 px wide at 18 pt
-/// in a 461 px window).
+/// The dialogs the narrow walk opens: every one that opens from History
+/// on the fixture, with a width of its own or the kit's, listed by hand, so
+/// a dialog left off the list is not walked (About was not, and drew 761 px
+/// wide at 18 pt in a 461 px window).
 #[derive(Clone, Copy, Debug)]
 enum Dialog {
     /// About GitTurtle, its details scrolled under the dialog's height cap.
@@ -1552,10 +1552,12 @@ enum Dialog {
     RecoveryDrafts,
     Profiles,
     RepositoryLibrary,
+    /// A custom theme's delete confirmation, which sets no width of its own.
+    DeleteTheme,
 }
 
 impl Dialog {
-    const ALL: [Dialog; 17] = [
+    const ALL: [Dialog; 18] = [
         Dialog::About,
         Dialog::Reflog,
         Dialog::Rebase,
@@ -1573,6 +1575,7 @@ impl Dialog {
         Dialog::RecoveryDrafts,
         Dialog::Profiles,
         Dialog::RepositoryLibrary,
+        Dialog::DeleteTheme,
     ];
 
     /// The room it keeps from either side of a window narrower than it:
@@ -1726,9 +1729,32 @@ impl Dialog {
                 })
                 .await
             }
+            Dialog::DeleteTheme => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    let base = appearance::ThemeChoice::Midnight;
+                    let id = app
+                        .custom_themes
+                        .iter()
+                        .map(|theme| theme.id)
+                        .max()
+                        .unwrap_or(0)
+                        + 1;
+                    app.custom_themes.push(appearance::custom::CustomTheme {
+                        id,
+                        name: "Walk theme".into(),
+                        base,
+                        palette: base.palette(),
+                    });
+                    app.confirm_delete_theme(id, window, cx)
+                })
+                .await
+            }
         }
     }
 }
+
+/// A Git error, as a failed fetch reports it, which a nested dialog shows.
+const WALK_ERROR: &str = "fatal: unable to access 'https://example.invalid/walk.git/': Could not resolve host: example.invalid";
 
 /// The kit's dialog padding, inside which a dialog's text lies.
 const DIALOG_PADDING: Pixels = px(16.);
@@ -1971,6 +1997,99 @@ async fn dialogs_keep_inside_a_narrow_window_at_13_pt(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn dialogs_keep_inside_a_narrow_window_at_18_pt(cx: &mut TestAppContext) {
     narrow_dialogs(18, cx).await;
+}
+
+/// A dialog opened over another, in a 461 × 490 half tile at `text` pt: the
+/// kit opens it 16 px lower than the one beneath it, and its height cap
+/// gives that offset up, so its foot ends the margin above the status bar
+/// as the first dialog's does. With the first dialog's cap, a nested
+/// dialog's foot lay 16 px further down, 8 px from the bar.
+async fn nested_dialog_keeps_its_foot(text: u8, cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _) = open(Page::History, cx).await;
+    cx.update(|_, cx| {
+        theme_editor::init(cx);
+        native_accessibility::bind_keys(cx);
+        shortcuts::bind_keys(cx);
+        cx.set_reduce_motion(true);
+    });
+    let (width, height) = (461., 490.);
+    cx.simulate_resize(size(px(width), px(height)));
+    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+    frame(cx);
+    Dialog::Reflog.open(&app, cx).await;
+    frame(cx);
+    // Details long enough to fill the cap.
+    let details = WALK_ERROR.repeat(40);
+    cx.update(|window, cx| crate::integration::show_error_details(&details, window, cx));
+    frame(cx);
+    frame(cx);
+    let findings = dialog_findings(cx, width, appearance::DIALOG_MARGIN);
+    assert!(findings.is_empty(), "{text} pt, nested: {findings:?}");
+    let panel = top_dialog(cx);
+    let first_top = cx.update(|window, _| {
+        let paddings = gpui_kit::component::window_paddings(window);
+        let room = window.viewport_size().height - paddings.top - paddings.bottom;
+        paddings.top + window.pixel_snap(room / 10.)
+    });
+    assert!(
+        (panel.top() - first_top - px(16.)).abs() <= px(1.),
+        "{text} pt: the nested dialog at {panel:?} opens its layer's 16 px below the first dialog's top at {first_top:?}"
+    );
+    let foot = panel.bottom();
+    let bound =
+        cx.update(|window, _| theme_editor::status_bar_top(window)) - appearance::DIALOG_MARGIN;
+    assert!(
+        (foot - bound).abs() <= px(1.),
+        "{text} pt: the nested dialog's foot at {foot:?} rests on its cap, the margin above the status bar at {bound:?}"
+    );
+}
+
+/// The panel of the dialog drawn on top: the first fill above the last
+/// overlay, as [`dialog_findings`] finds it.
+fn top_dialog(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+    let (text, control) = (
+        gpui_kit::Background::from(text_mark()),
+        gpui_kit::Background::from(control_mark()),
+    );
+    let (scale, viewport, mut quads) = cx.update(|window, _| {
+        (
+            window.scale_factor(),
+            window.viewport_size(),
+            window.painted_quads(),
+        )
+    });
+    quads.sort_by_key(|quad| quad.order);
+    let logical = |value: ScaledPixels| px(value.0 / scale);
+    let overlay = quads
+        .iter()
+        .filter(|quad| {
+            logical(quad.bounds.size.width) >= viewport.width - px(1.)
+                && logical(quad.bounds.size.height) >= viewport.height - px(1.)
+        })
+        .map(|quad| quad.order)
+        .max()
+        .expect("an overlay");
+    quads
+        .iter()
+        .filter(|quad| quad.order > overlay)
+        .find(|quad| quad.background != text && quad.background != control)
+        .map(|quad| {
+            Bounds::from_corners(
+                point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+            )
+        })
+        .expect("the nested dialog's panel")
+}
+
+#[gpui::test]
+async fn a_nested_dialog_keeps_its_foot_above_the_status_bar_at_13_pt(cx: &mut TestAppContext) {
+    nested_dialog_keeps_its_foot(13, cx).await;
+}
+
+#[gpui::test]
+async fn a_nested_dialog_keeps_its_foot_above_the_status_bar_at_18_pt(cx: &mut TestAppContext) {
+    nested_dialog_keeps_its_foot(18, cx).await;
 }
 
 /// About in a 461 × 490 half tile at `text` pt: Tab reaches Copy bug

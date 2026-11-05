@@ -158,7 +158,10 @@ pub const DIALOG_MARGIN: Pixels = px(24.);
 /// width whatever the window's, so a wider one would start left of the
 /// window. The window is what the kit centres the dialog in: inside a
 /// client-decorated frame's shadow padding. A dialog reads it on every frame,
-/// so one open while the window narrows stays inside it.
+/// so one open while the window narrows stays inside it. A dialog that sets
+/// no width of its own keeps the same margin: the kit narrows its 448 px by
+/// the theme's `dialog_margin`, which a palette's application sets to
+/// [`DIALOG_MARGIN`].
 pub fn dialog_width(width: Pixels, window: &Window) -> Pixels {
     let paddings = gpui_kit::component::window_paddings(window);
     let room = window.viewport_size().width - paddings.left - paddings.right;
@@ -171,7 +174,9 @@ pub fn dialog_width(width: Pixels, window: &Window) -> Pixels {
 /// (`theme_editor::status_bar_top`), so its foot never lies on the bar. A
 /// dialog's scrolling list gives up the height first, and its body scrolls
 /// past that. A dialog reads it on every frame, so one open while the window
-/// shortens or the text grows stays above the bar.
+/// shortens or the text grows stays above the bar. A dialog opened over
+/// another opens 16 px lower for each dialog beneath it, and the kit takes
+/// that offset from this cap, so its foot keeps the margin too.
 pub fn dialog_max_height(window: &Window) -> Pixels {
     let paddings = gpui_kit::component::window_paddings(window);
     let room = window.viewport_size().height - paddings.top - paddings.bottom;
@@ -2689,6 +2694,9 @@ impl Palette {
         theme.popover_edge = Some(rgb(palette.raised_edge()).into());
         let dialog_edge = rgb(palette.dialog_edge()).into();
         theme.dialog_edge = Some(dialog_edge);
+        // A dialog that sets no width of its own keeps the margin
+        // `dialog_width` keeps (`DESIGN.md`, "One responsive order").
+        theme.dialog_margin = Some(DIALOG_MARGIN);
         // The only bordered secondary Button is a dialog's Cancel, on the
         // dialog's surface, so it draws the dialog's edge in every state.
         theme.secondary_edge = Some(dialog_edge);
