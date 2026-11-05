@@ -763,7 +763,7 @@ cover current upstream x86-64 Omarchy.
        18 pt; verify), conversation-list and multi-line editor lines, the flush-stop sweep for
        PR/Overview/Review, FU16-B N3's O(L²) fallback, three test fixes (`github_view*`,
        `focus_reveal.rs`), M.
-     - **FU19 (proposed):**
+     - **FU19 (B, D and E in flight from BASE `339560a6`; A, C and F wait for FU18's files):**
        - (A) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
          app's recheck moves it at 300 ms, overriding a click (FU13-A 2-3; kit `dialog.rs`,
          `main.rs`); a dialog opened while another closes loses its restore target (FU13-A 4,
@@ -776,7 +776,7 @@ cover current upstream x86-64 Omarchy.
          Find waits for the tab, verify, `main.rs`); `modal_return_focus` untested
          (`page_navigation.rs:392`); a live preparation still dims Projects while its
          shortcut cancels it (PG5, verify, `main.rs`).
-       - (B) Errors and tabs, S-M: a quiet refresh does not clear an Open-set tab mark
+       - (B, in flight) Errors and tabs, S-M: a quiet refresh does not clear an Open-set tab mark
          (FU15-C, verify, `automatic_refresh.rs`); refusals that set the window's error
          replace the diff pane (FU15-C, `text_review.rs`); a ninth tab refused from Projects
          sets only the window's error (FU15-C, `projects.rs`); a failed theme save leaves New
@@ -791,7 +791,7 @@ cover current upstream x86-64 Omarchy.
          FU17-B rule draws under every match's underline (`text.rs`, `split_diff.rs`); no app
          test of Split's Find path with the rule; One Light's and Braden's hovered row beside
          the selected row reads heavier than the selected row (`appearance.rs`).
-       - (D) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
+       - (later, after FU18-C) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
          text-field and checkbox focus rings at 2.27:1, under the 3:1 non-text rule (verify);
          the kit's Select, Combobox, OtpInput, DatePicker and ColorPicker draw `input` when
          disabled, and an unused `Colorize` import (`vendor/gpui-component/src/input/input.rs:14`);
@@ -801,6 +801,15 @@ cover current upstream x86-64 Omarchy.
          else document as unused); the Switch's focus ring (verify `switch.rs:354`) and its
          knob at 1.37-1.92:1 on its on track (taste, verify); Daylight's Cancel border at
          1.28:1 (DL1, likely closed by PT1, verify).
+       - (F) Ghost Buttons in dialogs, M (decided 2026-11-05; after FU18-C, whose kit dialog file
+         holds the padding): dialogs' side padding max(16 px, label inset + ring room), 17 px at
+         18 pt, and the ghost-Button rule applied at FU18-B's dialog sites (profiles, signing,
+         Fetch rules…, Worktree created, Activity, LFS source, rewrite review, revision
+         choices, About's Copy bug diagnostics); the 0.75 rem bars keep their frames (the ring
+         wins); dialogs whose scroll views may cut a ring on the left (profiles, the profile
+         form, Activity, the LFS form, the comparison form; verify); Reset column layout and
+         Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
+         against the scaled label inset.
      - **FU20 (proposed):**
        - (A) Overflow and scroll cues, M (after FU18-B): the worktree and profile managers
          cut text with no scroll cue; a worktree row's ring against its border; the branch
@@ -809,7 +818,7 @@ cover current upstream x86-64 Omarchy.
          pitch at code 18 pt (`conflicts.rs:779`); the branch picker's and profiles menu's
          disabled items without a reason (verify); a 16 × 2 px scrollbar strip above the
          message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`).
-       - (B) History, S-M: the 18 pt SHA column shows five characters (verify); a long History
+       - (FU19-D, in flight) History, S-M: the 18 pt SHA column shows five characters (verify); a long History
          search shows its start after a tab switch (QA-87 #7, verify, `history_search.rs`);
          other generation bumps can strand the partial subscription (FU13-C 2,
          `history_updates.rs`, `history_search.rs`); Return in a rewritten series closes it
@@ -830,13 +839,10 @@ cover current upstream x86-64 Omarchy.
          pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
          verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
          `settings-themes.png` retaken (with a native round).
-     - **Later rounds (accessibility research, L):** Orca re-reads the window, dialog and list
+     - **Later rounds (accessibility research, L):** (FU19-E, in flight) Orca re-reads the window, dialog and list
        after a search removes its row (FU9-B item 3; AT-SPI adapter, vendor research); the
        palette may speak a move twice (native check first); X11 key repeats unmarked
        (vendored `x11/client.rs`, verify).
-     - **Decoders and security, S:** the Markdown view checks its 16 MiB pixel budget after
-       decoding rather than before (`markdown_view.rs:15`/`:422`; security re-review);
-       the `dav1d-sys` / `moxcms` `=0.8.x` pins unchecked by the source guard (`avif.rs`).
      - **macOS-only (hosted run or a Mac):** Menlo's metrics for FU17-B's rule (hosted run
        `42074771762` passed its tests; native position unmeasured); VoiceOver never hears the
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
