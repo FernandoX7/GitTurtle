@@ -380,9 +380,9 @@ impl GitTurtle {
     }
 
     /// Whether the error the window shows is the review's own failure: the
-    /// bar then says the review is unavailable. Any other error, such as the
-    /// refusal to close a tab while a write runs in it, keeps the caption
-    /// the options give, though it replaces the diff too.
+    /// bar then says the review is unavailable. Any other error the window
+    /// shows keeps the caption the options give, though it replaces the
+    /// diff too; a refusal never sets it ([`Self::refuse_in_tab_strip`]).
     pub(super) fn review_unavailable(&self) -> bool {
         self.error.is_some() && self.error == self.review.failed
     }
@@ -1506,31 +1506,45 @@ mod tests {
         );
     }
 
-    /// A refusal that sets the window's error over a text diff is no
-    /// failure of the review: the bar keeps the caption its options give.
-    /// Here closing the tab is refused while a write runs in its
-    /// repository.
+    /// A refusal never replaces the diff being read: the tab's close
+    /// button, clicked while a write runs in its repository, says why
+    /// beneath the tab strip, announced at once, while the diff stays drawn
+    /// with the caption its options give. Set as the window's error, the
+    /// refusal took the diff's place ("Preview unavailable").
     #[gpui::test]
     async fn a_refusal_over_the_diff_keeps_the_options_caption(cx: &mut gpui::TestAppContext) {
+        use crate::native_accessibility::written;
         let (_fixture, app, cx) = working_diff(cx).await;
         cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.operation_busy = Some("Fetching");
-                app.operation_repository = app.path.clone();
-                app.close_repository_tab(0, window, cx);
-                app.operation_busy = None;
-                app.operation_repository = None;
-                assert!(
-                    app.error
-                        .as_deref()
-                        .is_some_and(|error| error.starts_with("Fetching is running in")),
-                    "the close is refused: {:?}",
-                    app.error
-                );
-            })
+        app.update(cx, |app, _| {
+            app.operation_busy = Some("Fetching");
+            app.operation_repository = app.path.clone();
         });
         crate::tags::tests::draw(cx);
+        let close = cx
+            .debug_bounds("repository-tab-close-0")
+            .expect("the tab's close button");
+        cx.simulate_click(close.center(), gpui::Modifiers::default());
+        app.update(cx, |app, _| {
+            app.operation_busy = None;
+            app.operation_repository = None;
+        });
+        written::forget();
+        crate::tags::tests::draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.tabs.len(), 1, "the close is refused");
+            assert_eq!(app.error, None, "not as the window's error");
+            assert!(app.shown_text().is_some(), "the diff stays drawn");
+        });
+        assert!(
+            cx.debug_bounds("repository-tab-refusal").is_some(),
+            "the strip says why"
+        );
+        let announced = written::announced_from("repository-tab-refusal");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "announced at once: {announced:?}"
+        );
         assert!(
             cx.debug_bounds(caption_shown(ORIGINAL_CAPTION)).is_some(),
             "the options' caption"

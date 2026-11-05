@@ -395,9 +395,23 @@ pub struct State {
     saver: commit_drafts::CoalescingSaver<(), Session>,
     save_completion: Option<SessionSaveCompletion>,
     closing: bool,
+    /// Why the tab strip last refused what it was asked, drawn beneath the
+    /// strip until dismissed or a tab opens, closes or is shown
+    /// ([`GitTurtle::refuse_in_tab_strip`]).
+    refusal: Option<String>,
+    /// The strip's refusals so far, which gives each its own line node, so
+    /// the same refusal asked for again is announced again.
+    refusals: usize,
     #[cfg(test)]
     save_path: Option<PathBuf>,
 }
+/// The tab strip's refusal of a ninth tab, in the same words wherever the
+/// person asked for it: the strip's own line or the Projects page's.
+/// The local library's refusal of a repository past its bound, said where
+/// the person asked ([`GitTurtle::set_tab_library`]).
+const LIBRARY_FULL_REFUSAL: &str =
+    "Local library holds up to 128 repositories. Remove an entry before adding another.";
+pub(super) const TAB_LIMIT_REFUSAL: &str = "Eight repository tabs are open. Close a tab before opening another; its commit drafts remain saved.";
 impl State {
     pub(super) fn rescale_text_viewports(
         &mut self,
@@ -910,8 +924,7 @@ impl GitTurtle {
         let bytes = self.tab_retained_bytes();
         if !cold && self.repository_tabs.retained_bytes().saturating_add(bytes) > MAX_RETAINED_BYTES
         {
-            self.error=Some("Retained tabs would exceed the 512 MiB preview allowance. Close a tab to release its retained inspection before switching; drafts stay saved.".into());
-            cx.notify();
+            self.refuse_in_tab_strip("Retained tabs would exceed the 512 MiB preview allowance. Close a tab to release its retained inspection before switching; drafts stay saved.", cx);
             return false;
         }
         self.persist_commit_draft(window, cx);
@@ -1350,13 +1363,13 @@ impl GitTurtle {
             return false;
         }
         if self.repository_tabs.tabs.len() >= MAX_TABS {
-            self.error=Some("Eight repository tabs are open. Close a tab before opening another; its commit drafts remain saved.".into());
-            cx.notify();
+            self.refuse_in_tab_strip(TAB_LIMIT_REFUSAL, cx);
             return true;
         }
         if !self.retain_active_tab(window, cx) {
             return true;
         }
+        self.repository_tabs.refusal = None;
         let index = self.repository_tabs.tabs.len();
         self.repository_tabs.tabs.push(Tab {
             path: path.to_owned(),
@@ -1418,6 +1431,61 @@ impl GitTurtle {
         {
             tab.error = self.error.clone();
         }
+    }
+    /// Refuses what the tab strip was asked, a ninth tab, a switch past the
+    /// retained allowance, closing a tab while its write runs or a library
+    /// past its bound, saying why beneath the strip, where the person
+    /// acted, as an alert heard at once and again for each refusal. A
+    /// refusal never replaces what the window shows: set as the window's
+    /// error, it took the place of the diff being read ("Preview
+    /// unavailable") and of History's list. The line stays until
+    /// dismissed or until a tab opens, closes or is shown.
+    pub(super) fn refuse_in_tab_strip(
+        &mut self,
+        reason: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.repository_tabs.refusal = Some(reason.into());
+        self.repository_tabs.refusals = self.repository_tabs.refusals.wrapping_add(1);
+        cx.notify();
+    }
+    /// The tab strip's refusal line ([`Self::refuse_in_tab_strip`]) with its
+    /// Dismiss, drawn beneath the strip.
+    fn render_tab_refusal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let refusal = self.repository_tabs.refusal.clone()?;
+        let colors = palette(cx);
+        Some(
+            div()
+                .debug_selector(|| "repository-tab-refusal-row".into())
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_1()
+                .bg(rgb(colors.removed_background))
+                .border_b_1()
+                .border_color(rgb(colors.border))
+                .child(crate::native_accessibility::refusal_line(
+                    "repository-tab-refusal",
+                    self.repository_tabs.refusals,
+                    refusal,
+                    |line| {
+                        line.flex_1()
+                            .min_w_0()
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(colors.removed))
+                    },
+                ))
+                .child(
+                    button("dismiss-tab-refusal", "Dismiss", "", false)
+                        .debug_selector(|| "dismiss-tab-refusal".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.repository_tabs.refusal = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
     }
     /// Whether the shown tab is marked " · unavailable", its Open having
     /// failed ([`Self::tab_opening_failed`]).
@@ -1488,6 +1556,7 @@ impl GitTurtle {
         if !self.retain_active_tab(window, cx) {
             return;
         }
+        self.repository_tabs.refusal = None;
         self.repository_tabs.active = Some(index);
         let path = self.repository_tabs.tabs[index].path.clone();
         if let Some(warm) = self.repository_tabs.tabs[index].warm.take() {
@@ -1559,14 +1628,15 @@ impl GitTurtle {
         if self.operation_busy.is_some()
             && self.operation_repository.as_deref() == Some(tab.path.as_path())
         {
-            self.error = Some(format!(
+            let reason = format!(
                 "{} is running in {}. Wait for it to finish or use its Cancel action before closing this tab.",
                 self.operation_busy.unwrap_or("A Git operation"),
                 tab.path.display()
-            ));
-            cx.notify();
+            );
+            self.refuse_in_tab_strip(reason, cx);
             return;
         }
+        self.repository_tabs.refusal = None;
         let active = self.repository_tabs.active == Some(index);
         if active {
             // The closed tab's read is dropped, and what it was preparing:
@@ -2237,6 +2307,12 @@ impl GitTurtle {
             .find(|entry| entry.path.path() == path)
             .is_some_and(|entry| entry.pinned)
     }
+    /// Records `path` in the local library with what changes for it, and
+    /// returns whether the library took it: one past [`MAX_LIBRARY`] is
+    /// refused, and the caller says so where the person acted
+    /// ([`LIBRARY_FULL_REFUSAL`]): the pin beneath the tab strip, the Local
+    /// workspaces dialog in its own error line, which drew the refusal on
+    /// the strip under its backdrop and listed the entry as added.
     fn set_tab_library(
         &mut self,
         path: PathBuf,
@@ -2244,7 +2320,7 @@ impl GitTurtle {
         group: Option<Option<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let index = self
             .repository_tabs
             .library
@@ -2260,8 +2336,7 @@ impl GitTurtle {
             });
         if self.repository_tabs.library.len() > MAX_LIBRARY {
             self.repository_tabs.library.pop();
-            self.error=Some("Local library holds up to 128 repositories. Remove an entry before adding another.".into());
-            return;
+            return false;
         }
         let entry = &mut self.repository_tabs.library[index];
         if let Some(pinned) = pinned {
@@ -2272,6 +2347,7 @@ impl GitTurtle {
         }
         self.save_repository_session(window, cx);
         cx.notify();
+        true
     }
     pub(super) fn toggle_repository_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
@@ -2279,7 +2355,9 @@ impl GitTurtle {
         }
         if let Some(path) = self.path.clone() {
             let pinned = !self.tab_is_pinned(&path);
-            self.set_tab_library(path, Some(pinned), None, window, cx);
+            if !self.set_tab_library(path, Some(pinned), None, window, cx) {
+                self.refuse_in_tab_strip(LIBRARY_FULL_REFUSAL, cx);
+            }
         }
     }
     pub(super) fn open_repository_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2313,10 +2391,12 @@ impl GitTurtle {
             .filter(|path| self.repository_tabs.find(path).is_none())
             .count();
         if self.repository_tabs.tabs.len() + new > MAX_TABS {
-            self.error = Some(format!(
-                "Opening {group} needs {new} more tabs. Close tabs to keep at most eight open."
-            ));
-            cx.notify();
+            self.refuse_in_tab_strip(
+                format!(
+                    "Opening {group} needs {new} more tabs. Close tabs to keep at most eight open."
+                ),
+                cx,
+            );
             return;
         }
         for path in &paths {
@@ -2514,42 +2594,39 @@ impl GitTurtle {
             crate::views::LineKey::current(window),
             tab_label_insets(window),
         );
-        div()
-            .debug_selector(|| "repository-tab-strip".into())
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .min_h(tab_strip_height(window, cx))
-            .bg(rgb(colors.panel))
-            .border_b(TAB_STRIP_BORDER)
-            .border_color(rgb(colors.border))
-            .children(left_controls)
-            .when(cfg!(target_os = "linux"), |strip| {
-                #[cfg(target_os = "linux")]
-                let strip = strip.child(self.primary_menu.clone());
-                strip
-            })
-            .child(crate::native_accessibility::clips_children(
-                div()
-                    .id("repository-tabs")
-                    .debug_selector(|| "repository-tabs".into())
-                    .role(Role::TabList)
-                    .aria_label("Repository tabs")
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .p(ring_room)
-                    .m(-ring_room)
-                    .overflow_x_scroll()
-                    .children(
-                        self.repository_tabs
-                            .tabs
-                            .iter()
-                            .enumerate()
-                            .map(|(index, tab)| {
+        let strip =
+            div()
+                .debug_selector(|| "repository-tab-strip".into())
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .min_h(tab_strip_height(window, cx))
+                .bg(rgb(colors.panel))
+                .border_b(TAB_STRIP_BORDER)
+                .border_color(rgb(colors.border))
+                .children(left_controls)
+                .when(cfg!(target_os = "linux"), |strip| {
+                    #[cfg(target_os = "linux")]
+                    let strip = strip.child(self.primary_menu.clone());
+                    strip
+                })
+                .child(crate::native_accessibility::clips_children(
+                    div()
+                        .id("repository-tabs")
+                        .debug_selector(|| "repository-tabs".into())
+                        .role(Role::TabList)
+                        .aria_label("Repository tabs")
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .p(ring_room)
+                        .m(-ring_room)
+                        .overflow_x_scroll()
+                        .children(self.repository_tabs.tabs.iter().enumerate().map(
+                            |(index, tab)| {
                                 let selected = self.repository_tabs.active == Some(index);
                                 let pinned = self.tab_is_pinned(&tab.path);
                                 let busy = self.operation_shown().is_some()
@@ -2643,24 +2720,36 @@ impl GitTurtle {
                                     .when(selected, |el| {
                                         el.children(appearance::resting_edge(px(7.), cx))
                                     })
-                            }),
-                    )
-                    .children(drag_region),
-            ))
-            .child(
-                button("new-repository-tab", "", "plus", false)
-                    .accessibility_label("Open repository tab")
-                    .tooltip(format!(
-                        "Open a repository tab · {}",
-                        shortcuts::label(shortcuts::ShortcutId::NewTab)
-                    ))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.choose_repository(&OpenRepository, window, cx)
-                    })),
-            )
-            .child(self.repository_tabs_menu(labels.workspaces, cx))
-            .children(right_controls)
-            .into_any_element()
+                            },
+                        ))
+                        .children(drag_region),
+                ))
+                .child(
+                    button("new-repository-tab", "", "plus", false)
+                        .accessibility_label("Open repository tab")
+                        .tooltip(format!(
+                            "Open a repository tab · {}",
+                            shortcuts::label(shortcuts::ShortcutId::NewTab)
+                        ))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.choose_repository(&OpenRepository, window, cx)
+                        })),
+                )
+                .child(self.repository_tabs_menu(labels.workspaces, cx))
+                .children(right_controls)
+                .into_any_element();
+        // A refusal is said beneath the strip it came from; at rest the
+        // strip is the row alone.
+        match self.render_tab_refusal(cx) {
+            Some(refusal) => div()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .child(strip)
+                .child(refusal)
+                .into_any_element(),
+            None => strip,
+        }
     }
 
     /// A repository tab's label, its pin, project name and what it reports,
@@ -2901,6 +2990,10 @@ struct LibraryView {
     project_names: HashMap<PathBuf, String>,
     name: Entity<InputState>,
     error: Option<String>,
+    /// How many times the error line has said why something was refused,
+    /// which keys its node: the same refusal again is a fresh node, which
+    /// an assistive technology announces again.
+    errors_shown: usize,
     _subscription: Subscription,
 }
 impl LibraryView {
@@ -2922,8 +3015,16 @@ impl LibraryView {
             project_names,
             name,
             error: None,
+            errors_shown: 0,
             _subscription: subscription,
         }
+    }
+
+    /// Says why the dialog refused what was asked, heard again however
+    /// often the same refusal is given.
+    fn refuse(&mut self, error: impl Into<String>) {
+        self.errors_shown = self.errors_shown.wrapping_add(1);
+        self.error = Some(error.into());
     }
 
     fn project_identity(&self, path: &Path) -> String {
@@ -2935,7 +3036,7 @@ impl LibraryView {
         format!("{name} · {}", path.display())
     }
 }
-use crate::native_accessibility::{LiveRegion as _, text as workspace_text};
+use crate::native_accessibility::text as workspace_text;
 
 impl Render for LibraryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2951,15 +3052,17 @@ impl Render for LibraryView {
         );
         div().flex().flex_col().gap_3().child(workspace_text("local-workspaces-description", "Pinned repositories stay available after their tab closes. Named workspaces are local groups; opening a group only reads its selected repository.").text_size(appearance::ui_text(12.)))
             .children(self.active.as_ref().map(|path| workspace_text("local-workspaces-current-repository", format!("Current repository: {}", self.project_identity(path))).text_size(appearance::ui_text(12.)).truncate().tooltip({let identity=self.project_identity(path);move|window,cx|Tooltip::new(identity.clone()).build(window,cx)})))
-            .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).debug_selector(||"create-local-workspace".into()).on_click(cx.listener(|this,_,window,cx|{
+            .child(div().flex().items_center().gap_2().child(div().debug_selector(||"local-workspace-name".into()).flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).debug_selector(||"create-local-workspace".into()).on_click(cx.listener(|this,_,window,cx|{
                 let name=this.name.read(cx).value().trim().to_owned();
-                if name.is_empty()||name.len()>64||name.contains(['\n','\r','\0']){this.error=Some("Use a workspace name of 1–64 bytes.".into());cx.notify();return;}
-                if this.session.groups.len()>=MAX_GROUPS||this.session.groups.contains(&name){this.error=Some("Choose a new name; up to 16 local workspaces are supported.".into());cx.notify();return;}
-                this.session.groups.push(name.clone());let active=this.active.clone();let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.groups.push(name.clone());if let Some(path)=active{owner.set_tab_library(path,None,Some(Some(name.clone())),window,cx);}else{owner.save_repository_session(window,cx);}});
-                if let Some(path)=this.active.clone(){if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(name);}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(name)});}}
-                this.name.update(cx,|input,cx|input.set_value("",window,cx));this.error=None;cx.notify();
+                if name.is_empty()||name.len()>64||name.contains(['\n','\r','\0']){this.refuse("Use a workspace name of 1–64 bytes.");cx.notify();return;}
+                if this.session.groups.len()>=MAX_GROUPS||this.session.groups.contains(&name){this.refuse("Choose a new name; up to 16 local workspaces are supported.");cx.notify();return;}
+                // The group is made either way; a full library refuses only
+                // the repository, said here, where the person asked.
+                this.session.groups.push(name.clone());let active=this.active.clone();let has_path=active.is_some();let refused=this.owner.update(cx,|owner,cx|{owner.repository_tabs.groups.push(name.clone());let accepted=active.is_some_and(|path|owner.set_tab_library(path,None,Some(Some(name.clone())),window,cx));if !accepted{owner.save_repository_session(window,cx);}has_path&&!accepted}).unwrap_or(false);
+                if !refused&&let Some(path)=this.active.clone(){if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(name);}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(name)});}}
+                this.name.update(cx,|input,cx|input.set_value("",window,cx));if refused{this.refuse(LIBRARY_FULL_REFUSAL);}else{this.error=None;}cx.notify();
             }))))
-            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).alert(error.clone()).text_color(rgb(colors.removed))))
+            .children(self.error.as_ref().map(|error|crate::native_accessibility::refusal_line("local-workspaces-error", self.errors_shown, error.clone(), |line|line.text_color(rgb(colors.removed)))))
             .child(crate::native_accessibility::clips_children(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
@@ -2967,7 +3070,11 @@ impl Render for LibraryView {
                     let add_label=self.active.as_ref().map_or_else(||format!("Add current repository to workspace {group}; no repository is open"), |path|format!("Add repository {} to workspace {group}", self.project_identity(path)));
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-name", index), description.clone()).flex_1())
                         .child(button(("open-workspace",index),"Open","",false).accessibility_label(format!("Open workspace {description}")).disabled(count==0).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_group(&open,window,cx));})))
-                        .child(button(("assign-workspace",index),"Add current","",false).accessibility_label(add_label).disabled(self.active.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(path)=this.active.clone(){let _=this.owner.update(cx,|owner,cx|owner.set_tab_library(path.clone(),None,Some(Some(assign.clone())),window,cx));if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(assign.clone());}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(assign.clone())});}cx.notify();}})))
+                        .child(button(("assign-workspace",index),"Add current","",false).accessibility_label(add_label).debug_selector(move||format!("assign-workspace-{index}")).disabled(self.active.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(path)=this.active.clone(){
+                            // A full library refuses the repository, said here, where the person asked;
+                            // added, the line no longer says it was refused.
+                            let refused=this.owner.update(cx,|owner,cx|!owner.set_tab_library(path.clone(),None,Some(Some(assign.clone())),window,cx)).unwrap_or(false);
+                            if refused{this.refuse(LIBRARY_FULL_REFUSAL);}else{this.error=None;if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(assign.clone());}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(assign.clone())});}}cx.notify();}})))
                         .child(button(("delete-workspace",index),"Remove group","",false).accessibility_label(format!("Remove workspace group {group}; keep its repositories and drafts")).on_click(cx.listener(move|this,_,window,cx|{this.session.groups.retain(|group|group!=&remove);for entry in &mut this.session.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.groups.retain(|group|group!=&remove);for entry in &mut owner.repository_tabs.library{if entry.group.as_ref()==Some(&remove){entry.group=None;}}owner.save_repository_session(window,cx);});cx.notify();})))
                 }))
                 .children(self.session.library.clone().into_iter().enumerate().map(|(index,entry)|{
@@ -3207,6 +3314,110 @@ mod tests {
             "a quiet read whose scope vanished keeps it"
         );
         assert_eq!(app.read_with(cx, |app, _| app.commits.len()), 0);
+    }
+
+    /// A full local library refuses a repository where the person asked:
+    /// Create workspace in the Local workspaces dialog says why in the
+    /// dialog's own error line, announced at once, lists nothing as added
+    /// and draws nothing beneath the tab strip, under the dialog's
+    /// backdrop, where the refusal once went while the dialog's list
+    /// showed the repository added. Add current on the group is refused
+    /// the same way, and once the library has room it adds the repository
+    /// and the line goes: it once still said the repository was refused
+    /// beside the group that listed it. Each refusal is a fresh node,
+    /// announced again: the line kept one node, so the second refusal,
+    /// in the same words, went unheard.
+    #[gpui::test]
+    async fn a_full_library_refuses_in_the_local_workspaces_dialog(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use gpui::Modifiers;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        app.update(cx, |app, _| {
+            app.repository_tabs.library = (0..MAX_LIBRARY)
+                .map(|kept| LibraryEntry {
+                    path: SavedPath::new(&fixture.path().join(format!("kept-{kept}"))),
+                    pinned: false,
+                    group: None,
+                })
+                .collect();
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_library(window, cx)));
+        crate::views::tests::draw(cx);
+        let name = cx
+            .debug_bounds("local-workspace-name")
+            .expect("the name field");
+        cx.simulate_click(name.center(), Modifiers::default());
+        cx.simulate_input("Team");
+        let create = cx
+            .debug_bounds("create-local-workspace")
+            .expect("Create workspace");
+        cx.simulate_click(create.center(), Modifiers::default());
+        written::forget();
+        crate::views::tests::draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.library.len(), MAX_LIBRARY, "refused");
+            assert_eq!(app.repository_tabs.groups, vec!["Team".to_owned()]);
+            assert_eq!(
+                app.repository_tabs.refusal, None,
+                "nothing beneath the strip"
+            );
+            assert_eq!(app.error, None);
+        });
+        let refusal = |what: &str| {
+            let announced = written::announced_from("local-workspaces-error");
+            assert!(
+                announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+                "{what}: the dialog says why, at once: {announced:?}"
+            );
+            announced[0].0.clone()
+        };
+        let created = refusal("Create workspace");
+        let team = || {
+            written::get("local-workspace-name-0")
+                .and_then(|written| written.node.value().map(str::to_owned))
+                .expect("the group's line")
+        };
+        assert_eq!(team(), "Team · 0 repositories");
+        let add = cx
+            .debug_bounds("assign-workspace-0")
+            .expect("Team's Add current");
+        cx.simulate_click(add.center(), Modifiers::default());
+        written::forget();
+        crate::views::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("local-workspaces-error").is_some(),
+            "Add current is refused in the dialog too"
+        );
+        assert_ne!(
+            refusal("Add current"),
+            created,
+            "the same refusal again is a fresh node, announced again"
+        );
+        assert_eq!(team(), "Team · 0 repositories", "nothing added");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.library.len(), MAX_LIBRARY, "refused");
+        });
+        app.update(cx, |app, _| {
+            app.repository_tabs.library.pop();
+        });
+        cx.simulate_click(add.center(), Modifiers::default());
+        written::forget();
+        crate::views::tests::draw(cx);
+        assert!(
+            cx.debug_bounds("local-workspaces-error").is_none(),
+            "added, the dialog no longer says it was refused"
+        );
+        assert_eq!(team(), "Team · 1 repository", "the group lists it");
+        app.read_with(cx, |app, _| {
+            let root = app.path.clone().expect("a repository");
+            assert!(
+                app.repository_tabs.library.iter().any(
+                    |entry| entry.path.path() == root && entry.group.as_deref() == Some("Team")
+                ),
+                "added to the library, in Team"
+            );
+        });
     }
 
     #[gpui::test]
@@ -4027,7 +4238,14 @@ mod tests {
                     Some(1),
                     "the decorated patch is refused at the bound"
                 );
-                assert!(app.error.as_deref().is_some_and(|e| e.contains("512 MiB")));
+                assert!(
+                    app.repository_tabs
+                        .refusal
+                        .as_deref()
+                        .is_some_and(|e| e.contains("512 MiB")),
+                    "the tab strip says why"
+                );
+                assert_eq!(app.error, None, "not over the preview");
                 assert!(
                     app.patch_decoration.is_some(),
                     "a refusal keeps the preview"
@@ -6125,8 +6343,11 @@ mod tests {
             "an empty name is refused in the dialog"
         );
         assert_eq!(
-            native_accessibility::written::announced("local-workspaces-error"),
-            Some(native_accessibility::written::Announced::ASSERTIVE)
+            native_accessibility::written::announced_from("local-workspaces-error"),
+            vec![(
+                "local-workspaces-error-1".to_owned(),
+                native_accessibility::written::Announced::ASSERTIVE
+            )]
         );
         cx.update(|window, cx| window.close_dialog(cx));
         views::tests::draw(cx);
