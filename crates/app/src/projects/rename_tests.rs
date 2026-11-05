@@ -128,6 +128,35 @@ fn invalid_project_name_keeps_the_dialog_and_typed_text(cx: &mut TestAppContext)
     });
 }
 
+/// A name refused again, asked for again without an edit, is said on a
+/// fresh node, announced at once again: the error line kept one node, which
+/// an assistive technology announces only as it is added or its text
+/// changes, so the second refusal of the same name was heard as nothing.
+#[gpui::test]
+fn a_name_refused_again_is_announced_again(cx: &mut TestAppContext) {
+    use crate::native_accessibility::written;
+    let (fixture, app, cx) = test_app(cx);
+    let path = fixture.path().join("client-folder");
+    let _form = open_form(&app, &path, cx);
+    cx.simulate_input(&"x".repeat(129));
+    let mut nodes = Vec::new();
+    for attempt in ["first", "second"] {
+        written::forget();
+        cx.simulate_keystrokes("enter");
+        settle(cx);
+        let announced = written::announced_from("rename-project-error");
+        assert!(
+            announced.len() == 1 && announced[0].1 == written::Announced::ASSERTIVE,
+            "{attempt}: the refusal is announced at once: {announced:?}"
+        );
+        nodes.push(announced[0].0.clone());
+    }
+    assert_ne!(
+        nodes[0], nodes[1],
+        "the same refusal again is a fresh node, announced again"
+    );
+}
+
 #[gpui::test]
 async fn pending_rename_blocks_duplicate_submission_edits_and_cancel(cx: &mut TestAppContext) {
     let (fixture, app, cx) = test_app(cx);

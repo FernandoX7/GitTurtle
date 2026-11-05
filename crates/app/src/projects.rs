@@ -1445,7 +1445,7 @@ impl GitTurtle {
             Err(error) => {
                 let _ = form.update(cx, |form, cx| {
                     form.pending = false;
-                    form.error = Some(format!("Could not save the project name: {error:#}"));
+                    form.refuse(format!("Could not save the project name: {error:#}"));
                     cx.notify();
                 });
             }
@@ -1463,6 +1463,10 @@ pub struct RenameProjectForm {
     named: bool,
     input: Entity<InputState>,
     error: Option<String>,
+    /// How many times the error line has said why a name was not saved,
+    /// which keys its node: the same reason again is a fresh node, which an
+    /// assistive technology announces again.
+    errors_shown: usize,
     pending: bool,
     visible: bool,
     _subscription: Subscription,
@@ -1499,10 +1503,18 @@ impl RenameProjectForm {
             named,
             input,
             error: None,
+            errors_shown: 0,
             pending: false,
             visible: true,
             _subscription: subscription,
         }
+    }
+
+    /// Says why the name was not saved, heard again however often the same
+    /// reason is given.
+    fn refuse(&mut self, error: String) {
+        self.errors_shown = self.errors_shown.wrapping_add(1);
+        self.error = Some(error);
     }
 
     /// Keep the reviewed target and text until persistence reports success.
@@ -1513,7 +1525,7 @@ impl RenameProjectForm {
         let name = match chosen_name(self.input.read(cx).value().as_ref(), &self.folder) {
             Ok(name) => name,
             Err(error) => {
-                self.error = Some(error);
+                self.refuse(error);
                 cx.notify();
                 return;
             }
@@ -1530,7 +1542,7 @@ impl RenameProjectForm {
             .is_err()
         {
             self.pending = false;
-            self.error = Some("The project window is no longer available.".into());
+            self.refuse("The project window is no longer available.".into());
         }
         cx.notify();
     }
@@ -1584,7 +1596,9 @@ impl Render for RenameProjectForm {
             )
             .children(self.error.as_ref().map(|error| {
                 div()
-                    .id("rename-project-error")
+                    // A fresh node for each refusal, heard again however
+                    // often the same one is given.
+                    .id(("rename-project-error", self.errors_shown))
                     .alert(error.clone())
                     .rounded(px(8.))
                     .border_1()
