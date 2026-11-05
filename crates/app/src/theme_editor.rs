@@ -4971,7 +4971,8 @@ pub(crate) mod tests {
     /// Delete the active Harbor with the keyboard, the store answering before
     /// the next frame or only after three native frames have drawn the row's
     /// actions disabled and run the modal focus repair. Either way Space then
-    /// opens New theme…, also after the repair's delayed recheck.
+    /// opens New theme…, also once time has passed after the alert closed,
+    /// since nothing returns focus later.
     fn delete_then_space_opens_new_theme(cx: &mut TestAppContext, late_reply: bool) {
         let (app, cx) = open_app(cx);
         cx.update(|window, _| window.activate_window());
@@ -5009,7 +5010,7 @@ pub(crate) mod tests {
         // The first frame draws the card without the row; the next moves focus.
         native_frame(cx);
         native_frame(cx);
-        // The modal focus repair rechecks 300 ms after the alert closed.
+        // Time passes after the alert closed; nothing moves focus later.
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(400));
         cx.run_until_parked();
@@ -8513,9 +8514,9 @@ pub(crate) mod tests {
             "the saved theme closes the editor"
         );
 
-        // A confirmed delete of the first row, Harbor. The alert's close
-        // restores focus over the next frames and a 300 ms recheck; those pass
-        // before the store answers.
+        // A confirmed delete of the first row, Harbor. The alert gives focus
+        // back as it closes and the window repairs it in the next frame;
+        // those frames, and time after them, pass before the store answers.
         let rows = cx.read(|cx| app.read(cx).custom_themes.len());
         let hold = hold_preference_executor(cx, &app);
         open_delete_alert(cx, &app);

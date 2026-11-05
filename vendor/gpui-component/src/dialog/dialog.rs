@@ -831,9 +831,10 @@ mod tests {
     /// GitTurtle patch: a dialog its Confirm closes, as Enter or its OK
     /// does, gives focus back to the control it was opened from as it
     /// closes, as Escape and Cancel do, and a control focused after the
-    /// close keeps focus once the 250 ms the close animation runs have
-    /// passed. Upstream gave focus back only at the end of those 250 ms,
-    /// taking it from a control focused meanwhile.
+    /// close keeps focus once twice its opening animation's 250 ms have
+    /// passed. Upstream gave focus back only as a timer of that length ended
+    /// after the close, taking it from a control focused meanwhile; the
+    /// dialog animates only its opening.
     #[gpui::test]
     fn a_confirmed_dialog_gives_focus_back_as_it_closes(cx: &mut gpui::TestAppContext) {
         let cx = half_tile(cx);

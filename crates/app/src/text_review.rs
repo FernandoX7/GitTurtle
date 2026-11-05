@@ -2034,7 +2034,7 @@ mod tests {
         crate::revision_inspection::settle_quick_open(cx).await;
         cx.simulate_keystrokes("enter");
         draw(cx);
-        // The dialog's close animation ends before the next key.
+        // Time passes after the dialog closed, before the next key.
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(400));
         draw(cx);

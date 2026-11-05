@@ -398,8 +398,9 @@ impl GitTurtle {
             // is the one return after that, and only while focus stays
             // there: a click or a key the person gives first wins. A recheck
             // 300 ms later once followed the toolkit's own return, which
-            // waited out a 250 ms close animation, and each took focus from a
-            // control clicked meanwhile.
+            // waited for a 250 ms timer after the close (the dialog animates
+            // only its opening), and each took focus from a control clicked
+            // meanwhile.
             let left = window.focused(cx).map(|focus| focus.downgrade());
             let owner = cx.entity().downgrade();
             window.on_next_frame(move |window, cx| {
@@ -4109,8 +4110,8 @@ mod tests {
     }
 
     /// Closes the dialog as Escape or its Close button does, then lets the
-    /// window's repair run in the frame after the close, and the time the
-    /// toolkit's close animation runs pass.
+    /// window's repair run in the frame after the close, and time pass
+    /// after it, in which nothing moves focus again.
     fn close_probe_dialog(cx: &mut VisualTestContext) {
         use crate::views::tests::draw;
         cx.update(|window, cx| window.close_dialog(cx));
@@ -4260,13 +4261,13 @@ mod tests {
     /// focuses after the close keeps it. Confirmed by Enter, a dialog opened
     /// from History's changed files gives focus back to that list as it
     /// closes, and a commit row clicked next keeps focus on the commit list
-    /// once the close animation's 250 ms have passed; closed by Escape, a
-    /// click on an empty spot of the window, after the frame that repairs a
-    /// close or before it, leaves the window's root focused. The toolkit gave
-    /// a confirmed dialog's focus back only after those 250 ms, taking it
-    /// from the commit list; the window rechecked 300 ms after a close and
-    /// took the root's focus for the shown list, as its repair did in the
-    /// frame after the close.
+    /// once 400 ms have passed; closed by Escape, a click on an empty spot
+    /// of the window, after the frame that repairs a close or before it,
+    /// leaves the window's root focused. The toolkit gave a confirmed
+    /// dialog's focus back only as a 250 ms timer after the close ended,
+    /// taking it from the commit list; the window rechecked 300 ms after a
+    /// close and took the root's focus for the shown list, as its repair did
+    /// in the frame after the close.
     #[gpui::test]
     async fn a_focus_given_after_a_dialog_closes_keeps(cx: &mut TestAppContext) {
         use crate::views::tests::draw;
