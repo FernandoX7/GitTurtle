@@ -28040,6 +28040,71 @@ pub(crate) mod tests {
         assert!(!open(cx), "the menu closed with its file");
     }
 
+    /// Shift-F10 on History's lowest whole row scrolls nothing and moves no
+    /// row, at display scale 1 and 1.5 and at 13 and 18 pt in a 461 × 490
+    /// window: the row's foot lies under the list's 1 px edge, which the
+    /// menu's row place counts as shown (`ListRow::framed`), so its reveal
+    /// has nothing to do, however a fractional scale rounds that edge.
+    #[gpui::test]
+    async fn a_keyboard_menu_on_the_lowest_row_moves_nothing_at_any_scale(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 1)).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        for scale in [1.0f32, 1.5] {
+            for text in [13, 18] {
+                let at = format!("{text} pt at {scale}x");
+                cx.update(|window, cx| {
+                    window.set_scale_factor(scale);
+                    appearance::apply_text_sizes(text, 12, window, cx)
+                });
+                cx.simulate_resize(size(px(461.), px(490.)));
+                settle(&app, cx).await;
+                let status = crate::theme_editor::tests::status_bar_top(cx);
+                let lowest = (0..40)
+                    .filter_map(|row| bounds_of(cx, format!("history-row-{row}")).map(|b| (row, b)))
+                    .filter(|(_, bounds)| bounds.bottom() <= status)
+                    .max_by(|(_, a), (_, b)| {
+                        f32::from(a.bottom()).total_cmp(&f32::from(b.bottom()))
+                    })
+                    .map(|(row, _)| row)
+                    .unwrap_or_else(|| panic!("{at}: a whole row above the status bar"));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.select_commit(lowest, window, cx);
+                        app.pane = Pane::History;
+                        window.focus(&app.focus, cx);
+                    })
+                });
+                settle(&app, cx).await;
+                let row = format!("history-row-{lowest}");
+                let before = bounds_of(cx, row.clone()).expect("the lowest row");
+                let offset = app.read_with(cx, |app, _| {
+                    app.history_scroll.0.borrow().base_handle.offset()
+                });
+                cx.simulate_keystrokes("shift-f10");
+                draw(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.commit_menu.is_some()),
+                    "{at}: Shift-F10 opened the menu"
+                );
+                let after = bounds_of(cx, row.clone()).expect("the lowest row");
+                let moved = app.read_with(cx, |app, _| {
+                    app.history_scroll.0.borrow().base_handle.offset()
+                });
+                assert_eq!(offset, moved, "{at}: Shift-F10 scrolled the list");
+                assert_eq!(before, after, "{at}: the row moved");
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(1.0);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+    }
+
     /// Shift-F10 on History's lowest whole row, where the room down to the
     /// status bar holds too few of the commit's menu's rows, opens the menu
     /// wholly above the row, with the gap every menu keeps from what it
