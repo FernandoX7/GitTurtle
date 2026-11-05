@@ -296,7 +296,6 @@ const OFFSETS: &[Offset] = &[
             (Surface::Compare, "inspector"),
             (Surface::GitHub, "Conversations pane"),
             (Surface::GitHubPanes, "GitHub panel"),
-            (Surface::Settings, "Git identity"),
         ]),
         by: || appearance::ui_size(crate::LABEL_INSET + 16. + 6.),
         reason: "a compact Button standing at the edge whose 16 px icon leads its label starts \
@@ -304,8 +303,7 @@ const OFFSETS: &[Offset] = &[
                  Copy message, and in a bordered pane of the GitHub panel, whose Buttons stand \
                  their frames at its text edge, Refresh conversations on a line of its own \
                  (on the plain surface, the Conversations pane's, which the offline fixture's \
-                 open PR draws at 13 pt in a 461 × 980 window); Git identity's Reset edits and \
-                 Manage named profiles…",
+                 open PR draws at 13 pt in a 461 × 980 window)",
     },
     Offset {
         panel: Some(&[
@@ -369,12 +367,15 @@ const OFFSETS: &[Offset] = &[
             (Surface::GitHub, "GitHub panel"),
             (Surface::GitHubPanes, "GitHub panel"),
             (Surface::Settings, "Your themes"),
+            (Surface::Settings, "Git identity"),
         ]),
         by: || appearance::ui_size(16. + 6.),
         reason: "a ghost Button whose icon leads its label, as Pull requests, Refresh PRs and \
-                 New pull request do, and Your themes' New theme… where the actions wrap onto a \
-                 line of their own, stands its 16 px icon at the text's edge, its frame its \
-                 label inset before it, and starts its label after the icon's 6 px gap",
+                 New pull request do, Your themes' New theme… where the actions wrap onto a \
+                 line of their own, Git identity's Manage named profiles… and its Reset edits \
+                 wrapped below Save repository identity, stands its 16 px icon at the text's \
+                 edge, its frame its label inset before it, and starts its label after the \
+                 icon's 6 px gap",
     },
     Offset {
         panel: Some(SETTINGS_SECTIONS),
@@ -388,12 +389,6 @@ const OFFSETS: &[Offset] = &[
         reason: "a theme card stands at the section's edge, its caption's name and description \
                  inside the card's 1 px border, its 2 px padding and its preview box's 1 px \
                  border, after the caption's 0.75 rem padding",
-    },
-    Offset {
-        panel: Some(&[(Surface::Settings, "Appearance")]),
-        by: || appearance::ui_size(6.5),
-        reason: "a text size's controls, wrapped below its description, stand their small ghost \
-                 − at the edge, its label after the small Button's 0.5 rem padding",
     },
     Offset {
         panel: Some(&[(Surface::Settings, "Git identity")]),

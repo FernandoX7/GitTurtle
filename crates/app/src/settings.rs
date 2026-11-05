@@ -850,85 +850,96 @@ impl GitTurtle {
             // Rows are spaced more than a rem apart. Too narrow for the
             // controls beside the text, the row puts them on a line of their
             // own below it.
-            .child(wrapping_row(
-                div().debug_selector(move || {
-                    format!("text-size-row-{}", if code { "code" } else { "interface" })
-                }),
-                setting_description(label, explanation, cx),
-                div()
-                    .debug_selector(move || {
-                        format!(
-                            "text-size-controls-{}",
-                            if code { "code" } else { "interface" }
+            .child(
+                wrapping_row(
+                    div().debug_selector(move || {
+                        format!("text-size-row-{}", if code { "code" } else { "interface" })
+                    }),
+                    setting_description(label, explanation, cx),
+                    div()
+                        .debug_selector(move || {
+                            format!(
+                                "text-size-controls-{}",
+                                if code { "code" } else { "interface" }
+                            )
+                        })
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![
+                                Some(decrease.clone()),
+                                None,
+                                Some(increase.clone()),
+                                Some(reset.clone()),
+                            ],
+                            cx,
+                        ))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            Button::new(("text-size-decrease", usize::from(code)))
+                                .track_focus(&decrease)
+                                .debug_selector(move || {
+                                    format!(
+                                        "text-size-decrease-{}",
+                                        if code { "code" } else { "interface" }
+                                    )
+                                })
+                                .small()
+                                .ghost()
+                                .label("−")
+                                .accessibility_label(format!("Decrease {}", label.to_lowercase()))
+                                .disabled(value <= *bounds.start())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, value.saturating_sub(1), window, cx)
+                                })),
                         )
-                    })
-                    .on_children_prepainted(self.keep_in_view(
-                        vec![
-                            Some(decrease.clone()),
-                            None,
-                            Some(increase.clone()),
-                            Some(reset.clone()),
-                        ],
-                        cx,
-                    ))
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new(("text-size-decrease", usize::from(code)))
-                            .track_focus(&decrease)
-                            .small()
-                            .ghost()
-                            .label("−")
-                            .accessibility_label(format!("Decrease {}", label.to_lowercase()))
-                            .disabled(value <= *bounds.start())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, value.saturating_sub(1), window, cx)
-                            })),
-                    )
-                    .child(
-                        native_accessibility::static_text(
-                            div().id(("text-size-value", usize::from(code))),
-                            format!("{label}, {value} points"),
+                        .child(
+                            native_accessibility::static_text(
+                                div().id(("text-size-value", usize::from(code))),
+                                format!("{label}, {value} points"),
+                            )
+                            .min_w(appearance::ui_size(42.))
+                            .text_center()
+                            .text_size(appearance::ui_text(12.))
+                            .child(format!("{value} pt")),
                         )
-                        .min_w(appearance::ui_size(42.))
-                        .text_center()
-                        .text_size(appearance::ui_text(12.))
-                        .child(format!("{value} pt")),
-                    )
-                    .child(
-                        Button::new(("text-size-increase", usize::from(code)))
-                            .track_focus(&increase)
-                            .small()
-                            .ghost()
-                            .label("+")
-                            .accessibility_label(format!("Increase {}", label.to_lowercase()))
-                            .disabled(value >= *bounds.end())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, value.saturating_add(1), window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(("text-size-reset", usize::from(code)))
-                            .track_focus(&reset)
-                            .small()
-                            .ghost()
-                            .label("Reset")
-                            .accessibility_label(format!(
-                                "Reset {} to {default} points",
-                                label.to_lowercase()
-                            ))
-                            .disabled(value == default)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_text_size(code, default, window, cx)
-                            })),
-                    ),
-                // The kit's small Buttons' height (`h_6`), which the value
-                // between them does not exceed.
-                rem() * 1.5,
-                rem(),
-                cx,
-            ))
+                        .child(
+                            Button::new(("text-size-increase", usize::from(code)))
+                                .track_focus(&increase)
+                                .small()
+                                .ghost()
+                                .label("+")
+                                .accessibility_label(format!("Increase {}", label.to_lowercase()))
+                                .disabled(value >= *bounds.end())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, value.saturating_add(1), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(("text-size-reset", usize::from(code)))
+                                .track_focus(&reset)
+                                .small()
+                                .ghost()
+                                .label("Reset")
+                                .accessibility_label(format!(
+                                    "Reset {} to {default} points",
+                                    label.to_lowercase()
+                                ))
+                                .disabled(value == default)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_text_size(code, default, window, cx)
+                                })),
+                        ),
+                    // The kit's small Buttons' height (`h_6`), which the value
+                    // between them does not exceed.
+                    rem() * 1.5,
+                    rem(),
+                    cx,
+                )
+                // The small ghost −'s frame pads its label by the small Button's
+                // 0.5 rem (`px_2`): wrapped, its label stands on the title's edge.
+                .ghost_lead(rem() * 0.5),
+            )
             .child(
                 div()
                     .w_full()
@@ -2681,6 +2692,9 @@ impl GitTurtle {
                     .unwrap_or_default()
             );
             let manage_profiles = self.page_focus("settings-manage-profiles", cx);
+            // How far Reset edits and Manage named profiles…, ghost Buttons,
+            // stand their frames before the card's text edge.
+            let pull = ghost_pull(window);
             div()
                 // The repository card, Name, Email, the signing line, the
                 // save buttons, the note and Manage named profiles….
@@ -2753,10 +2767,18 @@ impl GitTurtle {
                         ))
                         .flex()
                         .flex_wrap()
-                        .gap_2()
+                        // Reset edits, a ghost Button, wrapped onto a line of
+                        // its own stands its icon on the card's edge, its
+                        // frame `pull` before it; beside Save its margin takes
+                        // back what the gap adds, so there it stays the gap
+                        // past Save and the row wraps where it did, as a
+                        // wrapping row's ghost lead does.
+                        .gap_y(window.rem_size() * 0.5)
+                        .gap_x(window.rem_size() * 0.5 + pull)
                         .child(
                             Button::new("save-repository-identity")
                                 .track_focus(&save_identity)
+                                .debug_selector(|| "save-repository-identity".into())
                                 .primary()
                                 .icon(Icon::default().path("icons/check.svg").size(px(14.)))
                                 .label(if looks_busy { "Working…" } else { "Save repository identity" })
@@ -2766,6 +2788,8 @@ impl GitTurtle {
                         .child(
                             button("use-current-identity", "Reset edits", "refresh", false)
                                 .track_focus(&reset_identity)
+                                .debug_selector(|| "use-current-identity".into())
+                                .ml(-pull)
                                 .tooltip("Restore the repository’s current name and email")
                                 .map(|reset| {
                                     let unavailable = self.profile.is_none() || !identity_edited;
@@ -2776,7 +2800,11 @@ impl GitTurtle {
                         ),
                 )
                 .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
-                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).map(|manage| crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy, looks_busy)).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                // A ghost Button at the card's text edge: its icon on the
+                // edge, its frame `pull` before it, as wide as its content
+                // as Settings' other ghost Buttons are. Stretched across the
+                // column, it centred its icon and label in the card.
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).debug_selector(|| "settings-manage-profiles".into()).self_start().ml(-pull).map(|manage| crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy, looks_busy)).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
                 .into_any_element()
         } else {
             let open_projects = self.page_focus("settings-open-projects", cx);
@@ -2801,6 +2829,8 @@ impl GitTurtle {
                         .text_color(rgb(p.muted))
                         .child("Your Git name, email, and signing preference will appear here."),
                 )
+                // A ghost Button at the card's text edge: its icon on the
+                // edge, its frame its label inset before it.
                 .child(
                     button(
                         "settings-open-projects",
@@ -2809,6 +2839,8 @@ impl GitTurtle {
                         false,
                     )
                     .track_focus(&open_projects)
+                    .debug_selector(|| "settings-open-projects".into())
+                    .ml(-ghost_pull(window))
                     .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
                 )
                 .into_any_element()
@@ -4962,6 +4994,20 @@ impl WrappingRow {
     }
 }
 
+/// How far a ghost Button standing at a Settings card's text edge, a
+/// labelled control of the `button` helper, transparent at rest, stands its
+/// frame before that edge: its label inset, on the device pixel layout places
+/// that padding on, so its content, its leading icon, else its label, lands
+/// on the edge, its hover fill and focus ring spreading into the card's
+/// padding (DESIGN.md, "One left edge"). The ring takes this and its own 3 px
+/// before the edge, which the section cards' 1.25 rem padding holds at every
+/// size: 13 px of 16.25 at 13 pt, 17 of 22.5 at 18 pt. Standing its frame on
+/// the edge, a wrapped Reset edits started its icon 10 px past the field
+/// labels at 13 pt and 14 px at 18 pt.
+fn ghost_pull(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(crate::LABEL_INSET))
+}
+
 impl RenderOnce for WrappingRow {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
         let top = beside_title(title_line(window), self.height, self.room - self.ring);
@@ -7012,6 +7058,33 @@ mod picker_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Where the leftmost text run the last frame drew inside `area` starts,
+    /// in a window whose root marks every text run
+    /// (`width_walk::text_mark`).
+    fn text_start_in(cx: &mut VisualTestContext, area: Bounds<Pixels>) -> Option<Pixels> {
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == mark)
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .filter(|run| area.contains(&run.center()))
+                .map(|run| run.left())
+                .reduce(Pixels::min)
+        })
+    }
+
     /// The focus ring the last frame drew around a Button's or a Switch's
     /// `control`: the bordered quad the installed `Theme::button_focus_ring`
     /// paints there, within a device pixel.
@@ -7203,7 +7276,9 @@ mod picker_tests {
     /// Import a theme file no longer fit beside the text with the text at
     /// least 180 px (scaled) wide, so they start a line of their own at the
     /// title's left edge (New theme…, a ghost Button, by its icon, its frame
-    /// its label inset before it), a row gap (0.75 rem) below the description, with
+    /// its label inset before it, and a text size's small ghost − by its
+    /// label, its frame its 0.5 rem padding before it), a row gap (0.75 rem)
+    /// below the description, with
     /// nothing reserved above them; the text takes the row's whole width,
     /// nothing overlaps, the row ends at the actions' foot, and each action's
     /// focus ring is drawn whole inside the card and the page's view. At
@@ -7228,26 +7303,28 @@ mod picker_tests {
         let ring = cx.read(appearance::button_ring_room);
         let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
         // Each row's title, its control, the row the control wraps in and
-        // whether the control leads with a ghost Button, whose frame stands
-        // its label inset before the title's edge on a line of its own.
-        let rows = [
+        // how far its leading ghost Button's content starts inside its
+        // frame, which on a line of its own stands that far before the
+        // title's edge: New theme…'s label inset, a text size's small −'s
+        // 0.5 rem padding.
+        let rows: [(_, _, _, fn() -> Pixels); 3] = [
             (
                 "Your themes",
                 "custom-themes-actions",
                 "custom-themes-header",
-                true,
+                || appearance::ui_size(crate::LABEL_INSET),
             ),
             (
                 "Interface text size",
                 "text-size-controls-interface",
                 "text-size-row-interface",
-                false,
+                || rem() * 0.5,
             ),
             (
                 "Code text size",
                 "text-size-controls-code",
                 "text-size-row-code",
-                false,
+                || rem() * 0.5,
             ),
         ];
         let mut wrapped = Vec::new();
@@ -7271,9 +7348,8 @@ mod picker_tests {
             settle(cx);
             let gap = rem() * 0.75;
             let line = cx.update(|window, _| title_line(window));
-            let inset =
-                cx.update(|window, _| window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)));
-            for (title, control, row, ghost) in rows {
+            for (title, control, row, lead) in rows {
+                let inset = cx.update(|window, _| window.pixel_snap(lead()));
                 let (Some(heading), Some(detail), Some(control), Some(row)) = (
                     drawn(cx, format!("setting-title: {title}")),
                     drawn(cx, format!("setting-detail: {title}")),
@@ -7307,7 +7383,7 @@ mod picker_tests {
                     continue;
                 }
                 wrapped.push(format!("{title} at {at}"));
-                let edge = heading.left() - if ghost { inset } else { px(0.) };
+                let edge = heading.left() - inset;
                 if (control.left() - edge).abs() > slack
                     || (control.top() - detail.bottom() - gap).abs() > slack
                     || (text - row.size.width).abs() > slack
@@ -7402,30 +7478,7 @@ mod picker_tests {
         // Every text run marked, so the test reads where New theme…'s label
         // is drawn.
         let (app, cx) = open_styled_app(cx, |root| root.text_bg(crate::width_walk::text_mark()));
-        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
-        // Where the first text run the last frame drew inside `frame` starts.
-        let label_in = |cx: &mut VisualTestContext, frame: Bounds<Pixels>| {
-            cx.update(|window, _| {
-                let scale = window.scale_factor();
-                window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|quad| quad.background == mark)
-                    .map(|quad| {
-                        let b = quad.bounds;
-                        Bounds::from_corners(
-                            point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
-                            point(
-                                px(b.right().as_f32() / scale),
-                                px(b.bottom().as_f32() / scale),
-                            ),
-                        )
-                    })
-                    .filter(|run| frame.contains(&run.center()))
-                    .map(|run| run.left())
-                    .reduce(Pixels::min)
-            })
-        };
+        let label_in = text_start_in;
         cx.update(|window, cx| {
             cx.set_reduce_motion(true);
             ThemeChoice::Midnight.apply(Some(window), cx);
@@ -7615,6 +7668,306 @@ mod picker_tests {
             "the actions stay beside the text at 1,480 px: {wrapped:?}"
         );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Where a ghost Button, which paints nothing at rest, stands at a
+    /// Settings card's text edge, its content stands on the edge and its
+    /// frame in the card's padding before it (DESIGN.md, "One left edge"),
+    /// at 13 and 18 pt: Git identity's Manage named profiles…, its "user"
+    /// icon on the edge its field labels and notes start at; Reset edits,
+    /// wrapped onto a line of its own below Save repository identity, its
+    /// icon there too; the Interface text size's −, wrapped below its
+    /// description, its label on its title's edge; and, with no repository
+    /// open, Choose a project, its icon on the edge the card's lines start
+    /// at. The icons draw no text, so the test reads where each label is
+    /// drawn, every text run marked, and places the icon its 16 px and their
+    /// 6 px gap before it. Tab onto each, where it stands at the edge, draws
+    /// its ring whole inside the card's 1 px border and the page's view.
+    /// Beside Save, in a single column of cards, Reset edits stays 0.5 rem
+    /// past it; beside its text the − is not measured, as it never moved
+    /// there. Standing their frames on the edge, Reset edits and Choose a
+    /// project started their icons 10 px past it at 13 pt and 14 px at
+    /// 18 pt, and the − its label 6.5 and 9 px; Manage, stretched across the
+    /// card, centred its content in it.
+    #[gpui::test]
+    async fn settings_ghost_buttons_stand_their_content_on_the_cards_text_edge(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::History, cx).await;
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            app.update(cx, |app, cx| app.show_settings(window, cx))
+        });
+        crate::views::tests::settle(&app, cx).await;
+        // An edit, so Save and Reset edits take focus.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.identity_name
+                    .update(cx, |input, cx| input.set_value("Another Name", window, cx))
+            })
+        });
+        settle(cx);
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let handles = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                [
+                    app.page_focus("settings-manage-profiles", cx),
+                    app.page_focus("use-current-identity", cx),
+                    app.page_focus(("text-size-decrease", 0_usize), cx),
+                ]
+            })
+        });
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width) in [
+            (13, 1480.),
+            (18, 1480.),
+            (13, 1000.),
+            (13, 760.),
+            (18, 1000.),
+            (18, 760.),
+            (13, 360.),
+            (18, 461.),
+        ] {
+            let at = format!("{interface} pt at {width}");
+            cx.simulate_resize(size(px(width), px(980.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            let slack = cx.update(|window, _| px(1. / window.scale_factor()));
+            for (index, selector) in [
+                "settings-manage-profiles",
+                "use-current-identity",
+                "text-size-decrease-interface",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                // Tab onto it, from the control before it, which also scrolls
+                // it into the page's view.
+                cx.update(|window, cx| {
+                    window.focus(&handles[index], cx);
+                    window.focus_prev(cx);
+                });
+                settle(cx);
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                if !cx.update(|window, _| handles[index].is_focused(window)) {
+                    failures.push(format!("{at}: Tab does not reach {selector}"));
+                    continue;
+                }
+                let card_selector = if index == 2 {
+                    "settings-section: Appearance"
+                } else {
+                    "settings-section: Git identity"
+                };
+                let (Some(frame), Some(card), Some(view)) = (
+                    drawn(cx, selector.to_owned()),
+                    drawn(cx, card_selector.to_owned()),
+                    drawn(cx, "settings-scroll".to_owned()),
+                ) else {
+                    failures.push(format!("{at}: {selector} is not drawn"));
+                    continue;
+                };
+                let Some(label) = text_start_in(cx, frame) else {
+                    failures.push(format!("{at}: {selector} {frame:?} draws no label"));
+                    continue;
+                };
+                // Where its content starts, and the text edge it stands at:
+                // the card's text where its lines lead the card, the text
+                // size's title for the −.
+                let (content, edge) = match index {
+                    0 => (
+                        icon_before(cx, label),
+                        text_start_in(cx, card.intersect(&view)),
+                    ),
+                    1 => {
+                        let Some(save) = drawn(cx, "save-repository-identity".to_owned()) else {
+                            failures.push(format!("{at}: Save repository identity is not drawn"));
+                            continue;
+                        };
+                        if save.top() + slack >= frame.top() {
+                            // Beside Save, where it always stood.
+                            wrapped.push(format!("Reset edits beside Save at {at}"));
+                            if (frame.left() - save.right() - rem() * 0.5).abs() > slack {
+                                failures.push(format!(
+                                    "{at}: beside Save {save:?}, Reset edits {frame:?} is not \
+                                     0.5 rem past it"
+                                ));
+                            }
+                            continue;
+                        }
+                        wrapped.push(format!("Reset edits at {at}"));
+                        (
+                            icon_before(cx, label),
+                            text_start_in(cx, card.intersect(&view)),
+                        )
+                    }
+                    _ => {
+                        let (Some(title), Some(detail)) = (
+                            drawn(cx, "setting-title: Interface text size".to_owned()),
+                            drawn(cx, "setting-detail: Interface text size".to_owned()),
+                        ) else {
+                            failures.push(format!("{at}: the text size's row is not drawn"));
+                            continue;
+                        };
+                        if frame.top() + slack < detail.bottom() {
+                            // Beside its text, where it always stood.
+                            continue;
+                        }
+                        wrapped.push(format!("− at {at}"));
+                        (label, Some(title.left()))
+                    }
+                };
+                failures.extend(on_the_edge(
+                    cx, &at, selector, content, edge, frame, card, view,
+                ));
+            }
+        }
+        // Git identity with no repository open: Choose a project, its
+        // "folder" icon on the edge the card's lines start at.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.close_repository_tab(0, window, cx);
+                app.show_settings(window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let choose = cx
+            .update(|_, cx| app.update(cx, |app, cx| app.page_focus("settings-open-projects", cx)));
+        for (interface, width) in [(13, 1480.), (18, 1480.), (13, 360.), (18, 461.)] {
+            let at = format!("{interface} pt at {width}, no repository open");
+            cx.simulate_resize(size(px(width), px(980.)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            settle(cx);
+            cx.update(|window, cx| {
+                window.focus(&choose, cx);
+                window.focus_prev(cx);
+            });
+            settle(cx);
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            if !cx.update(|window, _| choose.is_focused(window)) {
+                failures.push(format!("{at}: Tab does not reach Choose a project"));
+                continue;
+            }
+            let (Some(frame), Some(card), Some(view)) = (
+                drawn(cx, "settings-open-projects".to_owned()),
+                drawn(cx, "settings-section: Git identity".to_owned()),
+                drawn(cx, "settings-scroll".to_owned()),
+            ) else {
+                failures.push(format!("{at}: Choose a project is not drawn"));
+                continue;
+            };
+            let Some(label) = text_start_in(cx, frame) else {
+                failures.push(format!("{at}: Choose a project {frame:?} draws no label"));
+                continue;
+            };
+            let content = icon_before(cx, label);
+            let edge = text_start_in(cx, card.intersect(&view));
+            failures.extend(on_the_edge(
+                cx,
+                &at,
+                "settings-open-projects",
+                content,
+                edge,
+                frame,
+                card,
+                view,
+            ));
+        }
+        for required in [
+            "Reset edits at 13 pt at 360",
+            "Reset edits at 18 pt at 461",
+            "− at 13 pt at 360",
+            "− at 18 pt at 461",
+        ] {
+            assert!(
+                wrapped.iter().any(|layout| layout == required),
+                "{required} wraps: {wrapped:?}"
+            );
+        }
+        for size in ["13 pt", "18 pt"] {
+            assert!(
+                wrapped
+                    .iter()
+                    .any(|layout| layout.starts_with(&format!("Reset edits beside Save at {size}"))),
+                "Reset edits stands beside Save in some layout at {size}: {wrapped:?}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A leading icon's left edge, from where the label after it starts:
+    /// the icon's 16 px and their 6 px gap before it, as layout places them
+    /// on device pixels.
+    fn icon_before(cx: &mut VisualTestContext, label: Pixels) -> Pixels {
+        cx.update(|window, _| {
+            label
+                - window.pixel_snap(appearance::ui_size(6.))
+                - window.pixel_snap(appearance::ui_size(16.))
+        })
+    }
+
+    /// Where a ghost Button `selector`, drawn at `frame` and focused by Tab,
+    /// fails to stand its `content` on the text's `edge`, within a device
+    /// pixel, or draws its ring past its `card`'s 1 px border or the page's
+    /// `view`, by half a device pixel.
+    #[allow(clippy::too_many_arguments)]
+    fn on_the_edge(
+        cx: &mut VisualTestContext,
+        at: &str,
+        selector: &str,
+        content: Pixels,
+        edge: Option<Pixels>,
+        frame: Bounds<Pixels>,
+        card: Bounds<Pixels>,
+        view: Bounds<Pixels>,
+    ) -> Vec<String> {
+        let slack = cx.update(|window, _| px(1. / window.scale_factor()));
+        let Some(edge) = edge else {
+            return vec![format!("{at}: no text is drawn at {selector}'s card")];
+        };
+        let mut failures = Vec::new();
+        if (content - edge).abs() > slack {
+            failures.push(format!(
+                "{at}: {selector} {frame:?} starts its content at {content:?}, not on the \
+                 text's edge {edge:?}"
+            ));
+        }
+        let Some(ring) = ring_around(cx, frame) else {
+            failures.push(format!("{at}: focused by Tab, {selector} draws no ring"));
+            return failures;
+        };
+        let within = |outer: Bounds<Pixels>| {
+            ring.left() + slack / 2. >= outer.left()
+                && ring.top() + slack / 2. >= outer.top()
+                && ring.right() <= outer.right() + slack / 2.
+                && ring.bottom() <= outer.bottom() + slack / 2.
+        };
+        let border = Bounds::from_corners(
+            card.origin + point(px(1.), px(1.)),
+            card.bottom_right() - point(px(1.), px(1.)),
+        );
+        if !within(border) || !within(view) {
+            failures.push(format!(
+                "{at}: {selector}'s ring {ring:?} leaves its card's border {border:?} or the \
+                 page's view {view:?}"
+            ));
+        }
+        failures
     }
 
     /// A press on a switch's row, its title or its description, toggles the
