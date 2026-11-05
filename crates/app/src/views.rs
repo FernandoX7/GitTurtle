@@ -3043,6 +3043,11 @@ impl GitTurtle {
 
     /// Opens the highlighted changed file's menu beside its row, from
     /// Shift-F10 or the Menu key: the menu a right-click on the row opens.
+    /// It belongs to its file, by path, not to the row's place: where the
+    /// rows change under it, as a slow path filter's answer or the commit's
+    /// files landing again replace them, it stays open beside the row that
+    /// holds its file now, and it closes, focus back on the list, only once
+    /// no row does or another commit's files are shown.
     fn open_changed_file_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -3064,19 +3069,60 @@ impl GitTurtle {
             .selected_commit
             .and_then(|index| self.commits.get(index))
             .map(|commit| commit.oid.clone());
-        let anchor = native_accessibility::KeyboardMenu::cursor_row(
+        let anchor = native_accessibility::ListRow::new(
             &self.file_scroll,
             row,
             window.pixel_snap(px(self.settings.density.file_row_height())),
             appearance::ui_size(appearance::PANE_INSET),
-        );
+        )
+        // Inside the pane's 1 px border, as the commit list is in its edge.
+        .framed(px(1.));
+        let place = anchor.place();
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let (shown, of) = (repository.clone(), commit.clone());
+        // The entry by both its paths, so two entries sharing one path, as a
+        // rename's source and a file added in its place, stay apart.
+        let entry = (file.old_path.clone(), file.new_path.clone());
+        // A row still holds the file, and the menu is drawn beside it. The
+        // row it was last beside is asked first, so a check while nothing
+        // moved reads one row; the rows are the list's own, read again only
+        // where they changed.
+        let holds = move |app: &GitTurtle| {
+            let selected = app
+                .selected_commit
+                .and_then(|index| app.commits.get(index))
+                .map(|commit| &commit.oid);
+            if app.path != shown || selected != of.as_ref() {
+                return false;
+            }
+            let is_entry = |file: &FileChange| file.old_path == entry.0 && file.new_path == entry.1;
+            // While the filter's answer for the files as they now stand is
+            // pending, as the commit's files landing again under a query
+            // leave it, no row is known yet: the menu stays while the files
+            // hold its entry, its place kept until the rows are known.
+            let Some(rows) = app.answered_file_rows() else {
+                return app.files.iter().any(&is_entry);
+            };
+            let holds = |row: usize| {
+                rows.get(row)
+                    .and_then(|index| app.files.get(*index))
+                    .is_some_and(is_entry)
+            };
+            let row = Some(place.get())
+                .filter(|row| holds(*row))
+                .or_else(|| (0..rows.len()).find(|row| holds(*row)));
+            if let Some(row) = row {
+                place.set(row);
+            }
+            row.is_some()
+        };
         // Built once: File history… reads nothing a write or a pause
         // changes, and a rebuild would only move the keyboard's cursor.
-        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
+        self.file_menu = Some(native_accessibility::KeyboardMenu::open_while(
             anchor,
             self.file_focus.clone(),
             move |menu| changed_file_menu(menu, owner, repository, file, commit),
+            holds,
             Self::dismiss_file_menu,
             window,
             cx,
@@ -3174,7 +3220,7 @@ impl GitTurtle {
             _ => ("file-modified", colors.modified, "Modified"),
         };
         let row = div()
-            .id(("file", index))
+            .id(changed_file_id(file))
             .debug_selector(move || {
                 if active {
                     "selected-changed-file".into()
@@ -4204,6 +4250,25 @@ fn worktree_row_menu(
         );
     }
     menu
+}
+
+/// A changed file's row ID: the entry it shows, by its paths, rather than
+/// its place in the commit's list, so the window's accessibility tree keeps
+/// one node for each file as another commit's files or the same commit's
+/// read again replace the list, taking nodes away and adding others rather
+/// than renaming them, as Keyboard Shortcuts' rows are kept
+/// (`shortcuts::HelpRow::id`). The paths' bytes are hashed as Git gave them,
+/// so the ID costs no allocation as each frame lays the rows out; its debug
+/// selector is still its place.
+fn changed_file_id(file: &FileChange) -> ElementId {
+    use std::hash::{Hash, Hasher};
+    fn bytes(path: &Option<std::path::PathBuf>) -> Option<&[u8]> {
+        path.as_deref()
+            .map(|path| path.as_os_str().as_encoded_bytes())
+    }
+    let mut paths = std::hash::DefaultHasher::new();
+    (bytes(&file.old_path), bytes(&file.new_path)).hash(&mut paths);
+    ElementId::NamedInteger("changed-file".into(), paths.finish())
 }
 
 /// A History changed file's menu, which a right-click on its row and
@@ -27755,6 +27820,226 @@ pub(crate) mod tests {
         drop(fixture);
     }
 
+    /// History's keyboard menu on a changed file belongs to its file, by
+    /// path, not to its row's place, and so does the selection: Shift-F10 on
+    /// the second file, then the commit's files land again with two more
+    /// above it. The file stays selected, and the
+    /// menu stays open and focused beside the row that holds it now, two
+    /// rows down, as far below that row as it was below the row it opened
+    /// on; files arriving without it close the menu, focus back on the
+    /// list. Kept to the row's place, the menu stayed beside whichever file
+    /// took it.
+    #[gpui::test]
+    async fn a_changed_files_keyboard_menu_follows_its_file_as_rows_arrive_above(
+        cx: &mut TestAppContext,
+    ) {
+        const HISTORY: &str = "menu-item: File history… · MenuItem";
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfiles\n",
+        );
+        for name in ["c.txt", "e.txt", "g.txt", "i.txt"] {
+            script.push_str(&format!("M 100644 inline {name}\ndata 2\n{}\n", &name[..1]));
+        }
+        script.push_str("\ndone\n");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        let path = std::path::Path::new("e.txt");
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app
+                    .files
+                    .iter()
+                    .position(|file| file.path() == path)
+                    .expect("the commit changes e.txt");
+                assert_eq!(index, 1, "e.txt is the second file");
+                app.selected_file = Some(index);
+                app.preferred_file = Some(path.to_owned());
+                app.pane = Pane::Files;
+                window.focus(&app.file_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let selected = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.selected_file
+                    .and_then(|index| app.files.get(index))
+                    .map(|file| file.path().to_owned())
+            })
+        };
+        // e.txt's row writes one accessibility node, by its path, wherever
+        // it stands: keyed by its place, the node that had held it was
+        // renamed for the file that moved into it.
+        let node = app.read_with(cx, |app, _| {
+            let file = app.files.iter().find(|file| file.path() == path);
+            changed_file_id(file.expect("e.txt")).to_string()
+        });
+        let names_e = |cx: &mut VisualTestContext| {
+            native_accessibility::written::forget();
+            draw(cx);
+            native_accessibility::written::get(&node)
+                .and_then(|written| written.node.label().map(str::to_owned))
+                .is_some_and(|name| name.starts_with("e.txt · "))
+        };
+        assert!(names_e(cx), "e.txt's row writes its node {node}");
+        let before = cx
+            .debug_bounds("selected-changed-file")
+            .expect("the selected file's row");
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        let item = cx.debug_bounds(HISTORY).expect("Shift-F10 opened the menu");
+        let below = item.top() - before.bottom();
+        let arrive = |cx: &mut VisualTestContext, files: Vec<FileChange>| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.receive(
+                        Output::Changes(files, std::time::Duration::ZERO),
+                        window,
+                        cx,
+                    )
+                })
+            });
+            draw(cx);
+        };
+        let mut files = app.read_with(cx, |app, _| app.files.clone());
+        for name in ["b.txt", "a.txt"] {
+            let mut file = files[0].clone();
+            file.old_path = Some(name.into());
+            file.new_path = Some(name.into());
+            files.insert(0, file);
+        }
+        arrive(cx, files.clone());
+        assert_eq!(
+            selected(cx).as_deref(),
+            Some(path),
+            "the selection stays on e.txt"
+        );
+        let row = app.read_with(cx, |app, _| app.selected_file);
+        assert_eq!(row, Some(3), "two rows arrived above e.txt");
+        assert!(names_e(cx), "e.txt's row keeps its node {node}");
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_some()),
+            "the menu stays open on its file"
+        );
+        assert!(
+            cx.update(|window, cx| app
+                .read(cx)
+                .file_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx))),
+            "and keeps focus"
+        );
+        let after = cx
+            .debug_bounds("selected-changed-file")
+            .expect("the selected file's row");
+        assert!(
+            after.top() >= before.bottom() + before.size.height - px(0.5),
+            "e.txt's row {after:?} moved two rows down from {before:?}"
+        );
+        let item = cx.debug_bounds(HISTORY).expect("the menu is drawn");
+        assert!(
+            (item.top() - after.bottom() - below).abs() <= px(0.5),
+            "the menu's item {item:?} lies {below:?} below e.txt's row {after:?}"
+        );
+        files.retain(|file| file.path() != path);
+        arrive(cx, files);
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_none()),
+            "the menu closed with its file"
+        );
+        assert!(focused(cx), "focus is back on the changed-file list");
+    }
+
+    /// History's keyboard menu on a changed file stays open while a path
+    /// filter answers for the commit's files landing again: with a query
+    /// typed, the files arriving afresh leave the filter's rows unknown
+    /// until its answer lands, and the menu, judging by those rows, closed
+    /// though its file was still listed. It closes only once its file is
+    /// gone.
+    #[gpui::test]
+    async fn a_changed_files_keyboard_menu_stays_while_the_filter_answers(cx: &mut TestAppContext) {
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nfiles\n",
+        );
+        for name in ["c.txt", "e.txt", "g.txt", "i.txt"] {
+            script.push_str(&format!("M 100644 inline {name}\ndata 2\n{}\n", &name[..1]));
+        }
+        script.push_str("\ndone\n");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        hold_quiet_reads_for_test(&app, cx);
+        let path = std::path::Path::new("e.txt");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.file_filter
+                    .update(cx, |input, cx| input.set_value("txt", window, cx));
+                app.change_file_filter(window, cx);
+            })
+        });
+        crate::path_filter::filters_land(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app.files.iter().position(|file| file.path() == path);
+                app.selected_file = Some(index.expect("the commit changes e.txt"));
+                app.preferred_file = Some(path.to_owned());
+                app.pane = Pane::Files;
+                window.focus(&app.file_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        let open = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.file_menu.is_some());
+        assert!(open(cx), "Shift-F10 opened the menu");
+        let mut files = app.read_with(cx, |app, _| app.files.clone());
+        let arrive = |cx: &mut VisualTestContext, files: Vec<FileChange>| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.receive(
+                        Output::Changes(files, std::time::Duration::ZERO),
+                        window,
+                        cx,
+                    )
+                })
+            });
+            draw(cx);
+        };
+        // The same files landing again, the filter's answer for them
+        // pending as the menu checks them.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.receive(
+                    Output::Changes(files.clone(), std::time::Duration::ZERO),
+                    window,
+                    cx,
+                )
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.file_paths.pending),
+            "the filter answers for the files afresh"
+        );
+        assert!(open(cx), "the menu stays open while the filter answers");
+        draw(cx);
+        crate::path_filter::filters_land(&app, cx);
+        assert!(open(cx), "and once it has answered");
+        files.retain(|file| file.path() != path);
+        arrive(cx, files);
+        crate::path_filter::filters_land(&app, cx);
+        assert!(!open(cx), "the menu closed with its file");
+    }
+
     /// Shift-F10 on History's lowest whole row, where the room down to the
     /// status bar holds too few of the commit's menu's rows, opens the menu
     /// wholly above the row, with the gap every menu keeps from what it
@@ -30867,11 +31152,18 @@ pub(crate) mod tests {
                     && row.y1 <= outer.y1 + 0.01
             };
             let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            // Each row writes its node by its file's paths
+            // (`changed_file_id`), wherever it stands in the list.
+            let ids: Vec<String> = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .map(|file| changed_file_id(file).to_string())
+                    .collect()
+            });
+            assert_eq!(ids.len(), 30, "{at}: the commit's files");
             let mut rows = 0;
-            for index in 0..30 {
-                let Some(node) =
-                    crate::native_accessibility::written::get(&format!("file-{index}"))
-                else {
+            for (index, id) in ids.iter().enumerate() {
+                let Some(node) = crate::native_accessibility::written::get(id) else {
                     continue;
                 };
                 rows += 1;

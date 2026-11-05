@@ -178,6 +178,17 @@ impl GitTurtle {
         }
     }
 
+    /// The rows the filter has answered with for the changed files as they
+    /// now stand, or `None` while its answer for them is pending or its rows
+    /// belong to other files: a History changed file's keyboard menu, which
+    /// follows its file's row, then judges by the files alone
+    /// (`GitTurtle::open_changed_file_menu`).
+    pub(super) fn answered_file_rows(&self) -> Option<Arc<[usize]>> {
+        (self.file_paths.identity == Some((self.files.as_ptr() as usize, self.files.len()))
+            && !self.file_paths.pending)
+            .then(|| Arc::clone(&self.file_paths.visible))
+    }
+
     /// Every replacement of the owned changed-file snapshot calls this hook.
     /// The identity guard also prevents a missed clear from exposing stale rows.
     pub(super) fn refresh_file_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {

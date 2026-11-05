@@ -387,6 +387,35 @@ impl KeyboardMenu {
         Self::built(row.into(), focus, build, dismissed, window, cx)
     }
 
+    /// [`Self::open`] for a menu that belongs to what its row shows: built
+    /// once with `build`, as `open` builds it, since its items read nothing
+    /// a write or a pause changes (a changed file's File history…), and
+    /// closed through `dismissed`, focus back on its list, as soon as
+    /// `holds` finds that no row holds what it acts on, as
+    /// [`Self::following`] closes. Unlike `following` it is never built
+    /// again: a rebuild would only move the keyboard's cursor back to the
+    /// first item at each write's start and end.
+    pub(super) fn open_while(
+        row: impl Into<RowPlace>,
+        focus: FocusHandle,
+        build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
+        holds: impl Fn(&GitTurtle) -> bool + 'static,
+        dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+    ) -> Self {
+        let mut this = Self::built(row.into(), focus, build, dismissed, window, cx);
+        let mut gone = false;
+        this.watch(window, cx, move |app, menu, _, cx| {
+            if !gone && !holds(app) {
+                // Closed as Escape closes it.
+                gone = true;
+                menu.update(cx, |_, cx| cx.emit(DismissEvent));
+            }
+        });
+        this
+    }
+
     /// [`Self::open`] for a menu whose items read the window's state: from
     /// `app` as it opens, while the window is being updated, and from the
     /// window itself after. It is built again in place, as [`Self::rebuild`]
