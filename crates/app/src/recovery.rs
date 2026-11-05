@@ -2,8 +2,8 @@
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
-    CommitRecoveryPlan, OperationKind, RecoveryCommand, RecoveryKind, StashPage, StashSnapshot,
-    WriteCommand,
+    CommitRecoveryPlan, OperationKind, RecoveryCommand, RecoveryKind, StashEntry, StashPage,
+    StashSnapshot, WriteCommand,
 };
 use gpui_kit::component::{
     WindowExt,
@@ -1186,6 +1186,18 @@ fn amended_message(original: &str, initial: &CommitDraft, draft: &CommitDraft) -
     }
 }
 
+/// A saved stash's row ID: its stash commit, rather than its `stash@{n}`,
+/// which renumbers as a stash is saved above it or dropped below it, so the
+/// window's accessibility tree keeps one node for each stash as the list is
+/// read again. The commit is hashed, so the ID costs no allocation as each
+/// frame lays the rows out; its debug selector is still its place.
+fn stash_row_id(stash: &StashEntry) -> ElementId {
+    use std::hash::{Hash, Hasher};
+    let mut commit = std::hash::DefaultHasher::new();
+    stash.oid.hash(&mut commit);
+    ElementId::NamedInteger("saved-stash".into(), commit.finish())
+}
+
 fn list_key_selection(key: &str, selected: Option<usize>, count: usize) -> Option<usize> {
     if count == 0 {
         return None;
@@ -1746,8 +1758,12 @@ impl StashBrowser {
     /// replies land as the test parks.
     #[cfg(test)]
     pub(crate) fn lands(browser: &Entity<Self>, cx: &mut VisualTestContext) {
-        browser.read_with(cx, |browser, _| browser.metadata.drain());
-        crate::views::tests::draw(cx);
+        // The list's read, and the read of the stash it keeps selected
+        // (`Self::load_page`), which starts as the list lands.
+        for _ in 0..2 {
+            browser.read_with(cx, |browser, _| browser.metadata.drain());
+            crate::views::tests::draw(cx);
+        }
         assert!(
             browser.read_with(cx, |browser, _| browser.metadata_task.is_none()
                 && browser.loading.is_none()),
@@ -1874,6 +1890,12 @@ impl StashBrowser {
         self.clear_preview();
         self.snapshot = None;
         self.detail.scroll().set_offset(Point::default());
+        // The selected stash, by its stash commit, which the list read
+        // again keeps selected where it then stands.
+        let kept = self
+            .selected
+            .and_then(|index| self.page.as_ref()?.entries.get(index))
+            .map(|stash| stash.oid.clone());
         self.selected = None;
         self.selected_file = None;
         self.loading = Some("Reading stashes…");
@@ -1908,9 +1930,25 @@ impl StashBrowser {
                 }
                 match result {
                     Ok(page) => {
+                        // A stash saved since, from a terminal or the
+                        // Actions menu, renumbers the list above the one
+                        // selected, and a dropped one below it: the stash
+                        // stays selected by its commit, never by its
+                        // `stash@{n}`, and its saved changes are read
+                        // again, focus where it was. Gone, nothing is
+                        // selected.
+                        let kept = kept
+                            .and_then(|oid| page.entries.iter().position(|stash| stash.oid == oid));
                         this.page = Some(page);
                         this.offset = offset;
-                        this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                        match kept {
+                            Some(index) => {
+                                this.stash_scroll
+                                    .scroll_to_item(index, ScrollStrategy::Center);
+                                this.read_stash(index, window, cx);
+                            }
+                            None => this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top),
+                        }
                     }
                     Err(error) => {
                         this.read_alert = Some(crate::tags::alert_error_line(
@@ -1928,6 +1966,20 @@ impl StashBrowser {
     }
 
     fn select_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .page
+            .as_ref()
+            .is_some_and(|page| index < page.entries.len())
+        {
+            window.focus(&self.stash_focus, cx);
+            self.read_stash(index, window, cx);
+        }
+    }
+
+    /// Selects stash `index` and reads its saved changes, leaving focus
+    /// where it is, as the list read again keeps its stash selected
+    /// ([`Self::load_page`]).
+    fn read_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(stash) = self
             .page
             .as_ref()
@@ -1936,7 +1988,6 @@ impl StashBrowser {
         else {
             return;
         };
-        window.focus(&self.stash_focus, cx);
         if self.selected == Some(index) && self.error.is_none() {
             // Chosen again, as a click on its row, Up on the first or Home
             // does: the stash shown, or being read, stays, and so does
@@ -2498,44 +2549,50 @@ impl StashBrowser {
         };
         let p = palette(cx);
         let selected = self.selected == Some(index);
-        div()
-            .id(("saved-stash", stash.ordinal))
-            .debug_selector(move || format!("saved-stash-row-{index}"))
-            .role(Role::ListBoxOption)
-            .aria_selected(selected)
-            .aria_label(format!("{} · {}", stash.name, stash.selector))
-            .h(crate::appearance::ui_size(58.))
-            .w_full()
-            .px_3()
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .overflow_hidden()
-            .bg(rgb(if selected { p.selected } else { p.panel }))
-            .hover(|style| style.bg(rgb(p.row_hover(selected))))
-            .cursor_pointer()
-            .child(
-                div()
-                    .truncate()
-                    .text_size(crate::appearance::ui_text(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(stash.name.clone()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(p.muted))
-                    .child(format!(
-                        "{} · {} · {}",
-                        stash.selector,
-                        short_oid(&stash.oid),
-                        short_date(stash.timestamp)
-                    )),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| this.select_stash(index, window, cx)))
-            .into_any_element()
+        // Its node, which keeps its stash's ID, reports the part of the row
+        // the list draws, as History's changed files do.
+        native_accessibility::clips_children(
+            div()
+                .id(stash_row_id(stash))
+                .debug_selector(move || format!("saved-stash-row-{index}"))
+                .role(Role::ListBoxOption)
+                .aria_selected(selected)
+                .aria_label(format!("{} · {}", stash.name, stash.selector))
+                .h(crate::appearance::ui_size(58.))
+                .w_full()
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .overflow_hidden()
+                .bg(rgb(if selected { p.selected } else { p.panel }))
+                .hover(|style| style.bg(rgb(p.row_hover(selected))))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(crate::appearance::ui_text(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(stash.name.clone()),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(crate::appearance::ui_text(10.))
+                        .text_color(rgb(p.muted))
+                        .child(format!(
+                            "{} · {} · {}",
+                            stash.selector,
+                            short_oid(&stash.oid),
+                            short_date(stash.timestamp)
+                        )),
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.select_stash(index, window, cx)),
+                ),
+        )
+        .into_any_element()
     }
 
     fn render_file_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -3960,6 +4017,96 @@ mod tests {
             &["stash-comparison", "stash-detail"],
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A saved stash stays selected by its stash commit as the list is read
+    /// again: Refresh after a stash saved from a terminal, which renumbers
+    /// the list, keeps the stash that was selected selected one row down,
+    /// its saved changes read again and its row's node the same; Refresh
+    /// after it was dropped selects nothing. Refresh cleared the selection,
+    /// and the row's node took the stash that moved into its `stash@{n}`.
+    #[gpui::test]
+    async fn a_refresh_keeps_the_selected_stash_by_its_commit(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let notes = repo.path().join("notes.txt");
+        for message in ["first", "second"] {
+            std::fs::write(&notes, message).unwrap();
+            git(
+                repo.path(),
+                &["stash", "push", "--include-untracked", "-m", message],
+            );
+        }
+        let (app, cx) = window(cx, &repo);
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        landed(&app, cx, "saved-stash-row-1");
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("the Stashes dialog opens");
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.select_stash(1, window, cx)));
+        StashBrowser::lands(&stashes, cx);
+        let selected = |cx: &mut VisualTestContext| {
+            stashes.read_with(cx, |this, _| {
+                let stash = this
+                    .selected
+                    .and_then(|index| this.page.as_ref()?.entries.get(index));
+                (this.selected, stash.map(|stash| stash.oid.clone()))
+            })
+        };
+        let (row, first) = selected(cx);
+        assert_eq!(row, Some(1), "the first stash saved is selected");
+        let oid = first.expect("the selected stash");
+        // The accessibility node the stash's row writes, by the row's ID: its
+        // stash commit, wherever its `stash@{n}` puts it.
+        let id = stashes.read_with(cx, |this, _| {
+            stash_row_id(&this.page.as_ref().expect("the list").entries[1]).to_string()
+        });
+        let node = |cx: &mut VisualTestContext| {
+            crate::native_accessibility::written::forget();
+            draw(cx);
+            crate::native_accessibility::written::get(&id)
+                .and_then(|written| written.node.label().map(str::to_owned))
+        };
+        let named = node(cx).unwrap_or_else(|| panic!("the stash's row writes its node {id}"));
+        assert!(named.ends_with(": first · stash@{1}"), "{named}");
+        // Another saved from a terminal, above it.
+        std::fs::write(&notes, "third").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "third"],
+        );
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        StashBrowser::lands(&stashes, cx);
+        let (row, kept) = selected(cx);
+        assert_eq!(
+            row,
+            Some(2),
+            "the stash moved one row down and stays selected"
+        );
+        assert_eq!(kept, Some(oid.clone()), "by its commit");
+        let named = node(cx).unwrap_or_else(|| panic!("the stash's row keeps its node {id}"));
+        assert!(
+            named.ends_with(": first · stash@{2}"),
+            "the row's node stays with the stash, renumbered: {named}"
+        );
+        assert!(
+            stashes.read_with(cx, |this, _| this
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.stash.oid == oid)),
+            "its saved changes are read again"
+        );
+        git(repo.path(), &["stash", "drop", "-q", "stash@{2}"]);
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            selected(cx),
+            (None, None),
+            "a dropped stash leaves nothing selected"
+        );
     }
 
     /// A stashed image's sides offer the open control Compare's image
