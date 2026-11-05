@@ -3,7 +3,11 @@
 //! When focus moves onto a control that lies wholly or partly outside the
 //! container, the container scrolls by the least amount that shows the whole
 //! control plus a margin: to the nearest edge, without centring or animation.
-//! Only a change of focus reveals, or a page that opens with focus on a
+//! A control taller than the view with its margins shows its leading edge,
+//! its top a margin below the view's, from either side: it holds the label
+//! and the first action, and both passes described below then agree, where
+//! the nearest edge showed its foot first and then its top, a swing between
+//! edges. Only a change of focus reveals, or a page that opens with focus on a
 //! control ([`FocusReveal::reveal_next_focus`]), or a resize or text-size
 //! change that cuts the focused control the last frame showed whole. That
 //! last reveal follows how focus was placed, not the last input: focus the
@@ -515,7 +519,13 @@ impl FocusReveal {
 
     /// The offset that shows `bounds`, where the control lies at the current
     /// offset, `margin` clear of `viewport`'s edges by the least scroll, if
-    /// the container can move at all.
+    /// the container can move at all. A control taller than the view, with
+    /// its margins, shows its leading edge, which holds its label and first
+    /// action: its top `margin` below the view's, from wherever it lies, so
+    /// the render's reveal and the request its bounds make agree. Shown by
+    /// the least scroll, it showed its foot when it lay below the view, and
+    /// the request then scrolled back to its top, so the page swung between
+    /// its edges.
     fn target(
         &self,
         bounds: Bounds<Pixels>,
@@ -525,7 +535,15 @@ impl FocusReveal {
         if viewport.size.height <= Pixels::ZERO {
             return None;
         }
-        let delta = if bounds.top() - margin < viewport.top() {
+        let tall = bounds.size.height + margin * 2. > viewport.size.height;
+        let delta = if tall {
+            let delta = viewport.top() - (bounds.top() - margin);
+            // Already there, to within what layout's arithmetic leaves.
+            if delta.abs() < px(0.01) {
+                return None;
+            }
+            delta
+        } else if bounds.top() - margin < viewport.top() {
             viewport.top() - (bounds.top() - margin)
         } else if bounds.bottom() + margin > viewport.bottom() {
             viewport.bottom() - (bounds.bottom() + margin)
@@ -573,6 +591,7 @@ impl FocusReveal {
 pub(crate) mod tests {
     use super::*;
     use crate::tags::tests::{content_mask, draw, holds, rendered};
+    use core::prelude::v1::test;
     use gpui_kit::component::Theme;
 
     /// One frame the container was prepainted and painted in, as it ended:
@@ -809,5 +828,145 @@ pub(crate) mod tests {
             away,
             "clicking {control} leaves {selector} where it was"
         );
+    }
+
+    /// The height of [`Tall`]'s page's view.
+    const VIEW: f32 = 200.;
+
+    /// A revealing page, [`VIEW`] tall, of a short control, a control taller
+    /// than the view and another short control, so far apart that each lies
+    /// outside the view while either of the others is shown.
+    struct Tall {
+        page: FocusReveal,
+        controls: [FocusHandle; 3],
+    }
+
+    impl Render for Tall {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.page.reveal(window, cx);
+            let room = ring_room_of(cx);
+            let control = |index: usize, height: f32| {
+                let focus = self.controls[index].clone();
+                div()
+                    .flex_shrink_0()
+                    .on_children_prepainted(self.page.control(focus.clone(), room))
+                    .child(
+                        div()
+                            .id(("tall-control", index))
+                            .track_focus(&focus.tab_stop(true))
+                            .h(px(height)),
+                    )
+            };
+            let gap = || div().flex_shrink_0().h(px(VIEW * 1.5));
+            div().size_full().child(
+                div()
+                    .on_children_prepainted(self.page.observe())
+                    .id("tall-page")
+                    .h(px(VIEW))
+                    .overflow_y_scroll()
+                    .track_scroll(self.page.scroll())
+                    .flex()
+                    .flex_col()
+                    .child(control(0, 20.))
+                    .child(gap())
+                    .child(control(1, VIEW * 2.5))
+                    .child(gap())
+                    .child(control(2, 20.)),
+            )
+        }
+    }
+
+    /// [`ring_room`] where a view renders.
+    fn ring_room_of(cx: &App) -> Pixels {
+        let ring = Theme::global(cx).button_focus_ring;
+        ring.gap + ring.width
+    }
+
+    /// A control taller than its page's view, reached by Tab from the
+    /// control above it, which leaves it below the view, and by Shift+Tab
+    /// from the control below it, which leaves it above: in every frame
+    /// painted after the key, ten and more, the page holds one offset, the
+    /// one that lines the control's top up with the view's top with the
+    /// ring's room. Shown by the least scroll, the first frame after Tab
+    /// showed its foot and the request its bounds made scrolled back to its
+    /// top a frame later, and after Shift+Tab the request scrolled from its
+    /// top to its foot.
+    #[gpui::test]
+    fn a_control_taller_than_the_view_shows_its_top_and_stays(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let page = FocusReveal::new(Trigger::Keyboard);
+        let built = page.clone();
+        let handles: Rc<RefCell<Vec<FocusHandle>>> = Rc::default();
+        let kept = handles.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                let controls = [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()];
+                *kept.borrow_mut() = controls.to_vec();
+                Tall {
+                    page: built,
+                    controls,
+                }
+            });
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let controls = handles.borrow().clone();
+        let room = ring_room(cx);
+        draw(cx);
+        cx.update(|window, cx| window.focus(&controls[0], cx));
+        draw(cx);
+        // A key no binding takes, so the window has switched to keyboard
+        // input before the walk. That switch leaves the window to be drawn
+        // again, and GPUI draws a window left so before it dispatches a key,
+        // with focus not yet moved: a frame that no platform presents, since
+        // the frame request draws again after the key and presents only that.
+        cx.simulate_keystrokes("f13");
+        draw(cx);
+        let focused = |cx: &mut VisualTestContext, index: usize| {
+            cx.update(|window, _| controls[index].is_focused(window))
+        };
+        assert!(focused(cx, 0), "the first control holds focus");
+        let slack = px(0.01);
+        for (key, from) in [("tab", "below"), ("tab", ""), ("shift-tab", "above")] {
+            page.take_painted();
+            cx.simulate_keystrokes(key);
+            for _ in 0..4 {
+                draw(cx);
+            }
+            let frames = page.take_painted();
+            if from.is_empty() {
+                assert!(focused(cx, 2), "Tab moves on to the last control");
+                continue;
+            }
+            assert!(focused(cx, 1), "{key} focuses the tall control");
+            assert!(frames.len() >= 10, "{key} paints {} frames", frames.len());
+            let settled = frames[0].offset;
+            assert!(settled < px(0.), "{key} scrolls the page");
+            for (frame, painted) in frames.iter().enumerate() {
+                let control = painted
+                    .control
+                    .unwrap_or_else(|| panic!("frame {frame} after {key} draws the control"));
+                assert!(
+                    control.size.height + room * 2. > painted.viewport.size.height,
+                    "the control, {control:?}, is taller than the view, {:?}",
+                    painted.viewport
+                );
+                assert!(
+                    (painted.offset - settled).abs() < slack
+                        && (control.top() - room - painted.viewport.top()).abs() < slack,
+                    "frame {frame} after {key} from {from} the view is at offset {:?}, \
+                     not {settled:?}, and draws the control's top at {:?}, not {:?}",
+                    painted.offset,
+                    control.top(),
+                    painted.viewport.top() + room
+                );
+            }
+            for frame in [2, 5, 10] {
+                assert_eq!(
+                    frames[frame - 1].offset,
+                    settled,
+                    "{key}: the offset after frame {frame}"
+                );
+            }
+        }
     }
 }
