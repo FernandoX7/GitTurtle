@@ -2546,13 +2546,15 @@ impl GitTurtle {
                         .text_color(rgb(colors.muted))
                         .child(short_date(commit.timestamp))
                         .into_any_element(),
+                    // A commit's identifier in the interface font, as every
+                    // identifier the app draws (`sha_cell_width`).
                     ColumnId::Sha => cell
                         .pl(px(10.))
                         .pr_3()
                         .truncate()
-                        .font_family(mono())
                         .text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(colors.muted))
+                        .children(font_probe("history-sha"))
                         .child(short_oid(&commit.oid))
                         .into_any_element(),
                 }
@@ -2726,7 +2728,14 @@ impl GitTurtle {
                 .text_size(appearance::ui_text(11.))
                 .text_color(rgb(colors.muted))
                 .child(author_line(name, author))
-                .child(date)
+                // The commit's identifier ends the date's line, which an
+                // element of its own holds, so a test reads the face the
+                // identifier takes where it is drawn.
+                .child(
+                    div()
+                        .child(date)
+                        .children(font_probe("inspector-identifier")),
+                )
                 .child(parents),
         )
         .into_any_element()
@@ -6648,8 +6657,8 @@ pub(super) struct HistoryMetrics {
     /// the list's edge.
     trailing: f32,
     /// The SHA cell at its narrowest (`sha_cell_width`): Git's default short
-    /// form, seven hex characters, whole in the code font at the current
-    /// size, with the cell's insets.
+    /// form, seven hex characters, whole in the interface font at the
+    /// current size, with the cell's insets.
     sha_cell: f32,
     /// The header cell narrow History's Graph title needs whole
     /// (`graph_title_fits`).
@@ -6799,17 +6808,17 @@ fn subject_floor(key: &LineKey, window: &Window) -> Pixels {
 }
 
 /// History's SHA cell at its narrowest: seven hex characters, Git's
-/// default short form, at the cell's 11 pt in the code font it draws them in,
-/// and its 10 px and `pr_3` insets. The column is never narrower, at any text
-/// size or density, whatever width was saved: at 18 pt the default 84 px cell
-/// cut a commit's seven characters to five and an ellipsis. Each character is
-/// measured as the widest hex digit, since a fallback for the code font need
-/// not be monospaced, and again only when the font or the sizes, `key`,
-/// change.
+/// default short form, at the cell's 11 pt in the interface font, the face
+/// every object identifier takes (the inspector's, Reflog's and Stashes'
+/// commit IDs and Compare's blob IDs), and its 10 px and `pr_3` insets. The column is never narrower,
+/// at any text size or density, whatever width was saved: at 18 pt the
+/// default 84 px cell cut a commit's seven characters to five and an
+/// ellipsis. Each character is measured as the widest hex digit, since the
+/// interface font is not monospaced, and again only when the font or the
+/// sizes, `key`, change.
 fn sha_cell_width(key: &LineKey, window: &Window) -> Pixels {
     let digits = cached_width(&SHA_DIGITS, key, || {
-        let mut style = window.text_style();
-        style.font_family = mono().into();
+        let style = window.text_style();
         let size = appearance::ui_text(11.);
         let widest = (b'0'..=b'9')
             .chain(b'a'..=b'f')
@@ -6825,6 +6834,50 @@ fn sha_cell_width(key: &LineKey, window: &Window) -> Pixels {
         (widest * 7.).ceil()
     });
     px(10.) + window.rem_size() * 0.75 + digits
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the font each [`font_probe`] last stood in, by name.
+    static PROBED_FONTS: RefCell<Vec<(&'static str, Font)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Test-only: an empty element that records, as it prepaints, the font of
+/// the text beside it under `name`, for a test that asks which face a
+/// piece of text took ([`probed_font`]); outside tests it is nothing.
+#[cfg(test)]
+fn font_probe(name: &'static str) -> Option<AnyElement> {
+    Some(
+        canvas(
+            move |_, window, _| {
+                let font = window.text_style().font();
+                PROBED_FONTS.with_borrow_mut(|fonts| {
+                    fonts.retain(|(probed, _)| *probed != name);
+                    fonts.push((name, font));
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0()
+        .into_any_element(),
+    )
+}
+
+#[cfg(not(test))]
+fn font_probe(_: &'static str) -> Option<AnyElement> {
+    None
+}
+
+/// Test-only: the font the [`font_probe`] named `name` last stood in.
+#[cfg(test)]
+pub(crate) fn probed_font(name: &str) -> Option<Font> {
+    PROBED_FONTS.with_borrow(|fonts| {
+        fonts
+            .iter()
+            .find(|(probed, _)| *probed == name)
+            .map(|(_, font)| font.clone())
+    })
 }
 
 /// Whether narrow History's Graph title fits whole in its `width`-wide
@@ -31589,11 +31642,35 @@ pub(crate) mod tests {
         }
     }
 
+    /// Commit identifiers take one face across the app: History's SHA cell
+    /// draws a commit's short ID in the font the inspector draws the same
+    /// commit's ID in, at the end of its date's line, the interface font.
+    /// The cell drew the code family, the one identifier that did.
+    #[gpui::test]
+    async fn history_sha_cell_draws_identifiers_in_the_inspectors_face(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let sha = probed_font("history-sha").expect("History drew a SHA cell");
+        let inspector =
+            probed_font("inspector-identifier").expect("the inspector drew the commit's ID");
+        assert_eq!(
+            sha.family, inspector.family,
+            "History's SHA cell takes the inspector's face for an identifier"
+        );
+        assert_ne!(
+            sha.family,
+            SharedString::from(mono()),
+            "an identifier is not drawn in the code family"
+        );
+    }
+
     /// History's SHA column shows a commit's seven hex characters whole at
     /// every interface text size and density, in a wide window and in narrow
     /// History: the row's cell, inside its 10 px and `pr_3` insets, holds the
-    /// short id as the code font lays it out, and the header's cell is as
-    /// wide. The saved width is untouched. At 18 pt the default 84 px cell
+    /// short id as the interface font lays it out, and the header's cell is
+    /// as wide. The saved width is untouched. At 18 pt the default 84 px cell
     /// showed five characters and an ellipsis.
     #[gpui::test]
     async fn history_sha_column_shows_seven_characters_at_every_size(cx: &mut TestAppContext) {
@@ -31619,17 +31696,21 @@ pub(crate) mod tests {
                     let header =
                         bounds_of(cx, format!("history-column-{}", ColumnId::Sha as usize))
                             .unwrap_or_else(|| panic!("the SHA header is laid out {at}"));
+                    // The short id in the font the cell drew it in.
+                    let font = probed_font("history-sha")
+                        .unwrap_or_else(|| panic!("the SHA cell's font is probed {at}"));
                     let (needed, insets) = cx.update(|window, _| {
-                        let mut style = window.text_style();
-                        style.font_family = mono().into();
+                        let run = TextRun {
+                            len: oid.len(),
+                            font,
+                            color: gpui::black(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
                         let needed = window
                             .text_system()
-                            .layout_line(
-                                &oid,
-                                appearance::ui_text(11.),
-                                &[style.to_run(oid.len())],
-                                None,
-                            )
+                            .layout_line(&oid, appearance::ui_text(11.), &[run], None)
                             .width;
                         (needed, px(10.) + window.rem_size() * 0.75)
                     });
