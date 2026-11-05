@@ -701,18 +701,25 @@ fn landing(
 /// ([`landing`]), so that neither of the view's edges falls inside one of `lines`, the lines of
 /// text and controls of one line drawn in it: a half line reads as a rendering fault, and its
 /// words cannot be read. The part the reveal shows, `top..bottom` with its ring's room, stays
-/// whole, and the edge stays between `first` and `last`, where the content lets it scroll. It
-/// stops first at a safe place: one of `starts`, where blocks start less the ring's room, or
-/// an end of the content, as [`landing`] does, so it never falls inside text no line reports,
-/// or where the view's bottom edge lies at a line's top or foot; and only where none of those
-/// serves, between two of `lines`, at a line's top or foot. Among either, where `edge` leaves
-/// a line cut, the view scrolls the least less that shows that line whole or takes it out of
-/// view, so the part still shows whole and no other line is cut; otherwise the least more,
-/// until the line is wholly out of view; where neither can, the part whole wins and the edge
-/// stays at `edge`, as it does where it landed at the content's top, the box's top shown
-/// with the first part. A part taller than the view keeps the half of the view on the side
-/// the reveal shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection
-/// help's second line cut at the body's top edge.
+/// whole, and the edge stays between `first` and `last`, where the content lets it scroll.
+/// Where `edge` leaves a line cut, the edge moves to the nearest place that keeps the part
+/// whole with its ring and cuts no line at either edge, whichever way that lies ([`stop`]):
+/// a safe place, one of `starts`, where blocks start less the ring's room, or an end of the
+/// content, as [`landing`] does; or a place between two of `lines`, the top edge or the bottom
+/// edge at a line's top or foot. At equal distance a safe place wins, then the one that
+/// scrolls less. A reveal brings the focused control into view the way a scroll view does,
+/// moving the least, as macOS's `scrollRectToVisible` does (decision, 2026-11-05): a far stop
+/// skipped content a keyboard walk then never showed whole, as safe places first did at 17 pt
+/// in a 440 × 490 window, where Tab onto Connect took the body to Connect's row, 386.5 px
+/// down, past the connection help's second to sixth lines, which no stop of the walk showed
+/// whole. A place between lines can stop inside no text, as every surface the body draws
+/// reports its lines: each line of a text ([`text_lines`]), each control of one line
+/// ([`one_line`]), each row of a multi-line editor ([`editor_rows`]) and the lines a list
+/// shows ([`clipped`]). Where no place serves, the part whole wins and the edge stays at
+/// `edge`, as it does where it landed at the content's top, the box's top shown with the
+/// first part. A part taller than the view keeps the half of the view on the side the reveal
+/// shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection help's
+/// second line cut at the body's top edge.
 fn clear_of_lines(
     viewport: Bounds<Pixels>,
     edge: Pixels,
@@ -756,41 +763,52 @@ fn clear_of_lines(
     if lands(edge) || edge <= first + slack {
         return edge;
     }
+    stop(viewport, edge, lines, starts, (first, last), lands).unwrap_or(edge)
+}
+
+/// The place for the top edge of `viewport` nearest `edge` among those where it `lands`
+/// ([`clear_of_lines`]): the safe places, where a reveal may bring it whatever drew there, the
+/// start of a block (one of `starts`) or an end of the content, `first` or `last`; and the
+/// places between two of `lines`, the top edge or the bottom edge at a line's top or foot.
+/// The part's own top lies inside its frame: Tab wrapping to the banner stopped there, 9 px
+/// down, at 18 pt. At equal distance, to a hundredth of a pixel, a safe place wins, then the
+/// one that moves the edge back toward where the view stood, scrolling less. With the
+/// connection help in five lines at 18 pt, as macOS lays it out in a 461 × 490 window, no
+/// block start kept Connect whole with both edges clear, and the top edge at the foot of the
+/// help's first line clears every line; at 17 pt in a 440 × 490 window, Shift+Tab onto
+/// Account options stops with the bottom edge at the foot of the help's fifth line.
+fn stop(
+    viewport: Bounds<Pixels>,
+    edge: Pixels,
+    lines: &[(Pixels, Pixels)],
+    starts: &[Pixels],
+    (first, last): (Pixels, Pixels),
+    lands: impl Fn(Pixels) -> bool,
+) -> Option<Pixels> {
+    let height = viewport.size.height;
+    let within = px(0.01);
     // Less scrolling moves the edge back toward where the view stood.
     let from = viewport.top();
     let less = |at: Pixels| (at > edge) == (from > edge);
-    let nearest = |candidates: Vec<Pixels>| {
-        candidates.into_iter().min_by(|a, b| {
-            (*a - edge)
-                .abs()
-                .as_f32()
-                .total_cmp(&(*b - edge).abs().as_f32())
-        })
-    };
-    // The least less among `candidates` where the edge lands, otherwise the least more.
-    let stop = |candidates: &mut dyn Iterator<Item = Pixels>| {
-        let (fewer, more): (Vec<_>, Vec<_>) =
-            candidates.filter(|at| lands(*at)).partition(|at| less(*at));
-        nearest(fewer).or_else(|| nearest(more))
-    };
-    // The top edge stops first where a reveal may bring it, never through a line, whatever
-    // drew it: the start of a block or an end of the content. The part's own top lies inside
-    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt. Or the bottom
-    // edge stops at a line's top or foot: at 17 pt in a 440 × 490 window, Shift+Tab onto
-    // Account options found no block start clear of the connection help's lines below it,
-    // and the bottom edge at the foot of the help's fifth line clears every line.
-    let flush = lines
+    let safe = starts.iter().copied().chain([first, last]);
+    let between = lines
         .iter()
-        .flat_map(|(top, bottom)| [*top - height, *bottom - height]);
-    let blocks = &mut starts.iter().copied().chain([first, last]).chain(flush);
-    // Where none of those leaves every line whole or out of view, the top edge stops between
-    // two lines, at a line's top or foot, inside no line that reports itself: with the
-    // connection help in five lines at 18 pt, as macOS lays it out in a 461 × 490 window, no
-    // block start kept Connect whole with both edges clear, and Tab onto Connect left
-    // Disconnect cut at the body's foot, where the top edge at the foot of the help's first
-    // line clears both.
-    let between = &mut lines.iter().flat_map(|(top, bottom)| [*top, *bottom]);
-    stop(blocks).or_else(|| stop(between)).unwrap_or(edge)
+        .flat_map(|(top, bottom)| [*top, *bottom, *top - height, *bottom - height]);
+    let places: Vec<(Pixels, bool)> = safe
+        .map(|at| (at, true))
+        .chain(between.map(|at| (at, false)))
+        .filter(|(at, _)| lands(*at))
+        .collect();
+    let distance = |at: Pixels| (at - edge).abs();
+    let nearest = places
+        .iter()
+        .map(|(at, _)| distance(*at))
+        .reduce(Pixels::min)?;
+    places
+        .into_iter()
+        .filter(|(at, _)| distance(*at) <= nearest + within)
+        .min_by_key(|(at, safe)| (!safe, !less(*at)))
+        .map(|(at, _)| at)
 }
 
 /// The insides of a set of lines, where an edge cuts one of them ([`clear_of_lines`]): each
@@ -2390,8 +2408,9 @@ mod tests {
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
 
-    /// [`clear_of_lines`] as it stood with a pass over every line for each place it asks
-    /// about, the reference [`Insides`] must agree with.
+    /// [`clear_of_lines`] with a pass over every line for each place it asks about, as it
+    /// stood, the reference [`Insides`] must agree with; it chooses among the places as
+    /// [`clear_of_lines`] does ([`stop`]).
     fn clear_of_lines_by_pass(
         viewport: Bounds<Pixels>,
         edge: Pixels,
@@ -2426,27 +2445,7 @@ mod tests {
         if lands(edge) || edge <= first + slack {
             return edge;
         }
-        let from = viewport.top();
-        let less = |at: Pixels| (at > edge) == (from > edge);
-        let nearest = |candidates: Vec<Pixels>| {
-            candidates.into_iter().min_by(|a, b| {
-                (*a - edge)
-                    .abs()
-                    .as_f32()
-                    .total_cmp(&(*b - edge).abs().as_f32())
-            })
-        };
-        let stop = |candidates: &mut dyn Iterator<Item = Pixels>| {
-            let (fewer, more): (Vec<_>, Vec<_>) =
-                candidates.filter(|at| lands(*at)).partition(|at| less(*at));
-            nearest(fewer).or_else(|| nearest(more))
-        };
-        let flush = lines
-            .iter()
-            .flat_map(|(top, bottom)| [*top - height, *bottom - height]);
-        let blocks = &mut starts.iter().copied().chain([first, last]).chain(flush);
-        let between = &mut lines.iter().flat_map(|(top, bottom)| [*top, *bottom]);
-        stop(blocks).or_else(|| stop(between)).unwrap_or(edge)
+        stop(viewport, edge, lines, starts, (first, last), lands).unwrap_or(edge)
     }
 
     /// [`clear_of_lines`], which asks [`Insides`] whether an edge cuts a line, stops where a
@@ -2587,8 +2586,8 @@ mod tests {
         // ring is: it keeps the half of the view below its top, so where the content starts
         // just above it, with no block to stop at, the reveal stays where it landed. Where
         // the content goes on above, the view stops a little less, its bottom edge at the
-        // line's top, or, where that would cut another line at its top edge, at the block
-        // that starts above, the part's top, its leading edge, still in view either way.
+        // line's top, or, where that would cut another line at its top edge, at the nearest
+        // place clear of both, the part's top, its leading edge, still in view either way.
         let tall = (px(150.), px(500.));
         assert_eq!(
             clear_of_lines(
@@ -2610,8 +2609,9 @@ mod tests {
         let above = [(px(135.), px(145.)), (px(340.), px(360.))];
         assert_eq!(
             clear_of_lines(viewport, px(150.), tall, &above, &[px(120.)], range),
-            px(120.),
-            "a block start above clears both lines, the tall part's top still in view"
+            px(135.),
+            "the nearest place clear of both lines, the line above's top, wins over the block \
+             start farther up, the tall part's top still in view"
         );
         // Shift+Tab: a reveal scrolling up from a view at 400..600 lands at 190, its bottom
         // edge inside the line at 380..400, and less and more are mirrored: less stops lower.
@@ -2635,8 +2635,8 @@ mod tests {
     /// line's top or foot, the reveal stops between two lines, its top edge at a line's top or
     /// foot: a view at 100..300 scrolled down to 150, its top edge inside the first of three
     /// lines at 145..175; the bottom edge at the top or foot of the line at 350..370 below them
-    /// would leave the top edge inside one of the three. A block start that clears
-    /// every line still wins over a nearer place between two lines; otherwise the least less,
+    /// would leave the top edge inside one of the three. The nearest place clear of every line
+    /// wins over a block start farther on (decision, 2026-11-05); otherwise the least less,
     /// the paragraph's first line whole, and where that would cut the part, the least more,
     /// past the line at the bottom edge. As macOS wraps the connection help at 18 pt in a
     /// 461 × 490 window, no block start kept Connect whole with both edges clear, and Tab onto
@@ -2661,8 +2661,8 @@ mod tests {
                 &[px(148.), px(240.)],
                 range
             ),
-            px(240.),
-            "a block start that clears every line wins"
+            px(145.),
+            "the nearest place clear of every line wins over a block start farther on"
         );
         assert_eq!(
             clear_of_lines(viewport, px(150.), part(330.), &lines, &[px(148.)], range),

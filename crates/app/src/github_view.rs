@@ -4455,28 +4455,89 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let walked = walk_connection_reveals(cx, &[17], [440.]).await;
-        let (at, _, cut) = walked
+        let step = walked
             .iter()
-            .find(|(_, step, _)| *step == ("shift-tab", "github-account-options"))
+            .find(|step| step.step == ("shift-tab", "github-account-options"))
             .expect("the walk takes Shift+Tab onto Account options");
         assert_eq!(
-            cut,
-            &Vec::<String>::new(),
-            "{at}: Shift+Tab onto Account options leaves no line cut at the body's edges"
+            step.cut,
+            Vec::<String>::new(),
+            "{}: Shift+Tab onto Account options leaves no line cut at the body's edges",
+            step.at
         );
+    }
+
+    /// A step of [`walk_connection_reveals`]: where it was taken, its keys and the control
+    /// they focused, the lines it left cut at the body's edges, the lines it showed whole and
+    /// how many lines the connection help took.
+    struct Walked {
+        at: String,
+        step: (&'static str, &'static str),
+        cut: Vec<String>,
+        whole: Vec<String>,
+        help: usize,
+    }
+
+    /// The names of the lines of [`body_lines`] the body shows whole, half a pixel either way
+    /// being layout's rounding, and how many lines the connection help takes.
+    fn whole_lines(cx: &mut VisualTestContext, controls: &[&'static str]) -> (Vec<String>, usize) {
+        let (body, lines) = body_lines(cx, controls);
+        let slack = px(0.5);
+        let help = lines
+            .iter()
+            .filter(|(name, ..)| name.starts_with("github-connection-help line"))
+            .count();
+        let whole = lines
+            .into_iter()
+            .filter(|(_, top, bottom)| {
+                *top >= body.top() - slack && *bottom <= body.bottom() + slack
+            })
+            .map(|(name, ..)| name)
+            .collect();
+        (whole, help)
+    }
+
+    /// Tab and Shift+Tab through the connection pane show each line of its help whole at some
+    /// stop, at 17 pt in a 440 × 490 window and at 18 pt in a 480 × 490 one, as Linux wraps the
+    /// help in six and five lines: each reveal moves the body the least that shows the control
+    /// whole with no line cut at its edges ([`review::clear_of_lines`]). Safe stops first, Tab
+    /// onto Connect at 17 pt took the body to Connect's row, 386.5 px down, past the help's
+    /// second to sixth lines, which no stop of the walk then showed whole, and at 18 pt in 480
+    /// px the help's first line was never whole (FU18-D's review).
+    #[gpui::test]
+    async fn the_connection_walk_shows_every_help_line_whole(cx: &mut TestAppContext) {
+        let walked = walk_connection_reveals(cx, &[17, 18], [440., 480.]).await;
+        let mut places: Vec<&str> = walked.iter().map(|step| step.at.as_str()).collect();
+        places.dedup();
+        for at in places {
+            let steps: Vec<&Walked> = walked.iter().filter(|step| step.at == at).collect();
+            let lines = steps.iter().map(|step| step.help).max().unwrap_or(0);
+            assert!(lines > 1, "{at}: the help takes lines: {lines}");
+            let missing: Vec<usize> = (1..=lines)
+                .filter(|line| {
+                    let name = format!("github-connection-help line {line}");
+                    !steps.iter().any(|step| step.whole.contains(&name))
+                })
+                .collect();
+            assert_eq!(
+                missing,
+                Vec::<usize>::new(),
+                "{at}: each line of the help is whole at some stop of the walk"
+            );
+        }
     }
 
     /// Opens the panel over a repository with its connection pane open, Connect enabled (no
     /// request runs and the panel is no offline fixture), in each of `widths` × 490 windows
     /// at each of `sizes`, the body scrolled to its top, and walks Tab onto Connect, on onto
     /// Copy sign-in command and Disconnect, and Shift+Tab back onto Account options, holding
-    /// each to the rule of the body's reveals ([`assert_reveal_rule`]). Returns each step,
-    /// where it was taken and the keys and control, with the lines it left cut.
+    /// each to the rule of the body's reveals ([`assert_reveal_rule`]). Returns each step
+    /// ([`Walked`]).
     async fn walk_connection_reveals(
         cx: &mut TestAppContext,
         sizes: &[u8],
         widths: impl IntoIterator<Item = f32> + Clone,
-    ) -> Vec<(String, (&'static str, &'static str), Vec<String>)> {
+    ) -> Vec<Walked> {
         use crate::tags::tests::draw;
         let mut walked = Vec::new();
         let (_fixture, app, cx) = repository_window(cx);
@@ -4531,7 +4592,14 @@ mod tests {
                 ] {
                     let before = tab_onto(cx, &scroll, step.0, step.1);
                     let cut = assert_reveal_rule(cx, &scroll, before, step, &controls, &at);
-                    walked.push((at.clone(), step, cut));
+                    let (whole, help) = whole_lines(cx, &controls);
+                    walked.push(Walked {
+                        at: at.clone(),
+                        step,
+                        cut,
+                        whole,
+                        help,
+                    });
                 }
                 cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
                 settle_panel(&app, cx).await;
