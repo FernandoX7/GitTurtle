@@ -1265,15 +1265,22 @@ impl GitTurtle {
                     Err(error) => {
                         this.release_text_review(cx);
                         this.error = Some(format!("{error:#}"));
-                        if let Some(index) = this.repository_tabs.active
-                            && let Some(tab) = this.repository_tabs.tabs.get_mut(index)
-                        {
-                            tab.error = this.error.clone();
+                        // Only the repository's own read speaks for it: a
+                        // failed Open marks its tab and is the opening error
+                        // the Projects page shows. Any other read's failure,
+                        // a preview's or a review's, stays in its pane; set
+                        // on the hub as well, a review past its limit met
+                        // the person who closed the tab as Projects' alert.
+                        let opening_failed = opening.is_some();
+                        if opening_failed {
+                            this.tab_opening_failed();
                         }
                         this.status = "Read could not complete".into();
                         this.hub.update(cx, |hub, cx| {
                             hub.set_busy(false, cx);
-                            hub.set_error(this.error.clone(), cx);
+                            if opening_failed {
+                                hub.set_error(this.error.clone(), cx);
+                            }
                         });
                         if this.repository.is_none() {
                             this.page = AppPage::Projects;

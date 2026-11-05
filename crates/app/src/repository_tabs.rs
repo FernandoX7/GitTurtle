@@ -1403,6 +1403,22 @@ impl GitTurtle {
         }
         false
     }
+    /// Marks the shown tab with the error its repository's own read, an
+    /// Open, failed with, so its label reads " · unavailable" until a
+    /// snapshot of it is accepted ([`Self::tab_snapshot_accepted`]), as the
+    /// tab is opened again. The label speaks for the repository, so no other
+    /// read marks it: a preview's or a review's failure belongs to the
+    /// comparison and says so in its pane. Marked by every failed read, a
+    /// review past its limits left the tab "unavailable" after Reset review
+    /// brought the diff back, until the repository was opened again (QA-101
+    /// O1).
+    pub(super) fn tab_opening_failed(&mut self) {
+        if let Some(index) = self.repository_tabs.active
+            && let Some(tab) = self.repository_tabs.tabs.get_mut(index)
+        {
+            tab.error = self.error.clone();
+        }
+    }
     pub(super) fn switch_repository_tab(
         &mut self,
         index: usize,
@@ -2976,6 +2992,33 @@ mod tests {
                 app._display_preferences_task = None;
             })
         });
+    }
+
+    /// " · unavailable" marks a tab while its repository cannot be opened
+    /// and clears once it opens: a tab opened on a folder that holds no
+    /// repository is marked, and opened again once one is there, it reads
+    /// as its name alone.
+    #[gpui::test]
+    async fn an_unavailable_tab_clears_once_its_repository_opens(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let arriving = fixture.path().join("arriving");
+        let label = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let tab = &app.repository_tabs.tabs[1];
+                (app.tab_label(tab).0, tab.error.is_some())
+            })
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(arriving.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        assert_eq!(label(cx), ("arriving · unavailable".into(), true));
+        crate::views::tests::fixture_repository(&arriving);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        assert_eq!(label(cx), ("arriving".into(), false), "opened, it clears");
     }
 
     #[gpui::test]

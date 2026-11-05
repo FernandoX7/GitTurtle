@@ -1486,6 +1486,65 @@ mod tests {
         );
     }
 
+    /// The failed review leaves its tab's label alone, before Reset review
+    /// and after it: " · unavailable" speaks for the repository, which
+    /// still reads. Marked by the failure, the tab kept the mark after Reset
+    /// review brought the diff back (QA-101 O1).
+    #[gpui::test]
+    async fn a_failed_review_never_marks_its_tab_unavailable(cx: &mut gpui::TestAppContext) {
+        use gpui::Modifiers;
+        let (_fixture, app, cx) = review_past_the_limit(cx).await;
+        let tab = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let tab = &app.repository_tabs.tabs[app.repository_tabs.active.expect("a tab")];
+                (app.tab_label(tab).0, tab.error.clone())
+            })
+        };
+        let (label, error) = tab(cx);
+        assert!(
+            !label.ends_with(" · unavailable") && error.is_none(),
+            "after the failure: {label:?}, {error:?}"
+        );
+        let reset = cx.debug_bounds("reset-text-review").expect("Reset review");
+        cx.simulate_click(reset.center(), Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(tab(cx), (label, None), "after Reset review");
+    }
+
+    /// The failed review's error stays in its pane: once Reset review has
+    /// brought the diff back and the last tab is closed, the Projects page
+    /// shows no error. Set on the hub by every failed read, it met the
+    /// person there as an assertive alert naming the review's limit.
+    #[gpui::test]
+    async fn a_failed_review_leaves_the_projects_page_without_its_error(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        use gpui::Modifiers;
+        let (_fixture, app, cx) = review_past_the_limit(cx).await;
+        let reset = cx.debug_bounds("reset-text-review").expect("Reset review");
+        cx.simulate_click(reset.center(), Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(app.read_with(cx, |app, _| app.error.clone()), None);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.repository_tabs.tabs.len()),
+            1
+        );
+        written::forget();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.page == crate::AppPage::Projects));
+        assert!(
+            cx.debug_bounds("project-hub-action").is_some(),
+            "the Projects page is drawn"
+        );
+        assert_eq!(
+            written::announced("project-hub-error"),
+            None,
+            "with no error alert"
+        );
+    }
+
     /// Presses Stage on the shown diff's first hunk, as its partial action
     /// asks for it, and answers the write that started, if any, once it has
     /// landed.
