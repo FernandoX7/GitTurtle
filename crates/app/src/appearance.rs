@@ -2490,7 +2490,9 @@ impl Palette {
         // (`Theme::disabled_input_background`). Under More contrast they
         // derive from the chosen `border` (`Theme::input_fill_base`), so they
         // stay as they are off while the outline is adjusted; off, the kit
-        // derives them as upstream does.
+        // derives them as upstream does. With the base set, a disabled
+        // field's outline is the disabled edge set below, as a disabled
+        // Button's, so it stays fainter than the adjusted outline.
         theme.input_fill_base = more_contrast.then(|| rgb(chosen.border).into());
         // Text selection in the editors and inputs; rows and lists keep `selected` below.
         theme.colors.selection = rgb(highlights.selection).into();
@@ -7215,8 +7217,13 @@ mod tests {
     /// A fill is not an edge. With More contrast on, in every palette, a text
     /// field and Settings' Save, each enabled and disabled, paint on the
     /// canvas, panel, subtle and raised surfaces the fills they paint with it
-    /// off, while the field's outline, enabled and disabled, is the adjusted
-    /// `border` and reads 3:1 or more against each surface. The kit derived a
+    /// off, while the enabled field's outline is the adjusted `border` and
+    /// reads 3:1 or more against each surface, and the disabled field's is
+    /// the disabled edge, as a disabled Button's, and reads below it on each
+    /// surface; off, both outlines are `border`, as the kit draws them. A
+    /// disabled field once drew the enabled field's 3:1 outline beside a
+    /// disabled Button's 1.66:1 edge (Midnight #606976 against #313d4e),
+    /// marked only by its dim text. The kit derived a
     /// dark field's fill from `input`, the outline, at 30%, so the fill
     /// lifted with the outline (Midnight #1a2330 to #2a323d), the disabled
     /// Save's fill, half of it, with it, and the placeholder on the field
@@ -7259,7 +7266,8 @@ mod tests {
                 (placeholder, drawn)
             });
             let ((off_placeholder, off), (placeholder, on)) = (off, on);
-            let outline = chosen.with_more_contrast().border;
+            let (outline, disabled_edge) =
+                (chosen.with_more_contrast().border, chosen.disabled_edge());
             for (before, after) in off.iter().zip(&on) {
                 let (kind, surface, color, fills, edges) = after;
                 let at = format!("{name} {kind} on the {surface}");
@@ -7269,17 +7277,41 @@ mod tests {
                 if !kind.ends_with("field") {
                     continue;
                 }
-                if !edges.iter().any(|edge| {
-                    edge.one_px
-                        && edge.color == outline
-                        && contrast(edge.color, *color) >= MORE_CONTRAST_EDGE
-                }) {
+                let one_px = |edges: &[PaintedEdge]| -> Vec<u32> {
+                    edges
+                        .iter()
+                        .filter(|edge| edge.one_px)
+                        .map(|edge| edge.color)
+                        .collect()
+                };
+                if !one_px(&before.4).contains(&chosen.border) {
                     failures.push(format!(
-                        "{at}: no 1 px outline #{outline:06x} at 3:1 in {edges:?}"
+                        "{at}: off, outlines {:06x?}, none #{:06x}",
+                        one_px(&before.4),
+                        chosen.border
                     ));
                 }
+                let drawn = if *kind == "field" {
+                    outline
+                } else {
+                    disabled_edge
+                };
+                let outlines = one_px(edges);
+                if !outlines.contains(&drawn) || (drawn != outline && outlines.contains(&outline)) {
+                    failures.push(format!("{at}: outlines {outlines:06x?}, not #{drawn:06x}"));
+                }
+                let (ratio, enabled) = (contrast(drawn, *color), contrast(outline, *color));
                 if *kind != "field" {
+                    if ratio >= enabled {
+                        failures.push(format!(
+                            "{at}: outline #{drawn:06x} {ratio:.3}:1, the enabled field's \
+                             #{outline:06x} {enabled:.3}:1"
+                        ));
+                    }
                     continue;
+                }
+                if ratio < MORE_CONTRAST_EDGE {
+                    failures.push(format!("{at}: outline #{drawn:06x} {ratio:.3}:1"));
                 }
                 let reading = |placeholder: u32, fills: &[Background]| {
                     let fill = fills.last().and_then(|fill| fill.as_solid())?;
