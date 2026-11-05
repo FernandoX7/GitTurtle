@@ -1,6 +1,6 @@
 use crate::{
     ActiveTheme, ElementExt, Placement, StyledExt,
-    dialog::{ANIMATION_DURATION, Dialog},
+    dialog::Dialog,
     input::{AnyInputState, Copy},
     native_menu::FallbackMenuOverlay,
     notification::{Notification, NotificationList},
@@ -46,9 +46,6 @@ pub struct Root {
     window_shadow_size: Pixels,
     /// Render the Linux CSD `window_border` wrapper.
     bordered: bool,
-    /// The focus handle that will be restored after a dialog is closed with animation.
-    /// Used to handle rapid dialog opening/closing to maintain correct focus chain.
-    pending_focus_restore: Option<WeakFocusHandle>,
     window_id: gpui::WindowId,
 }
 
@@ -112,7 +109,6 @@ impl Root {
             sheet_size: None,
             window_shadow_size: window_border::SHADOW_SIZE,
             bordered: true,
-            pending_focus_restore: None,
             window_id: window.window_handle().window_id(),
         }
     }
@@ -295,13 +291,11 @@ impl Root {
     where
         F: Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
     {
-        let mut previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
-
-        // Use pending focus restore if available to maintain correct focus chain
-        // when a new dialog is opened immediately after closing another dialog.
-        if let Some(pending_handle) = self.pending_focus_restore.take() {
-            previous_focused_handle = Some(pending_handle);
-        }
+        // GitTurtle patch: every close gives focus back as the dialog goes
+        // (`Dialog`'s close request), so a dialog opened after another closed
+        // takes the focus that close gave back, or a control focused since,
+        // and needs no pending restore carried over from the closed one.
+        let previous_focused_handle = window.focused(cx).map(|h| h.downgrade());
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
@@ -333,30 +327,6 @@ impl Root {
     pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         if let Some(handle) = self.close_dialog_internal() {
             window.focus(&handle, cx);
-        }
-        gpui_base::TextSelection::clear(window, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn defer_close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
-        if let Some(handle) = self.close_dialog_internal() {
-            let dialogs_count = self.active_dialogs.len();
-
-            // Save for new dialogs opened during animation to maintain focus chain
-            self.pending_focus_restore = Some(handle.downgrade());
-
-            cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(*ANIMATION_DURATION).await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    let current_dialogs_count = this.active_dialogs.len();
-                    // Only restore focus if no new dialogs were opened during animation
-                    if current_dialogs_count == dialogs_count {
-                        window.focus(&handle, cx);
-                    }
-                    this.pending_focus_restore = None;
-                });
-            })
-            .detach();
         }
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();

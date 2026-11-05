@@ -606,6 +606,27 @@ comes up with no dialog open ends the press too, and a dialog opened later
 by a click takes its first Enter. Nothing else changes. Remove it with the
 base patch's guard.
 
+The dialog-focus patch modifies `src/dialog/dialog.rs` and `src/root.rs`.
+Upstream closes a dialog its Confirm closes (Enter, or the OK Button, which
+dispatches it) through `Root::defer_close_dialog`, which removes the dialog
+at once but gives focus back to the control captured as it opened only when
+a 250 ms timer ends, the length of its opening animation, and then whatever
+was focused meanwhile: a control the person clicked after the close, or the
+place the application had already returned focus to (GitTurtle's repair in
+the frame after a close, `update_modal_focus` in
+`crates/app/src/page_navigation.rs`, which rechecked 300 ms later to undo
+it). A pending restore handed the captured control to a dialog opened during
+those 250 ms. Patched, every close request gives focus back as the dialog
+goes, as Escape and Cancel did (`WindowExt::close_dialog`): the timer and
+the pending restore are gone, and a dialog opened after a close captures the
+focus that close gave back, or whatever was focused since. The kit's
+`a_confirmed_dialog_gives_focus_back_as_it_closes`
+(`scripts/vendor-crate-test.sh vendor/gpui-component dialog::dialog::tests`)
+and the app's `page_navigation::tests::a_focus_given_after_a_dialog_closes_keeps`
+cover it. Remove it when upstream gives a confirmed dialog's focus back as
+it closes, or never over focus moved since the close, and both tests pass
+without it.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,

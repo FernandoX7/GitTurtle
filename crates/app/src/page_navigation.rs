@@ -392,28 +392,21 @@ impl GitTurtle {
             let previous = self.modal_return_focus.take();
             let replaced = self.modal_replaced_focus.take();
             let generation = self.modal_focus_generation;
+            // Where the close left focus: the toolkit gives it back to the
+            // control it captured as the modal opened, as the modal closes
+            // (`vendor/gpui-component`, `Dialog`'s close request). The repair
+            // is the one return after that, and only while focus stays
+            // there: a click or a key the person gives first wins. A recheck
+            // 300 ms later once followed the toolkit's own return, which
+            // waited out a 250 ms close animation, and each took focus from a
+            // control clicked meanwhile.
+            let left = window.focused(cx).map(|focus| focus.downgrade());
             let owner = cx.entity().downgrade();
-            let immediate_previous = previous.clone();
-            let immediate_replaced = replaced.clone();
             window.on_next_frame(move |window, cx| {
                 let _ = owner.update(cx, |this, cx| {
-                    this.restore_detached_modal_focus(
-                        generation,
-                        immediate_previous.as_ref(),
-                        immediate_replaced.as_ref(),
-                        window,
-                        cx,
-                    );
-                });
-            });
-            // The pinned toolkit restores its captured focus after a 250 ms
-            // close animation. Recheck once afterward; never poll or take focus
-            // from a new dialog, a surviving editor, or a Root sibling menu.
-            cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(300))
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
+                    if window.focused(cx).map(|focus| focus.downgrade()) != left {
+                        return;
+                    }
                     this.restore_detached_modal_focus(
                         generation,
                         previous.as_ref(),
@@ -422,8 +415,7 @@ impl GitTurtle {
                         cx,
                     );
                 });
-            })
-            .detach();
+            });
         } else if !modal_open {
             // A modal opened and closed with no frame between, a restore
             // run under it, leaves its replaced control behind, which a
@@ -4068,8 +4060,8 @@ mod tests {
     }
 
     /// Closes the dialog as Escape or its Close button does, then lets the
-    /// window's repair run: the frame after the close, and its recheck once
-    /// the toolkit's close animation would have ended.
+    /// window's repair run in the frame after the close, and the time the
+    /// toolkit's close animation runs pass.
     fn close_probe_dialog(cx: &mut VisualTestContext) {
         use crate::views::tests::draw;
         cx.update(|window, cx| window.close_dialog(cx));
@@ -4213,6 +4205,80 @@ mod tests {
             app.read_with(cx, |app, _| app.pane == Pane::Files),
             "the window still names the file pane"
         );
+    }
+
+    /// Focus returns once as a dialog closes, and a control the person
+    /// focuses after the close keeps it. Confirmed by Enter, a dialog opened
+    /// from History's changed files gives focus back to that list as it
+    /// closes, and a commit row clicked next keeps focus on the commit list
+    /// once the close animation's 250 ms have passed; closed by Escape, a
+    /// click on an empty spot of the window, after the frame that repairs a
+    /// close or before it, leaves the window's root focused. The toolkit gave
+    /// a confirmed dialog's focus back only after those 250 ms, taking it
+    /// from the commit list; the window rechecked 300 ms after a close and
+    /// took the root's focus for the shown list, as its repair did in the
+    /// frame after the close.
+    #[gpui::test]
+    async fn a_focus_given_after_a_dialog_closes_keeps(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let (commits, files, root) = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && !app.files.is_empty());
+            (
+                app.focus.clone(),
+                app.file_focus.clone(),
+                app.app_focus.clone(),
+            )
+        });
+        let animation = |cx: &mut VisualTestContext| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+        };
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Probe").on_ok(|_, _, _| true)
+            })
+        });
+        draw(cx);
+        assert!(dialog_open(cx), "the dialog opens");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!dialog_open(cx), "Enter confirms the dialog");
+        assert_eq!(focused(cx), Some(files.clone()), "back on the file list");
+        let row = cx.debug_bounds("history-row-1").expect("a commit row");
+        cx.simulate_click(row.center(), Modifiers::default());
+        draw(cx);
+        assert_eq!(focused(cx), Some(commits.clone()), "the click focuses it");
+        animation(cx);
+        assert_eq!(focused(cx), Some(commits), "the commit list keeps focus");
+
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!dialog_open(cx), "Escape closes the dialog");
+        assert_eq!(focused(cx), Some(files.clone()), "back on the file list");
+        click_an_empty_spot(&app, cx);
+        animation(cx);
+        assert_eq!(focused(cx), Some(root.clone()), "after the repair, kept");
+
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        cx.simulate_keystrokes("escape");
+        // The frame that sees the dialog gone asks for the repair, which
+        // runs as the next frame starts; the click comes between.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor().run_until_parked();
+        assert!(!dialog_open(cx), "Escape closes the dialog");
+        click_an_empty_spot(&app, cx);
+        animation(cx);
+        assert_eq!(focused(cx), Some(root), "before the repair, kept");
     }
 
     /// Opens Settings with nothing focused and the window naming `pane`,

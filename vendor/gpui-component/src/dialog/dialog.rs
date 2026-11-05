@@ -445,12 +445,6 @@ impl Dialog {
         self.props = props;
         self
     }
-
-    fn defer_close_dialog(window: &mut Window, cx: &mut App) {
-        Root::update(window, cx, |root, window, cx| {
-            root.defer_close_dialog(window, cx);
-        });
-    }
 }
 
 impl ParentElement for Dialog {
@@ -604,13 +598,14 @@ impl RenderOnce for Dialog {
                             .on_ok(move |event, window, cx| on_ok(event, window, cx))
                             .on_cancel(move |event, window, cx| on_cancel(event, window, cx))
                             .on_close(move |event, window, cx| on_close(event, window, cx))
-                            .request_close(move |deferred, window, cx| {
-                                if deferred {
-                                    Self::defer_close_dialog(window, cx);
-                                } else {
-                                    window.close_dialog(cx);
-                                }
-                            })
+                            // GitTurtle patch: a confirmed dialog gives
+                            // focus back as it closes, as a cancelled one
+                            // does. Upstream deferred a confirm's return to
+                            // the end of a 250 ms timer, which took focus
+                            // from wherever it had gone meanwhile: a control
+                            // clicked after the close, or the place the
+                            // application had returned it to.
+                            .request_close(move |_, window, cx| window.close_dialog(cx))
                             .popup(
                                 v_flex()
                                     .id(layer_ix)
@@ -831,5 +826,38 @@ mod tests {
         // footer's.
         let foot = bounds(cx, "nested-foot").bottom() + px(17.);
         assert_eq!(foot, px(49.) + px(300.), "the first dialog's top plus the cap");
+    }
+
+    /// GitTurtle patch: a dialog its Confirm closes, as Enter or its OK
+    /// does, gives focus back to the control it was opened from as it
+    /// closes, as Escape and Cancel do, and a control focused after the
+    /// close keeps focus once the 250 ms the close animation runs have
+    /// passed. Upstream gave focus back only at the end of those 250 ms,
+    /// taking it from a control focused meanwhile.
+    #[gpui::test]
+    fn a_confirmed_dialog_gives_focus_back_as_it_closes(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let (opener, later) = cx.update(|_, cx| (cx.focus_handle(), cx.focus_handle()));
+        let focused = |cx: &mut VisualTestContext, handle: &FocusHandle| {
+            cx.update(|window, _| handle.is_focused(window))
+        };
+        cx.update(|window, cx| {
+            window.focus(&opener, cx);
+            window.open_dialog(cx, |dialog, _, _| dialog.on_ok(|_, _, _| true));
+        });
+        draw(cx);
+        assert!(!focused(cx, &opener), "the dialog takes focus");
+        cx.update(|window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx));
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| !window.has_active_dialog(cx)),
+            "Confirm closes the dialog"
+        );
+        assert!(focused(cx, &opener), "focus is back on the opener at once");
+        cx.update(|window, cx| window.focus(&later, cx));
+        cx.executor().advance_clock(*ANIMATION_DURATION * 2);
+        cx.run_until_parked();
+        draw(cx);
+        assert!(focused(cx, &later), "the later focus keeps");
     }
 }
