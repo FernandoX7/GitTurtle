@@ -152,12 +152,28 @@ impl Element for LaidOut {
         self.child.paint(window, cx);
     }
 }
-/// The tallest the panel's scrolling body grows in `window`, its padding included: the
-/// window less the dialog's chrome around it, scaled with the interface text.
+/// The dialog's own height around the panel's body in `window`: its 1 px edge above and
+/// below, the kit's 16 px padding above the title and below the footer and its 16 px gap
+/// above the footer (`gpui_kit::component::dialog`), the title's one line, a rem with a line
+/// height of one, and the half rem under it, and the footer's compact Button, 28 px at the
+/// default interface size (`crate::button_frame`).
+fn dialog_chrome(window: &Window) -> Pixels {
+    const EDGE: Pixels = px(1.);
+    const PADDING: Pixels = px(16.);
+    EDGE * 2. + PADDING * 3. + window.rem_size() * 1.5 + appearance::ui_size(28.)
+}
+/// The tallest the panel's scrolling body grows in `window`, its padding included: the room
+/// the dialog's height cap leaves it ([`appearance::dialog_max_height`], the bound every
+/// dialog takes, from a tenth of the window down to the margin above the status bar), less
+/// the dialog's own chrome ([`dialog_chrome`]), so the body takes the height its content
+/// needs up to that room and scrolls as one past it, and the dialog stays inside its cap. A
+/// window less a fixed 220 px scaled with the interface text once stood for that room: at
+/// 18 pt it took the dialog's unscaled padding and a tenth of the window as text, and in a
+/// 461 × 490 window left the body 185 px of the 265 px the cap gives it, shorter than the
+/// connection pane's help in a wider font. It never falls below 120 px, where the panel
+/// would show too little to use.
 fn body_max_height(window: &Window) -> Pixels {
-    (window.viewport_size().height
-        - window.rem_size() * (220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE)))
-    .clamp(px(120.), px(660.))
+    (appearance::dialog_max_height(window) - dialog_chrome(window)).max(px(120.))
 }
 /// One line of a PR row: left-aligned in its column and cut with an ellipsis
 /// where the row is too narrow, the whole text in the row's tooltip.
@@ -305,16 +321,21 @@ impl GitTurtle {
                 )
                 .on_ok(|_, _, _| false)
                 .width(appearance::dialog_width(px(1100.), window))
-                // No `appearance::dialog_max_height`: the panel bounds its
-                // own scrolling body from the window (`body_max_height`),
-                // which reveals the control Tab moves onto; the dialog's cap
-                // would clip that body and scroll it a second time.
+                // No `appearance::dialog_max_height` here: the panel bounds
+                // its own scrolling body to the room that cap leaves it
+                // (`body_max_height`), and reveals the control Tab moves onto
+                // there; the dialog's cap would clip that body and scroll it
+                // a second time.
                 .child(form.clone())
-                .footer(DialogFooter::new().child(
-                    button("github-close", "Back to repository", "", false).on_click(
-                        move |_, window, cx| close.update(cx, |this, cx| this.close(window, cx)),
+                .footer(
+                    DialogFooter::new().child(
+                        button("github-close", "Back to repository", "", false)
+                            .debug_selector(|| "github-close".into())
+                            .on_click(move |_, window, cx| {
+                                close.update(cx, |this, cx| this.close(window, cx))
+                            }),
                     ),
-                ))
+                )
                 .on_cancel(move |_, window, cx| {
                     cancel.update(cx, |this, cx| this.close(window, cx));
                     false
@@ -2145,9 +2166,10 @@ impl Render for Panel {
                 // reveals it even when it holds focus already, or by the panel reopening onto
                 // it, scrolls it into view with its ring, as a Tab onto it does, and only where
                 // it is not whole already. It is a part of its own, as each control in the row
-                // is: at 18 pt in a 461 × 490 window the row is taller than the body, and
-                // revealing the whole row scrolled a field already whole, and the banner above
-                // it out of view.
+                // is: the row can be taller than the body, as it was at 18 pt in a 461 × 490
+                // window while the body stopped short of the dialog's cap, and revealing the
+                // whole row scrolled a field already whole, and the banner above it out of
+                // view.
                 .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
                 .child(self.part("refresh",div(),cx).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
                 .child(self.part("create",div(),cx).child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
@@ -3913,6 +3935,118 @@ mod tests {
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
+    /// The panel's body takes the height its content needs up to the room the dialog's height
+    /// cap leaves it ([`appearance::dialog_max_height`], less the dialog's own chrome), so the
+    /// connection pane's help reads whole at 18 pt in a 461 × 490 window: with the content
+    /// running past the body, the dialog's foot reaches that cap and stays inside it, the help
+    /// shows whole once the body scrolls to it, and Tab onto Connect below it reveals Connect
+    /// whole. The body was the window less a fixed 220 px
+    /// scaled with the text, 185 px there where the cap leaves 265 px, and native QA saw the
+    /// help taller than the body (QA-97). At 13 pt the same holds in that window, and in a
+    /// 1,480 × 973 window the content fits: the body holds it unscrolled, the help whole, as
+    /// before.
+    #[gpui::test]
+    async fn the_body_takes_the_room_the_dialog_cap_leaves_and_shows_the_connection_help_whole(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        // Tab's bindings, the installed focus ring and motion at rest.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        for (interface, width, height) in [(18, 461., 490.), (13, 461., 490.), (13, 1480., 973.)] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            open_panel(&app, cx).await;
+            if !panel.read_with(cx, |panel, _| panel.review.connection_open) {
+                crate::copy_feedback::tests::click(cx, "github-account-options");
+                cx.run_until_parked();
+            }
+            scroll.set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            draw(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let (dialog, foot) = dialog_frame(cx);
+            let cap = cx.update(|window, _| appearance::dialog_max_height(window));
+            assert!(
+                dialog.bottom() <= foot + px(0.5),
+                "{at}: the dialog ends at {:?}, below its cap's foot {foot:?} ({cap:?} tall)",
+                dialog.bottom()
+            );
+            let help = cx
+                .debug_bounds("github-connection-help")
+                .expect("the connection pane's help");
+            let inside = |line: Bounds<Pixels>, body: Bounds<Pixels>| {
+                line.top() >= body.top() - px(0.5) && line.bottom() <= body.bottom() + px(0.5)
+            };
+            if width > 1000. {
+                assert_eq!(
+                    scroll.max_offset().y,
+                    px(0.),
+                    "{at}: the content fits the body"
+                );
+                assert!(
+                    inside(help, body),
+                    "{at}: the help {help:?} shows whole in the body {body:?}"
+                );
+                cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+                settle_panel(&app, cx).await;
+                continue;
+            }
+            // The content runs past the body, which takes all the room the cap leaves it.
+            assert!(
+                scroll.max_offset().y > px(0.),
+                "{at}: the content runs past the body"
+            );
+            assert!(
+                dialog.bottom() >= foot - px(1.),
+                "{at}: the body, {:?} tall, stops short of the room the dialog's cap leaves it: \
+                 the dialog ends at {:?}, its cap's foot at {foot:?}",
+                body.size.height,
+                dialog.bottom()
+            );
+            // Scrolled to the help, the body shows it whole.
+            let offset = (scroll.offset().y + (body.top() - help.top()))
+                .clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            draw(cx);
+            draw(cx);
+            let help = cx.debug_bounds("github-connection-help").unwrap();
+            assert!(
+                inside(help, body),
+                "{at}: scrolled to the help, the body {body:?} shows it {help:?} whole"
+            );
+            // Tab onto Connect, from the body's top, reveals it whole.
+            scroll.set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            let mut stops = 0;
+            while !ringed(cx, "github-connect") {
+                stops += 1;
+                assert!(stops <= 12, "{at}: Tab reaches Connect");
+                cx.simulate_keystrokes("tab");
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+            }
+            let connect = cx.debug_bounds("github-connect").unwrap();
+            assert!(
+                inside(connect, body),
+                "{at}: Tab shows Connect {connect:?} whole in the body {body:?}"
+            );
+            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+            settle_panel(&app, cx).await;
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Escape closes the panel and focus returns to what opened it, drawn as
     /// keyboard focus is drawn there: the header's Pull requests button, full
     /// or compact, takes the Button ring; from the command palette, opened by
@@ -5173,7 +5307,7 @@ mod tests {
     /// conversation moves, in the very frame it changes: a PR's Changes asked for while a reply
     /// is being written, its busy row appearing, then the operation bar's Cancel and the
     /// "Cancelled" line in place of the row, and the line clearing, at 18 pt in a 461 × 490
-    /// window, whose body is about 185 px tall, and at 13 pt in a 1,480 × 980 one. Focus stays
+    /// window, whose body is about 265 px tall, and at 13 pt in a 1,480 × 980 one. Focus stays
     /// in the draft, and the body scrolled to its top shows its first row whole below the
     /// line. Among the content under the toolbar, the line pushed the conversation, the draft
     /// included, down by its height.
@@ -7670,6 +7804,14 @@ mod tests {
                 ring.sides[0] && pane.top() >= body.top() + room - px(0.5),
                 "{at}: the ring's top edge lies inside the body {body:?}, its room clear: {ring:?}"
             );
+            // The case the narrow window is here for: a pane taller than the body, which a
+            // taller body would otherwise turn into a pane that fits without failing.
+            if width < 1000. {
+                assert!(
+                    pane.size.height + room * 2. > body.size.height,
+                    "{at}: the pane {pane:?} is taller than the body {body:?}"
+                );
+            }
             if pane.size.height + room * 2. <= body.size.height {
                 assert!(
                     ring.whole,
@@ -7753,7 +7895,7 @@ mod tests {
     /// At 18 pt it scrolled the body down, by 129.5 px the field's row to its top, and the
     /// banner out of view: the field kept a line's room clear of the body's edges rather than
     /// its ring's, which alone scrolled 112 px, and after a key its row, taller than the body,
-    /// revealed itself rather than the field. In a 461 × 470 window, where the field is not
+    /// revealed itself rather than the field. In a 461 × 360 window, where the field is not
     /// whole at the body's top, reopening scrolls the body until it is. A PR's Review reopens
     /// onto its summary, a field too: where the body shows it whole with its ring, at 13 pt in
     /// a 461 × 490 window and 18 pt in a 1,480 × 800 one, the body stays where it was, where a
@@ -7770,7 +7912,7 @@ mod tests {
             )
         });
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
-        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 461., 470.)] {
+        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 461., 360.)] {
             for pointer in [false, true] {
                 let at = format!(
                     "{interface} pt in {width} × {height}, reopened after the {}",
@@ -8102,6 +8244,35 @@ mod tests {
                 })
                 .collect()
         })
+    }
+
+    /// The open panel's dialog frame as the last frame painted it, the smallest edged quad
+    /// around the body and the footer, with its cap's foot: [`DIALOG_MARGIN`] above the
+    /// status bar's top edge, where [`appearance::dialog_max_height`] ends a dialog.
+    ///
+    /// [`DIALOG_MARGIN`]: appearance::DIALOG_MARGIN
+    pub(super) fn dialog_frame(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Pixels) {
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let close = cx.debug_bounds("github-close").expect("Back to repository");
+        let foot = cx.update(|window, _| {
+            crate::theme_editor::status_bar_top(window) - appearance::DIALOG_MARGIN
+        });
+        let dialog = quads(cx)
+            .into_iter()
+            .filter(|(bounds, quad)| {
+                let widths = quad.border_widths;
+                [widths.top, widths.right, widths.bottom, widths.left]
+                    .iter()
+                    .all(|width| width.as_f32() > 0.)
+                    && bounds.top() < body.top()
+                    && bounds.bottom() > close.bottom()
+                    && bounds.left() < body.left()
+                    && bounds.right() > body.right()
+            })
+            .map(|(bounds, _)| bounds)
+            .min_by(|a, b| a.size.height.partial_cmp(&b.size.height).unwrap())
+            .expect("the dialog's frame");
+        (dialog, foot)
     }
 
     fn near(a: Bounds<Pixels>, b: Bounds<Pixels>) -> bool {

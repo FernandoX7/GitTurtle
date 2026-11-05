@@ -1227,8 +1227,8 @@ impl Panel {
                 .enumerate()
                 .map(|(i, (section, name))| {
                     // Each tab is a part of its own: where the tabs wrap, their part may be
-                    // taller than the body, as at 18 pt in a 461 × 490 window, and Tab shows
-                    // the tab it moves onto with its ring.
+                    // taller than the body of a short window at a large text size, and Tab
+                    // shows the tab it moves onto with its ring.
                     self.part(["section-0", "section-1", "section-2"][i], div(), cx)
                         .child(
                             button(
@@ -2178,8 +2178,22 @@ mod tests {
         let composer = cx
             .debug_bounds("github-inline-composer")
             .expect("rendered inline composer");
-        let viewport = cx.read(|cx| panel.read(cx).review.body_scroll.bounds());
-        assert!(viewport.size.height <= px(380.));
+        // With the content running past it, the body takes the room the dialog's height cap
+        // leaves it in this window: the dialog is as tall as its cap, neither shorter nor
+        // taller. Its height rather than its foot, since the dialog may still be sliding in.
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let viewport = scroll.bounds();
+        assert!(
+            scroll.max_offset().y > px(0.),
+            "the content runs past the body"
+        );
+        let (dialog, _) = super::super::tests::dialog_frame(cx);
+        let cap = cx.update(|window, _| appearance::dialog_max_height(window));
+        assert!(
+            (dialog.size.height - cap).abs() <= px(1.),
+            "the dialog is {:?} tall, not its cap's {cap:?}",
+            dialog.size.height
+        );
         assert!(
             composer.size.height > px(100.) && composer.size.width > px(300.),
             "composer must retain useful native geometry"

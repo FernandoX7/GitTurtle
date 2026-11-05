@@ -171,11 +171,19 @@ fn panels(surface: Surface) -> &'static [Panel] {
         ),
         panel("composer", Selector("commit-composer")),
     ];
-    const GITHUB: &[Panel] = &[boxed_panel(
-        "GitHub panel",
-        Selector("github-panel"),
-        || appearance::ui_size(crate::LABEL_INSET),
-    )];
+    // The Conversations pane, bordered and padded to the panel's text edge, stands its
+    // Buttons' frames at that edge rather than at the panel's box edge: a nested group, so
+    // its Refresh conversations, wrapped onto a line of its own in a narrow window, takes
+    // the pane's offset without excusing the panel's own icon-led Buttons from theirs.
+    const GITHUB: &[Panel] = &[
+        panel(
+            "Conversations pane",
+            Within("github-thread-section", "github-panel"),
+        ),
+        boxed_panel("GitHub panel", Selector("github-panel"), || {
+            appearance::ui_size(crate::LABEL_INSET)
+        }),
+    ];
     // The conversations are cards inside the Conversations pane, each
     // bordered and padded inside the pane's text edge: a nested group.
     const GITHUB_PANES: &[Panel] = &[
@@ -286,6 +294,7 @@ const OFFSETS: &[Offset] = &[
         panel: Some(&[
             (Surface::History, "inspector"),
             (Surface::Compare, "inspector"),
+            (Surface::GitHub, "Conversations pane"),
             (Surface::GitHubPanes, "GitHub panel"),
             (Surface::Settings, "Git identity"),
         ]),
@@ -293,8 +302,10 @@ const OFFSETS: &[Offset] = &[
         reason: "a compact Button standing at the edge whose 16 px icon leads its label starts \
                  its label past its label inset, the icon and the 6 px gap: the inspector's \
                  Copy message, and in a bordered pane of the GitHub panel, whose Buttons stand \
-                 their frames at its text edge, Refresh conversations on a line of its own; \
-                 Git identity's Reset edits and Manage named profiles…",
+                 their frames at its text edge, Refresh conversations on a line of its own \
+                 (on the plain surface, the Conversations pane's, which the offline fixture's \
+                 open PR draws at 13 pt in a 461 × 980 window); Git identity's Reset edits and \
+                 Manage named profiles…",
     },
     Offset {
         panel: Some(&[
