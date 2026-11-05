@@ -2322,7 +2322,7 @@ impl Render for Panel {
                 .when(!self.create,|element|element.child(self.part("events",div(),cx).flex().flex_wrap().gap_1()
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
-                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_field_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
+                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_field_on_focus(self.body.read(cx).focus_handle(cx))).child(review::editor_rows(&self.body)).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
                 // The draft status beside Review submission… where it fits there whole, at the
                 // panel's text inset; otherwise on a line of its own below it, wrapping, so its
                 // remedy stays readable and the button stays inside the panel (at 18 pt a failed
@@ -4318,7 +4318,7 @@ mod tests {
             last.top() > list.bottom(),
             "the list {list:?} hides its last row {last:?} below its foot"
         );
-        let lines = panel.read_with(cx, |panel, _| panel.review.body_blocks.lines());
+        let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
         let hidden: Vec<_> = lines
             .iter()
             .filter(|(top, bottom)| *bottom > list.bottom() + px(0.5) && *top < last.bottom())
@@ -4391,7 +4391,7 @@ mod tests {
             !hidden.is_empty(),
             "the list {list:?} hides text below its foot"
         );
-        let lines = panel.read_with(cx, |panel, _| panel.review.body_blocks.lines());
+        let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
         let kept: Vec<_> = lines
             .iter()
             .filter(|(top, _)| {
@@ -8156,6 +8156,253 @@ mod tests {
             })
             .map(|(line, _)| line)
             .collect()
+    }
+
+    /// The conversation list and the lines drawn in it, each named, with where it lies, after
+    /// a fresh draw: each line of every text in it and each of its labelled Buttons, read from
+    /// the accessibility nodes the frame wrote, the rows it has scrolled out of itself among
+    /// them, since its own scroll can bring them into view. A text whose box is more than a
+    /// whole number of lines, as a conversation's status, padded inside its surface the same
+    /// above and below, counts its lines where its text draws them, that padding inside its
+    /// box: a status 369.5..395 draws its text 372.5..392 at 13 pt, where the list counts its
+    /// line too, and counted as its box it took the list's foot at the text's top for a cut.
+    fn list_lines(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Vec<(String, Pixels, Pixels)>) {
+        use crate::native_accessibility::written;
+        written::forget();
+        crate::tags::tests::draw(cx);
+        let list = cx.debug_bounds("github-threads").expect("the list");
+        let line = label_line(cx);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let mut lines = Vec::new();
+        for id in written::inside("github-threads") {
+            let Some(text) = written::get(&id) else {
+                continue;
+            };
+            let Some(layout) = text.layout else {
+                continue;
+            };
+            let (top, bottom) = (px(layout.y0 as f32 / scale), px(layout.y1 as f32 / scale));
+            match text.node.role() {
+                Role::Button => lines.push((id, top, bottom)),
+                Role::Label => {
+                    let count = ((bottom - top) / line + 0.05).floor();
+                    if count < 1. {
+                        lines.push((id, top, bottom));
+                        continue;
+                    }
+                    // What the lines leave of the box, its padding, half above them.
+                    let padding = ((bottom - top) - line * count) / 2.;
+                    for index in 0..count as usize {
+                        let at = top + padding + line * index as f32;
+                        lines.push((format!("{id} line {}", index + 1), at, at + line));
+                    }
+                }
+                _ => {}
+            }
+        }
+        (list, lines)
+    }
+
+    /// Tab down through a PR's conversations on the offline fixture, at 13, 17 and 18 pt in
+    /// windows 430 to 500 px wide, every 10 px, and 490 px tall, where the conversation list is
+    /// shorter than its conversations: wherever Tab scrolls the list onto a conversation's actions,
+    /// neither of the list's edges falls inside a line drawn in it (each line of its text and
+    /// each labelled Button; half a pixel either way is layout's rounding), unless no place
+    /// the list's top edge can take keeps the actions whole with their ring's room and both
+    /// edges clear: each line's top and foot, each less the list's height, each line's top less
+    /// the ring's room and both ends of the list's content. A conversation's status counts its
+    /// line where its text draws, inside its padding ([`list_lines`]). The list's reveals once
+    /// collected no lines of their own (FU15-D's review): they stopped wherever the block
+    /// starts put them, and at 13 pt in a 480 × 490 window Tab onto the third conversation's
+    /// actions left its permissions line, 274.5..294, cut at the list's foot, 279.5.
+    #[gpui::test]
+    async fn conversation_reveals_leave_no_line_cut_at_the_lists_edges(cx: &mut TestAppContext) {
+        let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
+        let list_scroll = cx.read(|cx| panel.read(cx).conversations.list_scroll.clone());
+        // The selectors of the first conversations' actions, made once for the whole test.
+        let names: Vec<&'static str> = (0..16)
+            .map(|index| &*format!("github-thread-actions-{index}").leak())
+            .collect();
+        let mut moves = 0;
+        let sizes = [13, 17, 18].into_iter().flat_map(|size| {
+            (430..=500)
+                .step_by(10)
+                .map(move |width| (size, width as f32, 490.))
+        });
+        for sizes in sizes {
+            let at = format!("{} pt in {} × {}", sizes.0, sizes.1, sizes.2);
+            show_overview(&panel, &pull, sizes, cx);
+            let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+            let mut offset = list_scroll.offset().y;
+            for stop in 0..60 {
+                cx.simulate_keystrokes("tab");
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let part = cx.update(|window, _| {
+                    window
+                        .context_stack()
+                        .iter()
+                        .rev()
+                        .find_map(|context| context.get(review::PART).cloned())
+                });
+                if part.as_ref().is_some_and(|part| part.as_ref() == "banner") {
+                    break;
+                }
+                let now = list_scroll.offset().y;
+                let moved = now != offset;
+                offset = now;
+                // At the list's top, a reveal keeps the box's top (`review::clear_of_lines`).
+                if !moved || now == px(0.) {
+                    continue;
+                }
+                let actions = names.iter().enumerate().find_map(|(index, name)| {
+                    let actions = cx.debug_bounds(name)?;
+                    let focused = cx.update(|window, _| {
+                        window.context_stack().iter().any(|context| {
+                            context.get("GitTurtleGithubConversation")
+                                == Some(&index.to_string().into())
+                        })
+                    });
+                    focused.then_some(actions)
+                });
+                let Some(actions) = actions else {
+                    continue;
+                };
+                moves += 1;
+                let here = format!("{at}, stop {stop}");
+                let (list, lines) = list_lines(cx);
+                let (top, bottom) = (actions.top() - ring, actions.bottom() + ring);
+                let slack = px(0.5);
+                assert!(
+                    top >= list.top() - slack && bottom <= list.bottom() + slack,
+                    "{here}: Tab shows the actions {actions:?} whole in the list {list:?}"
+                );
+                let inside = |edge: Pixels, within: Pixels| {
+                    lines.iter().filter(move |(_, top, bottom)| {
+                        *top < edge - within && *bottom > edge + within
+                    })
+                };
+                let cut: Vec<_> = inside(list.top(), slack)
+                    .chain(inside(list.bottom(), slack))
+                    .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?}"))
+                    .collect();
+                if cut.is_empty() {
+                    continue;
+                }
+                let height = list.size.height;
+                let first = list.top() + now;
+                let last = first + list_scroll.max_offset().y;
+                let within = px(0.01);
+                let stops: Vec<Pixels> = lines
+                    .iter()
+                    .flat_map(|(_, top, bottom)| {
+                        [*top, *bottom, *top - height, *bottom - height, *top - ring]
+                    })
+                    .chain([first, last])
+                    .filter(|edge| {
+                        *edge >= first - slack
+                            && *edge <= last + slack
+                            && *edge <= top + slack
+                            && *edge + height >= bottom - slack
+                            && inside(*edge, within).next().is_none()
+                            && inside(*edge + height, within).next().is_none()
+                    })
+                    .collect();
+                assert_eq!(
+                    stops,
+                    Vec::<Pixels>::new(),
+                    "{here}: {cut:?} cut at the edges of the list {list:?} where its top edge \
+                     could stop clear of every line"
+                );
+            }
+        }
+        assert!(moves > 0, "Tab scrolls the conversation list onto actions");
+    }
+
+    /// The rows of a multi-line editor, as `editor` laid them out when it last painted: each
+    /// place for a row in its viewport, from the top of its scrolled text, as tall as its line
+    /// height, the part of it the viewport shows.
+    fn editor_rows(
+        editor: &Entity<TextareaState>,
+        cx: &mut VisualTestContext,
+    ) -> Vec<(Pixels, Pixels)> {
+        cx.read(|cx| {
+            let editor = editor.read(cx);
+            let view = editor.input_bounds();
+            let text = editor.text_bounds().expect("the editor has painted");
+            let line = editor.line_height().expect("the editor has painted");
+            (0..)
+                .map(|row| text.top() + line * row as f32)
+                .take_while(|top| *top < view.bottom())
+                .filter(|top| *top + line > view.top())
+                .map(|top| (top.max(view.top()), (top + line).min(view.bottom())))
+                .collect()
+        })
+    }
+
+    /// A PR's review summary, a multi-line editor, reports each of its rows as a line of the
+    /// body, at 13 and 18 pt in a 461 × 490 window with three lines of draft in it, so no reveal
+    /// of the body stops with a row of a draft cut at either edge: the editor's rows reported
+    /// no lines, and the body's reveals took the whole editor for space between lines, where
+    /// either edge could stop (FU15-D's review).
+    #[gpui::test]
+    async fn a_multi_line_editors_rows_are_lines_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
+        let summary = cx.read(|cx| panel.read(cx).body.clone());
+        for sizes in [(13, 461., 490.), (18, 461., 490.)] {
+            let at = format!("{} pt in {} × {}", sizes.0, sizes.1, sizes.2);
+            show_overview(&panel, &pull, sizes, cx);
+            cx.update(|window, cx| {
+                summary.update(cx, |input, cx| {
+                    input.set_value("First line\nSecond line\nThird line", window, cx)
+                });
+                panel.update(cx, |panel, cx| {
+                    panel.review.section = Section::Review;
+                    cx.notify();
+                });
+            });
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            // The summary's top in view, where the body draws the rows above its foot.
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let field = cx
+                .debug_bounds("github-review-summary")
+                .expect("the summary");
+            let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+            let offset = (scroll.offset().y - (field.top() - body.top() - px(20.)))
+                .clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let rows = editor_rows(&summary, cx);
+            assert!(
+                rows.len() >= 3,
+                "{at}: the summary shows its three lines: {rows:?}"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+            let missing: Vec<_> = rows
+                .iter()
+                .filter(|(_, bottom)| *bottom <= body.bottom() + px(0.5))
+                .filter(|row| {
+                    !lines.iter().any(|line| {
+                        (line.0 - row.0).abs() < px(0.01) && (line.1 - row.1).abs() < px(0.01)
+                    })
+                })
+                .collect();
+            assert!(
+                rows.iter().any(|(_, bottom)| *bottom <= body.bottom()),
+                "{at}: the body {body:?} shows a row of the summary {rows:?}"
+            );
+            assert_eq!(
+                missing,
+                Vec::<&(Pixels, Pixels)>::new(),
+                "{at}: each row of the summary is a line of the body"
+            );
+        }
     }
 
     /// Tab through a PR's Overview on the offline fixture, at 13 and 18 pt in a 461 × 490

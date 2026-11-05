@@ -293,22 +293,33 @@ pub(super) fn record_shown(
 /// also keeps the lines drawn in it, each line of its text and each control of one line, from
 /// top to bottom, which neither of its edges may fall inside once a reveal lands
 /// ([`clear_of_lines`]); they report themselves while the body collects them
-/// ([`Blocks::collect_lines`], [`text_lines`], [`one_line`]).
+/// ([`Blocks::collect_lines`], [`text_lines`], [`one_line`], [`editor_rows`]), as the lines of
+/// a list that reveals its own parts do to its blocks ([`clipped_lines`]).
 #[derive(Clone, Default)]
 pub(super) struct Blocks {
     drawing: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
     drawn: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
     lines_drawing: std::rc::Rc<std::cell::RefCell<Vec<(Pixels, Pixels)>>>,
     lines_drawn: std::rc::Rc<std::cell::RefCell<Vec<(Pixels, Pixels)>>>,
+    /// The multi-line editors drawn in the container while a frame prepaints, and those of
+    /// the last frame, each with the span where the container keeps a line
+    /// ([`Collecting::spans`]): an editor lays its rows out as it paints, after the container
+    /// has prepainted, so [`Blocks::lines`] reads them from it then ([`editor_rows`]).
+    editors_drawing: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
+    editors_drawn: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
 }
+/// A multi-line editor drawn in a container collecting lines, with the span where the
+/// container keeps a line ([`Blocks::editors_drawing`]).
+type DrawnEditor = (Entity<TextareaState>, (Pixels, Pixels));
 /// The body collecting the lines its content draws ([`Blocks::collect_lines`]).
 struct Collecting {
     blocks: Blocks,
     /// The clip the body draws its content in.
     clip: Bounds<Pixels>,
     /// The viewports of the lists inside the body around what is prepainting, outermost
-    /// first ([`clipped`]).
-    lists: Vec<Bounds<Pixels>>,
+    /// first ([`clipped`]), each with the blocks of a list that collects lines of its own
+    /// ([`clipped_lines`]).
+    lists: Vec<(Bounds<Pixels>, Option<Blocks>)>,
 }
 impl Collecting {
     /// The span of the body's content, top to bottom, where a person can see a line drawn
@@ -330,21 +341,62 @@ impl Collecting {
         } else {
             px(f32::INFINITY)
         };
-        for list in &self.lists {
+        for (list, _) in &self.lists {
             top = top.max(list.top());
             bottom = bottom.min(list.bottom());
         }
         (top, bottom)
     }
-    /// Keeps the line from `top` to `bottom` where a person can see it whole in `visible`
-    /// ([`Collecting::visible`]): a line a list or a clip inside the body hides or cuts is
-    /// that container's to show, not the body's.
-    fn line(&self, top: Pixels, bottom: Pixels, (shown, ends): (Pixels, Pixels)) {
+    /// The containers collecting a line drawn under `mask`, each with the span where it keeps
+    /// one: the body, where a person can see it ([`Collecting::visible`]), and each list
+    /// around it that collects lines of its own ([`clipped_lines`]), where the list's own
+    /// scroll can bring it into view. For such a list, the rows it has scrolled out of itself
+    /// and what lies past the body's clip are still its lines, while a list or a clip inside
+    /// it hides what it hides.
+    fn spans(&self, mask: Bounds<Pixels>) -> Vec<(&Blocks, (Pixels, Pixels))> {
         let slack = px(0.5);
-        if top >= shown - slack && bottom <= ends + slack && bottom > top {
-            self.blocks.lines_drawing.borrow_mut().push((top, bottom));
+        let mut spans = vec![(&self.blocks, self.visible(mask))];
+        for (index, (_, blocks)) in self.lists.iter().enumerate() {
+            let Some(blocks) = blocks else {
+                continue;
+            };
+            // The clip the list and what holds it put on its content, which bounds nothing.
+            let (outer_top, outer_bottom) = self.lists[..=index].iter().fold(
+                (self.clip.top(), self.clip.bottom()),
+                |(top, bottom), (list, _)| (top.max(list.top()), bottom.min(list.bottom())),
+            );
+            let mut top = if mask.top() > outer_top + slack {
+                mask.top()
+            } else {
+                px(f32::NEG_INFINITY)
+            };
+            let mut bottom = if mask.bottom() < outer_bottom - slack {
+                mask.bottom()
+            } else {
+                px(f32::INFINITY)
+            };
+            for (inner, _) in &self.lists[index + 1..] {
+                top = top.max(inner.top());
+                bottom = bottom.min(inner.bottom());
+            }
+            spans.push((blocks, (top, bottom)));
         }
+        spans
     }
+}
+/// Keeps in `blocks` the line from `top` to `bottom` where it lies whole in `span`
+/// ([`Collecting::spans`]): a line a list or a clip inside the container hides or cuts is that
+/// list's or clip's to show, not the container's.
+fn keep_line(blocks: &Blocks, top: Pixels, bottom: Pixels, span: (Pixels, Pixels)) {
+    if whole_in(top, bottom, span) {
+        blocks.lines_drawing.borrow_mut().push((top, bottom));
+    }
+}
+/// Whether the line from `top` to `bottom` lies whole in `span`, half a pixel either way being
+/// layout's rounding ([`keep_line`]).
+fn whole_in(top: Pixels, bottom: Pixels, (shown, ends): (Pixels, Pixels)) -> bool {
+    let slack = px(0.5);
+    top >= shown - slack && bottom <= ends + slack && bottom > top
 }
 thread_local! {
     /// The body whose content is prepainting while it collects its lines
@@ -370,17 +422,16 @@ pub(super) fn text_lines(children: Vec<Bounds<Pixels>>, window: &mut Window, _: 
         if height <= Pixels::ZERO {
             return;
         }
-        let visible = collecting.visible(window.content_mask().bounds);
-        for child in children {
-            // A text with nothing in it, as an empty status, is no line.
-            let count = (child.size.height / height).round();
-            let first = ((visible.0 - child.top()) / height)
-                .floor()
-                .clamp(0., count);
-            let last = ((visible.1 - child.top()) / height).ceil().clamp(0., count);
-            for index in first as usize..last as usize {
-                let top = child.top() + height * index as f32;
-                collecting.line(top, top + height, visible);
+        for (blocks, span) in collecting.spans(window.content_mask().bounds) {
+            for child in &children {
+                // A text with nothing in it, as an empty status, is no line.
+                let count = (child.size.height / height).round();
+                let first = ((span.0 - child.top()) / height).floor().clamp(0., count);
+                let last = ((span.1 - child.top()) / height).ceil().clamp(0., count);
+                for index in first as usize..last as usize {
+                    let top = child.top() + height * index as f32;
+                    keep_line(blocks, top, top + height, span);
+                }
             }
         }
     });
@@ -403,6 +454,16 @@ fn drawn_line_height(window: &Window) -> Pixels {
 /// it has scrolled out of itself report no lines ([`Collecting::visible`]). The element is as
 /// tall as the list and stands where it would.
 pub(super) fn clipped(list: impl IntoElement) -> Div {
+    clipped_with(list, None)
+}
+/// [`clipped`] for a list that reveals its own parts, as the conversation list does: it also
+/// collects its own lines in `blocks`, all those its scroll can bring into view, so its
+/// reveals stop where its edges cut none ([`Blocks::lines`]). Collecting only the body's, its
+/// reveals saw no line at all and could stop with a comment's line cut at the list's edge.
+pub(super) fn clipped_lines(list: impl IntoElement, blocks: &Blocks) -> Div {
+    clipped_with(list, Some(blocks.clone()))
+}
+fn clipped_with(list: impl IntoElement, blocks: Option<Blocks>) -> Div {
     div()
         .flex_shrink_0()
         .flex()
@@ -417,10 +478,10 @@ pub(super) fn clipped(list: impl IntoElement) -> Div {
         // Prepainted before the list, laid over it at its place in the body.
         .child(
             canvas(
-                |bounds, _, _| {
+                move |bounds, _, _| {
                     COLLECTING.with(|collecting| {
                         if let Some(collecting) = &mut *collecting.borrow_mut() {
-                            collecting.lists.push(bounds);
+                            collecting.lists.push((bounds, blocks.clone()));
                         }
                     });
                 },
@@ -440,8 +501,9 @@ pub(super) fn one_line() -> impl IntoElement {
         |bounds, window, _| {
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
-                    let visible = collecting.visible(window.content_mask().bounds);
-                    collecting.line(bounds.top(), bounds.bottom(), visible);
+                    for (blocks, span) in collecting.spans(window.content_mask().bounds) {
+                        keep_line(blocks, bounds.top(), bounds.bottom(), span);
+                    }
                 }
             });
         },
@@ -449,6 +511,54 @@ pub(super) fn one_line() -> impl IntoElement {
     )
     .absolute()
     .inset_0()
+}
+/// An element laid over `editor`, a multi-line editor such as a composer's, that records it in
+/// each container collecting lines around it ([`Blocks::collect_lines`], [`clipped_lines`]), so
+/// the container's reveals read each of its rows as a line ([`Blocks::lines`]): an edge inside
+/// a row would cut the draft's text, which reported no lines before, so a reveal could stop
+/// with a row of a draft cut at the body's edge. Absolutely placed, it takes no room and moves
+/// nothing.
+pub(super) fn editor_rows(editor: &Entity<TextareaState>) -> impl IntoElement {
+    let editor = editor.clone();
+    canvas(
+        move |_, window, _| {
+            COLLECTING.with(|collecting| {
+                if let Some(collecting) = &*collecting.borrow() {
+                    for (blocks, span) in collecting.spans(window.content_mask().bounds) {
+                        let drawn = (editor.clone(), span);
+                        blocks.editors_drawing.borrow_mut().push(drawn);
+                    }
+                }
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+/// The rows of `editor` as it last painted, in that frame's coordinates, each a line where a
+/// person can see some of it: the part of each row the editor's viewport shows, kept where it
+/// lies whole in `span` ([`whole_in`]), added to `lines`. The editor draws its rows one under
+/// another from the top of its scrolled text, each as tall as its laid-out line height; each
+/// place for a row in its viewport counts, the empty ones past its text among them, as the
+/// frame of rows the editor is.
+fn editor_lines(editor: &TextareaState, span: (Pixels, Pixels), lines: &mut Vec<(Pixels, Pixels)>) {
+    let view = editor.input_bounds();
+    let (Some(text), Some(line)) = (editor.text_bounds(), editor.line_height()) else {
+        return;
+    };
+    if line <= Pixels::ZERO || view.size.height <= Pixels::ZERO {
+        return;
+    }
+    let first = ((view.top() - text.top()) / line).floor().max(0.);
+    let last = ((view.bottom() - text.top()) / line).ceil().max(first);
+    for row in first as usize..last as usize {
+        let top = text.top() + line * row as f32;
+        let (top, bottom) = (top.max(view.top()), (top + line).min(view.bottom()));
+        if whole_in(top, bottom, span) {
+            lines.push((top, bottom));
+        }
+    }
 }
 /// An element laid over its parent, a control in a row that wraps such as the toolbar's, that
 /// reports the parent's top as the start of a block of the body collecting lines
@@ -483,9 +593,15 @@ impl Blocks {
         })
     }
     /// The lines of the last prepainted frame, in its coordinates with the body's scroll at
-    /// its offset then.
-    pub(super) fn lines(&self) -> Vec<(Pixels, Pixels)> {
-        self.lines_drawn.borrow().clone()
+    /// its offset then: those its content reported and the rows of the multi-line editors it
+    /// drew, read from each editor's layout, which it keeps from the frame it last painted
+    /// ([`editor_rows`]), so a reveal deferred until that frame has painted reads that frame's.
+    pub(super) fn lines(&self, cx: &App) -> Vec<(Pixels, Pixels)> {
+        let mut lines = self.lines_drawn.borrow().clone();
+        for (editor, span) in self.editors_drawn.borrow().iter() {
+            editor_lines(editor.read(cx), *span, &mut lines);
+        }
+        lines
     }
     /// For an element's `on_children_prepainted`: each of its children starts a block.
     pub(super) fn starts(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
@@ -515,6 +631,8 @@ impl Blocks {
         });
         let lines = std::mem::take(&mut *self.lines_drawing.borrow_mut());
         *self.lines_drawn.borrow_mut() = lines;
+        let editors = std::mem::take(&mut *self.editors_drawing.borrow_mut());
+        *self.editors_drawn.borrow_mut() = editors;
     }
     /// The starts of the last prepainted frame, in its coordinates with `scroll` at its
     /// offset then: the container's children and those reported from inside it.
@@ -788,7 +906,7 @@ pub(super) fn show(
         let starts = blocks.at(&scroll);
         let edge = landing(viewport, top, bottom, &starts, inset, end, ringed);
         let starts: Vec<_> = starts.into_iter().map(|start| start - inset).collect();
-        let lines = blocks.lines();
+        let lines = blocks.lines(cx);
         let edge = clear_of_lines(viewport, edge, (top, bottom), &lines, &starts, (start, end));
         scroll_edge_to(&scroll, viewport, previous, edge, window);
     });
@@ -1645,10 +1763,14 @@ impl Panel {
                 .font_weight(FontWeight::SEMIBOLD),
             )
             .child(
-                Textarea::new(&self.review.input)
-                    .h(appearance::ui_size(100.))
-                    .aria_label("Inline review comment, saved locally with its captured position")
-                    .disabled(self.pending),
+                div().child(editor_rows(&self.review.input)).child(
+                    Textarea::new(&self.review.input)
+                        .h(appearance::ui_size(100.))
+                        .aria_label(
+                            "Inline review comment, saved locally with its captured position",
+                        )
+                        .disabled(self.pending),
+                ),
             )
             .child(
                 div()
