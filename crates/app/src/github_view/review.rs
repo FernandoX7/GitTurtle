@@ -2227,23 +2227,28 @@ impl Panel {
                 div().size_full().pb(slack).child(
                     // Ends at the last whole line's bottom and cuts what the editor paints
                     // below it, its bottom padding and the top of the next line, which it
-                    // overruns this by.
-                    div()
-                        .debug_selector(|| "github-source-text".into())
-                        .relative()
-                        .size_full()
-                        .overflow_hidden()
-                        // Each row this clip shows is a line of the body.
-                        .child(editor_rows(source))
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .bottom(-EDITOR_PADDING)
-                                .child(content),
-                        ),
+                    // overruns this by. Each row this clip shows whole is a line of the body,
+                    // and the clip tells the body its bounds ([`clipped`]), so the part of a
+                    // row under its foot is none where the clip runs past the body's edge,
+                    // which was taken for the clip there and let that part count.
+                    clipped(
+                        div()
+                            .debug_selector(|| "github-source-text".into())
+                            .relative()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(editor_rows(source))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom(-EDITOR_PADDING)
+                                    .child(content),
+                            ),
+                    )
+                    .size_full(),
                 ),
             )
             .into_any_element()

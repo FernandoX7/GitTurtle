@@ -2301,7 +2301,10 @@ impl Render for Panel {
                 .child(self.render_tabs(cx)))
                 .when(self.review.section==Section::Overview,|element|element
                     .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted)))
-                    .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).h(px(120.)).flex_shrink_0().child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
+                    .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).relative().h(px(120.)).flex_shrink_0()
+                        // Each row of the description its viewport shows is a line of the body.
+                        .child(review::editor_rows(description))
+                        .child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
                     .when_some(self.status.as_ref(),|element,status|element.child(div().py_3().px(text_inset()).bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
                         .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
                         .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
@@ -8446,16 +8449,22 @@ mod tests {
                     textarea(&panel.conversations.input),
                 ),
             ];
-            if let Some(source) = &panel.review.source {
-                let source = source.read(cx);
-                editors.push((
-                    "github-source-text",
-                    (
-                        source.input_bounds(),
-                        source.text_bounds(),
-                        source.line_height(),
-                    ),
-                ));
+            let code = [
+                ("github-source-text", panel.review.source.as_ref()),
+                ("github-part-description", panel.description.as_ref()),
+            ];
+            for (drawn, editor) in code {
+                if let Some(editor) = editor {
+                    let editor = editor.read(cx);
+                    editors.push((
+                        drawn,
+                        (
+                            editor.input_bounds(),
+                            editor.text_bounds(),
+                            editor.line_height(),
+                        ),
+                    ));
+                }
             }
             editors
         });
@@ -8702,88 +8711,143 @@ mod tests {
         assert!(moves > 0, "Tab scrolls the conversation list onto actions");
     }
 
-    /// The rows of a multi-line editor, as `editor` laid them out when it last painted: each
-    /// place for a row in its viewport, from the top of its scrolled text, as tall as its line
-    /// height, the part of it the viewport shows.
-    fn editor_rows(
-        editor: &Entity<TextareaState>,
-        cx: &mut VisualTestContext,
-    ) -> Vec<(Pixels, Pixels)> {
-        cx.read(|cx| {
-            let editor = editor.read(cx);
-            let view = editor.input_bounds();
-            let text = editor.text_bounds().expect("the editor has painted");
-            let line = editor.line_height().expect("the editor has painted");
-            (0..)
-                .map(|row| text.top() + line * row as f32)
-                .take_while(|top| *top < view.bottom())
-                .filter(|top| *top + line > view.top())
-                .map(|top| (top.max(view.top()), (top + line).min(view.bottom())))
-                .collect()
-        })
+    /// The caret the last frame drew inside `view`, an editor's viewport, after a fresh draw:
+    /// the one fill there at most 3 px wide and about as tall as a line of text. It marks the
+    /// row it stands on where the frame drew it, apart from the editor's record of its layout,
+    /// which the body reads ([`review::Blocks::lines`]).
+    fn drawn_caret(cx: &mut VisualTestContext, view: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        crate::tags::tests::draw(cx);
+        let slack = px(0.5);
+        let carets: Vec<Bounds<Pixels>> = quads(cx)
+            .into_iter()
+            .map(|(bounds, _)| bounds)
+            .filter(|bounds| {
+                bounds.size.width > px(0.)
+                    && bounds.size.width <= px(3.)
+                    && bounds.size.height >= px(8.)
+                    && bounds.size.height <= px(48.)
+                    && bounds.left() >= view.left() - slack
+                    && bounds.right() <= view.right() + slack
+                    && bounds.top() >= view.top() - slack
+                    && bounds.bottom() <= view.bottom() + slack
+            })
+            .collect();
+        assert!(carets.len() <= 1, "one caret in {view:?}: {carets:?}");
+        carets.first().copied()
     }
 
-    /// A PR's review summary, a multi-line editor, reports each of its rows as a line of the
-    /// body, at 13 and 18 pt in a 461 × 490 window with three lines of draft in it, so no reveal
-    /// of the body stops with a row of a draft cut at either edge: the editor's rows reported
-    /// no lines, and the body's reveals took the whole editor for space between lines, where
-    /// either edge could stop (FU15-D's review).
+    /// A multi-line editor reports each of its rows as a line of the body, at 13 and 18 pt in
+    /// a 461 × 490 window, so no reveal of the body stops with a row of its text cut at either
+    /// edge: a PR's review summary, holding twelve lines of draft in its 130 px, and Overview's
+    /// opened-PR description, a 120 px read-only editor holding twelve lines of Markdown, each
+    /// walked row by row with the keyboard, the summary from its last row up and the
+    /// description from its first down, so each scrolls inside itself. Each row the frame
+    /// draws the caret on, whole in the editor and in the body, lies in one line of the body
+    /// no taller than two rows. The editors' rows once reported no lines, and the body's
+    /// reveals took an editor for room between lines, where either edge could stop (FU15-D's
+    /// review); the description reported none until FU18-F's review.
     #[gpui::test]
     async fn a_multi_line_editors_rows_are_lines_of_the_body(cx: &mut TestAppContext) {
         let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
         let summary = cx.read(|cx| panel.read(cx).body.clone());
+        let text: String = (1..=12)
+            .map(|line| format!("Line {line} of the text"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let slack = px(0.5);
         for sizes in [(13, 461., 490.), (18, 461., 490.)] {
-            let at = format!("{} pt in {} × {}", sizes.0, sizes.1, sizes.2);
-            show_overview(&panel, &pull, sizes, cx);
-            cx.update(|window, cx| {
-                summary.update(cx, |input, cx| {
-                    input.set_value("First line\nSecond line\nThird line", window, cx)
-                });
-                panel.update(cx, |panel, cx| {
-                    panel.review.section = Section::Review;
-                    cx.notify();
-                });
-            });
-            for _ in 0..3 {
-                crate::width_walk::frame(cx);
-            }
-            // The summary's top in view, where the body draws the rows above its foot.
-            let body = cx.debug_bounds("github-panel").expect("the body");
-            let field = cx
-                .debug_bounds("github-review-summary")
-                .expect("the summary");
-            let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
-            let offset = (scroll.offset().y - (field.top() - body.top() - px(20.)))
-                .clamp(-scroll.max_offset().y, px(0.));
-            scroll.set_offset(point(px(0.), offset));
-            for _ in 0..3 {
-                crate::width_walk::frame(cx);
-            }
-            let rows = editor_rows(&summary, cx);
-            assert!(
-                rows.len() >= 3,
-                "{at}: the summary shows its three lines: {rows:?}"
-            );
-            let body = cx.debug_bounds("github-panel").expect("the body");
-            let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
-            let missing: Vec<_> = rows
-                .iter()
-                .filter(|(_, bottom)| *bottom <= body.bottom() + px(0.5))
-                .filter(|row| {
-                    !lines.iter().any(|line| {
-                        (line.0 - row.0).abs() < px(0.01) && (line.1 - row.1).abs() < px(0.01)
+            for description in [false, true] {
+                let at = format!(
+                    "{} at {} pt in {} × {}",
+                    if description {
+                        "the description"
+                    } else {
+                        "the summary"
+                    },
+                    sizes.0,
+                    sizes.1,
+                    sizes.2
+                );
+                show_overview(&panel, &pull, sizes, cx);
+                let text = text.clone();
+                let summary = summary.clone();
+                // The editor's viewport, as it last painted.
+                type Viewport = Box<dyn Fn(&App) -> Bounds<Pixels>>;
+                let layout: Viewport = cx.update(|window, cx| {
+                    // An inactive window draws no caret.
+                    window.activate_window();
+                    panel.update(cx, |panel, cx| {
+                        if description {
+                            let editor = text::editor(&text, "markdown", None, window, cx);
+                            panel.description = Some(editor.clone());
+                            window.focus(&editor.read(cx).focus_handle(cx), cx);
+                            Box::new(move |cx: &App| editor.read(cx).input_bounds()) as Viewport
+                        } else {
+                            summary.update(cx, |input, cx| input.set_value(text, window, cx));
+                            panel.review.section = Section::Review;
+                            window.focus(&summary.read(cx).focus_handle(cx), cx);
+                            Box::new(move |cx: &App| summary.read(cx).input_bounds())
+                        }
                     })
-                })
-                .collect();
-            assert!(
-                rows.iter().any(|(_, bottom)| *bottom <= body.bottom()),
-                "{at}: the body {body:?} shows a row of the summary {rows:?}"
-            );
-            assert_eq!(
-                missing,
-                Vec::<&(Pixels, Pixels)>::new(),
-                "{at}: each row of the summary is a line of the body"
-            );
+                });
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                // The editor's top in view, where the body draws its rows above its foot.
+                let part = if description {
+                    "github-part-description"
+                } else {
+                    "github-review-summary"
+                };
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let field = cx.debug_bounds(part).expect("the editor");
+                let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+                let offset = (scroll.offset().y - (field.top() - body.top() - px(20.)))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), offset));
+                let key = if description { "down" } else { "up" };
+                let (mut checked, mut tops) = (0, Vec::new());
+                for row in 0..12 {
+                    if row > 0 {
+                        cx.simulate_keystrokes(key);
+                    }
+                    for _ in 0..2 {
+                        crate::width_walk::frame(cx);
+                    }
+                    let view = cx.read(|cx| layout(cx));
+                    let Some(caret) = drawn_caret(cx, view) else {
+                        continue;
+                    };
+                    tops.push(caret.top());
+                    let body = cx.debug_bounds("github-panel").expect("the body");
+                    if caret.top() < body.top() - slack || caret.bottom() > body.bottom() + slack {
+                        continue;
+                    }
+                    let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+                    let held = lines.iter().any(|(top, bottom)| {
+                        *top <= caret.top() + slack
+                            && *bottom >= caret.bottom() - slack
+                            && *bottom - *top < caret.size.height * 2.
+                    });
+                    assert!(
+                        held,
+                        "{at}, row {row}: the row the caret {caret:?} stands on is a line of the \
+                         body: {lines:?}"
+                    );
+                    checked += 1;
+                }
+                assert!(
+                    checked >= 6,
+                    "{at}: the caret stood on {checked} rows in view"
+                );
+                // Past the rows in view, the caret stays at the editor's edge while its rows
+                // scroll under it.
+                assert!(
+                    tops.windows(2)
+                        .any(|pair| (pair[0] - pair[1]).abs() < slack),
+                    "{at}: the editor scrolls inside itself as the caret moves: {tops:?}"
+                );
+            }
         }
     }
 
@@ -8922,6 +8986,161 @@ mod tests {
                     "{at}: each row Files shows is a line of the body"
                 );
             }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// What Files' lists and clips hide is no line of the body, at 13 pt in a 461 × 490 window: the changed-file list, holding twelve files, scrolled half a row inside itself
+    /// and standing past the body's top edge, and Source's text, standing past the body's
+    /// foot, each tell the body their viewport ([`review::clipped`]), so the row the list's own
+    /// edge cuts beyond the body's, and the part of a row under Source's clip, inside the
+    /// editor's bottom padding, are none of its lines: no line of the body crosses either
+    /// edge of either. Past the body's edge, where the clip around them is the body's, the
+    /// body once took such a row for a line, and a reveal could refuse a stop that cut nothing
+    /// a person sees (FU18-F's review).
+    #[gpui::test]
+    async fn rows_files_hides_past_its_edges_are_no_lines_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let listed = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        // The fixture's files, and copies of them under other names, so the list scrolls.
+        let files: Vec<_> = (0..12)
+            .map(|index| {
+                let mut file = listed[index % listed.len()].clone();
+                if index >= listed.len() {
+                    file.filename = format!("copy-{index}/{}", file.filename);
+                }
+                file
+            })
+            .collect();
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let slack = px(0.5);
+        // Scrolls the body so `edge`, a place in the frame, lies at `at`.
+        let place = |edge: Pixels, at: Pixels, cx: &mut VisualTestContext| {
+            let offset = (scroll.offset().y + at - edge).clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        // The lines of the body that cross the top or bottom edge of the clip `name` draws and
+        // that `ours` takes for one of its rows, the text beside the clip apart.
+        let crossing = |name: &'static str,
+                        ours: &dyn Fn(&(Pixels, Pixels)) -> bool,
+                        cx: &mut VisualTestContext| {
+            let clip = cx.debug_bounds(name).expect("the clip");
+            let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+            let crosses = |edge: Pixels, (top, bottom): &(Pixels, Pixels)| {
+                *top < edge - slack && *bottom > edge + slack
+            };
+            lines
+                .into_iter()
+                .filter(|line| crosses(clip.top(), line) || crosses(clip.bottom(), line))
+                .filter(|line| ours(line))
+                .collect::<Vec<_>>()
+        };
+        for interface in [13] {
+            let at = format!("{interface} pt in 461 × 490");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(461.), px(490.)));
+            let (pull, files) = (pull.clone(), files.clone());
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = Some(pull);
+                    panel.review.show_list = false;
+                    panel.review.section = Section::Files;
+                    panel.review.files = files;
+                    panel.review.selected_file = None;
+                    panel.select_review_file(0, window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            // The list scrolled half a row inside itself, its top edge 10 px above the body's.
+            let row = cx.debug_bounds("github-file-row-0").expect("a file row");
+            cx.update(|_, cx| {
+                let panel = panel.read(cx);
+                let handle = panel.review.file_scroll.0.borrow();
+                handle
+                    .base_handle
+                    .set_offset(point(px(0.), -row.size.height / 2.));
+            });
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let list = cx.debug_bounds("github-file-rows").expect("the list");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            place(list.top(), body.top() - px(10.), cx);
+            let list = cx.debug_bounds("github-file-rows").expect("the list");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let rows: Vec<Bounds<Pixels>> = indexed("github-file-row-", 12)
+                .into_iter()
+                .filter_map(|name| cx.debug_bounds(name))
+                .collect();
+            let cut = rows
+                .iter()
+                .any(|row| row.top() < list.top() - slack && row.bottom() > list.top() + slack);
+            assert!(
+                cut && list.top() < body.top() - slack && list.bottom() > body.top(),
+                "{at}: the list {list:?} cuts a row at its top, past the body's {body:?}"
+            );
+            let a_row = |(top, bottom): &(Pixels, Pixels)| {
+                rows.iter().any(|row| {
+                    (row.top() - *top).abs() < px(0.01) && (row.bottom() - *bottom).abs() < px(0.01)
+                })
+            };
+            assert_eq!(
+                crossing("github-file-rows", &a_row, cx),
+                Vec::new(),
+                "{at}: no line of the body crosses the file list's edges"
+            );
+            // Source's text, its clip's foot 10 px below the body's.
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.review_source(1, window, cx))
+            });
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let clip = cx
+                .debug_bounds("github-source-text")
+                .expect("Source's clip");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            place(clip.bottom(), body.bottom() + px(10.), cx);
+            let clip = cx
+                .debug_bounds("github-source-text")
+                .expect("Source's clip");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let (view, line) = cx.read(|cx| {
+                let source = panel.read(cx).review.source.clone().expect("Source");
+                let source = source.read(cx);
+                (
+                    source.input_bounds(),
+                    source.line_height().expect("Source has painted"),
+                )
+            });
+            assert!(
+                clip.bottom() > body.bottom() + slack
+                    && clip.top() < body.bottom()
+                    && view.bottom() >= clip.bottom() - slack,
+                "{at}: Source's clip {clip:?} stands past the body's foot {body:?}, the editor \
+                 {view:?} to its foot"
+            );
+            assert_eq!(
+                crossing(
+                    "github-source-text",
+                    &|(top, bottom)| *top >= clip.top() - slack && *bottom - *top <= line + slack,
+                    cx
+                ),
+                Vec::new(),
+                "{at}: no line of the body crosses Source's clip"
+            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
