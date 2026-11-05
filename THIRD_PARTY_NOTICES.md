@@ -12,6 +12,7 @@ AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses a
 | Vendored package | License | Modification record |
 | --- | --- | --- |
 | `accesskit_atspi_common` 0.19.1 | [MIT](vendor/accesskit_atspi_common/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_atspi_common/LICENSE-APACHE), with [Chromium notices](vendor/accesskit_atspi_common/LICENSE.chromium) | [Patch](vendor/accesskit_atspi_common/GITTURTLE-PATCH.md) |
+| `accesskit_unix` 0.22.1 | [MIT](vendor/accesskit_unix/LICENSE-MIT) or [Apache-2.0](vendor/accesskit_unix/LICENSE-APACHE) | [Patch](vendor/accesskit_unix/GITTURTLE-PATCH.md) |
 | `gpui-base` 0.6.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
 | `gpui-component` 0.6.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
 | `gpui-pre-linux` 0.3.4 | [Apache-2.0](vendor/gpui-pre-linux/LICENSE-APACHE) | [Patch](vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |

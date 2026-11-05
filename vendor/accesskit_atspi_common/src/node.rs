@@ -26,7 +26,7 @@ use std::{
 use crate::{
     Action as AtspiAction, Error, ObjectEvent, Property, Rect as AtspiRect, Result,
     adapter::Adapter,
-    context::{AppContext, Context},
+    context::{AppContext, Context, Removed},
     filters::filter,
     text_attributes::ATTRIBUTE_GETTERS,
     util::*,
@@ -861,11 +861,7 @@ impl PlatformNode {
                 return context
                     .lock_removed()
                     .parent(self.id)
-                    .filter(|&parent| {
-                        state
-                            .node_by_id(parent)
-                            .is_some_and(|parent| filter(&parent) == FilterResult::Include)
-                    })
+                    .filter(|&parent| Removed::stays(state, parent))
                     .map(NodeIdOrRoot::Node)
                     .ok_or(Error::Defunct);
             };

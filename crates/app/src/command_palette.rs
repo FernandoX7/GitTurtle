@@ -3416,10 +3416,11 @@ mod render_tests {
 
     /// A search that takes away the command Orca last spoke leaves Orca
     /// nothing to say but the command each move reaches: the row it left
-    /// answers the list as its parent (the vendored AT-SPI adapter's
-    /// patch), so Orca finds the list they share and reads no window,
-    /// dialog or list before the command, as it did in Keyboard Shortcuts
-    /// once a search took away its row (QA-94).
+    /// stays in libatspi's cache and answers the list as its parent (the
+    /// vendored AT-SPI adapter's patches), so Orca takes it as alive, finds
+    /// the list they share and reads no window, dialog or list before the
+    /// command, as it did in Keyboard Shortcuts once a search took away its
+    /// row (QA-94).
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_search_that_takes_the_spoken_command_away_leaves_moves_bare(cx: &mut TestAppContext) {

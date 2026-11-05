@@ -36,6 +36,7 @@ fn main() {
         "../../Cargo.lock",
         "../../assets",
         "../../vendor/accesskit_atspi_common",
+        "../../vendor/accesskit_unix",
         "../../vendor/gpui-base",
         "../../vendor/gpui-component",
         "../../vendor/gpui-pre-linux",

@@ -4,12 +4,12 @@
 // the LICENSE-MIT file), at your option.
 
 use accesskit::{ActionHandler, ActionRequest};
-use accesskit_consumer::{NodeId, Tree};
+use accesskit_consumer::{FilterResult, NodeId, Tree, TreeState};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::WindowBounds;
+use crate::{WindowBounds, filters::filter};
 
 /// This is an implementation detail of `accesskit_unix`, required for robust
 /// state transitions with minimal overhead.
@@ -44,7 +44,8 @@ pub(crate) struct Context {
 /// GitTurtle patch (GITTURTLE-PATCH.md): selectable items, such as a list's
 /// rows, that left the tree while their parent stayed, each kept on the bus
 /// with its `Accessible` interface and answering that parent
-/// (`PlatformNode::parent`), the most recent [`Removed::KEPT`] of them. A screen reader that last spoke such a node, as
+/// (`PlatformNode::parent`) while the parent stays, the most recent
+/// [`Removed::KEPT`] of them. A screen reader that last spoke such a node, as
 /// Orca does a list row a search filters out, asks for its parent at the next
 /// move; an object it cannot answer that for leaves Orca no common ancestor,
 /// and it reads the window, the dialog and the list again.
@@ -90,6 +91,35 @@ impl Removed {
             self.order.remove(index);
         }
         true
+    }
+
+    /// Whether no node is kept.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// Forgets every node whose parent no longer `stays`, and returns them,
+    /// oldest first, whose objects leave the bus.
+    pub(crate) fn orphans(&mut self, mut stays: impl FnMut(NodeId) -> bool) -> Vec<NodeId> {
+        let mut orphans = Vec::new();
+        let parents = &mut self.parents;
+        self.order.retain(|&id| {
+            let kept = parents.get(&id).is_some_and(|&parent| stays(parent));
+            if !kept {
+                parents.remove(&id);
+                orphans.push(id);
+            }
+            kept
+        });
+        orphans
+    }
+
+    /// Whether `parent` is in the tree and included, as a kept node's
+    /// parent must be for the node to stay on the bus answering it.
+    pub(crate) fn stays(state: &TreeState, parent: NodeId) -> bool {
+        state
+            .node_by_id(parent)
+            .is_some_and(|parent| filter(&parent) == FilterResult::Include)
     }
 }
 

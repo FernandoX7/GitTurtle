@@ -10,7 +10,8 @@
 //! frames and keeps the objects it puts on the bus.
 
 use accesskit_atspi_common::{
-    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, NodeIdOrRoot, ObjectEvent, Property,
+    Adapter, AdapterCallback, AppContext, CacheEvent, Event, InterfaceSet, NodeIdOrRoot,
+    ObjectEvent, Property,
 };
 use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
@@ -162,9 +163,9 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
 /// "Unknown object"), the announcements it makes, the containers it reports
 /// a change of selection in (`object:selection-changed`), whose selected
 /// item Orca speaks, and the objects it reports renamed
-/// (`object:property-change:accessible-name`), and the announcements and
-/// changes of selection together in the order it made them, for what Orca
-/// hears of them ([`Bus::heard_by_orca`]).
+/// (`object:property-change:accessible-name`), and the announcements,
+/// changes of selection and removals from AT-SPI's cache together in the
+/// order it made them, for what Orca hears of them ([`Bus::heard_by_orca`]).
 #[derive(Clone, Default)]
 struct Registry {
     objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
@@ -175,10 +176,13 @@ struct Registry {
 }
 
 /// An event the adapter emitted that Orca speaks: an announcement's text,
-/// or a change of selection in a container, whose selected item it speaks.
+/// or a change of selection in a container, whose selected item it speaks;
+/// or one libatspi acts on in Orca's process: an object taken out of
+/// AT-SPI's cache (`RemoveAccessible`).
 enum Emitted {
     Announced(String),
     Selection(NodeId),
+    Uncached(NodeId),
 }
 
 /// How long Orca 51.1's spam filter (`event_manager.py`,
@@ -224,6 +228,9 @@ impl AdapterCallback for Registry {
                 target: NodeIdOrRoot::Node(id),
                 event: ObjectEvent::PropertyChanged(Property::Name(_)),
             } => self.renamed.lock().unwrap().push(id),
+            Event::Cache(CacheEvent::Removed(id)) => {
+                self.emitted.lock().unwrap().push(Emitted::Uncached(id));
+            }
             _ => {}
         }
     }
@@ -237,6 +244,9 @@ pub(crate) struct Bus {
     registry: Registry,
     /// When Orca last saw an event of each type ([`Self::heard_by_orca`]).
     orca: std::collections::HashMap<&'static str, std::time::Instant>,
+    /// The objects whose proxies libatspi disposed since Orca last took
+    /// them, on the cache's `RemoveAccessible` ([`Self::heard_by_orca_from`]).
+    disposed: std::collections::HashSet<NodeId>,
 }
 
 impl Bus {
@@ -255,6 +265,7 @@ impl Bus {
             adapter,
             registry,
             orca: std::collections::HashMap::new(),
+            disposed: std::collections::HashSet::new(),
         }
     }
 
@@ -334,16 +345,13 @@ impl Bus {
 
     /// As [`Self::heard_by_orca`], with Orca's locus of focus, which each
     /// change of selection it hears moves to the selected item. Before that
-    /// item Orca speaks the ancestors it does not share with the item it
-    /// left (`speech_generator.py`, `_generate_ancestors`, Orca 51.1): none
-    /// when both answer the same parent, all of them, here "<context>",
-    /// when the item it left cannot answer its parent, as an object no
-    /// longer on the bus answers nothing ("Unknown object"). QA-94 heard
-    /// "GitTurtle", "Keyboard Shortcuts dialog …" and "Keyboard shortcuts
-    /// by group List with 11 items" before the row Down moved to, once
-    /// typing a search had taken away the row Orca last spoke. Orca would
-    /// speak none for an item it knows is dead, which this does not model:
-    /// libatspi still held the row's name there, so Orca took it as alive.
+    /// item Orca 51.1 speaks the ancestors it does not share with the item
+    /// it left, here all as "<context>" ([`Self::quiet_move`]): none only
+    /// when the item it left is alive and answers the same parent. QA-94
+    /// heard "GitTurtle", "Keyboard Shortcuts dialog …" and "Keyboard
+    /// shortcuts by group List with 11 items" before the row Down moved to,
+    /// once typing a search had taken away the row Orca last spoke: that
+    /// row answered no parent, its object gone from the bus.
     pub(crate) fn heard_by_orca_from(
         &mut self,
         at: std::time::Instant,
@@ -363,6 +371,10 @@ impl Bus {
             let kind = match &event {
                 Emitted::Announced(_) => "object:announcement",
                 Emitted::Selection(_) => "object:selection-changed",
+                Emitted::Uncached(id) => {
+                    self.disposed.insert(*id);
+                    continue;
+                }
             };
             let last = self.orca.insert(kind, at);
             if last.is_some_and(|last| at.duration_since(last) < ORCA_SPAM_WINDOW) {
@@ -375,15 +387,38 @@ impl Bus {
                     let Some(item) = item else { continue };
                     if let Some(locus) = locus.as_deref_mut()
                         && let Some(left) = locus.replace(item)
-                        && self.orca_parent(left) != self.orca_parent(item)
+                        && !self.quiet_move(left, item)
                     {
                         heard.push("<context>".into());
                     }
+                    // A proxy libatspi disposed left its table; the item's
+                    // path gets a fresh one.
+                    self.disposed.remove(&item);
                     heard.push(self.adapter.platform_node(item).name().unwrap());
                 }
+                Emitted::Uncached(_) => unreachable!("handled before the spam filter"),
             }
         }
         heard
+    }
+
+    /// Whether Orca 51.1, moving its locus from `left` to `item`, speaks no
+    /// ancestor of `item`: only while `left` is alive and answers the parent
+    /// `item` answers (`speech_generator.py`, `_generate_ancestors`, 1144).
+    /// An item answering no parent shares no ancestor with `item`, so Orca
+    /// speaks all of them up to the application (1150-1214). An item whose
+    /// proxy libatspi 2.60 disposed, as it does on the cache's
+    /// `RemoveAccessible` (`atspi-misc.c`, `handle_remove_accessible`),
+    /// answers every call with "The application no longer exists", so Orca
+    /// takes it as dead (`ax_object.py`, `is_dead`), drops it as the prior
+    /// object (`focus_manager.py`, `set_locus_of_focus`, 338-342) and
+    /// speaks `item`'s ancestors below the window it presents from instead
+    /// (`scripts/default.py`, `locus_of_focus_changed`, 252-253): in
+    /// Keyboard Shortcuts the dialog and the list. libatspi took
+    /// `RemoveAccessible` only once the vendored `accesskit_unix` sent it
+    /// as `(so)` (AccessKit #819); 0.22.1's `so` it dropped.
+    fn quiet_move(&self, left: NodeId, item: NodeId) -> bool {
+        !self.disposed.contains(&left) && self.orca_parent(left) == self.orca_parent(item)
     }
 
     /// The parent Orca reads for `id`: none when its object is not on the

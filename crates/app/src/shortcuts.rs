@@ -4143,7 +4143,10 @@ mod list_tests {
     /// the row for its parent. Answered nothing, it found no ancestor the
     /// two share and read the window, the dialog and the list first, then
     /// "Close Repository Tab: Ctrl+W" (QA-94); the row now answers the list
-    /// it left (the vendored AT-SPI adapter's patch).
+    /// it left. It also stays in libatspi's cache, which the vendored
+    /// `accesskit_unix` now tells of every other removal: a row libatspi
+    /// disposed would be dead to Orca, which then reads the dialog and the
+    /// list (the vendored AT-SPI adapter's patches).
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn the_first_down_after_a_search_took_the_heard_row_speaks_only_the_entry(

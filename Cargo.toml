@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/app", "crates/git-core", "crates/preview"]
 default-members = ["crates/app"]
-exclude = ["vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common"]
+exclude = ["vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-macros", "vendor/mermaid-rs-renderer", "vendor/gpui-base", "vendor/gpui-component", "vendor/accesskit_atspi_common", "vendor/accesskit_unix"]
 resolver = "3"
 
 [workspace.package]
@@ -22,11 +22,13 @@ codegen-units = 8
 strip = "debuginfo"
 
 # Keep the matching GPUI 0.3.4 stack; supply a demand-driven macOS frame wakeup,
-# AccessKit's AT-SPI disabled state (#788) under its accesskit_unix 0.22, and a
+# AccessKit's AT-SPI disabled state (#788) under its accesskit_unix 0.22 and the
+# AT-SPI cache signals libatspi accepts (#819, in accesskit_unix 0.24.1), and a
 # test-only #[gpui::test] teardown that releases each seed's app; and Wayland
 # text input only while a text field is focused (zed#63776, in gpui-pre 0.3.5).
 [patch.crates-io]
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "vendor/accesskit_unix" }
 gpui-base = { path = "vendor/gpui-base" }
 gpui-component = { path = "vendor/gpui-component" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
