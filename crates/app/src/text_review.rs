@@ -427,9 +427,11 @@ impl GitTurtle {
     /// window's read as the view was built, the actions had to be bound
     /// again at each read that left the diff shown, Blame's, an
     /// inspection's or a text review's, and any read that was not left
-    /// Stage looking enabled while a press started nothing. A refused press
-    /// leaves the actions suspended (`DiffView::apply_partial`), so they
-    /// read disabled.
+    /// Stage looking enabled while a press started nothing. A press on a
+    /// diff no longer shown leaves its actions suspended
+    /// (`DiffView::apply_partial`), so they read disabled; one refused
+    /// because a write already runs, another tab's, gives them back with
+    /// the busy look, so the next press after that write acts.
     pub(super) fn bind_text_partial(
         &mut self,
         view: &gpui_kit::Entity<crate::diff_view::DiffView>,
@@ -442,6 +444,24 @@ impl GitTurtle {
                 cx.subscribe_in(view, window, move |this, view, event, window, cx| {
                     let crate::diff_view::DiffViewEvent::ApplyPartial { diff, selection } = event;
                     if this.path != repository || !this.shows_partial(view, diff) {
+                        return;
+                    }
+                    // A write already runs, another tab's, as this one's
+                    // clears the diff it acts on: the press starts nothing,
+                    // so its controls return at once rather than stay
+                    // suspended until another file is chosen.
+                    if this.operation_busy.is_some() {
+                        if let Some(Content::Text {
+                            presentation,
+                            partial,
+                            ..
+                        }) = this.content.as_deref()
+                        {
+                            view.update(cx, |view, cx| {
+                                view.refresh(presentation, partial.clone(), cx)
+                            });
+                        }
+                        this.show_busy_look(cx);
                         return;
                     }
                     this.write(
@@ -1751,6 +1771,58 @@ mod tests {
             press_drawn_stage(&app, cx).await,
             STAGING,
             "and Stage stages"
+        );
+    }
+
+    /// A hunk's Stage pressed while a write runs in another tab starts
+    /// nothing, and its controls return at once: once that write ends, the
+    /// next press stages. Left suspended by the press the write refused,
+    /// Stage stayed disabled and a line click selected nothing until
+    /// another file was chosen.
+    #[gpui::test]
+    async fn a_partial_press_refused_by_another_write_gives_its_controls_back(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::Modifiers;
+        let (fixture, app, cx) = working_diff(cx).await;
+        let row = app.read_with(cx, |app, _| {
+            let Some(Content::Text {
+                partial: Some(partial),
+                ..
+            }) = app.content.as_deref()
+            else {
+                panic!("the diff offers its partial actions");
+            };
+            partial
+                .rows
+                .iter()
+                .position(|row| matches!(row, crate::partial_view::PartialRow::Hunk(_)))
+                .expect("a hunk")
+        });
+        let selector: &'static str = format!("partial-hunk-{row}").leak();
+        app.update(cx, |app, _| {
+            app.operation_busy = Some("Fetching");
+            app.operation_repository = Some(fixture.path().join("another tab"));
+        });
+        native_frames(cx);
+        let stage = cx.debug_bounds(selector).expect("the hunk's Stage");
+        cx.simulate_mouse_move(stage.center(), None, Modifiers::default());
+        native_frames(cx);
+        cx.simulate_click(stage.center(), Modifiers::default());
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some("Fetching"),
+            "the press starts nothing"
+        );
+        assert_eq!(suspended(&app, cx), (false, false), "its controls return");
+        app.update(cx, |app, _| {
+            app.operation_busy = None;
+            app.operation_repository = None;
+        });
+        assert_eq!(
+            press_drawn_stage(&app, cx).await,
+            STAGING,
+            "and once that write ends Stage stages"
         );
     }
 
