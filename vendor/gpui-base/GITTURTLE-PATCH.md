@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/mod.rs`, `src/otp_input.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/base/blink_cursor.rs`, `src/input/editor/decorations.rs`, `src/input/editor/mod.rs`, `src/input/base/kind.rs`, `src/input/mod.rs`, `src/otp_input.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popover.rs`, `src/popup.rs`, `src/positioner.rs`, `src/resizable/mod.rs` and `src/resizable/panel.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook. The Button test module no longer imports `gpui::Element`, which none of its tests use, so the crate's lib tests build without an unused-import warning; this test-only change goes with the module's tests.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -781,3 +781,77 @@ Remove the patch when upstream shows the caret as a focus starts it,
 pauses no cursor it has not started, starts none before the focus is
 reported, shows a focused field's caret as it is focused again, and those
 tests pass without it.
+
+A text decoration can carry a bottom rule: `TextDecoration::bottom_rule`, an
+optional colour set with `TextDecoration::with_bottom_rule`, which
+`src/input/editor/decorations.rs` adds and keeps when it clips a range, and
+`src/input/base/element.rs` paints. Upstream a decoration carries only a GPUI
+`HighlightStyle`, whose `underline` GPUI's text pass draws as an `Underline`
+primitive at a font-metric offset (the line's centred padding, the ascent and
+0.618 of the descent below the line's top), not on the edge of the box a
+background fills: in the bundled DejaVu Sans Mono at 13 px in a 20 px line its
+top lies 16.4 px down, its 1 px stroke ending 2.6 px above the box's bottom (5
+device pixels at scale 2), and at 18 px in a 27 px line 22.4 px down, 3.6 px
+above it (7 device pixels); it would also be the property Find's accent
+underline on the current match takes. GitTurtle's Diff view and Split mark
+each changed word under More contrast with a 1 px rule inside its highlight
+box's bottom edge, on a decoration of its own over the word's range
+(`crates/app/src/text.rs`'s `theme_decorations` and
+`crates/app/src/split_diff.rs`'s `SplitSide::decorations`, the colour from
+`appearance::EditorHighlights::word_rule`). The decoration collections keep,
+as their decorations are created, set, appended and cleared, whether any
+holds a rule, which the editor reports through the added
+`InputExtras::has_bottom_rules` (`src/input/base/kind.rs`, false for other
+inputs, and `src/input/editor/mod.rs`); without one, a frame composes the
+decorations with upstream's `compose_decoration_collections` unchanged and
+paints no rule, so More contrast off pays one flag check a frame and a
+branch a visible line. Where one holds a rule,
+`compose_ruled_decoration_collections` reads each collection's visible rules
+in the pass that composes the styles,
+so a frame walks each decoration once, and leaves a rule out where an earlier
+collection draws an underline, so two strokes never run one above the other:
+Find's current match, in the application's first collection, draws its accent
+underline about 2.6 px above the rule and hides it, while Find's other
+matches, backgrounds alone, keep it, since the application removes the word's
+tint under every match and the rule is then what marks a matched word as
+changed. The underlines are sorted once with the furthest each prefix reaches,
+so a rule is checked only against the underlines that can reach it (Find
+highlights up to 4,096 matches at once). The element keeps the
+rules in its prepaint state, and the background pass paints each line's
+rules after that line's backgrounds, each visual line's rules in one layer as
+the background pass paints each line's boxes, so the scene orders them once a
+line and they lie over the backgrounds and under the indent guides,
+selections and text. A rule spans the box the
+background pass fills for its range on each visual line, walking the glyphs
+as GPUI's `paint_line_background` walks them, so its edges are the same
+floats and land on the same device pixels; one walk of a visual line's glyphs
+finds every rule's edges, answering the edges' bytes in ascending order, each
+at the first glyph whose index reaches it, which holds in any glyph order, so a 16 KiB line with 81 changed words costs one walk, not two
+a rule; it takes the box's bottom edge on
+its device pixel and a 1 px stroke's device pixels above it (one at scales up
+to 1.5, two at 2, halves toward zero as GPUI snaps a stroke), adjacent rules
+of one colour join as adjacent backgrounds of one colour fill one box, and a
+range without width paints none. `TextDecoration` grows by the
+`Option<Hsla>`, which the application's retained-byte accounting counts
+through `size_of`. A decoration without a rule paints exactly as before, the styles are composed as before, and IME's marked-text underline
+and every other underline are unchanged. The kit tests are
+`input::element::tests::a_bottom_rule_is_painted_inside_its_boxs_bottom_edge`,
+at scales 1, 1.2, 1.25, 1.5 and 2, with the rule on a decoration of its own
+and on the one that sets the background, and the frame otherwise as without
+the rules,
+`input::element::tests::a_wrapped_range_draws_its_bottom_rule_under_each_visual_line`,
+a soft-wrapped range ruled under each of its visual lines' boxes,
+`input::element::tests::bottom_rules_are_hidden_only_by_an_earlier_collections_underline`
+(`scripts/vendor-crate-test.sh vendor/gpui-base bottom_rule first_glyphs
+decorations`), which also reads a frame without rules leaving them unread,
+`input::element::tests::first_glyphs_at_answers_as_a_search_in_walk_order`,
+the walk against a first-match search over ascending, shuffled and descending
+glyphs, and
+`input::decorations::tests::collections_know_whether_any_decoration_has_a_bottom_rule`,
+with clipping in
+`input::decorations::tests::collections_are_independent_and_ranges_are_clipped`;
+the application's are `text::tests::more_contrast_rules_each_changed_word_in_the_diff_view`,
+`text::tests::find_hides_a_changed_word_s_rule_only_under_its_current_match`
+and `split_diff::tests::more_contrast_rules_each_emphasized_word_in_split`.
+Remove this part when upstream decorations can draw a rule along their box's
+bottom edge.

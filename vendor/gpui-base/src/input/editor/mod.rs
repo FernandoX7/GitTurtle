@@ -209,6 +209,10 @@ impl crate::input::InputExtras for super::EditorExtras {
         self.decorations.iter().collect()
     }
 
+    fn has_bottom_rules(&self) -> bool {
+        self.decorations.has_bottom_rules()
+    }
+
     fn semantic_token_styles(
         &self,
         text: &ropey::Rope,

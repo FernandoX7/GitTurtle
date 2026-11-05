@@ -1,7 +1,7 @@
 use crate::input::EditorMode;
 use std::ops::Range;
 
-use gpui::{App, Context, HighlightStyle, WeakEntity};
+use gpui::{App, Context, HighlightStyle, Hsla, WeakEntity};
 use ropey::Rope;
 use sum_tree::Bias;
 
@@ -15,12 +15,34 @@ use super::{InputBaseState, RopeExt as _};
 pub struct TextDecoration {
     pub range: Range<usize>,
     pub style: HighlightStyle,
+    /// A rule along the bottom edge of the box the range's text occupies on
+    /// each visual line: the box a background on this range fills, from the
+    /// range's first glyph to the glyph after it and over the line's height,
+    /// with the rule 1 px tall inside its bottom edge, both edges on whole
+    /// device pixels. It is painted with the decoration backgrounds, over
+    /// them and under indent guides, selections and text, whether or not the
+    /// decoration sets a background itself. Where an earlier collection draws
+    /// an underline over part of the range, the rule is not painted there, so
+    /// two strokes never run one above the other; under an earlier
+    /// collection's background alone it is. `None`, as [`Self::new`] makes
+    /// it, paints nothing.
+    pub bottom_rule: Option<Hsla>,
 }
 
 impl TextDecoration {
     /// Create a text decoration from a UTF-8 byte range and a GPUI style.
     pub fn new(range: Range<usize>, style: HighlightStyle) -> Self {
-        Self { range, style }
+        Self {
+            range,
+            style,
+            bottom_rule: None,
+        }
+    }
+
+    /// This decoration with a [`Self::bottom_rule`] in `color`.
+    pub fn with_bottom_rule(mut self, color: Hsla) -> Self {
+        self.bottom_rule = Some(color);
+        self
     }
 }
 
@@ -95,37 +117,57 @@ impl TextDecorationCollection {
 #[derive(Default)]
 pub(crate) struct DecorationCollections {
     entries: Vec<(TextDecorationCollectionId, Vec<TextDecoration>)>,
+    /// Which collections hold a decoration with a bottom rule, decided as
+    /// their decorations are given, so a frame with none takes upstream's
+    /// path and does no rule work ([`Self::has_bottom_rules`]). An edit that
+    /// removes a ruled decoration leaves its collection marked until it is
+    /// set or cleared, which costs only that path.
+    ruled: Vec<bool>,
+}
+
+fn has_bottom_rule(decorations: &[TextDecoration]) -> bool {
+    decorations
+        .iter()
+        .any(|decoration| decoration.bottom_rule.is_some())
 }
 
 impl DecorationCollections {
     fn create(&mut self, decorations: Vec<TextDecoration>) -> TextDecorationCollectionId {
         let id = TextDecorationCollectionId(self.entries.len());
+        self.ruled.push(has_bottom_rule(&decorations));
         self.entries.push((id, decorations));
         id
     }
 
     fn set(&mut self, id: TextDecorationCollectionId, decorations: Vec<TextDecoration>) -> bool {
-        let Some((_, current)) = self
+        let Some(slot) = self
             .entries
-            .iter_mut()
-            .find(|(entry_id, _)| *entry_id == id)
+            .iter()
+            .position(|(entry_id, _)| *entry_id == id)
         else {
             return false;
         };
-        *current = decorations;
+        self.ruled[slot] = has_bottom_rule(&decorations);
+        self.entries[slot].1 = decorations;
         true
     }
 
     fn append(&mut self, id: TextDecorationCollectionId, decorations: Vec<TextDecoration>) -> bool {
-        let Some((_, current)) = self
+        let Some(slot) = self
             .entries
-            .iter_mut()
-            .find(|(entry_id, _)| *entry_id == id)
+            .iter()
+            .position(|(entry_id, _)| *entry_id == id)
         else {
             return false;
         };
-        current.extend(decorations);
+        self.ruled[slot] |= has_bottom_rule(&decorations);
+        self.entries[slot].1.extend(decorations);
         true
+    }
+
+    /// Whether any collection holds a decoration with a bottom rule.
+    pub(crate) fn has_bottom_rules(&self) -> bool {
+        self.ruled.contains(&true)
     }
 
     fn get(&self, id: TextDecorationCollectionId) -> Option<&[TextDecoration]> {
@@ -149,6 +191,7 @@ impl DecorationCollections {
         for (_, decorations) in &mut self.entries {
             decorations.clear();
         }
+        self.ruled.fill(false);
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = &[TextDecoration]> {
@@ -212,7 +255,7 @@ fn normalize(text: &Rope, decorations: Vec<TextDecoration>) -> Vec<TextDecoratio
                 ..text.clip_offset(decoration.range.end, Bias::Right);
             (!range.is_empty()).then_some(TextDecoration {
                 range,
-                style: decoration.style,
+                ..decoration
             })
         })
         .collect()
@@ -267,6 +310,12 @@ mod tests {
         };
         let mut collections = DecorationCollections::default();
 
+        let ruled = TextDecoration::new(2..4, first_style).with_bottom_rule(gpui::blue());
+        assert_eq!(
+            normalize(&text, vec![ruled]),
+            [TextDecoration::new(1..4, first_style).with_bottom_rule(gpui::blue())],
+            "clipping keeps a decoration's bottom rule"
+        );
         let first = collections.create(normalize(
             &text,
             vec![TextDecoration::new(2..4, first_style)],
@@ -303,6 +352,36 @@ mod tests {
             collections.get(second),
             Some(&[TextDecoration::new(5..6, second_style)][..])
         );
+    }
+
+    /// The collections know whether any holds a bottom rule as their
+    /// decorations are created, set, appended and cleared, so a frame without
+    /// one takes upstream's path.
+    #[test]
+    fn collections_know_whether_any_decoration_has_a_bottom_rule() {
+        let style = HighlightStyle::default();
+        let plain = || vec![TextDecoration::new(0..2, style)];
+        let ruled = || vec![TextDecoration::new(0..2, style).with_bottom_rule(gpui::blue())];
+        let mut collections = DecorationCollections::default();
+        let first = collections.create(plain());
+        let second = collections.create(Vec::new());
+        assert!(!collections.has_bottom_rules(), "created without a rule");
+        assert!(collections.append(second, ruled()));
+        assert!(collections.has_bottom_rules(), "a rule appended");
+        assert!(collections.set(first, ruled()));
+        assert!(collections.set(second, plain()));
+        assert!(
+            collections.has_bottom_rules(),
+            "one collection keeps its rule"
+        );
+        assert!(collections.set(first, plain()));
+        assert!(!collections.has_bottom_rules(), "every rule set away");
+        assert!(collections.set(first, ruled()));
+        collections.clear();
+        assert!(!collections.has_bottom_rules(), "cleared");
+        let third = collections.create(ruled());
+        assert_ne!(third, first);
+        assert!(collections.has_bottom_rules(), "created with a rule");
     }
 
     #[test]

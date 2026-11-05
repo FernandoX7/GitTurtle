@@ -80,6 +80,13 @@ pub trait InputExtras: Default + 'static {
         Vec::new()
     }
 
+    /// Whether any decoration layer holds a bottom rule
+    /// ([`TextDecoration::bottom_rule`]); without one the renderer does no
+    /// rule work.
+    fn has_bottom_rules(&self) -> bool {
+        false
+    }
+
     /// Semantic-token styles for a visible range, when an LSP supplies them.
     fn semantic_token_styles(
         &self,

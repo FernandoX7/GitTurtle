@@ -106,6 +106,259 @@ fn compose_decoration_collections<'a>(
     (!styles.is_empty()).then_some(styles)
 }
 
+/// Compose the decoration layers: upstream's composition where no decoration
+/// carries a bottom rule (`ruled`, kept as the decorations are set, so such a
+/// frame does no rule work and leaves `rules` empty), and
+/// [`compose_ruled_decoration_collections`] where one does.
+fn compose_decoration_layers(
+    styles: Vec<(Range<usize>, HighlightStyle)>,
+    collections: Vec<&[TextDecoration]>,
+    ruled: bool,
+    visible_byte_range: Range<usize>,
+    rules: &mut Vec<(Range<usize>, Hsla)>,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    if ruled {
+        compose_ruled_decoration_collections(styles, collections, visible_byte_range, rules)
+    } else {
+        compose_decoration_collections(styles, collections, visible_byte_range)
+    }
+}
+
+/// Compose the collections' styles as [`compose_decoration_collections`]
+/// does, and put their visible bottom rules ([`TextDecoration::bottom_rule`])
+/// in `rules`, ascending by start. A rule is left out where an earlier
+/// collection draws an underline, as GitTurtle's Find marks its current
+/// match, so two strokes never run one above the other; under an earlier
+/// collection's background alone it is kept. The rules are read in the pass
+/// that composes the styles, so a frame walks each decoration once, and each
+/// rule is checked only against the underlines that can reach it.
+fn compose_ruled_decoration_collections<'a>(
+    mut styles: Vec<(Range<usize>, HighlightStyle)>,
+    collections: impl IntoIterator<Item = &'a [TextDecoration]>,
+    visible_byte_range: Range<usize>,
+    rules: &mut Vec<(Range<usize>, Hsla)>,
+) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+    let visible = |range: &Range<usize>| {
+        let range =
+            range.start.max(visible_byte_range.start)..range.end.min(visible_byte_range.end);
+        (!range.is_empty()).then_some(range)
+    };
+    // Each visible rule with its collection's index, and the visible
+    // underlines of the collections before a ruled one, with theirs.
+    let mut ruled: Vec<(usize, Range<usize>, Hsla)> = Vec::new();
+    let mut underlines: Vec<(usize, Range<usize>)> = Vec::new();
+    // Apply collections in reverse creation order so the first collection is
+    // composed last and retains its documented precedence.
+    let collections = collections.into_iter().collect::<Vec<_>>();
+    for (index, decorations) in collections.into_iter().enumerate().rev() {
+        // Only a later collection's rule can be hidden by this one's underlines.
+        let hides = !ruled.is_empty();
+        styles = compose_decorations(
+            styles,
+            decorations.iter().map(|decoration| {
+                if let Some(color) = decoration.bottom_rule
+                    && let Some(range) = visible(&decoration.range)
+                {
+                    ruled.push((index, range, color));
+                }
+                if hides
+                    && decoration.style.underline.is_some()
+                    && let Some(range) = visible(&decoration.range)
+                {
+                    underlines.push((index, range));
+                }
+                (decoration.range.clone(), decoration.style)
+            }),
+            visible_byte_range.clone(),
+        )
+        .unwrap_or_default();
+    }
+
+    rules.clear();
+    underlines.sort_unstable_by_key(|(_, underline)| underline.start);
+    // The furthest any of the first underlines reaches, so a rule passes over
+    // every underline that ends before it with one search.
+    let reach = underlines
+        .iter()
+        .scan(0, |reach, (_, underline)| {
+            *reach = underline.end.max(*reach);
+            Some(*reach)
+        })
+        .collect::<Vec<_>>();
+    for (index, range, color) in ruled {
+        let first = reach.partition_point(|&end| end <= range.start);
+        let mut start = range.start;
+        for (earlier, underline) in underlines[first..]
+            .iter()
+            .take_while(|(_, underline)| underline.start < range.end)
+        {
+            if *earlier >= index || underline.end <= start {
+                continue;
+            }
+            if start < underline.start {
+                rules.push((start..underline.start, color));
+            }
+            start = underline.end;
+        }
+        if start < range.end {
+            rules.push((start..range.end, color));
+        }
+    }
+    rules.sort_by_key(|(range, _)| range.start);
+
+    (!styles.is_empty()).then_some(styles)
+}
+
+/// For each of `indices`, the x of the first of `glyphs`, in the order the
+/// background pass walks them, whose byte index is at least that index: the
+/// glyph at which that pass starts or ends a run's box. One walk answers them
+/// all, whatever the glyphs' order (a right-to-left run's indices fall): the
+/// indices are answered in ascending order, each by the first glyph that
+/// reaches it, so a glyph whose index falls below one walked before reaches
+/// only indices that glyph already answered. `None` where no glyph does.
+fn first_glyphs_at(
+    glyphs: impl IntoIterator<Item = (usize, Pixels)>,
+    indices: &[usize],
+) -> SmallVec<[Option<Pixels>; 8]> {
+    let mut order = (0..indices.len()).collect::<SmallVec<[usize; 8]>>();
+    order.sort_unstable_by_key(|&slot| indices[slot]);
+    let mut found = SmallVec::from_elem(None, indices.len());
+    let mut next = 0;
+    for (index, x) in glyphs {
+        if next == order.len() {
+            break;
+        }
+        while next < order.len() && indices[order[next]] <= index {
+            found[order[next]] = Some(x);
+            next += 1;
+        }
+    }
+    found
+}
+
+/// Paint the bottom rules ([`TextDecoration::bottom_rule`]) on one buffer
+/// line, whose first byte is `line_start`, laid out at `origin` as the
+/// background pass lays it out. `rules` hold absolute byte ranges ascending by
+/// start, the first ending past `line_start`.
+///
+/// Each rule spans the box `paint_background` fills for its range on each
+/// visual line, from the range's first glyph to the glyph after it, or the
+/// line's end: the glyphs are walked as that pass walks them, so the rule's
+/// edges and the box's are the same floats and land on the same device
+/// pixels. Adjacent rules of one colour join, as adjacent backgrounds of one
+/// colour fill one box. The rule takes the box's bottom edge on its device
+/// pixel and a 1 px stroke's device pixels above it, so it stands inside the
+/// box on whole device pixels at every scale. A range without width paints
+/// nothing, as its box has none.
+#[allow(clippy::too_many_arguments)]
+fn paint_bottom_rules(
+    line: &LineLayout,
+    line_start: usize,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    text_align: TextAlign,
+    align_width: Option<Pixels>,
+    rules: &[(Range<usize>, Hsla)],
+    window: &mut Window,
+) {
+    let line_end = line_start
+        + line
+            .wrapped_lines
+            .iter()
+            .map(|line| line.len)
+            .sum::<usize>();
+    if rules
+        .first()
+        .is_none_or(|(range, _)| range.start >= line_end)
+    {
+        return;
+    }
+    let scale = window.scale_factor();
+    let stroke = round_half_toward_zero(scale).max(1.);
+    let mut start = line_start;
+    for (ix, shaped) in line.wrapped_lines.iter().enumerate() {
+        let end = start + shaped.len;
+        let indent = if ix == 0 { px(0.) } else { line.wrap_indent };
+        let pos = origin + point(indent, ix * line_height);
+        // This visual line's ranges, local to it, joined where they touch in one colour.
+        let mut local: SmallVec<[(Range<usize>, Hsla); 4]> = SmallVec::new();
+        for (range, color) in rules
+            .iter()
+            .take_while(|(range, _)| range.start < end)
+            .filter(|(range, _)| range.end > start)
+        {
+            let range = range.start.max(start) - start..range.end.min(end) - start;
+            match local.last_mut() {
+                Some((last, last_color)) if last.end == range.start && last_color == color => {
+                    last.end = range.end
+                }
+                _ => local.push((range, *color)),
+            }
+        }
+        start = end;
+        if local.is_empty() {
+            continue;
+        }
+        // The glyph walk of the background pass: each glyph's x, accumulated.
+        let layout: &gpui::LineLayout = shaped;
+        let align_width = align_width.unwrap_or(layout.width);
+        let mut x = match text_align {
+            TextAlign::Left => pos.x,
+            TextAlign::Center => (pos.x * 2.0 + align_width - layout.width) / 2.0,
+            TextAlign::Right => pos.x + align_width - layout.width,
+        };
+        let mut previous = px(0.);
+        let glyphs = layout
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter())
+            .map(|glyph| {
+                x += glyph.position.x - previous;
+                previous = glyph.position.x;
+                (glyph.index, x)
+            });
+        let edges = local
+            .iter()
+            .flat_map(|(range, _)| [range.start, range.end])
+            .collect::<SmallVec<[usize; 8]>>();
+        let edges = first_glyphs_at(glyphs, &edges);
+        let bottom = round_half_toward_zero((pos.y + line_height).as_f32() * scale);
+        let (top, bottom) = (px((bottom - stroke) / scale), px(bottom / scale));
+        let quads = local
+            .into_iter()
+            .enumerate()
+            .filter_map(|(rule, (_, color))| {
+                let left = edges[2 * rule]?;
+                let right = edges[2 * rule + 1].unwrap_or(pos.x + layout.width);
+                (right > left).then(|| (left, right, color))
+            })
+            .collect::<SmallVec<[(Pixels, Pixels, Hsla); 4]>>();
+        let Some(&(left, right, _)) = quads.first() else {
+            continue;
+        };
+        let (left, right) = quads.iter().fold((left, right), |(left, right), quad| {
+            (left.min(quad.0), right.max(quad.1))
+        });
+        // One layer a visual line, as the background pass paints its boxes,
+        // so the scene orders the line's rules together, over its boxes and
+        // under the guides, selections and text painted after.
+        let layer = Bounds::from_corners(point(left, top), point(right, bottom));
+        window.paint_layer(layer, |window| {
+            for (left, right, color) in quads {
+                window.paint_quad(fill(
+                    Bounds::from_corners(point(left, top), point(right, bottom)),
+                    color,
+                ));
+            }
+        });
+    }
+}
+
+/// GPUI's device-pixel rounding, half toward zero, as `paint_quad` snaps edges.
+fn round_half_toward_zero(value: f32) -> f32 {
+    (value.abs() - 0.5).ceil().copysign(value)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EditorScrollbarLayout {
     bounds: Bounds<Pixels>,
@@ -1413,12 +1666,15 @@ impl<M: InputModeKind> TextElement<M> {
         lines
     }
 
-    /// First usize is the offset of skipped.
+    /// First usize is the offset of skipped. The decorations' visible bottom
+    /// rules go in `rules` ([`compose_decoration_collections`]), none while
+    /// the input is masked.
     fn highlight_lines(
         &mut self,
         visible_buffer_lines: &[usize],
         _visible_top: Pixels,
         visible_byte_range: Range<usize>,
+        rules: &mut Vec<(Range<usize>, Hsla)>,
         cx: &mut App,
     ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
         let state = self.state.read(cx);
@@ -1434,10 +1690,12 @@ impl<M: InputModeKind> TextElement<M> {
             _ => {
                 return (!state.masked)
                     .then(|| {
-                        compose_decoration_collections(
+                        compose_decoration_layers(
                             Vec::new(),
-                            state.extras.decoration_layers().into_iter(),
+                            state.extras.decoration_layers(),
+                            state.extras.has_bottom_rules(),
                             visible_byte_range,
+                            rules,
                         )
                     })
                     .flatten();
@@ -1446,10 +1704,12 @@ impl<M: InputModeKind> TextElement<M> {
         let Some(highlighter) = highlighter.as_mut() else {
             return (!state.masked)
                 .then(|| {
-                    compose_decoration_collections(
+                    compose_decoration_layers(
                         Vec::new(),
-                        state.extras.decoration_layers().into_iter(),
+                        state.extras.decoration_layers(),
+                        state.extras.has_bottom_rules(),
                         visible_byte_range,
+                        rules,
                     )
                 })
                 .flatten();
@@ -1546,10 +1806,12 @@ impl<M: InputModeKind> TextElement<M> {
         // Compose tree-sitter, semantic, application, then diagnostic styles.
         styles = gpui::combine_highlights(custom_styles, styles).collect();
         if !state.masked {
-            styles = compose_decoration_collections(
+            styles = compose_decoration_layers(
                 styles,
-                state.extras.decoration_layers().into_iter(),
+                state.extras.decoration_layers(),
+                state.extras.has_bottom_rules(),
                 visible_byte_range.clone(),
+                rules,
             )
             .unwrap_or_default();
         }
@@ -1594,6 +1856,9 @@ pub(super) struct PrepaintState {
     /// First line of inline completion (painted after cursor on same line)
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
+    /// The decorations' visible bottom rules, absolute byte ranges ascending
+    /// ([`compose_decoration_collections`]), painted with the backgrounds.
+    bottom_rules: Vec<(Range<usize>, Hsla)>,
 }
 
 impl PrepaintState {
@@ -1789,10 +2054,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
             .text
             .line_end_offset(visible_range.end.saturating_sub(1));
 
+        let mut bottom_rules = Vec::new();
         let highlight_styles = self.highlight_lines(
             &visible_buffer_lines,
             visible_top,
             visible_start_offset..visible_end_offset,
+            &mut bottom_rules,
             cx,
         );
 
@@ -2103,6 +2370,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+            bottom_rules,
         }
     }
 
@@ -2192,13 +2460,19 @@ impl<M: InputModeKind> Element for TextElement<M> {
         //
         // gpui's `paint` only draws glyphs, underlines, and strikethroughs, so decoration
         // backgrounds need their own pass. It runs ahead of the indent guides, selections,
-        // and text so a highlighted range sits under them instead of covering them.
+        // and text so a highlighted range sits under them instead of covering them. The
+        // decorations' bottom rules are painted in it, over their line's backgrounds.
         let mut offset_y = invisible_top_padding;
-        for (line, &buffer_line) in prepaint
+        // The first rule that may reach the line: the lines ascend, and the
+        // rules ascend by start. A frame without rules paints as upstream.
+        let rules = &prepaint.bottom_rules;
+        let mut rules_from = 0;
+        for ((line, &buffer_line), &line_start) in prepaint
             .last_layout
             .lines
             .iter()
             .zip(prepaint.last_layout.visible_buffer_lines.iter())
+            .zip(prepaint.last_layout.visible_line_byte_offsets.iter())
         {
             let p = point(
                 origin.x + prepaint.last_layout.line_number_width + scroll_offset,
@@ -2213,6 +2487,26 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 window,
                 cx,
             );
+            if !rules.is_empty() {
+                while rules
+                    .get(rules_from)
+                    .is_some_and(|(range, _)| range.end <= line_start)
+                {
+                    rules_from += 1;
+                }
+                if rules_from < rules.len() {
+                    paint_bottom_rules(
+                        line,
+                        line_start,
+                        p,
+                        line_height,
+                        text_align,
+                        Some(prepaint.last_layout.content_width),
+                        &rules[rules_from..],
+                        window,
+                    );
+                }
+            }
 
             offset_y += line.size(line_height).height;
 
@@ -2714,6 +3008,316 @@ mod tests {
 
         assert_eq!(styles.len(), 1);
         assert_eq!(styles[0].1.background_color, Some(gpui::red()));
+    }
+
+    /// A bottom rule is read where it is visible, and an earlier collection's
+    /// underline hides it, as Find's current match does; an earlier
+    /// collection's background alone, as Find's other matches, and an
+    /// underline in its own collection or a later one do not. Underlines
+    /// reaching across several rules, and one ending inside another, hide
+    /// each rule only where they lie over it. The styles are composed as
+    /// without the rules.
+    #[test]
+    fn bottom_rules_are_hidden_only_by_an_earlier_collections_underline() {
+        let tint = |color| HighlightStyle {
+            background_color: Some(color),
+            ..Default::default()
+        };
+        let underlined = |color| HighlightStyle {
+            underline: Some(UnderlineStyle {
+                color: Some(color),
+                thickness: px(1.),
+                wavy: false,
+            }),
+            ..tint(color)
+        };
+        let (rule, other, third) = (gpui::green(), gpui::yellow(), gpui::white());
+        let find = [
+            TextDecoration::new(0..3, underlined(gpui::red())),
+            TextDecoration::new(4..6, underlined(gpui::red())),
+            TextDecoration::new(7..8, tint(gpui::red())),
+            TextDecoration::new(25..40, underlined(gpui::red())),
+        ];
+        let patch = [
+            TextDecoration::new(2..9, tint(gpui::blue())),
+            TextDecoration::new(2..9, HighlightStyle::default()).with_bottom_rule(rule),
+            TextDecoration::new(12..20, tint(gpui::blue())).with_bottom_rule(other),
+            TextDecoration::new(22..30, tint(gpui::blue())).with_bottom_rule(third),
+            TextDecoration::new(32..36, tint(gpui::blue())).with_bottom_rule(third),
+        ];
+        let later = [TextDecoration::new(13..15, underlined(gpui::red()))];
+        let plain = patch.clone().map(|decoration| TextDecoration {
+            bottom_rule: None,
+            ..decoration
+        });
+
+        let mut rules = vec![(0..1, gpui::black())];
+        let styles = compose_ruled_decoration_collections(
+            Vec::new(),
+            [&find[..], &patch[..], &later[..]],
+            0..34,
+            &mut rules,
+        );
+        assert_eq!(
+            rules,
+            [(3..4, rule), (6..9, rule), (12..20, other), (22..25, third)],
+            "hidden under the earlier underlines, kept under the earlier background alone and \
+             the later underline, and clipped to the visible bytes"
+        );
+        assert_eq!(
+            styles,
+            compose_decoration_collections(Vec::new(), [&find[..], &plain[..], &later[..]], 0..34),
+            "rules leave the styles upstream's composition gives"
+        );
+        let mut none = vec![(0..1, gpui::black())];
+        compose_decoration_layers(
+            Vec::new(),
+            vec![&find[..], &plain[..], &later[..]],
+            false,
+            0..34,
+            &mut none,
+        );
+        assert_eq!(
+            none,
+            [(0..1, gpui::black())],
+            "a frame without rules does no rule work"
+        );
+    }
+
+    /// The single walk that finds where each rule's box starts and ends
+    /// answers as the first-match search over the glyphs in walk order does,
+    /// for glyphs ascending, shuffled and descending (as a right-to-left run
+    /// lays them out), at indices before, between, on and past every glyph.
+    #[test]
+    fn first_glyphs_at_answers_as_a_search_in_walk_order() {
+        let ascending = (0..40).map(|index| index * 3).collect::<Vec<usize>>();
+        let mut shuffled = ascending.clone();
+        // A fixed permutation: a stride coprime with the length.
+        for (slot, index) in shuffled.iter_mut().enumerate() {
+            *index = ascending[(slot * 17) % ascending.len()];
+        }
+        let descending = ascending.iter().rev().copied().collect::<Vec<_>>();
+        let queries = (0..125).rev().chain([0, 60, 60, 200]).collect::<Vec<_>>();
+        for (order, indices) in [
+            ("ascending", ascending),
+            ("shuffled", shuffled),
+            ("descending", descending),
+        ] {
+            let glyphs = indices
+                .iter()
+                .enumerate()
+                .map(|(slot, &index)| (index, px(slot as f32 * 7.5)))
+                .collect::<Vec<_>>();
+            let found = first_glyphs_at(glyphs.iter().copied(), &queries);
+            for (query, found) in queries.iter().zip(found) {
+                let searched = glyphs
+                    .iter()
+                    .find(|(index, _)| index >= query)
+                    .map(|(_, x)| *x);
+                assert_eq!(found, searched, "{order} glyphs at byte {query}");
+            }
+        }
+    }
+
+    /// A decoration's bottom rule is painted inside its box's bottom edge,
+    /// as wide as the box and a 1 px stroke tall on whole device pixels,
+    /// whether it rides on the decoration that sets the background or on a
+    /// decoration of its own over the same range; a decoration without one
+    /// paints exactly what it painted before the field existed.
+    #[gpui::test]
+    fn a_bottom_rule_is_painted_inside_its_boxs_bottom_edge(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.0.clone())
+            }
+        }
+
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx).default_value("first line\nsecond line\nthird\n")
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+
+        let (tint, own, shared) = (gpui::blue(), gpui::green(), gpui::red());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        // "first" without a rule, "second" with a rule of its own over the
+        // same range, and "line" on the second line with the rule on its
+        // background decoration.
+        let ruled = vec![
+            TextDecoration::new(0..5, background),
+            TextDecoration::new(11..17, background),
+            TextDecoration::new(11..17, HighlightStyle::default()).with_bottom_rule(own),
+            TextDecoration::new(18..22, background).with_bottom_rule(shared),
+        ];
+        let plain = ruled
+            .iter()
+            .cloned()
+            .map(|decoration| TextDecoration {
+                bottom_rule: None,
+                ..decoration
+            })
+            .collect::<Vec<_>>();
+        let collection = cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(ruled.clone(), cx)
+            })
+        });
+        let painted = |decorations: &[TextDecoration], cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| collection.set(decorations.to_vec(), cx));
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .map(|quad| (quad.bounds, quad.background))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        for scale in [2., 1., 1.2, 1.25, 1.5] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            let with_rules = painted(&ruled, cx);
+            let without = painted(&plain, cx);
+            let boxes = without
+                .iter()
+                .filter(|(_, fill)| *fill == Background::from(tint))
+                .map(|(bounds, _)| *bounds)
+                .collect::<Vec<_>>();
+            assert_eq!(boxes.len(), 3, "scale {scale}: one box a decorated word");
+            // 1 px on its device pixels, halves toward zero, as GPUI snaps a stroke.
+            let stroke: f32 = if scale < 2. { 1. } else { 2. };
+            for (word, color) in [(1, own), (2, shared)] {
+                let tinted = boxes[word];
+                let rules = with_rules
+                    .iter()
+                    .filter(|(_, fill)| *fill == Background::from(color))
+                    .map(|(bounds, _)| *bounds)
+                    .collect::<Vec<_>>();
+                assert_eq!(rules.len(), 1, "scale {scale}: word {word} has one rule");
+                let rule = rules[0];
+                assert_eq!(
+                    (rule.left(), rule.right(), rule.bottom()),
+                    (tinted.left(), tinted.right(), tinted.bottom()),
+                    "scale {scale}: word {word}'s rule spans its box {tinted:?} along its bottom edge"
+                );
+                assert_eq!(
+                    rule.size.height.0, stroke,
+                    "scale {scale}: word {word}'s rule is a 1 px stroke on whole device pixels"
+                );
+                assert_eq!(rule.top().0.fract(), 0., "scale {scale}: on a device pixel");
+                // The scene draws in this order: the rule over its box.
+                let drawn = |bounds: Bounds<gpui::ScaledPixels>, fill: Background| {
+                    with_rules
+                        .iter()
+                        .position(|quad| *quad == (bounds, fill))
+                        .expect("painted")
+                };
+                assert!(
+                    drawn(rule, Background::from(color)) > drawn(tinted, Background::from(tint)),
+                    "scale {scale}: word {word}'s rule is drawn over its box"
+                );
+            }
+            let mut rest = with_rules
+                .into_iter()
+                .filter(|(_, fill)| ![own, shared].map(Background::from).contains(fill))
+                .collect::<Vec<_>>();
+            let mut without = without;
+            let order = |quads: &mut Vec<(Bounds<gpui::ScaledPixels>, Background)>| {
+                quads.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")))
+            };
+            order(&mut rest);
+            order(&mut without);
+            assert_eq!(
+                rest, without,
+                "scale {scale}: the rules add their quads and nothing else"
+            );
+        }
+    }
+
+    /// A range that soft wrapping lays over several visual lines draws its
+    /// bottom rule under each of its boxes, one a visual line.
+    #[gpui::test]
+    fn a_wrapped_range_draws_its_bottom_rule_under_each_visual_line(cx: &mut gpui::TestAppContext) {
+        use crate::input::{EditorMode, EditorState};
+        use gpui::{AppContext as _, Background, Context, IntoElement, Render, Styled as _, div};
+
+        struct Root(Entity<InputBaseState<EditorMode>>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(160.)).h(px(400.)).child(self.0.clone())
+            }
+        }
+
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let mut editor = None;
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.set_global(crate::theme::Theme::default());
+                crate::input::init(cx);
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .soft_wrap(true)
+                        .default_value(text)
+                });
+                editor = Some(state.clone());
+                cx.new(|_| Root(state))
+            })
+            .unwrap()
+        });
+        let editor = editor.unwrap();
+        let cx = &mut gpui::VisualTestContext::from_window(window.into(), cx);
+        let (tint, rule) = (gpui::blue(), gpui::green());
+        let background = HighlightStyle {
+            background_color: Some(tint),
+            ..Default::default()
+        };
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.create_decorations_collection(
+                    vec![TextDecoration::new(0..text.len(), background).with_bottom_rule(rule)],
+                    cx,
+                )
+            })
+        });
+        let quads = cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_quads()
+        });
+        let painted = |color| {
+            quads
+                .iter()
+                .filter(|quad| quad.background == Background::from(color))
+                .map(|quad| quad.bounds)
+                .collect::<Vec<_>>()
+        };
+        let (boxes, rules) = (painted(tint), painted(rule));
+        assert!(boxes.len() > 1, "the range wraps: {boxes:?}");
+        assert_eq!(rules.len(), boxes.len(), "a rule a visual line");
+        for (tinted, rule) in boxes.iter().zip(&rules) {
+            assert_eq!(
+                (rule.left(), rule.right(), rule.bottom()),
+                (tinted.left(), tinted.right(), tinted.bottom()),
+                "the rule spans its visual line's box {tinted:?} along its bottom edge"
+            );
+            assert_eq!(rule.size.height.0, 2., "a 1 px stroke at scale 2");
+        }
     }
 
     #[test]
