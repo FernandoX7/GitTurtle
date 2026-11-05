@@ -9405,6 +9405,23 @@ mod tests {
                 };
                 let clip = clip.expect("the file's text");
                 let content = cx.debug_bounds(name).expect("the file's box");
+                // The part a reveal of the file shows, which the reveal sweep reads
+                // (`part_selector`): the file's title down to its box, inside its column. The
+                // column's selector once replaced the part's, so the sweep never found it.
+                let part = cx
+                    .debug_bounds(part_selector("file-content"))
+                    .unwrap_or_else(|| panic!("{at}: the file's part"));
+                let title = cx
+                    .debug_bounds("github-file-title")
+                    .expect("the file's title");
+                assert!(
+                    part.top() <= title.top() + slack
+                        && part.bottom() >= content.bottom() - slack
+                        && part.left() >= column.left() - slack
+                        && part.right() <= column.right() + slack,
+                    "{at}: the file's part {part:?} holds its title {title:?} and its box \
+                     {content:?} inside its column {column:?}"
+                );
                 assert!(
                     clip.size.height >= line * 5. - slack,
                     "{at}: the file's text {clip:?} shows five lines of {line:?}"

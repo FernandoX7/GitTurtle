@@ -2109,9 +2109,13 @@ impl Panel {
                 self.review.top_line.clone(),
                 self.review.top_line_pinned.get(),
             );
-            self.part("file-content", div(), cx)
-                .debug_selector(|| "github-file-column".into())
-                .flex_1()
+            // The part holds the file's title, mode row and box and Changes' range hint, as tall
+            // as they are, inside the column, which tests find by a selector of its own, so the
+            // part keeps the one it names itself by ([`revealing`]): the reveal sweep reads it
+            // as what a reveal of the file shows, and never found it while the column's
+            // selector replaced it.
+            let content = self
+                .part("file-content", div(), cx)
                 .min_w_0()
                 .flex()
                 .flex_col()
@@ -2217,7 +2221,14 @@ impl Panel {
                                     .text_color(rgb(p.muted)),
                             ),
                     )
-                })
+                });
+            div()
+                .debug_selector(|| "github-file-column".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(content)
                 .into_any_element()
         } else {
             div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().p_5().pl(super::text_inset()).flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").debug_selector(||"github-choose-file".into()).font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
