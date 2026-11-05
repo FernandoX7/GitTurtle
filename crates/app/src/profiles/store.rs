@@ -287,13 +287,24 @@ mod tests {
             signing: None,
         }
     }
+    /// A store path in a directory of its own for each call. The pid and the
+    /// clock's nanoseconds alone named one directory for two tests on
+    /// parallel threads that started in one clock tick, which steps 41-42 ns
+    /// on an AArch64 host, and one test's storage lock refused the other's
+    /// (`WouldBlock`); a process-wide sequence keeps them apart, as
+    /// `preferences`' test directories do.
     fn path() -> PathBuf {
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir()
-            .join(format!("gitturtle-profiles-{}-{nonce}", std::process::id()))
+            .join(format!(
+                "gitturtle-profiles-{}-{nonce}-{sequence}",
+                std::process::id()
+            ))
             .join("profiles.json")
     }
     #[cfg(unix)]
