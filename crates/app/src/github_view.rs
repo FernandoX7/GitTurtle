@@ -4091,13 +4091,14 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// The lines drawn in the panel's body that its top or bottom edge cuts, each named, with
-    /// where it lies, after a fresh draw: each line of every text inside the body, read from
-    /// the accessibility nodes the frame wrote, with its lines at the panel's 12 pt line height
-    /// (a text of another height counts as one line), and each control of one line in
-    /// `controls`. A line whole inside the body, or wholly outside it, is not cut; half a pixel
-    /// either way is layout's rounding.
-    fn cut_lines(cx: &mut VisualTestContext, controls: &[&'static str]) -> Vec<String> {
+    /// The body and the lines drawn in it, each named, with where it lies, after a fresh draw:
+    /// each line of every text inside the body, read from the accessibility nodes the frame
+    /// wrote, with its lines at the panel's 12 pt line height (a text of another height counts
+    /// as one line), and each control of one line in `controls`.
+    fn body_lines(
+        cx: &mut VisualTestContext,
+        controls: &[&'static str],
+    ) -> (Bounds<Pixels>, Vec<(String, Pixels, Pixels)>) {
         use crate::native_accessibility::written;
         written::forget();
         crate::tags::tests::draw(cx);
@@ -4138,16 +4139,98 @@ mod tests {
                 .any(|(name, ..)| name.starts_with("github-connection-help")),
             "the body draws the connection help"
         );
+        (body, lines)
+    }
+
+    /// Presses `keys` until `control` draws its focus ring, drawing three frames after each
+    /// press, and returns the body's scroll offset before the last press.
+    fn tab_onto(
+        cx: &mut VisualTestContext,
+        scroll: &ScrollHandle,
+        keys: &str,
+        control: &'static str,
+    ) -> Pixels {
+        let mut before = scroll.offset().y;
+        let mut stops = 0;
+        while !ringed(cx, control) {
+            stops += 1;
+            assert!(stops <= 12, "{keys} reaches {control}");
+            before = scroll.offset().y;
+            cx.simulate_keystrokes(keys);
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        }
+        before
+    }
+
+    /// Holds the body to the rule of its reveals once `keys` moved focus onto `control` from
+    /// the body scrolled to `before` ([`review::clear_of_lines`]): the control shows whole
+    /// with its ring's room, and where the body moved, neither of its edges falls inside a
+    /// line (the lines of [`body_lines`]; half a pixel either way is layout's rounding), or no
+    /// place the body can scroll to, its top edge at a line's top or foot or at an end of the
+    /// content, keeps the control whole with neither edge inside a line, so the control whole
+    /// won. Where the body did not move, the control was whole there with its ring, which moves
+    /// nothing. The lines and the stops are read from the frame drawn, not from the reveal, so
+    /// the rule holds however the platform's text wraps.
+    fn assert_reveal_rule(
+        cx: &mut VisualTestContext,
+        scroll: &ScrollHandle,
+        before: Pixels,
+        (keys, control): (&str, &'static str),
+        controls: &[&'static str],
+        at: &str,
+    ) {
+        let (body, lines) = body_lines(cx, controls);
+        let ring = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let shown = cx.debug_bounds(control).expect(control);
         let slack = px(0.5);
-        let cut =
-            |edge: Pixels, top: Pixels, bottom: Pixels| top < edge - slack && bottom > edge + slack;
-        lines
-            .into_iter()
-            .filter(|(_, top, bottom)| {
-                cut(body.top(), *top, *bottom) || cut(body.bottom(), *top, *bottom)
+        let (top, bottom) = (shown.top() - ring, shown.bottom() + ring);
+        assert!(
+            top >= body.top() - slack && bottom <= body.bottom() + slack,
+            "{at}: {keys} shows {control} {shown:?} whole with its ring in the body {body:?}"
+        );
+        let offset = scroll.offset().y;
+        if offset == before {
+            return;
+        }
+        let inside = |edge: Pixels, within: Pixels| {
+            lines
+                .iter()
+                .filter(move |(_, top, bottom)| *top < edge - within && *bottom > edge + within)
+        };
+        let cut: Vec<_> = inside(body.top(), slack)
+            .chain(inside(body.bottom(), slack))
+            .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?}"))
+            .collect();
+        if cut.is_empty() {
+            return;
+        }
+        // Where the body's top edge can stop, in this frame's coordinates, with the control
+        // whole and no edge inside a line by more than the reveal's own hundredth of a pixel.
+        let height = body.size.height;
+        let first = body.top() + offset;
+        let last = first + scroll.max_offset().y;
+        let within = px(0.01);
+        let stops: Vec<Pixels> = lines
+            .iter()
+            .flat_map(|(_, top, bottom)| [*top, *bottom])
+            .chain([first, last])
+            .filter(|edge| {
+                *edge >= first - slack
+                    && *edge <= last + slack
+                    && *edge <= top + slack
+                    && *edge + height >= bottom - slack
+                    && inside(*edge, within).next().is_none()
+                    && inside(*edge + height, within).next().is_none()
             })
-            .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?} in {body:?}"))
-            .collect()
+            .collect();
+        assert_eq!(
+            stops,
+            Vec::<Pixels>::new(),
+            "{at}: after {keys} onto {control}, {cut:?} cut at the edges of the body {body:?} \
+             where its top edge could stop clear of every line"
+        );
     }
 
     /// A list inside the body clips its rows to its own viewport, so the lines of the rows
@@ -4297,11 +4380,40 @@ mod tests {
     /// shows Connect whole and leaves no line cut at the body's edges at 18 pt and at 13 pt
     /// in a 461 × 490 window: each line of the body's text and each of its one-line controls
     /// lies wholly inside the body or wholly outside it, where the reveal stopped a little
-    /// short or went a little further. Shift+Tab back up onto Account options does the same.
-    /// Revealed as one part, the connection pane, taller than the body at 18 pt, showed its
-    /// foot and left the help's second line cut at the body's top edge (FU14-E's review).
+    /// short or went a little further. Tab on onto Copy sign-in command and Disconnect, and
+    /// Shift+Tab back up onto Account options, do the same, unless no place the body can
+    /// scroll to clears every line with the control whole ([`assert_reveal_rule`]). Revealed
+    /// as one part, the connection pane, taller than the body at 18 pt, showed its foot and
+    /// left the help's second line cut at the body's top edge (FU14-E's review).
     #[gpui::test]
     async fn a_reveal_leaves_no_line_cut_at_the_body_edges(cx: &mut TestAppContext) {
+        walk_connection_reveals(cx, &[18, 13], [461.]).await;
+    }
+
+    /// The reveals of [`a_reveal_leaves_no_line_cut_at_the_body_edges`] keep their rule
+    /// wherever the connection pane's text wraps, at 18 pt and 13 pt in windows from 440 px
+    /// to 480 px wide, 490 px tall, as each platform's text measures it. From 468 px at 18 pt
+    /// the help takes five lines, as macOS lays it out at 461 px, and no block start kept the
+    /// control whole with both edges clear: Tab onto Connect left Copy sign-in command cut at
+    /// the body's foot, and Tab onto Copy left Disconnect cut there, 336..375 in the body
+    /// 93..358, as on macOS (hosted run 42032620931), where the top edge at the foot of the
+    /// help's first line clears both. Shift+Tab back onto Account options there, with the
+    /// toolbar's controls each on a row of their own above the pane, has nowhere clear to stop.
+    #[gpui::test]
+    async fn reveals_keep_their_rule_wherever_the_connection_help_wraps(cx: &mut TestAppContext) {
+        walk_connection_reveals(cx, &[18, 13], (440..=480).step_by(4).map(|w| w as f32)).await;
+    }
+
+    /// Opens the panel over a repository with its connection pane open, Connect enabled (no
+    /// request runs and the panel is no offline fixture), in each of `widths` × 490 windows
+    /// at each of `sizes`, the body scrolled to its top, and walks Tab onto Connect, on onto
+    /// Copy sign-in command and Disconnect, and Shift+Tab back onto Account options, holding
+    /// each to the rule of the body's reveals ([`assert_reveal_rule`]).
+    async fn walk_connection_reveals(
+        cx: &mut TestAppContext,
+        sizes: &[u8],
+        widths: impl IntoIterator<Item = f32> + Clone,
+    ) {
         use crate::tags::tests::draw;
         let (_fixture, app, cx) = repository_window(cx);
         // Tab's bindings, the installed focus ring and motion at rest.
@@ -4326,80 +4438,39 @@ mod tests {
             "github-next",
             "github-recovery-toggle",
         ];
-        let whole = |control: Bounds<Pixels>, body: Bounds<Pixels>| {
-            control.top() >= body.top() - px(0.5) && control.bottom() <= body.bottom() + px(0.5)
-        };
-        let tab_onto = |cx: &mut VisualTestContext, keys: &str, control: &'static str| {
-            let mut stops = 0;
-            while !ringed(cx, control) {
-                stops += 1;
-                assert!(stops <= 12, "{keys} reaches {control}");
-                cx.simulate_keystrokes(keys);
-                for _ in 0..3 {
-                    crate::width_walk::frame(cx);
+        for &interface in sizes {
+            for width in widths.clone() {
+                let at = format!("{interface} pt in {width} × 490");
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(490.)));
+                draw(cx);
+                open_panel(&app, cx).await;
+                if !panel.read_with(cx, |panel, _| panel.review.connection_open) {
+                    crate::copy_feedback::tests::click(cx, "github-account-options");
+                    cx.run_until_parked();
                 }
-            }
-        };
-        for interface in [18, 13] {
-            let at = format!("{interface} pt in 461 × 490");
-            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
-            cx.simulate_resize(size(px(461.), px(490.)));
-            draw(cx);
-            open_panel(&app, cx).await;
-            if !panel.read_with(cx, |panel, _| panel.review.connection_open) {
-                crate::copy_feedback::tests::click(cx, "github-account-options");
-                cx.run_until_parked();
-            }
-            // Connect is enabled: no request runs and the panel is no offline fixture.
-            assert!(
-                panel.read_with(cx, |panel, _| !panel.pending && !panel.review.fixture),
-                "{at}: Connect is enabled"
-            );
-            scroll.set_offset(point(px(0.), px(0.)));
-            draw(cx);
-            draw(cx);
-            assert!(scroll.max_offset().y > px(0.), "{at}: the body scrolls");
-
-            tab_onto(cx, "tab", "github-connect");
-            let body = cx.debug_bounds("github-panel").unwrap();
-            let connect = cx.debug_bounds("github-connect").unwrap();
-            assert!(
-                whole(connect, body),
-                "{at}: Tab shows Connect {connect:?} whole in the body {body:?}"
-            );
-            assert_eq!(
-                cut_lines(cx, &controls),
-                Vec::<String>::new(),
-                "{at}: after Tab onto Connect, no line is cut at the body's edges"
-            );
-            // On through the pane's other controls, each a part starting a block.
-            for control in ["github-sign-in-help", "github-disconnect"] {
-                tab_onto(cx, "tab", control);
-                let shown = cx.debug_bounds(control).unwrap();
+                // Connect is enabled: no request runs and the panel is no offline fixture.
                 assert!(
-                    whole(shown, body),
-                    "{at}: Tab shows {control} {shown:?} whole in the body {body:?}"
+                    panel.read_with(cx, |panel, _| !panel.pending && !panel.review.fixture),
+                    "{at}: Connect is enabled"
                 );
-                assert_eq!(
-                    cut_lines(cx, &controls),
-                    Vec::<String>::new(),
-                    "{at}: after Tab onto {control}, no line is cut at the body's edges"
-                );
+                scroll.set_offset(point(px(0.), px(0.)));
+                draw(cx);
+                draw(cx);
+                assert!(scroll.max_offset().y > px(0.), "{at}: the body scrolls");
+                // On through the pane's controls, each a part starting a block, and back up.
+                for step in [
+                    ("tab", "github-connect"),
+                    ("tab", "github-sign-in-help"),
+                    ("tab", "github-disconnect"),
+                    ("shift-tab", "github-account-options"),
+                ] {
+                    let before = tab_onto(cx, &scroll, step.0, step.1);
+                    assert_reveal_rule(cx, &scroll, before, step, &controls, &at);
+                }
+                cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+                settle_panel(&app, cx).await;
             }
-
-            tab_onto(cx, "shift-tab", "github-account-options");
-            let account = cx.debug_bounds("github-account-options").unwrap();
-            assert!(
-                whole(account, body),
-                "{at}: Shift+Tab shows Account options {account:?} whole in the body {body:?}"
-            );
-            assert_eq!(
-                cut_lines(cx, &controls),
-                Vec::<String>::new(),
-                "{at}: after Shift+Tab back onto Account options, no line is cut"
-            );
-            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
-            settle_panel(&app, cx).await;
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

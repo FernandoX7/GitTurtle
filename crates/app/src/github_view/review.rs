@@ -569,12 +569,13 @@ fn landing(
 /// Where the top edge of `viewport` lands instead of `edge`, where a reveal brought it
 /// ([`landing`]), so that neither of the view's edges falls inside one of `lines`, the lines of
 /// text and controls of one line drawn in it: a half line reads as a rendering fault, and its
-/// words cannot be read. `kept`, the part the reveal shows with its ring's room, stays whole,
-/// and the edge stays within `range`, where the content lets it scroll; it stops only at one
-/// of `starts`, where blocks start less the ring's room, or at an end of the content, as
-/// [`landing`] does, so it never falls inside text no line reports. Where `edge`
-/// leaves a line cut, the view scrolls the least less that shows that line whole or takes it
-/// out of view, so the part still shows whole and no other line is cut; otherwise the least more,
+/// words cannot be read. The part the reveal shows, `top..bottom` with its ring's room, stays
+/// whole, and the edge stays between `first` and `last`, where the content lets it scroll; it
+/// stops at one of `starts`, where blocks start less the ring's room, or at an end of the
+/// content, as [`landing`] does, so it never falls inside text no line reports, and only where
+/// none of those serves, between two of `lines`, at a line's top or foot. Where `edge` leaves
+/// a line cut, the view scrolls the least less that shows that line whole or takes it out of
+/// view, so the part still shows whole and no other line is cut; otherwise the least more,
 /// until the line is wholly out of view; where neither can, the part whole wins and the edge
 /// stays at `edge`. A part taller than the view keeps the half of the view on the side the
 /// reveal shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection
@@ -616,14 +617,6 @@ fn clear_of_lines(
     if lands(edge) {
         return edge;
     }
-    // The top edge stops only where a reveal may bring it, never through a line, whatever
-    // drew it: the start of a block or an end of the content. The part's own top lies inside
-    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt.
-    let candidates = starts
-        .iter()
-        .copied()
-        .chain([first, last])
-        .filter(|at| lands(*at));
     // Less scrolling moves the edge back toward where the view stood.
     let from = viewport.top();
     let less = |at: Pixels| (at > edge) == (from > edge);
@@ -635,8 +628,24 @@ fn clear_of_lines(
                 .total_cmp(&(*b - edge).abs().as_f32())
         })
     };
-    let (fewer, more): (Vec<_>, Vec<_>) = candidates.partition(|at| less(*at));
-    nearest(fewer).or_else(|| nearest(more)).unwrap_or(edge)
+    // The least less among `candidates` where the edge lands, otherwise the least more.
+    let stop = |candidates: &mut dyn Iterator<Item = Pixels>| {
+        let (fewer, more): (Vec<_>, Vec<_>) =
+            candidates.filter(|at| lands(*at)).partition(|at| less(*at));
+        nearest(fewer).or_else(|| nearest(more))
+    };
+    // The top edge stops first where a reveal may bring it, never through a line, whatever
+    // drew it: the start of a block or an end of the content. The part's own top lies inside
+    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt.
+    let blocks = &mut starts.iter().copied().chain([first, last]);
+    // Where none of those leaves every line whole or out of view, the top edge stops between
+    // two lines, at a line's top or foot, inside no line that reports itself: with the
+    // connection help in five lines at 18 pt, as macOS lays it out in a 461 × 490 window, no
+    // block start kept Connect whole with both edges clear, and Tab onto Connect left
+    // Disconnect cut at the body's foot, where the top edge at the foot of the help's first
+    // line clears both.
+    let between = &mut lines.iter().flat_map(|(top, bottom)| [*top, *bottom]);
+    stop(blocks).or_else(|| stop(between)).unwrap_or(edge)
 }
 
 /// Scrolls `scroll`, the panel's body or a list inside it, to show `bounds`, the children of
@@ -2301,6 +2310,49 @@ mod tests {
             clear_of_lines(below, px(190.), (px(190.), px(260.)), &line, &starts, range),
             px(170.),
             "scrolling up, where less would cut the part, a little more takes the line out"
+        );
+    }
+
+    /// Where no block start leaves every line whole or out of view, the reveal stops between
+    /// two lines, at a line's top or foot: a view at 100..300 scrolled down to 150, inside
+    /// the first of three lines at 145..175 and with its bottom edge inside the line at
+    /// 345..365. A block start that clears both still wins over a nearer place between two
+    /// lines; otherwise the least less, the paragraph's first line whole, and where that would
+    /// cut the part, the least more. As macOS wraps the connection help at 18 pt in a 461 × 490
+    /// window, no block start kept Connect whole with both edges clear, and Tab onto it left
+    /// Disconnect cut at the body's foot.
+    #[test]
+    fn where_no_block_start_clears_the_lines_the_edge_stops_between_two() {
+        let viewport = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(200.)));
+        let lines = [
+            (px(145.), px(155.)),
+            (px(155.), px(165.)),
+            (px(165.), px(175.)),
+            (px(345.), px(365.)),
+        ];
+        let range = (px(0.), px(1000.));
+        let part = |bottom: f32| (px(250.), px(bottom));
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(330.),
+                &lines,
+                &[px(148.), px(240.)],
+                range
+            ),
+            px(240.),
+            "a block start that clears every line wins"
+        );
+        assert_eq!(
+            clear_of_lines(viewport, px(150.), part(330.), &lines, &[px(148.)], range),
+            px(145.),
+            "with no block start clear, the least less between two lines"
+        );
+        assert_eq!(
+            clear_of_lines(viewport, px(150.), part(346.), &lines, &[px(148.)], range),
+            px(165.),
+            "where less would cut the part, the least more between two lines"
         );
     }
 
