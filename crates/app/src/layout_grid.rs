@@ -55,7 +55,7 @@ enum Surface {
     Rebase,
     CommandPalette,
     QuickOpen,
-    /// Settings, its four sections each a bordered card, read a scroll
+    /// Settings, its four sections each a bordered card, read half a scroll
     /// view at a time from the page's top to its end.
     Settings,
 }
@@ -368,11 +368,13 @@ const OFFSETS: &[Offset] = &[
         panel: Some(&[
             (Surface::GitHub, "GitHub panel"),
             (Surface::GitHubPanes, "GitHub panel"),
+            (Surface::Settings, "Your themes"),
         ]),
         by: || appearance::ui_size(16. + 6.),
-        reason: "a Button whose icon leads its label, as Pull requests, Refresh PRs and New \
-                 pull request do, stands its 16 px icon at the text's edge, where its frame's \
-                 label inset puts it, and starts its label after the icon's 6 px gap",
+        reason: "a ghost Button whose icon leads its label, as Pull requests, Refresh PRs and \
+                 New pull request do, and Your themes' New theme… where the actions wrap onto a \
+                 line of their own, stands its 16 px icon at the text's edge, its frame its \
+                 label inset before it, and starts its label after the icon's 6 px gap",
     },
     Offset {
         panel: Some(SETTINGS_SECTIONS),
@@ -896,7 +898,12 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
             app.update(cx, |_, cx| cx.notify());
             frame(cx);
             if surface == Surface::Settings {
-                // The page, a scroll view at a time from its top to its end.
+                // The page, from its top to its end, half a scroll view at a
+                // time: a line its view cuts at its foot lies whole in the
+                // next. A whole view at a time, a line across the boundary
+                // was cut at the foot of one view and the top of the next and
+                // never read, as Your themes' wrapped actions were at 13 and
+                // 18 pt in a 461 px window.
                 let page = app.read_with(cx, |app, _| app.theme_editor.page_scroll().clone());
                 let mut top = px(0.);
                 loop {
@@ -921,7 +928,7 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
                     if top >= end {
                         break;
                     }
-                    top = (top + view).min(end);
+                    top = (top + view / 2.).min(end);
                 }
                 page.set_offset(point(px(0.), px(0.)));
                 continue;

@@ -1765,7 +1765,9 @@ impl GitTurtle {
             // Centred on the title's first line, as every Settings row's
             // trailing control, inside the card's padding; too narrow for
             // them beside the text, the actions take a line of their own
-            // below it, as the text sizes' controls do.
+            // below it, as the text sizes' controls do, New theme…'s "+" on
+            // the title's edge, its transparent frame its label inset before
+            // it.
             .child(
                 wrapping_row(
                     div().debug_selector(|| "custom-themes-header".into()),
@@ -1809,7 +1811,10 @@ impl GitTurtle {
                     appearance::ui_size(28.),
                     rem(),
                     cx,
-                ),
+                )
+                // New theme…'s frame pads its icon by the helper's label
+                // inset.
+                .ghost_lead(appearance::ui_size(crate::LABEL_INSET)),
             )
             .when(self.custom_themes.is_empty(), |card| {
                 card.child(
@@ -4901,9 +4906,11 @@ fn wrapping_text_min() -> Pixels {
 /// [`wrapping_text_min`], the control is centred on the title's first line
 /// as [`on_title_line`] centres one, its focus ring kept within `room` above
 /// the title; narrower, it starts a line of its own at the text's left edge,
-/// the row's gap (a `gap_3`) below the text, with nothing reserved above it.
-/// Only the text sizes' rows and Your themes' header wrap; the others stack
-/// below a breakpoint or keep their control beside their text.
+/// the row's gap (a `gap_3`) below the text, with nothing reserved above it:
+/// its frame does, or, for a ghost Button, its content
+/// ([`WrappingRow::ghost_lead`]). Only the text sizes' rows and Your themes'
+/// header wrap; the others stack below a breakpoint or keep their control
+/// beside their text.
 fn wrapping_row(
     row: Div,
     text: impl IntoElement,
@@ -4919,6 +4926,7 @@ fn wrapping_row(
         height,
         room,
         ring: appearance::button_ring_room(cx),
+        lead: Pixels::ZERO,
     }
 }
 
@@ -4932,17 +4940,46 @@ struct WrappingRow {
     height: Pixels,
     room: Pixels,
     ring: Pixels,
+    /// How far the control's content starts inside its frame, where that
+    /// frame draws nothing at rest ([`Self::ghost_lead`]).
+    lead: Pixels,
+}
+
+impl WrappingRow {
+    /// The row for a control that leads with a ghost Button, transparent at
+    /// rest, whose content (its leading icon, else its label) starts `inset`
+    /// inside its frame: on a line of its own, the control's frame stands
+    /// that far before the text's edge, its hover fill and focus ring
+    /// spreading into the padding before it, so what a person sees starts at
+    /// the edge (DESIGN.md, "One left edge"). Beside the text it stays where
+    /// it was. Standing its frame at the edge, Your themes' New theme…, a
+    /// ghost Button, started its "+" icon 10 px past the title at 13 pt and
+    /// 14 px at 18 pt on a 2x display, and the cross itself, inset in its
+    /// icon, 12.5 and 17 px past it: a third left edge in the card.
+    fn ghost_lead(mut self, inset: Pixels) -> Self {
+        self.lead = inset;
+        self
+    }
 }
 
 impl RenderOnce for WrappingRow {
     fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
         let top = beside_title(title_line(window), self.height, self.room - self.ring);
         let gap = window.rem_size() * 0.75;
+        // On the device pixel the Button's own padding is laid out at, so its
+        // content lands on the text's edge rather than a rounding beside it.
+        let lead = window.pixel_snap(self.lead);
         self.row
             .flex()
             .flex_wrap()
             .items_start()
-            .gap_x(gap)
+            // Beside the text, the control's margin takes back the lead the
+            // gap adds, so it stays the gap past the text and the row wraps
+            // where it did: the control's outer width and the gap sum to what
+            // they were. A line of its own has no gap before the control, so
+            // the same margin stands its frame the lead before the text's
+            // edge.
+            .gap_x(gap + lead)
             // Beside the text, the control's margin places it on the title's
             // line. A line of its own starts `top` short of the gap, so the
             // same margin puts the control's edge the gap below the text:
@@ -4964,6 +5001,7 @@ impl RenderOnce for WrappingRow {
                     .flex_shrink_0()
                     .h(self.height)
                     .mt(top)
+                    .ml(-lead)
                     .flex()
                     .items_center()
                     .child(self.control),
@@ -5433,6 +5471,15 @@ mod picker_tests {
     use std::{cell::RefCell, rc::Rc};
 
     pub(super) fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        open_styled_app(cx, |root| root)
+    }
+
+    /// [`open_app`] with its window's root styled by `style`, as a test that
+    /// reads where text runs are drawn marks them (`width_walk::text_mark`).
+    fn open_styled_app(
+        cx: &mut TestAppContext,
+        style: impl FnOnce(gpui_kit::component::Root) -> gpui_kit::component::Root + 'static,
+    ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
         crate::views::tests::init_app(cx);
@@ -5454,7 +5501,7 @@ mod picker_tests {
                 )
             });
             *output.borrow_mut() = Some(app.clone());
-            gpui_kit::component::Root::new(app, window, cx)
+            style(gpui_kit::component::Root::new(app, window, cx))
         });
         let app = captured.borrow().as_ref().unwrap().clone();
         // Tall enough that the Your themes card is on screen without scrolling.
@@ -7155,7 +7202,8 @@ mod picker_tests {
     /// window at 18 pt, and at 13 pt in a 410 × 490 one, New theme… and
     /// Import a theme file no longer fit beside the text with the text at
     /// least 180 px (scaled) wide, so they start a line of their own at the
-    /// title's left edge, a row gap (0.75 rem) below the description, with
+    /// title's left edge (New theme…, a ghost Button, by its icon, its frame
+    /// its label inset before it), a row gap (0.75 rem) below the description, with
     /// nothing reserved above them; the text takes the row's whole width,
     /// nothing overlaps, the row ends at the actions' foot, and each action's
     /// focus ring is drawn whole inside the card and the page's view. At
@@ -7179,22 +7227,27 @@ mod picker_tests {
         let code = cx.read(|cx| app.read(cx).settings.code_text_size);
         let ring = cx.read(appearance::button_ring_room);
         let slack = cx.update(|window, _| px(0.5 / window.scale_factor()));
-        // Each row's title, its control and the row the control wraps in.
+        // Each row's title, its control, the row the control wraps in and
+        // whether the control leads with a ghost Button, whose frame stands
+        // its label inset before the title's edge on a line of its own.
         let rows = [
             (
                 "Your themes",
                 "custom-themes-actions",
                 "custom-themes-header",
+                true,
             ),
             (
                 "Interface text size",
                 "text-size-controls-interface",
                 "text-size-row-interface",
+                false,
             ),
             (
                 "Code text size",
                 "text-size-controls-code",
                 "text-size-row-code",
+                false,
             ),
         ];
         let mut wrapped = Vec::new();
@@ -7218,7 +7271,9 @@ mod picker_tests {
             settle(cx);
             let gap = rem() * 0.75;
             let line = cx.update(|window, _| title_line(window));
-            for (title, control, row) in rows {
+            let inset =
+                cx.update(|window, _| window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)));
+            for (title, control, row, ghost) in rows {
                 let (Some(heading), Some(detail), Some(control), Some(row)) = (
                     drawn(cx, format!("setting-title: {title}")),
                     drawn(cx, format!("setting-detail: {title}")),
@@ -7252,15 +7307,16 @@ mod picker_tests {
                     continue;
                 }
                 wrapped.push(format!("{title} at {at}"));
-                if (control.left() - heading.left()).abs() > slack
+                let edge = heading.left() - if ghost { inset } else { px(0.) };
+                if (control.left() - edge).abs() > slack
                     || (control.top() - detail.bottom() - gap).abs() > slack
                     || (text - row.size.width).abs() > slack
                     || (control.bottom() - row.bottom()).abs() > slack
                 {
                     failures.push(format!(
                         "{at}: {title}'s control {control:?} on its own line does not start \
-                         at its title's left edge {:?} {gap:?} below its description \
-                         {detail:?}, ending its row {row:?}",
+                         at {edge:?}, by its title's left edge {:?}, {gap:?} below its \
+                         description {detail:?}, ending its row {row:?}",
                         heading.left()
                     ));
                 }
@@ -7315,6 +7371,248 @@ mod picker_tests {
         assert!(
             !wrapped.iter().any(|row| row.contains("1480")),
             "every control stays beside its text at 1,480 px: {wrapped:?}"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Where Your themes' actions wrap onto a line of their own, New theme…,
+    /// a ghost Button whose frame paints nothing at rest, stands its "+" icon
+    /// on the title's left edge, its frame the `button` helper's label inset
+    /// before it, and Import… follows at the actions' 0.5 rem gap (DESIGN.md,
+    /// "One left edge"). The icon draws no text, so the test reads where its
+    /// label is drawn, every text run marked as the layout grid marks them,
+    /// and places the icon its 16 px and their 6 px gap before it. Its hover
+    /// fill, and the ring Tab draws around it, stay inside the card's 1 px
+    /// border and the page's view: the ring's outer edge falls on the
+    /// border's inner edge at 13 pt, where the card's 1 rem padding less the
+    /// inset is the ring's 3 px, and a pixel inside it at 18 pt. In
+    /// 461 × 490 Linux wraps the actions at 13 and 18 pt;
+    /// CoreText's narrower labels may fit them beside the text at 13 pt, so
+    /// there the test holds whichever layout it takes to that layout's rule,
+    /// and 410 px, about 60 px short, wraps them on every platform. Beside
+    /// the text, at 1,480 × 973, the actions stay where they were: the
+    /// 0.75 rem gap past the text's column, ending the header, centred on the
+    /// title's first line. Standing its frame on the title's edge, New
+    /// theme… started its icon 10 px past the title at 13 pt and 14 px at
+    /// 18 pt.
+    #[gpui::test]
+    fn new_theme_stands_its_icon_on_the_titles_edge_where_the_actions_wrap(
+        cx: &mut TestAppContext,
+    ) {
+        // Every text run marked, so the test reads where New theme…'s label
+        // is drawn.
+        let (app, cx) = open_styled_app(cx, |root| root.text_bg(crate::width_walk::text_mark()));
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        // Where the first text run the last frame drew inside `frame` starts.
+        let label_in = |cx: &mut VisualTestContext, frame: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == mark)
+                    .map(|quad| {
+                        let b = quad.bounds;
+                        Bounds::from_corners(
+                            point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                            point(
+                                px(b.right().as_f32() / scale),
+                                px(b.bottom().as_f32() / scale),
+                            ),
+                        )
+                    })
+                    .filter(|run| frame.contains(&run.center()))
+                    .map(|run| run.left())
+                    .reduce(Pixels::min)
+            })
+        };
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let room = cx.read(appearance::button_ring_room);
+        let new_theme =
+            cx.update(|_, cx| app.update(cx, |app, cx| app.page_focus("custom-themes-new", cx)));
+        let (scale, slack) = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            (scale, px(0.5 / scale))
+        });
+        // The non-transparent fills the last frame painted at `at`.
+        let fills_at = |cx: &mut VisualTestContext, at: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let near =
+                    |a: ScaledPixels, b: Pixels| (a.as_f32() / scale - f32::from(b)).abs() <= 0.5;
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), at.left())
+                            && near(quad.bounds.top(), at.top())
+                            && near(quad.bounds.right(), at.right())
+                            && near(quad.bounds.bottom(), at.bottom())
+                    })
+                    .count()
+            })
+        };
+        let mut wrapped = Vec::new();
+        let mut failures = Vec::new();
+        for (interface, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 410., 490.),
+            (13, 1480., 973.),
+            (18, 1480., 973.),
+        ] {
+            let at = format!("{interface} pt at {width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                });
+                window.blur(cx);
+            });
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            settle(cx);
+            let inset =
+                cx.update(|window, _| window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)));
+            let (Some(title), Some(detail), Some(header), Some(actions), Some(new), Some(import)) = (
+                drawn(cx, "setting-title: Your themes".to_owned()),
+                drawn(cx, "setting-detail: Your themes".to_owned()),
+                drawn(cx, "custom-themes-header".to_owned()),
+                drawn(cx, "custom-themes-actions".to_owned()),
+                drawn(cx, "custom-themes-new".to_owned()),
+                drawn(cx, "custom-themes-import".to_owned()),
+            ) else {
+                failures.push(format!("{at}: Your themes' header is not drawn whole"));
+                continue;
+            };
+            if actions.top() + slack < detail.bottom() {
+                // Beside the text, where the actions always stood: the row's
+                // gap past the text's column, which the description fills,
+                // ending the header, centred on the title's first line.
+                let line = cx.update(|window, _| title_line(window));
+                let top = title.top() + beside_title(line, actions.size.height, rem() - room);
+                if (actions.left() - detail.right() - rem() * 0.75).abs() > slack
+                    || (actions.right() - header.right()).abs() > slack
+                    || (actions.top() - top).abs() > slack
+                    || (new.left() - actions.left()).abs() > slack
+                {
+                    failures.push(format!(
+                        "{at}: beside the text {detail:?} the actions {actions:?} moved from \
+                         0.75 rem past it, ending the header {header:?}, at {top:?}"
+                    ));
+                }
+                continue;
+            }
+            wrapped.push(format!("{interface} pt at {width}"));
+            // Its frame its label inset before the title's edge, as layout
+            // places the frame's padding on device pixels, and Import… at the
+            // actions' gap.
+            if (new.left() - (title.left() - inset)).abs() > slack
+                || (import.left() - new.right() - rem() * 0.5).abs() > slack
+            {
+                failures.push(format!(
+                    "{at}: wrapped, New theme… {new:?} does not stand its frame {inset:?} \
+                     before the title's edge {:?}, or Import… {import:?} is not 0.5 rem after \
+                     it",
+                    title.left()
+                ));
+            }
+            // Tab onto New theme…, from the control before it, which also
+            // scrolls it into the page's view.
+            cx.update(|window, cx| {
+                window.focus(&new_theme, cx);
+                window.focus_prev(cx);
+            });
+            settle(cx);
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            if !cx.update(|window, _| new_theme.is_focused(window)) {
+                failures.push(format!("{at}: Tab does not reach New theme…"));
+                continue;
+            }
+            let (Some(new), Some(card), Some(view)) = (
+                drawn(cx, "custom-themes-new".to_owned()),
+                drawn(cx, "custom-themes-card".to_owned()),
+                drawn(cx, "settings-scroll".to_owned()),
+            ) else {
+                failures.push(format!("{at}: focused, New theme… is not drawn"));
+                continue;
+            };
+            // The icon, in view now: where the label New theme… draws
+            // starts, less the icon and its gap as layout places them on
+            // device pixels, on the title's edge. Below the view, the label
+            // is not drawn.
+            let (Some(title), Some(label)) = (
+                drawn(cx, "setting-title: Your themes".to_owned()),
+                label_in(cx, new),
+            ) else {
+                failures.push(format!("{at}: in view, New theme… {new:?} draws no label"));
+                continue;
+            };
+            let icon = cx.update(|window, _| {
+                label
+                    - window.pixel_snap(appearance::ui_size(6.))
+                    - window.pixel_snap(appearance::ui_size(16.))
+            });
+            if (icon - title.left()).abs() > slack {
+                failures.push(format!(
+                    "{at}: wrapped, New theme… draws its label at {label:?}, its icon at \
+                     {icon:?}, not on the title's edge {:?}",
+                    title.left()
+                ));
+            }
+            let Some(ring) = ring_around(cx, new) else {
+                failures.push(format!("{at}: focused by Tab, New theme… draws no ring"));
+                continue;
+            };
+            // Inside the card's 1 px border, over no other control, and the
+            // page's view.
+            let within = |outer: Bounds<Pixels>| {
+                ring.left() + slack >= outer.left()
+                    && ring.top() + slack >= outer.top()
+                    && ring.right() <= outer.right() + slack
+                    && ring.bottom() <= outer.bottom() + slack
+            };
+            let border = Bounds::from_corners(
+                card.origin + point(px(1.), px(1.)),
+                card.bottom_right() - point(px(1.), px(1.)),
+            );
+            if !within(border) || !within(view) {
+                failures.push(format!(
+                    "{at}: New theme…'s ring {ring:?} leaves the card's border {border:?} or \
+                     the page's view {view:?}"
+                ));
+            }
+            // At rest the frame paints nothing: what a person sees is its
+            // icon. Hovered, its fill stays inside the card's border.
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            if fills_at(cx, new) != 0 {
+                failures.push(format!("{at}: New theme… paints a fill at rest"));
+            }
+            cx.simulate_mouse_move(new.center(), None, Modifiers::default());
+            settle(cx);
+            if fills_at(cx, new) == 0 || new.left() + slack < border.left() {
+                failures.push(format!(
+                    "{at}: hovered, New theme… {new:?} paints no fill, or one past the card's \
+                     border {border:?}"
+                ));
+            }
+        }
+        for required in ["18 pt at 461", "13 pt at 410"] {
+            assert!(
+                wrapped.iter().any(|layout| layout == required),
+                "the actions wrap at {required} px: {wrapped:?}"
+            );
+        }
+        assert!(
+            !wrapped.iter().any(|layout| layout.ends_with("1480")),
+            "the actions stay beside the text at 1,480 px: {wrapped:?}"
         );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
