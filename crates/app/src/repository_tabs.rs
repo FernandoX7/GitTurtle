@@ -372,6 +372,15 @@ struct FocusReturn {
     focus: Option<FocusHandle>,
 }
 
+/// History's search asked for while the shown tab's snapshot is read
+/// ([`GitTurtle::defer_search`]), for the tab it was asked in and the focus
+/// the key found. It opens once the tab can show History's search, unless
+/// focus has moved since ([`GitTurtle::run_pending_search`]).
+struct PendingSearch {
+    path: PathBuf,
+    focus: Option<FocusHandle>,
+}
+
 #[derive(Default)]
 pub struct State {
     pub tabs: Vec<Tab>,
@@ -390,6 +399,9 @@ pub struct State {
     /// The watch on the control a cold restore landing in Compare left
     /// focus on, until focus leaves it ([`GitTurtle::land_focus_leaving`]).
     landed_focus: Option<Subscription>,
+    /// History's search asked for while the shown tab's snapshot is read,
+    /// until the tab can show it ([`GitTurtle::run_pending_search`]).
+    pending_search: Option<PendingSearch>,
     panel_observers: Vec<Subscription>,
     pub save_pending: Option<Task<()>>,
     saver: commit_drafts::CoalescingSaver<(), Session>,
@@ -413,6 +425,37 @@ const LIBRARY_FULL_REFUSAL: &str =
     "Local library holds up to 128 repositories. Remove an entry before adding another.";
 pub(super) const TAB_LIMIT_REFUSAL: &str = "Eight repository tabs are open. Close a tab before opening another; its commit drafts remain saved.";
 impl State {
+    /// Drops History's search held while a snapshot was read, as another
+    /// read of a repository starts or another tab shows
+    /// ([`GitTurtle::run_pending_search`]).
+    pub(super) fn drop_pending_search(&mut self) {
+        self.pending_search = None;
+    }
+
+    /// Keeps History's search held for the path a tab was opened by once
+    /// its snapshot names the repository's own path, which the window then
+    /// shows ([`GitTurtle::run_pending_search`]).
+    pub(super) fn resolve_pending_search(&mut self, opened: Option<&Path>, resolved: &Path) {
+        if let Some(pending) = self.pending_search.as_mut()
+            && opened == Some(pending.path.as_path())
+        {
+            pending.path = resolved.to_owned();
+        }
+    }
+
+    /// Whether the restore under way lands in Compare, on a captured
+    /// comparison or an older session's chosen file, where History's search
+    /// held meanwhile opens ([`GitTurtle::land_restore_focus`]), or in
+    /// History where it never gets there: its file gone or none chosen
+    /// (`restore_tab_file`), or a read of its own that `GitTurtle::request`
+    /// sends, or its saved query's search page
+    /// (`GitTurtle::continue_history_search`), failed or dropped.
+    pub(super) fn restore_lands_in_compare(&self) -> bool {
+        self.restoring
+            .as_ref()
+            .is_some_and(|saved| saved.comparison.is_some() || saved.compare)
+    }
+
     pub(super) fn rescale_text_viewports(
         &mut self,
         lists: Option<settings::ListScales>,
@@ -1161,6 +1204,7 @@ impl GitTurtle {
         }
         self.page = AppPage::Repository;
         self.forget_page_return();
+        self.repository_tabs.drop_pending_search();
         self.restore_inspection_context(warm.context, window, cx);
         if let Some(saved) = warm.document_restore {
             self.resume_tab_documents(saved, window, cx);
@@ -1963,6 +2007,13 @@ impl GitTurtle {
             } else {
                 self.selected_file = Some(index);
             }
+        } else {
+            // A bookmark in Compare whose file the saved commit no longer
+            // changes, or that chose none, stays in History, where History's
+            // search asked for meanwhile opens, as it does where a restore
+            // stays in History; held for a Compare that never came, it was
+            // lost (`run_pending_search`).
+            self.run_pending_search(window, cx);
         }
         restore_list_viewport(&self.file_scroll, saved.file_y, &mut self.file_list_layout);
         // Seed the completed layout without reapplying the history offset:
@@ -2006,7 +2057,64 @@ impl GitTurtle {
         );
         self.history_horizontal
             .set_offset(point(px(saved.horizontal_x), px(0.)));
-        self.request_restored_comparison(saved, window, cx);
+        // History's search, asked for while the snapshot was read, left
+        // Compare for History as the restore landed: nothing shows the
+        // comparison to read.
+        if self.mode == WorkspaceMode::Compare {
+            self.request_restored_comparison(saved, window, cx);
+        }
+    }
+
+    /// Holds History's search, asked for by its shortcut or command
+    /// (`search`) while the shown tab's snapshot is read, for the tab and
+    /// the focus the key found: History has nothing to show yet, and
+    /// showing it then showed Projects, whose own control took focus, so
+    /// the key acted on another page than the one it was pressed in.
+    /// Decision (2026-11-05, owner-delegated): a shortcut acts on the
+    /// context it was pressed in, so the search opens as the tab lands
+    /// (`run_pending_search`), never Projects. Returns whether it held it:
+    /// only a tab reading its repository shows none.
+    pub(super) fn defer_search(&mut self, window: &Window, cx: &App) -> bool {
+        let Some(path) = self.path.clone().filter(|_| self.repository.is_none()) else {
+            return false;
+        };
+        self.repository_tabs.pending_search = Some(PendingSearch {
+            path,
+            focus: window.focused(cx),
+        });
+        true
+    }
+
+    /// Opens History's search held while the tab's snapshot was read
+    /// (`defer_search`) once the tab can show it: as a fresh open's snapshot
+    /// lands, as a cold tab's does where its restore stays in History, as
+    /// that restore lands in Compare (`land_restore_focus`), which the
+    /// search leaves for History as it does from Compare, or as it ends in
+    /// History short of Compare (`restore_lands_in_compare`). It opens only in
+    /// the tab it was asked in, on the repository page with no modal over
+    /// it, and while focus rests where the key found it: a control the
+    /// person focused meanwhile keeps focus, and the search is dropped, as
+    /// it is once the window opens or shows another tab (`open`,
+    /// `restore_warm_tab`). Returns whether it opened.
+    pub(super) fn run_pending_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(PendingSearch { path, focus }) = self.repository_tabs.pending_search.take() else {
+            return false;
+        };
+        if self.repository.is_none()
+            || self.page != AppPage::Repository
+            || window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+            || self.path.as_ref() != Some(&path)
+            || window.focused(cx) != focus
+        {
+            return false;
+        }
+        self.search(&Search, window, cx);
+        true
     }
 
     /// Focus as a cold tab's restore lands in Compare, on its captured
@@ -2031,6 +2139,11 @@ impl GitTurtle {
     /// window's shortcuts, Escape and the tab shortcuts among them, until a
     /// click on a file row.
     fn land_restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // History's search asked for while the snapshot was read opens
+        // here, leaving Compare as the search does.
+        if self.run_pending_search(window, cx) {
+            return;
+        }
         if self.page != AppPage::Repository {
             if self
                 .page_return_focus
@@ -7854,35 +7967,28 @@ mod tests {
     /// by the keyboard while the snapshot is read, keeps it; one Compare
     /// takes away, the navigation's filter, gives way to the changed-file
     /// list as the frame that draws Compare ends. Settings opened over the
-    /// restore keeps its focus, and so does Projects, which History's
-    /// search shortcut shows while no repository is read, rather than
-    /// focus History's search field, which no page then draws; Back from
-    /// either returns to the changed-file list, not to History's list where
-    /// showing the tab had put focus, nor to the navigation's filter, which
-    /// Settings opened from it returned to.
+    /// restore keeps its focus; Back returns to the changed-file list, not
+    /// to History's list where showing the tab had put focus, nor to the
+    /// navigation's filter, which Settings opened from it returned to.
+    /// History's search shortcut pressed meanwhile opens History's search
+    /// as the restore lands instead
+    /// (`a_search_asked_for_while_a_tab_loads_opens_as_it_lands`).
     #[gpui::test]
     async fn a_cold_restore_keeps_focus_the_person_moved(cx: &mut TestAppContext) {
         let (_first, app, cx) = crate::views::tests::history_window(cx).await;
         cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
         let root = tempfile::tempdir().unwrap();
         let _repo = open_compared_tab(&app, root.path(), cx).await;
-        let (list, files, search, navigation) = app.read_with(cx, |app, cx| {
+        let (list, files, navigation) = app.read_with(cx, |app, cx| {
             (
                 app.focus.clone(),
                 app.file_focus.clone(),
-                app.search.read(cx).focus_handle(cx),
                 app.nav_search.read(cx).focus_handle(cx),
             )
         });
-        let primary = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
         for moved in [
             "tab strip",
             "navigation",
-            "search",
             "settings",
             "navigation, then settings",
         ] {
@@ -7900,7 +8006,6 @@ mod tests {
                     window.focus_next(cx);
                 }),
                 "navigation" => cx.update(|window, cx| window.focus(&navigation, cx)),
-                "search" => cx.simulate_keystrokes(&format!("{primary}-f")),
                 "settings" => {
                     cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)))
                 }
@@ -7927,15 +8032,6 @@ mod tests {
                 // Drawn where History shows it, so only the frame that
                 // draws Compare takes it away.
                 "navigation" => assert_eq!(drawn_focus(&app, cx), Some(navigation.clone())),
-                // With no repository read yet, History, which the shortcut
-                // shows, is Projects, whose control takes focus.
-                "search" => {
-                    let page = app.read_with(cx, |app, _| app.page);
-                    assert!(page == AppPage::Projects, "{moved}: Projects shown");
-                    let drawn = drawn_focus(&app, cx);
-                    assert!(drawn.is_some() && drawn != Some(search.clone()), "{moved}");
-                    assert_eq!(drawn, before, "{moved}: drawn");
-                }
                 _ => assert!(before.is_some() && before != Some(files.clone()), "{moved}"),
             }
             drop(held);
@@ -7971,6 +8067,310 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// History's search, asked for by its shortcut while a tab's snapshot
+    /// is read, opens in that tab once it can show it, never Projects: as a
+    /// cold tab's restore lands in Compare, which the search leaves for
+    /// History, as one that stays in History lands its snapshot, and as a
+    /// new tab's snapshot lands. Focus the person moves meanwhile keeps its
+    /// place, and the search does not open. With no repository read yet,
+    /// History, which the shortcut showed, was Projects, whose own control
+    /// took focus, so the key acted on another page.
+    #[gpui::test]
+    async fn a_search_asked_for_while_a_tab_loads_opens_as_it_lands(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, files, search, navigation) = app.read_with(cx, |app, cx| {
+            (
+                app.focus.clone(),
+                app.file_focus.clone(),
+                app.search.read(cx).focus_handle(cx),
+                app.nav_search.read(cx).focus_handle(cx),
+            )
+        });
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        for (commit, compare, moved) in [(0, true, false), (1, false, false), (0, true, true)] {
+            let when = format!(
+                "{} restore{}",
+                if compare { "Compare" } else { "History" },
+                if moved { ", focus moved" } else { "" }
+            );
+            leave_tab_cold_on(&app, commit, "notes.txt", compare, cx).await;
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}");
+            cx.simulate_keystrokes(find);
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository, "{when}: the tab stays");
+                assert!(app.repository.is_none(), "{when}: still read");
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+            if moved {
+                cx.update(|window, cx| window.focus(&navigation, cx));
+                draw_tab_frames(cx);
+            }
+            drop(held);
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.repository_tabs.restoring.is_none()),
+                "{when}: restored"
+            );
+            if moved {
+                assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+                assert_eq!(drawn_focus(&app, cx), Some(files.clone()), "{when}");
+            } else {
+                assert!(
+                    app.read_with(cx, |app, _| app.page == AppPage::Repository
+                        && app.mode == WorkspaceMode::History),
+                    "{when}: History shows"
+                );
+                assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+            }
+        }
+
+        // A new tab, opened from the shown one.
+        let third = crate::views::tests::fixture_repository(root.path().join("third"));
+        std::fs::write(third.path().join("notes.txt"), "third\n").unwrap();
+        crate::tags::tests::git(third.path(), &["add", "notes.txt"]);
+        crate::tags::tests::git(third.path(), &["commit", "--quiet", "-m", "third"]);
+        let held = hold_reads(&app, cx);
+        let path = third.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        draw_tab_frames(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.loading),
+            Some("Reading local history…"),
+            "the new tab reads its snapshot"
+        );
+        let before = focused(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        assert_eq!(focused(cx), before, "focus stays where the key found it");
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_deref(), Some(third.path()), "the new tab");
+            assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::History);
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(search), "History's search");
+    }
+
+    /// History's search, asked for while a cold tab's snapshot is read,
+    /// opens where a restore bound for Compare ends in History instead: a
+    /// bookmark in Compare, as an older session saved it, whose file the
+    /// saved commit no longer changes or that chose none
+    /// (`restore_tab_file`), and one whose changed files' read fails, which
+    /// ends the restore (`request`). Held for a Compare that never came,
+    /// the search was lost, and focus stayed on History's list.
+    #[gpui::test]
+    async fn a_search_asked_for_while_a_compare_restore_ends_in_history_opens_there(
+        cx: &mut TestAppContext,
+    ) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, search) = app.read_with(cx, |app, cx| {
+            (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+        });
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        // The failed read comes last: it takes the commit's tree away.
+        for (when, file) in [
+            ("its file gone", Some("gone.txt")),
+            ("no file chosen", None),
+            ("its read failed", Some("notes.txt")),
+        ] {
+            let failed = when == "its read failed";
+            leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+            app.update(cx, |app, _| {
+                let saved = &mut app.repository_tabs.tabs[1].saved;
+                saved.comparison = None;
+                saved.compare = true;
+                saved.selected_file = file.map(|name| SavedPath::new(Path::new(name)));
+            });
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            cx.simulate_keystrokes(find);
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_none(), "{when}: still read");
+                assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+            drop(held);
+            if failed {
+                // The snapshot lands, and the saved commit's changed files
+                // are read without its tree.
+                let held = hold_reads(&app, cx);
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| {
+                    assert_eq!(app.loading, Some("Reading changed files…"), "{when}");
+                    assert!(app.repository_tabs.restoring.is_some(), "{when}");
+                });
+                let output = std::process::Command::new("git")
+                    .args(["rev-parse", "HEAD^{tree}"])
+                    .current_dir(repo.path())
+                    .output()
+                    .unwrap();
+                let tree = String::from_utf8(output.stdout).unwrap();
+                let tree = tree.trim();
+                std::fs::remove_file(
+                    repo.path()
+                        .join(".git/objects")
+                        .join(&tree[..2])
+                        .join(&tree[2..]),
+                )
+                .unwrap();
+                drop(held);
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| assert!(app.error.is_some(), "{when}"));
+            }
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert!(
+                    app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                    "{when}: History shows"
+                );
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+        }
+    }
+
+    /// History's search, asked for while a cold tab's snapshot is read,
+    /// opens where the restore's search for its saved query ends with no
+    /// page, failed or dropped: that ends the restore in History, short of
+    /// the Compare an older session's bookmark was bound for
+    /// (`continue_history_search`). Held for a Compare that never came, the
+    /// search was lost, and focus stayed on History's list.
+    #[gpui::test]
+    async fn a_search_asked_for_while_a_restores_search_fails_opens_in_history(
+        cx: &mut TestAppContext,
+    ) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, search) = app.read_with(cx, |app, cx| {
+            (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+        });
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+        for (round, when) in ["its search failed", "its search dropped"]
+            .into_iter()
+            .enumerate()
+        {
+            let failed = when == "its search failed";
+            if round > 0 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle_tab_test(&app, cx).await;
+                draw_tab_frames(cx);
+            }
+            app.update(cx, |app, _| {
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = Bookmark {
+                    comparison: None,
+                    compare: true,
+                    query: "second".into(),
+                    // A commit the repository no longer has, the saved
+                    // search's scope, fails its search.
+                    pinned: failed.then(|| SavedHistoryScope::Commit("1".repeat(40))),
+                    offset: 0,
+                    ..bookmark.clone()
+                };
+            });
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            cx.simulate_keystrokes(find);
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_none(), "{when}: still read");
+                assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+            // The snapshot lands, and the saved query is searched once its
+            // typing pause is over, its page read while the reader is held.
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_some(), "{when}: landed");
+                assert!(app.repository_tabs.restoring.is_some(), "{when}");
+                assert!(app.history_search_pending(), "{when}: searched");
+            });
+            let held = hold_reads(&app, cx);
+            cx.executor()
+                .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.loading, Some("Searching repository history…"), "{when}");
+                assert!(app.repository_tabs.restoring.is_some(), "{when}");
+            });
+            if !failed {
+                // Dropped unanswered, as a newer read drops one waiting.
+                app.read_with(cx, |app, _| app.worker.cancel());
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert!(!app.history_search_pending(), "{when}: answered");
+                assert_eq!(
+                    app.history_search_empty().map(|(title, _)| title),
+                    Some(if failed {
+                        "Search could not complete"
+                    } else {
+                        "Search paused"
+                    }),
+                    "{when}"
+                );
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert!(
+                    app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                    "{when}: History shows"
+                );
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
         }
     }
 

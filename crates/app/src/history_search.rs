@@ -6,7 +6,7 @@ use std::time::Duration;
 
 const SEARCH_LABEL: &str = "Searching repository history…";
 /// How long typing must pause before a query is searched.
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+pub(crate) const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_RESULTS: usize = 10_000;
 const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
 /// The narrowest the controls' summary is drawn beside its buttons, at the
@@ -378,10 +378,13 @@ impl GitTurtle {
                 this.loading = None;
                 // A search that ends with no page to use, failed or
                 // dropped, ends a cold tab's restore waiting for it, as a
-                // read that replaces it does (`end_replaced_restore`).
-                if !matches!(&result, Ok(Ok(Output::SearchHistory(_)))) {
-                    this.repository_tabs.restoring = None;
-                }
+                // read that replaces it does (`end_replaced_restore`). A
+                // restore that would have gone on to Compare stays in
+                // History then, where History's search asked for meanwhile
+                // opens once the reply is recorded (`run_pending_search`);
+                // held for that Compare, it was lost.
+                let restore_ended = !matches!(&result, Ok(Ok(Output::SearchHistory(_))))
+                    && this.repository_tabs.restoring.take().is_some();
                 match result {
                     Ok(Ok(Output::SearchHistory(result))) => {
                         if let Some(progress) = &mut this.history_search.progress {
@@ -422,6 +425,9 @@ impl GitTurtle {
                             progress.paused = true;
                         }
                     }
+                }
+                if restore_ended {
+                    this.run_pending_search(window, cx);
                 }
                 this.try_automatic_refresh(window, cx);
                 cx.notify();

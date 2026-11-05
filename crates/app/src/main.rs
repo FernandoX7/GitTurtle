@@ -1229,9 +1229,12 @@ impl GitTurtle {
                 // A read that ends with no reply to use, failed or dropped,
                 // ends a cold tab's restore waiting for it, as a read that
                 // replaces it does (`end_replaced_restore`): the tab, left,
-                // stays warm with what it shows.
-                if !matches!(&reply, Ok(Ok(_))) {
-                    this.repository_tabs.restoring = None;
+                // stays warm with what it shows. A restore that would have
+                // gone on to Compare stays in History then, where History's
+                // search asked for meanwhile opens (`run_pending_search`);
+                // held for that Compare, it was lost.
+                if !matches!(&reply, Ok(Ok(_))) && this.repository_tabs.restoring.take().is_some() {
+                    this.run_pending_search(window, cx);
                 }
                 // Dropped unanswered by the worker, the read is over all the
                 // same: left loading, it held quiet reads off, a write's
@@ -1315,6 +1318,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // History's search held for a snapshot read earlier is for that
+        // read alone (`run_pending_search`).
+        self.repository_tabs.drop_pending_search();
         if self.tab_open_requested(&path, &scope, window, cx) {
             return;
         }
@@ -1502,6 +1508,8 @@ impl GitTurtle {
                         .update(cx, |input, cx| input.set_value("", window, cx));
                 }
                 self.restore_commit_draft(resolved, window, cx);
+                self.repository_tabs
+                    .resolve_pending_search(self.path.as_deref(), snapshot.repository.path());
                 self.path = Some(snapshot.repository.path().to_owned());
                 self.repository = Some(snapshot.repository);
                 self.ensure_local_watcher(false, window, cx);
@@ -1527,6 +1535,12 @@ impl GitTurtle {
                     .or_else(|| self.visible.first().copied());
                 if self.repository_tabs.restoring.is_some() {
                     self.finish_tab_snapshot(window, cx);
+                    // History's search asked for meanwhile opens now where
+                    // the restore stays in History, and as it lands where it
+                    // goes on to Compare (`land_restore_focus`).
+                    if !self.repository_tabs.restore_lands_in_compare() {
+                        self.run_pending_search(window, cx);
+                    }
                     return;
                 }
                 if self.mode == WorkspaceMode::Working {
@@ -1541,6 +1555,7 @@ impl GitTurtle {
                 if !self.search.read(cx).value().is_empty() {
                     self.history_query_changed(window, cx);
                 }
+                self.run_pending_search(window, cx);
             }
             Output::Changes(files, elapsed) => {
                 self.status = format!(
@@ -2297,11 +2312,15 @@ impl GitTurtle {
         {
             return;
         }
+        // While the tab's snapshot is read, History has nothing to show:
+        // the search opens as the tab lands (`defer_search`).
+        if self.defer_search(window, cx) {
+            return;
+        }
         self.show_history(window, cx);
-        // With no repository read, as while a tab's snapshot is read,
-        // History shows Projects, whose own control takes focus: History's
-        // search field is drawn on no page then, and focus on it reached no
-        // key until a click.
+        // With no repository at all, History shows Projects, whose own
+        // control takes focus: History's search field is drawn on no page
+        // then, and focus on it reached no key until a click.
         if self.repository.is_some() {
             window.focus(&self.search.read(cx).focus_handle(cx), cx);
         }
