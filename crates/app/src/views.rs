@@ -2936,7 +2936,9 @@ impl GitTurtle {
     /// Menu key: the menu a right-click on the row opens. It ends at the
     /// list's trailing inset in the part of the list the viewport shows,
     /// where the columns scroll sideways, so it leaves the graph's lanes in
-    /// view.
+    /// view. It belongs to its commit, not to the row's place: where a
+    /// quiet reload brings commits above it, it stays open beside the row
+    /// that holds its commit now, and it closes only once no row does.
     fn open_commit_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.commit_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx)
         {
@@ -2954,29 +2956,48 @@ impl GitTurtle {
         let oid = commit.oid.clone();
         let commit = recovery::commit_target(commit);
         let inset = appearance::ui_size(appearance::PANE_INSET);
-        let anchor = native_accessibility::KeyboardMenu::cursor_row(
-            &self.history_scroll,
-            row,
-            window.pixel_snap(px(self.settings.density.history_row_height())),
-            inset,
-        );
         // The list's right edge in the part the viewport shows, inside the
         // 1 px edge drawn there (`history_list_edge`).
         let list = self.history_scroll.0.borrow().base_handle.bounds().right();
         let shown = self.history_horizontal.bounds().right() - px(1.);
-        let anchor = anchor.trailing(list.min(shown) - inset);
+        // Its row lies inside that edge, over the list's 1 px padding: a
+        // row whose foot lies under it opens its menu without moving the
+        // list.
+        let anchor = native_accessibility::ListRow::new(
+            &self.history_scroll,
+            row,
+            window.pixel_snap(px(self.settings.density.history_row_height())),
+            inset,
+        )
+        .trailing(list.min(shown) - inset)
+        .framed(px(1.));
+        let place = anchor.place();
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        // The row it opened beside still holds the commit: an Undo or an
-        // Amend takes it from History as the write's quiet reload lands, and
-        // commits arriving above it move it down.
+        // A row still holds the commit, and the menu is drawn beside it: an
+        // Undo or an Amend takes the commit from History as the write's
+        // quiet reload lands, and commits arriving above it move its row
+        // down. The row it was last beside is asked first, so a check while
+        // nothing moved reads one row.
         let shown = repository.clone();
+        // The selected commit a reload took away stays listed, retained at
+        // the list's end for its inspector, but no longer in History: its
+        // menu goes, as one opened on HEAD before an Undo must, which
+        // offered a Revert of the commit the Undo had taken away.
         let holds = move |app: &GitTurtle| {
-            app.path == shown
-                && app.visible.get(row) == Some(&index)
-                && app
-                    .commits
-                    .get(index)
+            let holds = |row: usize| {
+                app.visible
+                    .get(row)
+                    .filter(|index| app.automatic.retained_commit != Some(**index))
+                    .and_then(|index| app.commits.get(*index))
                     .is_some_and(|commit| commit.oid == oid)
+            };
+            let row = Some(place.get())
+                .filter(|row| holds(*row))
+                .or_else(|| (0..app.visible.len()).find(|row| holds(*row)));
+            if let Some(row) = row {
+                place.set(row);
+            }
+            app.path == shown && row.is_some()
         };
         let head_of = commit.clone();
         let build = Self::keyboard_commit_menu(owner, repository, commit);
@@ -27554,6 +27575,131 @@ pub(crate) mod tests {
             assert!(cx.debug_bounds(REVERT).is_none(), "{key}: Escape closed it");
             assert!(focused(cx), "{key}: Escape returned focus to the list");
         }
+    }
+
+    /// History's keyboard commit menu belongs to its commit, not to its
+    /// row's place: Shift-F10 on the third row, then two commits made
+    /// outside the app arrive above it with a quiet reload. The menu stays
+    /// open and focused, drawn beside the row that holds its commit now, two
+    /// rows down, as far below that row as it was below the row it opened
+    /// on; a reset that takes the commit from History outside the app, which
+    /// leaves it retained for the inspector, then closes it, focus back on
+    /// History's list. Kept to the row's place, the menu closed as soon as
+    /// the rows moved.
+    #[gpui::test]
+    async fn a_keyboard_commit_menu_follows_its_commit_as_rows_arrive_above(
+        cx: &mut TestAppContext,
+    ) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 1)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        let opened = 2;
+        let (index, oid) = app.read_with(cx, |app, _| {
+            let index = app.visible[opened];
+            (index, app.commits[index].oid.clone())
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_commit(index, window, cx);
+                app.pane = Pane::History;
+                window.focus(&app.focus, cx);
+            })
+        });
+        settle(&app, cx).await;
+        let row_of = |cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.visible
+                    .iter()
+                    .position(|index| app.commits[*index].oid == oid)
+                    .map(|row| (row, app.visible[row]))
+            });
+            index.map(|(row, index)| {
+                let bounds = cx
+                    .debug_bounds(format!("history-row-{index}").leak())
+                    .unwrap_or_else(|| panic!("the commit's row {row} is drawn"));
+                (row, bounds)
+            })
+        };
+        let (row, before) = row_of(cx).expect("the commit's row");
+        assert_eq!(row, opened);
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        let item = cx.debug_bounds(REVERT).expect("Shift-F10 opened the menu");
+        let below = item.top() - before.bottom();
+        let reload = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.queue_automatic_refresh(
+                        crate::local_refresh::LocalChange {
+                            git: true,
+                            worktree: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            });
+            for _ in 0..8 {
+                if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            draw(cx);
+            draw(cx);
+        };
+        for subject in ["Arrived first", "Arrived second"] {
+            fixture_git(
+                &repository,
+                &["commit", "-q", "--allow-empty", "-m", subject],
+            );
+        }
+        reload(cx);
+        let (row, after) = row_of(cx).expect("the commit is still listed");
+        assert_eq!(row, opened + 2, "two rows arrived above the commit");
+        assert!(
+            app.read_with(cx, |app, _| app.commit_menu.is_some()),
+            "the menu stays open on its commit"
+        );
+        assert!(
+            cx.update(|window, cx| app
+                .read(cx)
+                .commit_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx))),
+            "and keeps focus"
+        );
+        let item = cx.debug_bounds(REVERT).expect("the menu is drawn");
+        assert!(
+            (item.top() - after.bottom() - below).abs() <= px(0.5),
+            "the menu's first item {item:?} lies {below:?} below the commit's row {after:?}"
+        );
+        fixture_git(&repository, &["reset", "-q", "--hard", &format!("{oid}~1")]);
+        reload(cx);
+        assert!(
+            app.read_with(cx, |app, _| app
+                .automatic
+                .retained_commit
+                .is_some_and(|index| app.commits[index].oid == oid)),
+            "the reset took the commit from History, retained for the inspector"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.commit_menu.is_none()),
+            "the menu closed with its commit"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).focus.is_focused(window)),
+            "focus is back on History's list"
+        );
+        drop(fixture);
     }
 
     /// Shift-F10 on History's lowest whole row, where the room down to the

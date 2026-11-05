@@ -207,13 +207,20 @@ impl From<ListRow> for RowPlace {
 /// menu starting `inset` from the list's leading edge, placed as
 /// [`KeyboardMenu::cursor_row`] places it from the list's bounds and scroll
 /// in the frame being drawn. Its owner moves it among the rows as rows come
-/// or go before it ([`KeyboardMenu::follow_row`]).
+/// or go before it ([`KeyboardMenu::follow_row`], or the place
+/// [`Self::place`] shares).
 #[derive(Clone)]
 pub(super) struct ListRow {
     scroll: UniformListScrollHandle,
-    row: usize,
+    row: std::rc::Rc<std::cell::Cell<usize>>,
     height: Pixels,
     inset: Pixels,
+    /// Where the menu ends instead of starting at the leading inset
+    /// ([`RowAnchor::trailing`]).
+    trailing: Option<Pixels>,
+    /// How far the list's drawn edge reaches outside its bounds, over a row
+    /// cut by no more than that ([`Self::framed`]).
+    frame: Pixels,
 }
 
 impl ListRow {
@@ -225,20 +232,58 @@ impl ListRow {
     ) -> Self {
         Self {
             scroll: scroll.clone(),
-            row,
+            row: std::rc::Rc::new(std::cell::Cell::new(row)),
             height,
             inset,
+            trailing: None,
+            frame: Pixels::ZERO,
         }
     }
 
+    /// The list lies inside an edge `edge` wide drawn around it, as each of
+    /// History's lists lies inside its 1 px edge: a row whose top or foot
+    /// lies under that edge shows all of itself the list's frame lets it,
+    /// and opening its menu scrolls nothing ([`Self::reveal`]). Revealed to
+    /// the list's bounds, the lowest whole row History showed at 13 pt in a
+    /// 461 × 490 window, its foot under the edge, scrolled the whole list up
+    /// 1 px as Shift-F10 opened its menu, which then stood 5 px above where
+    /// the row had been, not the menu gap's 4.
+    pub(super) fn framed(self, edge: Pixels) -> Self {
+        Self {
+            frame: edge,
+            ..self
+        }
+    }
+
+    /// The menu ends at `right` ([`RowAnchor::trailing`]): History's commit
+    /// menu, beside the part of its row the viewport shows.
+    pub(super) fn trailing(self, right: Pixels) -> Self {
+        Self {
+            trailing: Some(right),
+            ..self
+        }
+    }
+
+    /// The row's place in its list, which its owner moves as rows come or go
+    /// before it, from a check that finds where its entry now stands: the
+    /// menu is drawn beside that row from the next frame.
+    pub(super) fn place(&self) -> std::rc::Rc<std::cell::Cell<usize>> {
+        self.row.clone()
+    }
+
     fn anchor(&self) -> RowAnchor {
-        KeyboardMenu::cursor_row(&self.scroll, self.row, self.height, self.inset)
+        let anchor =
+            KeyboardMenu::cursor_row(&self.scroll, self.row.get(), self.height, self.inset);
+        match self.trailing {
+            Some(right) => anchor.trailing(right),
+            None => anchor,
+        }
     }
 
     fn drawn(&self) -> bool {
         let state = self.scroll.0.borrow();
         let bounds = state.base_handle.bounds();
-        let top = bounds.top() + state.base_handle.offset().y + self.height * self.row as f32;
+        let top = bounds.top() + state.base_handle.offset().y + self.height * self.row.get() as f32;
         top < bounds.bottom() && top + self.height > bounds.top()
     }
 
@@ -246,18 +291,20 @@ impl ListRow {
     /// `ScrollStrategy::Nearest` does, at once rather than at the list's next
     /// layout, so a menu opened beside it is placed and sized beside the row
     /// in view: opened for a row a wheel had scrolled away, it lay pinned to
-    /// the list's edge, beside no row.
+    /// the list's edge, beside no row. A row cut only under the list's drawn
+    /// edge ([`Self::framed`]) stays where it is.
     fn reveal(&self) {
         let state = self.scroll.0.borrow();
         let bounds = state.base_handle.bounds();
         let offset = state.base_handle.offset();
-        let top = bounds.top() + offset.y + self.height * self.row as f32;
+        let top = bounds.top() + offset.y + self.height * self.row.get() as f32;
+        if top >= bounds.top() - self.frame && top + self.height <= bounds.bottom() + self.frame {
+            return;
+        }
         let shift = if top < bounds.top() {
             bounds.top() - top
-        } else if top + self.height > bounds.bottom() {
-            (bounds.bottom() - top - self.height).max(bounds.top() - top)
         } else {
-            return;
+            (bounds.bottom() - top - self.height).max(bounds.top() - top)
         };
         state
             .base_handle
@@ -623,8 +670,8 @@ impl KeyboardMenu {
     /// `row`th row, where rows that came or went before its own moved it:
     /// it is drawn beside that row from the next frame.
     pub(super) fn follow_row(&mut self, row: usize) {
-        if let RowPlace::Listed(listed) = &mut self.row {
-            listed.row = row;
+        if let RowPlace::Listed(listed) = &self.row {
+            listed.row.set(row);
         }
     }
 
