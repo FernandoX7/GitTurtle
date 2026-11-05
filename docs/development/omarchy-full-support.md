@@ -742,6 +742,134 @@ cover current upstream x86-64 Omarchy.
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
         VoiceOver's reading of check menu items and of copy announcements from dialogs.
+   - **Open polish queue (consolidated 2026-11-05).** "The queues" from here on: this list
+     replaces the per-session "Queue additions" sub-bullets in `HANDOFF.md` (every session
+     bullet from 2026-10-27 to 2026-11-05 morning, checked against `a975f1e9` by read-only
+     audits; the closed items and why are in HANDOFF's "Session 2026-11-05 midday" bullet).
+     Each landed item is removed from it; new findings are added here, not to HANDOFF.
+     Order: user-visible defects and accessibility, then layout consistency, then macOS-only,
+     then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
+     confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
+     disjoint files; a round's slices may change as files free up.
+     - **FU18 (in flight, BASE `7eb00c46`):** (A) the line-tint extent across the editor's
+       whole row (decided 2026-11-05; `text.rs`, `split_diff.rs`, kit background pass), L.
+       (B) ghost Buttons at a text edge align their content (FU17-C item 3: ~22 sites + 6
+       uncertain across Settings, commit message, profiles, branch actions, worktrees,
+       activity, LFS, rewrite review, revision inspection, recovery drafts), M. (C) dialogs:
+       every dialog within `dialog_width`'s margins (kit-width dialogs 6.5 px from a 461 px
+       window's sides), nested dialogs' height cap, Enter on a focused body Button activates
+       it, the narrow walk's dialog list guarded (`appearance.rs`, `width_walk.rs`, kit
+       `dialog.rs`), M. (D) GitHub panel reveals: QA-97's short scroll area (461 × 490,
+       18 pt; verify), conversation-list and multi-line editor lines, the flush-stop sweep for
+       PR/Overview/Review, FU16-B N3's O(L²) fallback, three test fixes (`github_view*`,
+       `focus_reveal.rs`), M.
+     - **FU19 (proposed):**
+       - (A) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
+         app's recheck moves it at 300 ms, overriding a click (FU13-A 2-3; kit `dialog.rs`,
+         `main.rs`); a dialog opened while another closes loses its restore target (FU13-A 4,
+         `main.rs`); `open()` clears `page_return_focus` while Ctrl+1/2 from Settings leave it
+         set (FU13-A 5, `repository_tabs.rs:1595`/`:1916`); File history behind Settings
+         focuses off-page and `restore_inspection_context` can focus behind a dialog (FU10-D,
+         verify, `repository_tabs.rs`); CR1's edge cases: the fallback without `Pane::Files`,
+         a dialog between Back and its frame, `restore_tab_file` with a dialog open (verify,
+         `main.rs`, `repository_tabs.rs`); Ctrl+F in a loading tab opens Projects (decide:
+         Find waits for the tab, verify, `main.rs`); `modal_return_focus` untested
+         (`page_navigation.rs:392`); a live preparation still dims Projects while its
+         shortcut cancels it (PG5, verify, `main.rs`).
+       - (B) Errors and tabs, S-M: a quiet refresh does not clear an Open-set tab mark
+         (FU15-C, verify, `automatic_refresh.rs`); refusals that set the window's error
+         replace the diff pane (FU15-C, `text_review.rs`); a ninth tab refused from Projects
+         sets only the window's error (FU15-C, `projects.rs`); a failed theme save leaves New
+         theme… disabled (`theme_editor.rs:1417`, verify); another cancellation leaves partial
+         actions suspended (FU8-C, verify, `text_review.rs`).
+       - (C) Editor highlights, M (after FU18-A and FU18-C free the files): Braden's removed
+         word tint lighter than its line, Midnight's Find matches the selection's colour
+         (verify, `appearance.rs`); `editor_highlights`' fallback fits with `None` under More
+         contrast before any palette applies (FU14-A, `appearance.rs`); the ≥0.04 ΔEOK rule
+         between the selection, matches and word tints confirmed by a test over every palette
+         (2026-10-29 follow-up); with no reserved Find layer (over 64 retained editors) the
+         FU17-B rule draws under every match's underline (`text.rs`, `split_diff.rs`); no app
+         test of Split's Find path with the rule; One Light's and Braden's hovered row beside
+         the selected row reads heavier than the selected row (`appearance.rs`).
+       - (D) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
+         text-field and checkbox focus rings at 2.27:1, under the 3:1 non-text rule (verify);
+         the kit's Select, Combobox, OtpInput, DatePicker and ColorPicker draw `input` when
+         disabled, and an unused `Colorize` import (`vendor/gpui-component/src/input/input.rs:14`);
+         kit fills still derived from `input` (NumberInput steps, Radio opacity, outline Button
+         hover; `vendor/gpui-base/src/state_style.rs:86`) and the warning/success/info Buttons'
+         20 % tints at 1.07-1.64:1 under More contrast (both unused by the app: fix only if cheap,
+         else document as unused); the Switch's focus ring (verify `switch.rs:354`) and its
+         knob at 1.37-1.92:1 on its on track (taste, verify); Daylight's Cancel border at
+         1.28:1 (DL1, likely closed by PT1, verify).
+     - **FU20 (proposed):**
+       - (A) Overflow and scroll cues, M (after FU18-B): the worktree and profile managers
+         cut text with no scroll cue; a worktree row's ring against its border; the branch
+         chooser's Tab does not scroll rows into view (verify; `worktrees.rs`, `profiles.rs`,
+         `branch_actions.rs`); the conflict result draft's fixed 160 px height and 12 pt line
+         pitch at code 18 pt (`conflicts.rs:779`); the branch picker's and profiles menu's
+         disabled items without a reason (verify); a 16 × 2 px scrollbar strip above the
+         message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`).
+       - (B) History, S-M: the 18 pt SHA column shows five characters (verify); a long History
+         search shows its start after a tab switch (QA-87 #7, verify, `history_search.rs`);
+         other generation bumps can strand the partial subscription (FU13-C 2,
+         `history_updates.rs`, `history_search.rs`); Return in a rewritten series closes it
+         rather than inspecting files (verify, `interactive_rebase.rs`); History's Shift-F10
+         menu closes when its row moves, and History's changed files, Reflog, Stashes and Tags
+         rows are keyed by index (PL1, M, `views.rs`, `reflog.rs`, `tags.rs`); tracking-branch
+         creation gives no feedback (brief 9 task C, verify, `branch_actions.rs:1347`).
+       - (C) Text cuts, S: a character cut can split a grapheme cluster (FU8-G N-c, verify);
+         `ended()` trims punctuation per character; `DESIGN.md:136`'s "character boundary"
+         rule names grapheme clusters (FU13-C 3-4).
+       - (D) Small visible polish, S: popover clicks not audited for reduce motion
+         (`popover.rs`); the tab ring's padding at scale 1.5 and `tab_whole_widths` allocating
+         per frame (PH1, `repository_tabs.rs:2709`); `LineKey` caches against a display-scale
+         change (`editor_find.rs`, verify); a still-loading file restarts its decode on
+         reselection (verify, `main.rs`); the caret drawn late after focus (kit blink, verify);
+         a Settings entry with an empty accessible name at Tab 47 (AT-SPI walk first,
+         `settings.rs`); the 2026-10-28 taste items decided then (profile tile, review row
+         pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
+         verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
+         `settings-themes.png` retaken (with a native round).
+     - **Later rounds (accessibility research, L):** Orca re-reads the window, dialog and list
+       after a search removes its row (FU9-B item 3; AT-SPI adapter, vendor research); the
+       palette may speak a move twice (native check first); X11 key repeats unmarked
+       (vendored `x11/client.rs`, verify).
+     - **Decoders and security, S:** the Markdown view checks its 16 MiB pixel budget after
+       decoding rather than before (`markdown_view.rs:15`/`:422`; security re-review);
+       the `dav1d-sys` / `moxcms` `=0.8.x` pins unchecked by the source guard (`avif.rs`).
+     - **macOS-only (hosted run or a Mac):** Menlo's metrics for FU17-B's rule (hosted run
+       `42074771762` passed its tests; native position unmeasured); VoiceOver never hears the
+       palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
+       animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
+       and of copy announcements from dialogs (the backlog line above).
+     - **Performance, S-M:** `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
+       release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
+       hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
+       read tags after the history page when only one CPU is available (+5.9 ms on one core,
+       brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
+       clip (brief 12).
+     - **Test infrastructure and nits:** `SerialExecutor::hold`'s blocking `send` on a full
+       8-slot queue (`operations.rs:233`) and the hold delaying quiet jobs queued during the
+       click (FU17-E); `github_view.rs`'s remaining test premises after FU18-D; tests calling
+       `hold_quiet_reads(true)` directly and the other quiet-read wait helpers checked against
+       FU12-E's window (`repository_tabs.rs:6807`, `motion.rs:8964`, `page_navigation.rs:920`,
+       `recovery.rs`); FU12-D's test needing a Tab first; the M4 Tab test's first-frame scroll;
+       FU11-B's redraw-at-rest nits; FU13-B's click test relying on GPUI's stray frame and its
+       patch note; no press test for the dropped-reply release (FU13-C 1, `main.rs`);
+       `State::reset` clearing the hold (`automatic_refresh.rs:90`), the GIF assertion and the
+       hue order under 7:1 (FU10-C, M1, M2 N3); FU14-B's first-paint gating untested; FU8-D's
+       wrap slack and `FIT_SLACK` only on a test fault; `tests/pdf_helper.rs` sleeps
+       (`:638`, `:670`, `:965`, `:1107`) to `Slots::waiting`; the AVIF-animation fixture not
+       reproducible (Pillow timestamps); the packager test failing without `readelf`; SK1's nits
+       (`DESIGN.md:136` says Escape is kept longest though "↑↓" outlasts it; one `STATUS_TEXT`
+       slot shared by windows); the confirmation test's own Git identity (`confirmation_tests.rs:122`); the benchmark
+       records' kill-at-work low ends predating FU8fix (a note at the next measurement).
+     - **Tooling and CI:** `qa.py` cannot launch on this host (python-xlib) and has no
+       Hyprland backend, frame recorder or horizontal scroll (QA harness); the QA tooling
+       items (ΔEOK analysis kind, the `;` keysym, per-channel tolerance, `runenv.py:323`
+       measuring its path in characters); zizmor's `$/`,
+       icu/json5 and rust-cache upkeep in CI; LFS 3.8.1 on the runner images and whether to
+       warn before a clone needs LFS (decide with phase 4).
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
