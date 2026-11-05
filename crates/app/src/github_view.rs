@@ -4168,11 +4168,18 @@ mod tests {
     /// the body scrolled to `before` ([`review::clear_of_lines`]): the control shows whole
     /// with its ring's room, and where the body moved, neither of its edges falls inside a
     /// line (the lines of [`body_lines`]; half a pixel either way is layout's rounding), or no
-    /// place the body can scroll to, its top edge at a line's top or foot or at an end of the
-    /// content, keeps the control whole with neither edge inside a line, so the control whole
-    /// won. Where the body did not move, the control was whole there with its ring, which moves
-    /// nothing. The lines and the stops are read from the frame drawn, not from the reveal, so
-    /// the rule holds however the platform's text wraps.
+    /// place the body's top edge can take keeps the control whole with neither edge inside a
+    /// line, so the control whole won. Those places are every one the frame drawn offers, not
+    /// the reveal's own: each line's top and foot (the top edge between two lines), each
+    /// line's top and foot less the body's height (the bottom edge between two lines), each
+    /// line's top less the ring's room (where a block a line starts stands with its ring above
+    /// it) and both ends of the content, where the content lets the body scroll. Where the
+    /// body did not move, the control was whole there with its ring, which moves nothing. The
+    /// lines and the places are read from the frame drawn, so the rule holds however the
+    /// platform's text wraps. The places once were the reveal's own, the lines' tops and feet
+    /// and the content's ends: at 17 pt in a 440 × 490 window Shift+Tab onto Account options
+    /// left the help's fifth line cut at the body's foot, where the bottom edge at that line's
+    /// foot clears every line.
     fn assert_reveal_rule(
         cx: &mut VisualTestContext,
         scroll: &ScrollHandle,
@@ -4214,7 +4221,9 @@ mod tests {
         let within = px(0.01);
         let stops: Vec<Pixels> = lines
             .iter()
-            .flat_map(|(_, top, bottom)| [*top, *bottom])
+            .flat_map(|(_, top, bottom)| {
+                [*top, *bottom, *top - height, *bottom - height, *top - ring]
+            })
             .chain([first, last])
             .filter(|edge| {
                 *edge >= first - slack
