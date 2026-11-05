@@ -1121,9 +1121,9 @@ impl Palette {
     /// lifts toward the canvas stops at half its line's gap from it, so where
     /// the word has no room left the line may still have some.
     fn more_contrast_fit(self) -> (Self, Chosen) {
-        let own = self.syntax_roles(false);
+        let own = self.syntax_roles(None);
         let raised = self.with_raised_floors();
-        let roles = raised.syntax_roles(true);
+        let roles = raised.syntax_roles(Some(self));
         let sides = [
             (self.added, self.added_background),
             (self.removed, self.removed_background),
@@ -1190,7 +1190,7 @@ impl Palette {
         fn reads(mut drawn: impl Iterator<Item = (u32, u32)>, on: u32, off_on: u32) -> bool {
             drawn.all(|(is, was)| custom::contrast(is, on) >= custom::contrast(was, off_on))
         }
-        let roles = adjusted.syntax_roles(true);
+        let roles = adjusted.syntax_roles(Some(self));
         let on_line = |palette: Self, roles: SyntaxRoles, diff: u32| {
             roles
                 .colors()
@@ -2551,7 +2551,7 @@ impl Palette {
             None,
             cx,
         );
-        let roles = palette.syntax_roles(more_contrast);
+        let roles = palette.syntax_roles(more_contrast.then_some(self));
         let highlights = EditorHighlights::fit(palette, roles, chosen);
         palette.configure(
             is_light,
@@ -2762,25 +2762,41 @@ impl Palette {
         theme.tokens = (&theme.colors).into();
     }
 
-    /// Each syntax role's palette color fitted by [`SyntaxTargets::fit`], measured once per
-    /// application: at the text rule with the rasterization margin, or at
-    /// [`MORE_CONTRAST_TEXT`] under More contrast.
-    fn syntax_roles(self, more_contrast: bool) -> SyntaxRoles {
-        let rule = if more_contrast {
+    /// Each syntax role's palette color fitted, measured once per application. With More
+    /// contrast off, `chosen` is `None` and each is fitted by [`SyntaxTargets::fit`] at the
+    /// text rule with the rasterization margin. Under More contrast, this palette is the one
+    /// More contrast draws and `chosen` the palette as chosen, before it was adjusted: each is
+    /// fitted at [`MORE_CONTRAST_TEXT`] in OKLab lightness, its hue kept, and never reads on
+    /// a background worse than the role drawn off on `chosen` reads on `chosen`'s
+    /// ([`SyntaxTargets::fit_in_lightness`]). Comments are secondary text and follow `muted`,
+    /// which More contrast raises toward `text` by the secondary-text rule
+    /// ([`Self::with_raised_floors`]), so they are fitted by [`SyntaxTargets::fit`] at the rule
+    /// in force in both.
+    ///
+    /// Why `chosen`: where a line tint moved ([`Self::more_contrast_fit`]), the off fit on this
+    /// palette is not the role drawn off, and a role held only to it could read worse on the
+    /// editor background or the active line than the role drawn off does.
+    fn syntax_roles(self, chosen: Option<Palette>) -> SyntaxRoles {
+        let rule = if chosen.is_some() {
             MORE_CONTRAST_TEXT
         } else {
             LABEL_RULE + LABEL_MARGIN
         };
         let targets = SyntaxTargets::new(self, rule);
+        let off = chosen.map(|chosen| SyntaxTargets::new(chosen, LABEL_RULE + LABEL_MARGIN));
+        let fit = |color: u32| match &off {
+            Some(off) => targets.fit_in_lightness(color, off),
+            None => targets.fit(color),
+        };
         SyntaxRoles {
-            keyword: targets.fit(self.renamed),
-            string: targets.fit(self.added),
-            constant: targets.fit(self.warning),
-            type_: targets.fit(self.modified),
-            function: targets.fit(self.hunk),
-            markup: targets.fit(self.accent),
+            keyword: fit(self.renamed),
+            string: fit(self.added),
+            constant: fit(self.warning),
+            type_: fit(self.modified),
+            function: fit(self.hunk),
+            markup: fit(self.accent),
             comment: targets.fit(self.muted),
-            removed: targets.fit(self.removed),
+            removed: fit(self.removed),
             // `text` reaches every target by definition, so fitting would return it unchanged.
             text: self.text,
         }
@@ -2800,7 +2816,7 @@ impl Palette {
             },
             ..Theme::default()
         };
-        let roles = self.syntax_roles(false);
+        let roles = self.syntax_roles(None);
         self.configure(
             is_light,
             false,
@@ -2815,7 +2831,7 @@ impl Palette {
     /// The editor highlights [`Self::apply`] fits for this palette, without an application.
     #[cfg(test)]
     pub(crate) fn editor_highlights(self) -> EditorHighlights {
-        EditorHighlights::fit(self, self.syntax_roles(false), None)
+        EditorHighlights::fit(self, self.syntax_roles(None), None)
     }
 }
 
@@ -2973,6 +2989,9 @@ struct SyntaxTargets {
     text: u32,
     /// Whether `text` reads at the text rule on every background.
     text_reads: bool,
+    /// Whether `text` is lighter than the editor background, as in a dark palette: the side
+    /// [`Self::fit_in_lightness`] moves a role toward.
+    text_lighter: bool,
     /// Each background's luminance and the contrast a syntax color must reach on it: the
     /// fitting's rule (the text rule plus the rasterization margin, or More contrast's 7:1), or
     /// `text`'s own contrast where that is lower.
@@ -2998,6 +3017,7 @@ impl SyntaxTargets {
         Self {
             text: palette.text,
             text_reads,
+            text_lighter: text > custom::luminance(palette.canvas),
             backgrounds,
         }
     }
@@ -3035,6 +3055,82 @@ impl SyntaxTargets {
         }
         toward_text(high)
     }
+
+    /// More contrast's fit for the syntax role drawn from `color`, with `off` the targets of
+    /// the palette as chosen with More contrast off: `color` as it is where it reads on every
+    /// background, and
+    /// otherwise `color` moved in OKLab lightness toward `text`'s side, lighter in a dark
+    /// palette and darker in a light one, its hue and chroma kept, or where sRGB cannot hold
+    /// that chroma at that lightness the most of it sRGB holds in the same hue
+    /// ([`linear_in_gamut`]), to the least step, in thousandths of lightness, that reads on
+    /// every background, found by a binary search. It never moves past `text`'s lightness:
+    /// where no step short of it reads, the role stops at `text`'s lightness in its own hue,
+    /// and a color already level with `text` or past it does not move. Where what that gives
+    /// reads on a background below the role drawn off (`off`'s fit of `color`) on the same
+    /// background as chosen, the role drawn off stays, so no role reads worse than with More
+    /// contrast off; the role drawn off is fitted only then. A palette whose `text` is below
+    /// the text rule on a background, which only
+    /// a custom theme with a readability warning can be, draws its syntax in `text`, as
+    /// [`Self::fit`] does.
+    ///
+    /// Why lightness: moving toward `text` in sRGB spends chroma and turns the hue, so where
+    /// `text` reads under 7:1 roles ended at `text` itself (Omarchy tokyo-night's keyword,
+    /// function and markup), and short of that they greyed (Omarchy catppuccin's removed
+    /// #f38ba8 drew #d9bedb); lightness is the channel hierarchy is built from, so contrast
+    /// raised through it keeps each role's hue. Why the bound: syntax is never lighter than
+    /// body text (darker in a light palette), the lightness form of the secondary-text rule;
+    /// unbound, 29 roles in the shipped and Omarchy palettes passed `text`'s lightness, One
+    /// Dark's keyword by 0.020.
+    fn fit_in_lightness(&self, color: u32, off: &SyntaxTargets) -> u32 {
+        if !self.text_reads {
+            return self.text;
+        }
+        if self.reads(color) {
+            return color;
+        }
+        let ([lightness, a, b], text) = (oklab(color), oklab(self.text)[0]);
+        let toward = if self.text_lighter { 1. } else { -1. };
+        let span = (text - lightness) * toward;
+        let fitted = if span > 0. {
+            let steps = (span * 1000.).ceil() as u32;
+            let at = |step: u32| {
+                let lightness = if step >= steps {
+                    text
+                } else {
+                    lightness + toward * f64::from(step) / 1000.
+                };
+                from_linear(linear_in_gamut([lightness, a, b]))
+            };
+            if self.reads(at(steps)) {
+                // `high` always reads and `low` never does (at 0 steps the color is `color`).
+                let (mut low, mut high) = (0, steps);
+                while high - low > 1 {
+                    let middle = (low + high) / 2;
+                    if self.reads(at(middle)) {
+                        high = middle;
+                    } else {
+                        low = middle;
+                    }
+                }
+                at(high)
+            } else {
+                at(steps)
+            }
+        } else {
+            color
+        };
+        let drawn_off = off.fit(color);
+        let (fitted_luminance, off_luminance) =
+            (custom::luminance(fitted), custom::luminance(drawn_off));
+        // Both hold the editor background, the active line and the two line tints in order.
+        let reads_as_off = self.backgrounds.iter().zip(&off.backgrounds).all(
+            |(&(background, _), &(off_background, _))| {
+                custom::luminance_contrast(fitted_luminance, background)
+                    >= custom::luminance_contrast(off_luminance, off_background)
+            },
+        );
+        if reads_as_off { fitted } else { drawn_off }
+    }
 }
 
 /// `from` moved `step` 256ths of the way to `to` in each sRGB channel, rounded.
@@ -3061,13 +3157,18 @@ pub struct EditorHighlights {
 impl Global for EditorHighlights {}
 
 /// The applied palette's editor highlights. Every application sets them with the palette; only
-/// a test application that has not applied one fits the default palette's here.
+/// a test application that has not applied one fits the default palette's here, as its own
+/// palette as chosen under More contrast.
 pub fn editor_highlights(cx: &App) -> EditorHighlights {
     cx.try_global::<EditorHighlights>()
         .copied()
         .unwrap_or_else(|| {
             let palette = palette(cx);
-            EditorHighlights::fit(palette, palette.syntax_roles(more_contrast(cx)), None)
+            EditorHighlights::fit(
+                palette,
+                palette.syntax_roles(more_contrast(cx).then_some(palette)),
+                None,
+            )
         })
 }
 
@@ -3190,7 +3291,7 @@ impl EditorHighlights {
             off,
             words: [added_word, removed_word],
         } = chosen;
-        let own_roles = chosen.syntax_roles(false);
+        let own_roles = chosen.syntax_roles(None);
         let (away, lines) = (Self::away(palette), Self::lines(palette));
         let patch = Self::patch_colors(palette, roles, &lines);
         let own: Vec<u32> = Self::patch_colors(chosen, own_roles, &Self::lines(chosen))
@@ -4825,7 +4926,7 @@ mod tests {
         };
         for (name, palette) in test_palettes() {
             let theme = palette.configured_theme(palette.is_light()).highlight_theme;
-            let roles = palette.syntax_roles(false);
+            let roles = palette.syntax_roles(None);
             let drawn = styles(&document, &theme);
             let mut start = document.find("```diff\n").unwrap() + "```diff\n".len();
             for line in fence.split_inclusive('\n') {
@@ -5166,7 +5267,7 @@ mod tests {
             .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
         let mut theme = Theme::default();
         for (choice, palette, is_light) in cases {
-            let roles = palette.syntax_roles(false);
+            let roles = palette.syntax_roles(None);
             palette.configure(
                 is_light,
                 false,
@@ -6772,7 +6873,8 @@ mod tests {
     /// palette, and `as_applied` returns it; the kit draws secondary text and
     /// gutter numbers from it. Every syntax color and the editor foreground
     /// read 7:1, or as `text` reads where that is lower, on the editor
-    /// background, the active line and both line tints. The kit's disabled
+    /// background, the active line and both line tints, or stand at `text`'s
+    /// lightness, where a role's fit stops short of that. The kit's disabled
     /// label reads 4.5:1 on every surface a disabled label rests on and on
     /// the default Button's disabled fill over each, fainter than the
     /// adjusted secondary text there and on the selected row, and at most 75%
@@ -6819,7 +6921,9 @@ mod tests {
                 for (surface, background) in lines {
                     let floor = MORE_CONTRAST_TEXT.min(contrast(applied.text, background));
                     let ratio = contrast(color, background);
-                    if ratio < floor {
+                    // A role short of its floor at `text`'s lightness stopped there
+                    // (`more_contrast_raises_syntax_in_lightness_keeping_its_hue`).
+                    if ratio < floor && !at_text_lightness(color, applied.text) {
                         failures.push(format!(
                             "{name} {field} #{color:06x} on {surface} {ratio:.3}:1, needs {floor:.3}"
                         ));
@@ -6958,6 +7062,295 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The most sRGB rounding leaves between a syntax role More contrast
+    /// stops at `text`'s lightness and that lightness, with margin: the
+    /// largest in every test palette is 0.0012.
+    const AT_TEXT_LIGHTNESS: f64 = 0.002;
+
+    /// The most sRGB rounding moves a role's OKLab opponent coordinates off
+    /// its palette color's hue, or off the chroma sRGB holds at its
+    /// lightness, with margin: the largest in every test palette are 0.0014
+    /// off the hue and 0.0015 off the chroma.
+    const HUE_ROUNDING: f64 = 0.004;
+
+    /// Whether `color` stands at `text`'s OKLab lightness, as a syntax role
+    /// whose fit stops there under More contrast does.
+    fn at_text_lightness(color: u32, text: u32) -> bool {
+        (oklab(color)[0] - oklab(text)[0]).abs() <= AT_TEXT_LIGHTNESS
+    }
+
+    /// How far `color`'s OKLab opponent coordinates stand from the ray of
+    /// `source`'s hue, and whether they lie on that ray rather than past
+    /// grey from it.
+    fn hue_stray(color: u32, source: u32) -> (f64, bool) {
+        let ([_, a, b], [_, source_a, source_b]) = (oklab(color), oklab(source));
+        let chroma = source_a.hypot(source_b);
+        let (along_a, along_b) = (source_a / chroma, source_b / chroma);
+        (
+            (a * along_b - b * along_a).abs(),
+            a * along_a + b * along_b > 0.,
+        )
+    }
+
+    /// The roles More contrast fits in lightness, by name, each with the
+    /// palette color it draws from and its color in `roles`: every role but
+    /// comments, which follow secondary text, and `text`.
+    fn lightness_roles(palette: Palette, roles: SyntaxRoles) -> [(&'static str, u32, u32); 7] {
+        [
+            ("keyword", palette.renamed, roles.keyword),
+            ("string", palette.added, roles.string),
+            ("constant", palette.warning, roles.constant),
+            ("type", palette.modified, roles.type_),
+            ("function", palette.hunk, roles.function),
+            ("markup", palette.accent, roles.markup),
+            ("removed", palette.removed, roles.removed),
+        ]
+    }
+
+    /// The backgrounds syntax is fitted on, by name: the editor background,
+    /// the active line and both line tints.
+    fn syntax_backgrounds(palette: Palette) -> [(&'static str, u32); 4] {
+        [
+            ("editor background", palette.canvas),
+            ("active line", palette.panel),
+            ("added lines", palette.added_background),
+            ("removed lines", palette.removed_background),
+        ]
+    }
+
+    /// Under More contrast every syntax role but comments, in every palette,
+    /// moves only in OKLab lightness, toward `text`'s side, keeping its
+    /// palette color's hue and chroma, or where sRGB cannot hold that chroma
+    /// at its lightness the most sRGB holds there, in that hue: it reads
+    /// 7:1, or as `text` reads where that is lower, on the editor
+    /// background, the active line and both line tints as More contrast
+    /// draws them, or stands at `text`'s lightness, and never moves past it.
+    /// A role whose palette color already reads there is that color, byte
+    /// for byte, as it is drawn off, and every role reads on each of those
+    /// backgrounds at least as the role drawn off reads there with More
+    /// contrast off. Mixed toward `text` in sRGB, the roles spent their
+    /// chroma and turned their hue, and where `text` reads under 7:1 ended
+    /// at `text` itself: Omarchy tokyo-night's keyword, function and markup
+    /// drew #a9b1d6, where they keep their hues at `text`'s lightness
+    /// (#bfa0f9, #8db2ff, #8db2ff). Unbound by `text`'s lightness, 29 roles
+    /// passed it by more than rounding, One Dark's keyword by 0.020.
+    #[test]
+    fn more_contrast_raises_syntax_in_lightness_keeping_its_hue() {
+        let mut failures = Vec::new();
+        let (mut kept, mut stopped) = (0, 0);
+        for (name, chosen) in more_contrast_palettes() {
+            let applied = chosen.with_more_contrast();
+            let (off, on) = (
+                chosen.syntax_roles(None),
+                applied.syntax_roles(Some(chosen)),
+            );
+            let backgrounds = syntax_backgrounds(applied);
+            let reads = |color: u32| {
+                backgrounds.iter().all(|&(_, background)| {
+                    let floor = MORE_CONTRAST_TEXT.min(contrast(applied.text, background));
+                    contrast(color, background) >= floor
+                })
+            };
+            let text = oklab(applied.text)[0];
+            let toward = if luminance(applied.text) > luminance(applied.canvas) {
+                1.
+            } else {
+                -1.
+            };
+            let drawn_off = lightness_roles(chosen, off).map(|(.., color)| color);
+            for ((role, source, fitted), drawn_off) in
+                lightness_roles(chosen, on).into_iter().zip(drawn_off)
+            {
+                let at = format!("{name} {role} #{fitted:06x}");
+                for ((surface, background), (_, off_background)) in
+                    backgrounds.into_iter().zip(syntax_backgrounds(chosen))
+                {
+                    let (is, was) = (
+                        contrast(fitted, background),
+                        contrast(drawn_off, off_background),
+                    );
+                    if is < was {
+                        failures.push(format!(
+                            "{at} on {surface} {is:.3}:1, #{drawn_off:06x} {was:.3}:1 off"
+                        ));
+                    }
+                }
+                if reads(source) {
+                    kept += 1;
+                    if fitted != source || drawn_off != source {
+                        failures.push(format!(
+                            "{at} from #{source:06x}, which reads, #{drawn_off:06x} off"
+                        ));
+                    }
+                    continue;
+                }
+                let [lightness, a, b] = oklab(fitted);
+                let past = (lightness - text) * toward;
+                if fitted != source && past > AT_TEXT_LIGHTNESS {
+                    failures.push(format!("{at} {past:.4} past text's lightness"));
+                }
+                if !reads(fitted) {
+                    stopped += 1;
+                    if past < -AT_TEXT_LIGHTNESS {
+                        failures.push(format!(
+                            "{at} short of its floor {:.4} before text's lightness",
+                            -past
+                        ));
+                    }
+                }
+                let [_, source_a, source_b] = oklab(source);
+                if source_a.hypot(source_b) >= GREY_CHROMA {
+                    let (stray, along) = hue_stray(fitted, source);
+                    if stray > HUE_ROUNDING || !along {
+                        failures.push(format!("{at} {stray:.4} off #{source:06x}'s hue"));
+                    }
+                }
+                let held = oklab(from_linear(linear_in_gamut([
+                    lightness, source_a, source_b,
+                ])));
+                let (chroma, held) = (a.hypot(b), held[1].hypot(held[2]));
+                if (chroma - held).abs() > HUE_ROUNDING {
+                    failures.push(format!(
+                        "{at} chroma {chroma:.4}, #{source:06x}'s held there {held:.4}"
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(
+            kept > 0 && stopped > 0,
+            "{kept} roles kept, {stopped} stopped at text's lightness"
+        );
+    }
+
+    /// Tokyo Night with its added lines lightened until `text` reads 6.25:1
+    /// there: under More contrast a role reads as `text` reads on those
+    /// lines and 7:1 elsewhere, short of `text`'s lightness where it can.
+    /// Its string #9ece6a stops at #aadb76, 0.011 darker than `text`; held
+    /// to 7:1 on those lines too, it ran on to `text`'s lightness.
+    #[test]
+    fn a_role_reads_as_text_does_where_text_reads_under_seven() {
+        let palette = Palette {
+            added_background: 0x33463c,
+            ..ThemeChoice::TokyoNight.palette()
+        };
+        let on_added = contrast(palette.text, palette.added_background);
+        assert!(on_added < MORE_CONTRAST_TEXT, "text {on_added:.3}:1");
+        let string = palette.syntax_roles(Some(palette)).string;
+        for (surface, background) in syntax_backgrounds(palette) {
+            let (ratio, floor) = (
+                contrast(string, background),
+                MORE_CONTRAST_TEXT.min(contrast(palette.text, background)),
+            );
+            assert!(
+                ratio >= floor,
+                "#{string:06x} on {surface} {ratio:.3}:1, needs {floor:.3}"
+            );
+        }
+        let short = oklab(palette.text)[0] - oklab(string)[0];
+        assert!(short > 0.005, "#{string:06x} {short:.4} short of text");
+        let (stray, along) = hue_stray(string, palette.added);
+        assert!(stray <= HUE_ROUNDING && along, "#{string:06x} {stray:.4}");
+        assert_eq!(string, 0xaadb76);
+    }
+
+    /// Tokyo Night with its added lines lightened until `text` reads 7.05:1
+    /// there: its removed #f7768e reaches `text`'s lightness before 7:1 on
+    /// those lines, so it stops there, #ffb5bf in its own hue at 6.83:1,
+    /// never lighter than `text`; unbound, it passed `text` by 0.007 to
+    /// read 7:1.
+    #[test]
+    fn a_role_stops_at_text_lightness_where_that_comes_first() {
+        let palette = Palette {
+            added_background: 0x2c3e34,
+            ..ThemeChoice::TokyoNight.palette()
+        };
+        let on_added = contrast(palette.text, palette.added_background);
+        assert!(on_added >= MORE_CONTRAST_TEXT, "text {on_added:.3}:1");
+        let removed = palette.syntax_roles(Some(palette)).removed;
+        let ratio = contrast(removed, palette.added_background);
+        assert!(ratio < MORE_CONTRAST_TEXT, "#{removed:06x} {ratio:.3}:1");
+        assert!(
+            at_text_lightness(removed, palette.text),
+            "#{removed:06x} {:+.4} from text's lightness",
+            oklab(removed)[0] - oklab(palette.text)[0]
+        );
+        let (stray, along) = hue_stray(removed, palette.removed);
+        assert!(stray <= HUE_ROUNDING && along, "#{removed:06x} {stray:.4}");
+        assert_eq!(removed, 0xffb5bf);
+    }
+
+    /// Tokyo Night with its added lines lightened until `text` reads 4.88:1
+    /// there: its removed #f7768e stopped at `text`'s lightness, #ffb5bf,
+    /// reads 4.73:1 on those lines, below the 4.77:1 the role drawn off,
+    /// #c2c7f1, reads there, so under More contrast it keeps the role drawn
+    /// off.
+    #[test]
+    fn a_role_that_would_read_worse_than_off_keeps_the_role_drawn_off() {
+        let palette = Palette {
+            added_background: 0x42564c,
+            ..ThemeChoice::TokyoNight.palette()
+        };
+        let (off, on) = (
+            palette.syntax_roles(None).removed,
+            palette.syntax_roles(Some(palette)).removed,
+        );
+        let [_, a, b] = oklab(palette.removed);
+        let stopped = from_linear(linear_in_gamut([oklab(palette.text)[0], a, b]));
+        let line = palette.added_background;
+        assert!(
+            contrast(stopped, line) < contrast(off, line),
+            "#{stopped:06x} {:.3}:1, #{off:06x} {:.3}:1 off",
+            contrast(stopped, line),
+            contrast(off, line)
+        );
+        assert_eq!(on, off, "#{on:06x}, #{off:06x} off");
+        assert_ne!(on, palette.removed);
+    }
+
+    /// Tokyo Night with its added lines lightened until `text` reads 4.92:1
+    /// there, then moved darker under More contrast as a line a word cannot
+    /// leave moves, from #44554a to #405146: each role reads on the editor
+    /// background, the active line and both line tints at least as the role
+    /// drawn off reads there on the palette as chosen. Its removed #f7768e,
+    /// held only to the off fit on the moved line, stopped at `text`'s
+    /// lightness, #ffb5bf, 10.27:1 on the editor background, where the role
+    /// drawn off, #c3c6f0, reads 10.30:1, so it keeps that role.
+    #[test]
+    fn a_role_reads_as_the_role_drawn_off_on_the_palette_as_chosen() {
+        let chosen = Palette {
+            added_background: 0x44554a,
+            ..ThemeChoice::TokyoNight.palette()
+        };
+        let adjusted = Palette {
+            added_background: 0x405146,
+            ..chosen
+        };
+        let (off, on) = (
+            chosen.syntax_roles(None),
+            adjusted.syntax_roles(Some(chosen)),
+        );
+        let drawn_off = lightness_roles(chosen, off).map(|(.., color)| color);
+        for ((role, _, fitted), drawn_off) in lightness_roles(chosen, on).into_iter().zip(drawn_off)
+        {
+            for ((surface, background), (_, off_background)) in syntax_backgrounds(adjusted)
+                .into_iter()
+                .zip(syntax_backgrounds(chosen))
+            {
+                let (is, was) = (
+                    contrast(fitted, background),
+                    contrast(drawn_off, off_background),
+                );
+                assert!(
+                    is >= was,
+                    "{role} #{fitted:06x} on {surface} {is:.3}:1, #{drawn_off:06x} {was:.3}:1 off"
+                );
+            }
+        }
+        assert_eq!(on.removed, off.removed);
+        assert_eq!(off.removed, 0xc3c6f0);
     }
 
     /// A word tint's gap from its line in OKLab lightness, signed: positive
@@ -7234,13 +7627,17 @@ mod tests {
                     set_more_contrast(more, cx);
                     chosen.apply(chosen.is_light(), None, cx);
                     let applied = palette(cx);
-                    (applied, editor_highlights(cx), applied.syntax_roles(more))
+                    (
+                        applied,
+                        editor_highlights(cx),
+                        applied.syntax_roles(more.then_some(chosen)),
+                    )
                 })
             });
             let ((before, off_tints, off_roles), (after, on_tints, on_roles)) = (off, on);
             // The syntax the lift is judged under: raised on the line tints
             // as chosen, before any line moves.
-            let lift_roles = chosen.with_raised_floors().syntax_roles(true);
+            let lift_roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
             let canvas = oklab(chosen.canvas)[0];
             let from_canvas = |tint: u32| (oklab(tint)[0] - canvas).abs();
             for (tint, diff, (off_line, on_line), off_tint, on_tint) in [
@@ -7491,12 +7888,16 @@ mod tests {
                     set_more_contrast(more, cx);
                     chosen.apply(chosen.is_light(), None, cx);
                     let applied = palette(cx);
-                    (applied, editor_highlights(cx), applied.syntax_roles(more))
+                    (
+                        applied,
+                        editor_highlights(cx),
+                        applied.syntax_roles(more.then_some(chosen)),
+                    )
                 })
             });
             let ((before, off_tints, off_roles), (after, on_tints, on_roles)) = (off, on);
-            let own = chosen.syntax_roles(false);
-            let lift_roles = chosen.with_raised_floors().syntax_roles(true);
+            let own = chosen.syntax_roles(None);
+            let lift_roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
             let canvas = oklab(chosen.canvas)[0];
             let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
             let off_words = [off_tints.added_word, off_tints.removed_word];
@@ -7547,7 +7948,7 @@ mod tests {
                     ..chosen
                 }
                 .with_raised_floors();
-                let roles = candidate.syntax_roles(true);
+                let roles = candidate.syntax_roles(Some(chosen));
                 let worse = || {
                     sides.iter().enumerate().any(|(at, &(_, diff, (off, _)))| {
                         diff_side_reads_worse(
@@ -7736,7 +8137,7 @@ mod tests {
     /// tints under More contrast and those drawn off, added then removed.
     fn diff_tints(chosen: Palette) -> (Palette, [u32; 2], [u32; 2]) {
         let (adjusted, fit) = chosen.more_contrast_fit();
-        let off = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        let off = EditorHighlights::fit(chosen, chosen.syntax_roles(None), None);
         (adjusted, fit.words, [off.added_word, off.removed_word])
     }
 
@@ -7757,8 +8158,8 @@ mod tests {
     #[test]
     fn a_word_tint_lift_stops_at_half_its_lines_gap_from_the_canvas() {
         let unbounded = |chosen: Palette, off: u32, diff: u32, line: u32| {
-            let roles = chosen.with_raised_floors().syntax_roles(true);
-            let own = chosen.syntax_roles(false);
+            let roles = chosen.with_raised_floors().syntax_roles(Some(chosen));
+            let own = chosen.syntax_roles(None);
             EditorHighlights::lifted_word_tint(roles, own, off, diff, line, line)
         };
         let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
@@ -7935,7 +8336,7 @@ mod tests {
             selected: 0x002c28,
             ..tokyo
         };
-        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(None), None);
         assert_eq!(highlights.selection, 0x002c28);
         let (adjusted, words, off) = diff_tints(chosen);
         let (line, moved) = (chosen.added_background, adjusted.added_background);
@@ -7965,7 +8366,7 @@ mod tests {
     fn a_moved_line_never_passes_a_step_that_fails_a_bound() {
         let chosen = faint_custom_palette();
         let (adjusted, words, off) = diff_tints(chosen);
-        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(None), None);
         let (line, word) = (chosen.removed_background, words[1]);
         let holds = |step: u32| {
             let candidate = Palette {
@@ -7976,7 +8377,7 @@ mod tests {
             .with_raised_floors();
             highlights.stay_apart_from(step, line)
                 && keeps_colour_blind_gaps(word, step, line)
-                && chosen.diff_reads_as_off(chosen.syntax_roles(false), candidate, off, words)
+                && chosen.diff_reads_as_off(chosen.syntax_roles(None), candidate, off, words)
         };
         let moves = line_moves(line, word, (off[1], line), chosen.canvas);
         assert!(
@@ -8020,13 +8421,13 @@ mod tests {
         ] {
             let chosen = theme.palette();
             let palette = chosen.with_more_contrast();
-            let roles = palette.syntax_roles(true);
+            let roles = palette.syntax_roles(Some(chosen));
             let (diff, line) = if removed {
                 (palette.removed, palette.removed_background)
             } else {
                 (palette.added, palette.added_background)
             };
-            let own_roles = chosen.syntax_roles(false);
+            let own_roles = chosen.syntax_roles(None);
             let off = EditorHighlights::word_tint(chosen, own_roles, diff, line);
             let (lines, on_line) = (EditorHighlights::lines(palette), [line]);
             let drawn: Vec<_> =
@@ -8172,8 +8573,8 @@ mod tests {
             custom.palette.set(TokenKind::Accent, accent);
             let chosen = custom.palette;
             let (palette, raised) = chosen.more_contrast_fit();
-            let roles = palette.syntax_roles(true);
-            let off = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+            let roles = palette.syntax_roles(Some(chosen));
+            let off = EditorHighlights::fit(chosen, chosen.syntax_roles(None), None);
             let on = EditorHighlights::fit(palette, roles, Some(raised));
             let apart = |current: u32, others: u32| oklab_distance(oklab(current), oklab(others));
             let off_apart = apart(off.find_current, off.selection);
@@ -8245,11 +8646,14 @@ mod tests {
                     chosen.apply(chosen.is_light(), None, cx);
                     let applied = palette(cx);
                     let lines = EditorHighlights::lines(applied);
-                    let drawn: Vec<(u32, Vec<u32>)> =
-                        EditorHighlights::patch_colors(applied, applied.syntax_roles(more), &lines)
-                            .into_iter()
-                            .map(|(color, on)| (color, on.to_vec()))
-                            .collect();
+                    let drawn: Vec<(u32, Vec<u32>)> = EditorHighlights::patch_colors(
+                        applied,
+                        applied.syntax_roles(more.then_some(chosen)),
+                        &lines,
+                    )
+                    .into_iter()
+                    .map(|(color, on)| (color, on.to_vec()))
+                    .collect();
                     (editor_highlights(cx), drawn, lines)
                 })
             });
