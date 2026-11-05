@@ -1,11 +1,11 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId, FocusHandle,
-    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
-    MouseButton, ParentElement, Pixels, Refineable as _, RenderOnce, Role, SharedString, Stateful,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
-    relative,
+    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement,
+    KeyboardButton, KeyboardClickEvent, LayoutId, MouseButton, ParentElement, Pixels,
+    Refineable as _, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, relative,
 };
 use smallvec::SmallVec;
 
@@ -40,7 +40,15 @@ impl Button {
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
         Self {
-            base: div().id(id.clone()),
+            // GitTurtle patch: the Button's key context
+            // (`crate::dialog::BUTTON_CONTEXT`), in which a dialog leaves
+            // Enter to the Button. A caller's own `key_context` replaces it,
+            // and that Button opts out of the dialog's Enter press: Enter on
+            // it is the dialog's `Confirm` again, unless the caller binds the
+            // key in its own context.
+            base: div()
+                .id(id.clone())
+                .key_context(crate::dialog::BUTTON_CONTEXT),
             id,
             style: StyleRefinement::default(),
             semantic_styles: ButtonStyles::default(),
@@ -223,6 +231,12 @@ impl RenderOnce for Button {
         let selected = self.selected;
         let style = self.resolved_style();
         let on_click = self.on_click;
+        // GitTurtle patch: where the Button was laid out, for the keyboard
+        // click Enter makes in a dialog.
+        let bounds = Rc::new(Cell::new(Bounds::default()));
+        let enter = (!disabled && self.focusable)
+            .then(|| on_click.clone())
+            .flatten();
 
         let content = self
             .base
@@ -266,12 +280,34 @@ impl RenderOnce for Button {
                     })
                 },
             )
+            // GitTurtle patch: Enter on the focused Button in a dialog
+            // presses it as the key goes down, once per press
+            // (`crate::dialog::enter_presses_button`). Taken in the capture
+            // phase, it never reaches GPUI's key-up activation, which would
+            // press it a second time.
+            .when_some(enter, |this, on_click| {
+                let bounds = bounds.clone();
+                this.capture_key_down(move |event, window, cx| {
+                    if !crate::dialog::enter_presses_button(event, window) {
+                        return;
+                    }
+                    if !event.is_held {
+                        let click = ClickEvent::Keyboard(KeyboardClickEvent {
+                            button: KeyboardButton::Enter,
+                            bounds: bounds.get(),
+                        });
+                        on_click(&click, window, cx);
+                    }
+                    cx.stop_propagation();
+                })
+            })
             .children(self.children)
             .refine_style(&style);
         AccessibleButton {
             content,
             disabled: disabled || self.accessibility_disabled,
             selected,
+            bounds,
         }
     }
 }
@@ -285,6 +321,8 @@ struct AccessibleButton {
     content: Stateful<Div>,
     disabled: bool,
     selected: bool,
+    /// Where the Button was laid out, for the keyboard click Enter makes.
+    bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 impl IntoElement for AccessibleButton {
     type Element = Self;
@@ -319,6 +357,7 @@ impl Element for AccessibleButton {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        self.bounds.set(bounds);
         self.content
             .prepaint(id, inspector, bounds, layout, window, cx)
     }

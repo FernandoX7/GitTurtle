@@ -305,6 +305,9 @@ impl Root {
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        // GitTurtle patch: a dialog opened by an Enter press waits for that
+        // press to come up before it takes Enter.
+        gpui_base::dialog_opened(window, cx);
 
         let selection_scope = self.allocate_text_selection_scope();
         self.active_dialogs.push(ActiveDialog::new(
@@ -596,6 +599,9 @@ impl Render for Root {
         let inner = div()
             .id("root")
             .key_context(CONTEXT)
+            // GitTurtle patch: every Enter that comes up in the window, so a
+            // dialog an Enter press opened takes Enter again once it does.
+            .capture_key_up(|event, window, cx| gpui_base::note_key_up(event, window, cx))
             .on_action(cx.listener(Self::on_action_tab))
             .on_action(cx.listener(Self::on_action_tab_prev))
             .on_action(cx.listener(Self::on_action_copy))

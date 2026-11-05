@@ -597,6 +597,15 @@ Remove this part of the patch when upstream lets an application
 bound a dialog's default width and keeps a nested dialog's foot under its
 cap, and those tests pass without it.
 
+The dialog-enter patch modifies `src/root.rs`, with the base patch's held
+Enter guard (base `GITTURTLE-PATCH.md`, "dialog-button"). `Root::open_dialog`
+calls `gpui_base::dialog_opened`, so a dialog an Enter press opened waits for
+that press to come up before it takes Enter, and the root's element passes
+every key-up in the window to `gpui_base::note_key_up`, so an Enter that
+comes up with no dialog open ends the press too, and a dialog opened later
+by a click takes its first Enter. Nothing else changes. Remove it with the
+base patch's guard.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,

@@ -935,3 +935,75 @@ the application's are
 `split_diff::tests::a_changed_line_s_tint_spans_its_row_on_each_split_side`.
 Remove this part when upstream decorations can fill a line's whole row,
 blank lines included.
+
+The dialog-button patch (2026-11-05) modifies `src/dialog.rs` and
+`src/button.rs`. Enter on a focused Button in a dialog presses that Button,
+once per press, as the key goes down, rather than the dialog's default
+action (decided by the coordinator, owner-delegated: the focus ring shows
+the control the keyboard acts on, and GTK and Windows activate the focused
+button). Upstream binds Enter to `Confirm` in the `Dialog` context, and a
+binding is dispatched before any key listener, so GPUI's key-up activation
+of the focused Button never saw the key: Enter with the ring on a body's
+Button, or on Cancel, ran the dialog's default action and pressed nothing.
+The base Button now carries the key context `Button` from its constructor,
+which a caller's own `key_context` replaces, and Enter is bound to GPUI's
+`NoAction` in `Dialog > Button`, which at the Button's depth outranks the
+dialog's `Confirm`, so the key-down reaches the Button. An enabled,
+focusable Button with a click handler takes it in the capture phase
+(`dialog::enter_presses_button`, which also requires a `Dialog` context
+around the Button, so outside a dialog nothing changes): a fresh press calls
+the click handler with a keyboard click on the Button's laid-out bounds, a
+repeat (`is_held`) calls nothing, and either way the key goes no further, so
+GPUI's key-up activation does not press it again. Under X11 a held key
+arrives as fresh presses, which this cannot tell apart, as the
+popover-trigger patch notes. A listener an ancestor captures the key with
+still runs first, as the popover trigger's and the app's About's do. Enter
+in a single-line field, on the dialog itself and on anything but a Button
+is the dialog's `Confirm` as before, the default Button's click is that
+action, a multi-line field keeps Enter as a new line, and Escape and Space
+are unchanged. The consumers are every app dialog; About's Copy bug
+diagnostics and the GitHub panel's Buttons, which bound Enter to `NoAction`
+in contexts of their own to the same end, keep working, as does the custom
+theme's delete confirmation, whose footer routed `Confirm` to its focused
+Button. The kit test is
+`dialog::tests::enter_on_a_focused_button_presses_it_once`
+(`scripts/vendor-crate-test.sh vendor/gpui-base dialog:: button::`), and the
+application's is
+`appearance::tests::enter_presses_the_focused_button_in_a_dialog`, which
+Tabs onto a body's Button and presses Enter, holds it, and presses Enter in
+a single-line field, a multi-line field and on the default Button, with
+`width_walk`'s About test pressing Copy bug diagnostics once. Remove this
+part when upstream leaves Enter on a focused Button in a dialog to the
+Button, and those tests pass without it.
+
+The same patch keeps a held Enter from confirming a dialog (decided by the
+coordinator after the security re-review of 2026-11-05). Bound to
+`Confirm`, Enter confirmed on every repeat a held key sends, since GPUI
+hands an action no key event: held on a body Button that opens a
+confirmation (Stashes' Drop…, Git profiles' Delete…), the fresh press
+opened it, `Root` focused it, and the next repeat ran its write, one
+physical press. Enter is now bound to `NoAction` in `Dialog`, so it reaches
+no binding outside the dialog, and to a hidden `EnterKey` after that at the
+same depth, which outranks it there and marks the press as the dialog's;
+the dialog host's capture-phase key-down listener then dispatches the
+`Confirm` the binding did, on the focused element, only for a fresh press
+(`is_held` unset), and takes the key either way, as the binding did. A
+press something inside the dialog binds (a single-line field, whose
+binding hands it on, a multi-line field, which keeps it as a new line, a
+Button, a popover's trigger) reaches it as before. Under X11 a held key's
+repeats arrive as fresh presses, so a dialog opened while Enter is down
+also takes no Enter, neither its `Confirm` nor a press of its Buttons,
+until that Enter comes up: a keystroke interceptor marks Enter down in its
+window before any binding runs, `dialog_opened`, which the component
+`Root` calls as it opens a dialog, turns the mark into a wait, and
+`note_key_up`, which the dialog host and the component `Root` call on every
+key-up in the window, ends both. A dialog opened by a click or with no key
+down takes its first Enter as before; Escape and Space are unchanged. The
+kit tests are `dialog::tests::a_held_enter_confirms_a_dialog_once` and
+`dialog::tests::a_dialog_waits_for_the_enter_that_opened_it`, and the
+application's are
+`appearance::tests::a_held_enter_never_confirms_what_it_opened_over_its_dialog`
+and `_in_its_dialogs_place`,
+`appearance::tests::a_repeat_that_looks_fresh_waits_for_the_enter_that_opened_the_dialog`
+and `appearance::tests::a_dialog_opened_with_no_enter_down_confirms_on_the_first_press`,
+which also holds Space on a body Button.

@@ -1,13 +1,14 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     rc::Rc,
 };
 
 use gpui::{
-    AnyElement, App, ClickEvent, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement, Pixels, RenderOnce, Role, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, anchored, deferred, div, point, prelude::FluentBuilder as _,
-    px,
+    AnyElement, App, ClickEvent, FocusHandle, Global, InteractiveElement as _, IntoElement,
+    KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, NoAction, ParentElement, Pixels,
+    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, WindowId,
+    actions, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 use smallvec::SmallVec;
 
@@ -15,6 +16,9 @@ use crate::actions::{Cancel, Confirm};
 use crate::{FocusTrapElement as _, StyledExt as _};
 
 const CONTEXT: &str = "Dialog";
+/// GitTurtle patch: the key context of a [`crate::Button`], in which a
+/// dialog leaves Enter to the Button ([`enter_presses_button`]).
+pub(crate) const BUTTON_CONTEXT: &str = "Button";
 type Decision = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) -> bool>;
 type Closed = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 type CloseRequest = Rc<dyn Fn(bool, &mut Window, &mut App)>;
@@ -108,11 +112,116 @@ fn request_open_change(
     }
 }
 
+actions!(
+    dialog,
+    [
+        /// GitTurtle patch: Enter reached a dialog with nothing inside it
+        /// binding the key; the dialog confirms only on a fresh press
+        /// ([`Dialog`]'s key-down listener).
+        #[doc(hidden)]
+        EnterKey
+    ]
+);
+
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
-        KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
+        // GitTurtle patch: Enter is no longer bound to `Confirm`, which a
+        // held key's repeats dispatched as well as its first press. Bound
+        // to nothing in the dialog, it reaches no binding outside it; bound
+        // to `EnterKey` after that, at the same depth, it marks the press
+        // as the dialog's for the dialog's key-down listener, which
+        // confirms only on a fresh press.
+        KeyBinding::new("enter", NoAction, Some(CONTEXT)),
+        KeyBinding::new("enter", EnterKey, Some(CONTEXT)),
+        // GitTurtle patch: on a focused Button, Enter is the Button's own.
+        KeyBinding::new(
+            "enter",
+            NoAction,
+            Some(&format!("{CONTEXT} > {BUTTON_CONTEXT}")),
+        ),
     ]);
+    // GitTurtle patch: every Enter that goes down, whatever then takes it.
+    cx.intercept_keystrokes(|event, window, cx| {
+        if event.keystroke.key == ENTER {
+            let window = window.window_handle().window_id();
+            cx.default_global::<EnterPress>().down.insert(window);
+        }
+    })
+    .detach();
+}
+
+const ENTER: &str = "enter";
+
+/// GitTurtle patch: Enter's state in each window, so a dialog opened by an
+/// Enter press takes no Enter until that press comes up: under X11 a held
+/// key's repeats arrive as fresh presses, which no repeat flag marks.
+#[derive(Default)]
+struct EnterPress {
+    /// The windows where Enter went down and has not come up.
+    down: HashSet<WindowId>,
+    /// The windows where a dialog opened while Enter was down.
+    blocked: HashSet<WindowId>,
+}
+
+impl Global for EnterPress {}
+
+/// GitTurtle patch: a dialog opened in `window` while Enter is down takes
+/// no Enter, neither its default action nor a press of its Buttons, until
+/// that Enter comes up ([`note_key_up`]). An opener calls this as it opens
+/// the dialog, as the component `Root` does.
+pub fn dialog_opened(window: &Window, cx: &mut App) {
+    let window = window.window_handle().window_id();
+    let press = cx.default_global::<EnterPress>();
+    if press.down.contains(&window) {
+        press.blocked.insert(window);
+    }
+}
+
+/// GitTurtle patch: Enter coming up in `window` ends the press a dialog
+/// waited out. A dialog's host notes it, and so does whatever holds the
+/// window's root, as the component `Root` does, since an Enter can come up
+/// with no dialog open.
+pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
+    if event.keystroke.key != ENTER {
+        return;
+    }
+    let window = window.window_handle().window_id();
+    if let Some(press) = cx.try_global::<EnterPress>()
+        && (press.down.contains(&window) || press.blocked.contains(&window))
+    {
+        let press = cx.global_mut::<EnterPress>();
+        press.down.remove(&window);
+        press.blocked.remove(&window);
+    }
+}
+
+/// GitTurtle patch: whether `window`'s dialogs wait for an Enter press that
+/// opened one to come up.
+fn enter_blocked(window: &Window, cx: &App) -> bool {
+    cx.try_global::<EnterPress>().is_some_and(|press| {
+        press
+            .blocked
+            .contains(&window.window_handle().window_id())
+    })
+}
+
+/// GitTurtle patch: whether `event` is Enter going down on a focused Button
+/// in a dialog, which activates that Button rather than the dialog's default
+/// action: the focus ring shows the control the keyboard acts on, and Enter
+/// there took the dialog's [`Confirm`], pressing a control other than the one
+/// it marks. On the Button the binding above leaves the key unbound, so it
+/// reaches the Button, which acts as it goes down, never on a held key's
+/// repeats, as a popover's trigger and a menu act, and takes it no further.
+/// In a field, on the dialog itself and on anything else that is not a
+/// Button, Enter is the dialog's [`Confirm`] as before; Escape is unchanged.
+pub(crate) fn enter_presses_button(event: &KeyDownEvent, window: &Window) -> bool {
+    event.keystroke.key == ENTER
+        && !event.keystroke.modifiers.modified()
+        && window
+            .context_stack()
+            .iter()
+            .any(|context| context.contains(CONTEXT))
 }
 
 impl Dialog {
@@ -518,6 +627,9 @@ impl RenderOnce for Dialog {
         let backdrop_change = self.on_open_change.clone();
         let viewport = window.viewport_size();
         let keyboard = self.keyboard;
+        // GitTurtle patch: set as `EnterKey` reaches the dialog and taken by
+        // its key-down listener in the same press.
+        let enter = Rc::new(Cell::new(false));
 
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
@@ -536,7 +648,48 @@ impl RenderOnce for Dialog {
                         let request_cancel = request_close.clone();
                         let request_confirm = request_close.clone();
                         let closed_cancel = closed.clone();
+                        let (marked, pressed) = (enter.clone(), enter.clone());
                         this.when(keyboard, |this| {
+                            this.on_action(move |_: &EnterKey, _, cx| {
+                                marked.set(true);
+                                cx.propagate();
+                            })
+                            // GitTurtle patch: Enter confirms the dialog as
+                            // it goes down, never on a held key's repeats,
+                            // and not at all until an Enter that opened the
+                            // dialog comes up. Taken in the capture phase,
+                            // ahead of anything inside the dialog, as the
+                            // binding to `Confirm` took it; a press something
+                            // inside binds (a field, a Button) reaches it as
+                            // before, unless the dialog waits out its opener.
+                            .capture_key_down(move |event, window, cx| {
+                                if event.keystroke.key != ENTER
+                                    || event.keystroke.modifiers.modified()
+                                {
+                                    return;
+                                }
+                                let marked = pressed.replace(false);
+                                if enter_blocked(window, cx) {
+                                    cx.stop_propagation();
+                                    return;
+                                }
+                                if !marked {
+                                    return;
+                                }
+                                if !event.is_held
+                                    && let Some(focused) = window.focused(cx)
+                                {
+                                    focused.dispatch_action(
+                                        &Confirm { secondary: false },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                cx.stop_propagation();
+                            })
+                            .capture_key_up(|event, window, cx| note_key_up(event, window, cx))
+                        })
+                        .when(keyboard, |this| {
                             this.on_action(|_: &crate::input::Escape, window, cx| {
                                 // Inputs bind Escape to their own action. Bridge it
                                 // only after child Find/completion/IME handlers had
@@ -710,5 +863,215 @@ mod tests {
             viewport,
             "a zero-sized backdrop paints no overlay behind the dialog"
         );
+    }
+
+    /// GitTurtle patch: Enter on a focused Button in a dialog presses that
+    /// Button, once, as the key goes down: a held key's repeats and its
+    /// release press nothing more, and the dialog's default action does not
+    /// run. On the dialog itself and on a focused element that is not a
+    /// Button, Enter is the dialog's [`Confirm`], as before. Bound to
+    /// [`Confirm`] in the dialog, Enter on the Button ran the default action
+    /// and pressed nothing.
+    #[gpui::test]
+    fn enter_on_a_focused_button_presses_it_once(cx: &mut gpui::TestAppContext) {
+        use gpui::{KeyDownEvent, KeyUpEvent, Keystroke};
+        use std::cell::Cell;
+
+        struct Harness {
+            dialog: FocusHandle,
+            field: FocusHandle,
+            button: FocusHandle,
+            confirms: Rc<Cell<usize>>,
+            presses: Rc<Cell<usize>>,
+        }
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let (confirms, presses) = (self.confirms.clone(), self.presses.clone());
+                Dialog::new(cx)
+                    .open(true)
+                    .focus_handle(self.dialog.clone())
+                    .on_ok(move |_, _, _| {
+                        confirms.set(confirms.get() + 1);
+                        false
+                    })
+                    .child(div().track_focus(&self.field).size(px(20.)))
+                    .child(
+                        crate::Button::new("press")
+                            .track_focus(&self.button)
+                            .size(px(20.))
+                            .on_click(move |_, _, _| presses.set(presses.get() + 1)),
+                    )
+            }
+        }
+
+        cx.update(crate::init);
+        let (confirms, presses) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let (view, cx) = cx.add_window_view({
+            let (confirms, presses) = (confirms.clone(), presses.clone());
+            move |_, cx| Harness {
+                dialog: cx.focus_handle(),
+                field: cx.focus_handle(),
+                button: cx.focus_handle(),
+                confirms,
+                presses,
+            }
+        });
+        let enter = Keystroke::parse("enter").unwrap();
+        let down = |cx: &mut gpui::VisualTestContext, is_held: bool| {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: enter.clone(),
+                is_held,
+                prefer_character_input: false,
+            })
+        };
+        let focus = |cx: &mut gpui::VisualTestContext, pick: fn(&Harness) -> FocusHandle| {
+            let handle = view.read_with(cx, |harness, _| pick(harness));
+            cx.update(|window, cx| {
+                window.focus(&handle, cx);
+                window.draw(cx).clear(cx);
+            });
+        };
+
+        focus(cx, |harness| harness.button.clone());
+        down(cx, false);
+        assert_eq!((presses.get(), confirms.get()), (1, 0), "Enter presses the Button");
+        down(cx, true);
+        down(cx, true);
+        cx.simulate_event(KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 0),
+            "a held Enter and its release press nothing more"
+        );
+
+        focus(cx, |harness| harness.dialog.clone());
+        down(cx, false);
+        assert_eq!((presses.get(), confirms.get()), (1, 1), "on the dialog, Confirm");
+
+        focus(cx, |harness| harness.field.clone());
+        down(cx, false);
+        assert_eq!((presses.get(), confirms.get()), (1, 2), "beside the Button, Confirm");
+    }
+
+    /// A probe of two dialogs: A, focused on its Button, which opens B over
+    /// it as a reviewed write's last step opens, and B, whose default action
+    /// counts.
+    struct Pair {
+        a: FocusHandle,
+        button: FocusHandle,
+        b: FocusHandle,
+        b_open: Rc<Cell<bool>>,
+        confirms: Rc<Cell<usize>>,
+    }
+
+    impl Render for Pair {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let (b, b_open, confirms) = (self.b.clone(), self.b_open.clone(), self.confirms.clone());
+            div()
+                .child(
+                    Dialog::new(cx)
+                        .open(!self.b_open.get())
+                        .focus_handle(self.a.clone())
+                        .child(
+                            crate::Button::new("open-b")
+                                .track_focus(&self.button)
+                                .size(px(20.))
+                                .on_click(move |_, window, cx| {
+                                    b_open.set(true);
+                                    dialog_opened(window, cx);
+                                    window.focus(&b, cx);
+                                    window.refresh();
+                                }),
+                        ),
+                )
+                .child(
+                    Dialog::new(cx)
+                        .open(self.b_open.get())
+                        .layer(1, true)
+                        .focus_handle(self.b.clone())
+                        .on_ok(move |_, _, _| {
+                            confirms.set(confirms.get() + 1);
+                            false
+                        })
+                        .child(div().size(px(20.))),
+                )
+        }
+    }
+
+    fn pair(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<Pair>, &mut gpui::VisualTestContext) {
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| Pair {
+            a: cx.focus_handle(),
+            button: cx.focus_handle(),
+            b: cx.focus_handle(),
+            b_open: Rc::new(Cell::new(false)),
+            confirms: Rc::new(Cell::new(0)),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (view, cx)
+    }
+
+    fn enter(cx: &mut gpui::VisualTestContext, is_held: Option<bool>) {
+        let keystroke = gpui::Keystroke::parse("enter").unwrap();
+        match is_held {
+            Some(is_held) => cx.simulate_event(gpui::KeyDownEvent {
+                keystroke,
+                is_held,
+                prefer_character_input: false,
+            }),
+            None => cx.simulate_event(gpui::KeyUpEvent { keystroke }),
+        }
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// GitTurtle patch: Enter on a dialog confirms it once, as the key goes
+    /// down; a held key's repeats confirm nothing more. Bound to
+    /// [`Confirm`], every repeat confirmed again.
+    #[gpui::test]
+    fn a_held_enter_confirms_a_dialog_once(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = pair(cx);
+        let (b, b_open, confirms) = view.read_with(cx, |pair, _| {
+            (pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+        });
+        b_open.set(true);
+        cx.update(|window, cx| {
+            window.focus(&b, cx);
+            window.draw(cx).clear(cx);
+        });
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh Enter confirms");
+        enter(cx, Some(true));
+        enter(cx, Some(true));
+        enter(cx, None);
+        assert_eq!(confirms.get(), 1, "its repeats and release confirm nothing");
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 2, "a fresh press confirms again");
+    }
+
+    /// GitTurtle patch: a dialog an Enter press opened takes no Enter until
+    /// that press comes up, even a key-down not marked held, as each repeat
+    /// arrives under X11; then a fresh Enter confirms it.
+    #[gpui::test]
+    fn a_dialog_waits_for_the_enter_that_opened_it(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = pair(cx);
+        let (button, b, confirms) = view.read_with(cx, |pair, _| {
+            (pair.button.clone(), pair.b.clone(), pair.confirms.clone())
+        });
+        cx.update(|window, cx| {
+            window.focus(&button, cx);
+            window.draw(cx).clear(cx);
+        });
+        enter(cx, Some(false));
+        assert!(cx.update(|window, _| b.is_focused(window)), "the press opened B");
+        enter(cx, Some(false));
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 0, "no confirm before the opening press comes up");
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after it confirms");
     }
 }
