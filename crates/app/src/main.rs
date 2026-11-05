@@ -1211,6 +1211,7 @@ impl GitTurtle {
         self.loading = Some(label);
         self.error = None;
         self.preview_read = PreviewRead::of(&job, generation);
+        let reviewing = matches!(&job, Job::ReviewText { .. });
         let opening = matches!(&job, Job::Open { .. }).then(|| {
             self.operation_outcomes
                 .begin_open(&self.operation_error, &self.operation_notice)
@@ -1265,6 +1266,9 @@ impl GitTurtle {
                     Err(error) => {
                         this.release_text_review(cx);
                         this.error = Some(format!("{error:#}"));
+                        if reviewing {
+                            this.text_review_failed();
+                        }
                         // Only the repository's own read speaks for it: a
                         // failed Open marks its tab and is the opening error
                         // the Projects page shows. Any other read's failure,

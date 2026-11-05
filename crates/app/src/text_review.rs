@@ -36,11 +36,12 @@ pub(crate) const OPTIONS_TOOLTIP: &str = "Hide whitespace-only changes, expand u
 /// closes the Options menu below a separator it reads as state rather than
 /// as the title of an empty group, as "Original Git diff" did.
 pub(crate) const ORIGINAL_CAPTION: &str = "Showing the original Git diff";
-/// The caption while a read's error replaces the diff, as a review past its
-/// limits does: the content area shows no diff, original or reviewed, so the
-/// caption says the review is unavailable; the body gives the reason, and
-/// Reset review beside it brings the diff back. It once said
-/// [`ORIGINAL_CAPTION`] beside the error (QA-101 O1).
+/// The caption while the review's own read failed, as past its limits, and
+/// its error replaces the diff: the content area shows no diff, original or
+/// reviewed, so the caption says the review is unavailable; the body gives
+/// the reason, and Reset review beside it brings the diff back. It once said
+/// [`ORIGINAL_CAPTION`] beside the error (QA-101 O1). Any other error keeps
+/// the caption the options give.
 pub(crate) const UNAVAILABLE_CAPTION: &str = "Review unavailable";
 
 /// The review bar's caption for `options`, or for a read whose error
@@ -78,6 +79,10 @@ pub struct State {
     pub options: Options,
     pending: Option<Options>,
     original: Option<Arc<Content>>,
+    /// The error the review's own read failed with, which the bar names
+    /// [`UNAVAILABLE_CAPTION`] while the window shows it
+    /// ([`GitTurtle::review_unavailable`]).
+    failed: Option<String>,
 }
 
 /// Called on the read worker. No Git command, filesystem read, mutation, or
@@ -306,6 +311,7 @@ impl GitTurtle {
             .get_or_insert_with(|| Arc::clone(content))
             .clone();
         self.review.pending = Some(options);
+        self.review.failed = None;
         if let Some(view) = &self.patch_view {
             view.update(cx, |view, cx| view.suspend_partial(cx));
         }
@@ -365,6 +371,20 @@ impl GitTurtle {
             self.ensure_editor(window, cx);
         }
         cx.notify();
+    }
+
+    /// Records the window's error as the failure of the review's own read,
+    /// as a review past its limits fails, for the bar to name.
+    pub(super) fn text_review_failed(&mut self) {
+        self.review.failed = self.error.clone();
+    }
+
+    /// Whether the error the window shows is the review's own failure: the
+    /// bar then says the review is unavailable. Any other error, such as the
+    /// refusal to close a tab while a write runs in it, keeps the caption
+    /// the options give, though it replaces the diff too.
+    pub(super) fn review_unavailable(&self) -> bool {
+        self.error.is_some() && self.error == self.review.failed
     }
 
     /// Ends a text review whose preparation will not land while the
@@ -534,9 +554,9 @@ impl GitTurtle {
         // The caption takes a small button's text inset, which the control
         // before it gives back: beside that control nothing moves, and on a
         // line of its own the caption starts where the buttons' labels do.
-        // While a read's error replaces the diff the content area shows
-        // none (`render_preview`), so neither does the caption.
-        let (caption_text, accented) = review_caption(options, self.error.is_some());
+        // While the review's own failure replaces the diff the content
+        // area shows none (`render_preview`), so neither does the caption.
+        let (caption_text, accented) = review_caption(options, self.review_unavailable());
         let caption = |text: AnyElement| {
             div()
                 .debug_selector(move || format!("text-review-caption/{caption_text}"))
@@ -1483,6 +1503,42 @@ mod tests {
         assert!(
             cx.debug_bounds(caption_shown(UNAVAILABLE_CAPTION))
                 .is_none()
+        );
+    }
+
+    /// A refusal that sets the window's error over a text diff is no
+    /// failure of the review: the bar keeps the caption its options give.
+    /// Here closing the tab is refused while a write runs in its
+    /// repository.
+    #[gpui::test]
+    async fn a_refusal_over_the_diff_keeps_the_options_caption(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) = working_diff(cx).await;
+        cx.simulate_resize(gpui::size(gpui::px(1480.), gpui::px(973.)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching");
+                app.operation_repository = app.path.clone();
+                app.close_repository_tab(0, window, cx);
+                app.operation_busy = None;
+                app.operation_repository = None;
+                assert!(
+                    app.error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("Fetching is running in")),
+                    "the close is refused: {:?}",
+                    app.error
+                );
+            })
+        });
+        crate::tags::tests::draw(cx);
+        assert!(
+            cx.debug_bounds(caption_shown(ORIGINAL_CAPTION)).is_some(),
+            "the options' caption"
+        );
+        assert!(
+            cx.debug_bounds(caption_shown(UNAVAILABLE_CAPTION))
+                .is_none(),
+            "not the review's failure"
         );
     }
 
