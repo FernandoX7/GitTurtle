@@ -4426,6 +4426,65 @@ mod tests {
         }
     }
 
+    /// The control a modal opened next returns to, recorded by the frame
+    /// (`update_modal_focus`).
+    fn recorded_return(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<FocusHandle> {
+        app.read_with(cx, |app, _| app.modal_return_focus.clone())
+    }
+
+    /// Every frame that shows no modal records the focused control as the
+    /// one a modal opened next returns to, while focus is in the window's
+    /// own tree: History's changed files, then its commit list.
+    #[gpui::test]
+    async fn the_modal_return_follows_focus_while_no_modal_shows(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let (commits, files) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        for list in [files, commits] {
+            cx.update(|window, cx| window.focus(&list, cx));
+            draw(cx);
+            assert_eq!(recorded_return(&app, cx), Some(list), "recorded");
+        }
+    }
+
+    /// Focus outside the window's own tree, as on a popup menu Root draws
+    /// beside it, is no control to return to: the frame keeps the one it
+    /// recorded last, History's commit list.
+    #[gpui::test]
+    async fn the_modal_return_passes_over_focus_outside_the_window(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let commits = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&commits, cx));
+        draw(cx);
+        let outside = cx.update(|_, cx| cx.focus_handle());
+        cx.update(|window, cx| window.focus(&outside, cx));
+        draw(cx);
+        assert_eq!(recorded_return(&app, cx), Some(commits), "kept");
+    }
+
+    /// While a modal shows, the return it recorded as it opened stays,
+    /// wherever focus moves: into the dialog as it opens, or to another
+    /// control of the window.
+    #[gpui::test]
+    async fn the_modal_return_holds_while_a_modal_shows(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let (commits, files) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        open_probe_dialog(&app, cx, &files, Pane::Files);
+        assert_eq!(
+            recorded_return(&app, cx),
+            Some(files.clone()),
+            "as it opened"
+        );
+        cx.update(|window, cx| window.focus(&commits, cx));
+        draw(cx);
+        assert!(dialog_open(cx), "the dialog still shows");
+        assert_eq!(recorded_return(&app, cx), Some(files), "held");
+    }
+
     /// Opens Settings with nothing focused and the window naming `pane`,
     /// then goes Back, and lets the frames that give focus back run.
     fn back_from_settings_with_nothing_focused(
