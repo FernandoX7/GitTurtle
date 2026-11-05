@@ -1,5 +1,6 @@
 //! Native conventions and explicitly initiated local application handoff.
 use crate::*;
+use focus_reveal::{FocusReveal, Trigger};
 use gpui_kit::component::{
     WindowExt,
     input::{Copy, Cut, Paste, Redo, SelectAll, Undo},
@@ -742,21 +743,62 @@ impl GitTurtle {
                 appearance::more_contrast(cx),
             ),
         });
-        let details = cx.new(|_| AboutDetails { report });
+        bind_about_keys(cx);
+        let details = cx.new(|_| AboutDetails {
+            report,
+            body: FocusReveal::new(Trigger::Keyboard),
+        });
+        // The dialog bounds every dialog keeps (DESIGN.md, "One responsive
+        // order"): its own 550 px, narrowed to the window less the dialog
+        // margin on either side, and its height capped above the status bar.
+        // At a literal 550 px scaled with the text, it was 761 px wide at 18
+        // pt and started 150 px left of a 461 px window.
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
-                .max_h(appearance::dialog_max_height(window))
                 .title("About GitTurtle")
                 .description("A native Git workspace for history inspection and everyday Git work.")
-                .width(appearance::ui_size(550.))
-                .child(details.clone())
+                .width(appearance::dialog_width(appearance::ui_size(550.), window))
+                .max_h(appearance::dialog_max_height(window))
+                // In the dialog's content rather than its scrolling body,
+                // whose scroller lays what it holds out at full height: here
+                // the details take what the cap leaves below the title and
+                // above Done, which stays drawn, and scroll the rest.
+                .content({
+                    let details = details.clone();
+                    move |content, _, _| content.min_h_0().child(details.clone())
+                })
                 .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 }
 
+/// Copy bug diagnostics' key context, where Enter is bound to no action, so
+/// the dialog's Done binding leaves its key-down to the button
+/// ([`AboutDetails::copy_key`]), as the GitHub panel's buttons do.
+const COPY_KEYS: &str = "GitTurtleAboutCopy";
+
+#[derive(Default)]
+struct AboutBindings;
+impl gpui_kit::Global for AboutBindings {}
+
+/// Binds [`COPY_KEYS`] once, as About first opens.
+fn bind_about_keys(cx: &mut App) {
+    if cx.try_global::<AboutBindings>().is_some() {
+        return;
+    }
+    cx.set_global(AboutBindings);
+    cx.bind_keys([KeyBinding::new(
+        "enter",
+        gpui_kit::NoAction,
+        Some(COPY_KEYS),
+    )]);
+}
+
 struct AboutDetails {
     report: String,
+    /// The details' scroll, which brings Copy bug diagnostics whole into
+    /// view, ring included, as the keyboard moves focus onto it.
+    body: FocusReveal,
 }
 
 impl AboutDetails {
@@ -764,15 +806,63 @@ impl AboutDetails {
     fn diagnostics_mark(&self) -> copy_feedback::Mark {
         copy_feedback::Mark::new("copy-bug-diagnostics", &self.report)
     }
+
+    /// Copies the report and marks Copy bug diagnostics Copied: a click, or
+    /// Enter or Space on the focused button.
+    fn copy_report(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let report = self.report.clone();
+        copy_feedback::copy(
+            window,
+            cx,
+            Some(self.diagnostics_mark()),
+            "bug diagnostics",
+            report,
+        );
+    }
+
+    /// Enter on the focused button copies as the key goes down, never on a
+    /// held key's repeats, as the toolkit's popover triggers and menus act
+    /// (under X11 a held key arrives as fresh presses, which this cannot
+    /// tell apart). The key goes no further, so GPUI's key-up activation
+    /// copies nothing more. Bound to the dialog's Done, Enter closed About
+    /// and copied nothing; taken as its Confirm, each repeat copied again.
+    fn copy_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key != "enter" || event.keystroke.modifiers.modified() {
+            return;
+        }
+        if !event.is_held {
+            self.copy_report(window, cx);
+        }
+        cx.stop_propagation();
+    }
 }
 
 impl Render for AboutDetails {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let revision = &build_info::REVISION[..build_info::REVISION.len().min(12)];
-        crate::native_accessibility::clips_children(div()
+        // The details have no height of their own: they shrink to what the
+        // dialog's cap leaves them and scroll past it, cued by their
+        // scrollbar. They keep the focus ring's room at their sides, given
+        // back through their margin, so nothing moves sideways, and below the
+        // button, so Copy bug diagnostics' ring is never cut by their clip
+        // (it was cut at both sides and its foot). With a literal height, the
+        // viewport less 230 px, they ended 171.5 px down at 18 pt in a 461 ×
+        // 490 window, half a pixel into the button's top: it drew nothing of
+        // its label, a click on it met no hitbox, and Tab left it there.
+        let room = appearance::button_ring_room(cx);
+        self.body.reveal(window, cx);
+        let copy = self.body.focus("copy-bug-diagnostics", cx);
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        cue.list(div()
+            .on_children_prepainted(cue.observe(self.body.observe()))
             .id("about-gitturtle-details")
-            .max_h((window.viewport_size().height - appearance::ui_size(230.)).max(px(100.)))
+            .debug_selector(|| "about-gitturtle-details".into())
+            .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(self.body.scroll())
+            .px(room)
+            .mx(-room)
+            .pb(room)
             .flex()
             .flex_col()
             .gap_2()
@@ -796,13 +886,14 @@ impl Render for AboutDetails {
                 div().text_color(rgb(palette(cx).muted))
                     .child("Bug diagnostics include build and display settings. Repository paths, file content and account details are omitted."),
             )
-            .child(
+            // Enter on the focused button is its own, as Space is, not the
+            // dialog's Done (`copy_key`).
+            .child(div().key_context(COPY_KEYS).capture_key_down(cx.listener(Self::copy_key)).on_children_prepainted(self.body.control(copy.clone(), room)).child(
                 copy_feedback::copy_button(self.diagnostics_mark(), "Copy bug diagnostics", "", cx)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let report = this.report.clone();
-                        copy_feedback::copy(window, cx, Some(this.diagnostics_mark()), "bug diagnostics", report);
-                    })),
-            ))
+                    .track_focus(&copy)
+                    .on_click(cx.listener(|this, _, window, cx| this.copy_report(window, cx))),
+            )), "about-gitturtle-details-scrollbar")
+        .min_h_0()
     }
 }
 

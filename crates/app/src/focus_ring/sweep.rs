@@ -868,6 +868,33 @@ async fn repository_dialogs_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCont
     assert_whole(failures);
 }
 
+/// About in a 461 × 490 half tile, where at 18 pt its details scroll Copy
+/// bug diagnostics in from below their fold: Copy bug diagnostics and Done
+/// each draw a whole ring, the details keeping the ring's room inside their
+/// clip. No sweep walked About, whose details' clip cut the button's ring
+/// at both sides and its foot.
+#[gpui::test]
+async fn about_draws_a_whole_ring_at_every_stop_in_a_half_tile(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx, 2);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk_dialog(
+            &app,
+            cx,
+            "About",
+            interface,
+            &mut failures,
+            |app, window, cx| app.about(window, cx),
+        )
+        .await;
+    }
+    assert_whole(failures);
+}
+
 /// Moves History's selection between its first two rows, as a reply landing
 /// between two frames moves the selected row: a quiet refresh that lists new
 /// commits above it, such as a stash's two.

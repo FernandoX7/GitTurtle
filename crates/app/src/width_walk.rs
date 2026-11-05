@@ -1527,9 +1527,14 @@ async fn a_changed_file_row_ends_a_line_it_cannot_hold_inside_its_room(cx: &mut 
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
 
-/// The dialogs the narrow walk opens: every one with a width of its own.
+/// The dialogs the narrow walk opens: every one with a width of its own
+/// that opens from History on the fixture, listed by hand, so a dialog left
+/// off the list is not walked (About was not, and drew 761 px wide at 18 pt
+/// in a 461 px window).
 #[derive(Clone, Copy, Debug)]
 enum Dialog {
+    /// About GitTurtle, its details scrolled under the dialog's height cap.
+    About,
     Reflog,
     Rebase,
     RewriteReview,
@@ -1550,7 +1555,8 @@ enum Dialog {
 }
 
 impl Dialog {
-    const ALL: [Dialog; 16] = [
+    const ALL: [Dialog; 17] = [
+        Dialog::About,
         Dialog::Reflog,
         Dialog::Rebase,
         Dialog::RewriteReview,
@@ -1617,6 +1623,9 @@ impl Dialog {
         use crate::focus_ring::sweep::open_dialog;
         let name = format!("{self:?}");
         match self {
+            Dialog::About => {
+                open_dialog(app, cx, &name, |app, window, cx| app.about(window, cx)).await
+            }
             Dialog::Reflog => {
                 open_dialog(app, cx, &name, |app, window, cx| {
                     app.open_reflog_browser(window, cx)
@@ -1862,10 +1871,11 @@ fn drawn_clip(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> Option<Boun
         .map(|quad| logical(quad.content_mask.bounds))
 }
 
-/// Opens every dialog with a width of its own in a 461 × 490 half tile at
+/// Opens every dialog on [`Dialog`]'s list in a 461 × 490 half tile at
 /// `text` pt: each lies inside the window with its margin on either side,
 /// rather than centred at its width with its left side past the window's,
-/// ends that margin above the status bar, where Keyboard Shortcuts once
+/// as About was, from 44.5 px left of the window at 13 pt and 150.5 px at
+/// 18 pt, ends that margin above the status bar, where Keyboard Shortcuts once
 /// ended 14 px over the bar at 13 pt and on its top rule at 18 pt, and its
 /// content gives way in the responsive order with nothing cut by its clip
 /// (DESIGN.md, "One responsive order").
@@ -1961,6 +1971,211 @@ async fn dialogs_keep_inside_a_narrow_window_at_13_pt(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn dialogs_keep_inside_a_narrow_window_at_18_pt(cx: &mut TestAppContext) {
     narrow_dialogs(18, cx).await;
+}
+
+/// About in a 461 × 490 half tile at `text` pt: Tab reaches Copy bug
+/// diagnostics, which the details show whole, its ring whole inside every
+/// clip and the button above Done, at 18 pt by scrolling it in from past
+/// the room the dialog's height cap leaves them below the title; a click on
+/// its drawn centre copies the report and marks it Copied, and so does
+/// Enter on the focused button, once, leaving About open; every line of
+/// text lies inside the dialog's sides, scrolled or not. About was 761 px
+/// wide at 18 pt, from 150 px left of the window, and its details, a
+/// literal height of their own, ended half a pixel into the button: it drew
+/// nothing of its label, a click on it met no hitbox, and Tab left it below
+/// the fold; at both sizes Enter on it took the dialog's Done and closed
+/// About.
+async fn about_copies_bug_diagnostics(text: u8, cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::{Shows, announced, clipboard, shows, wait};
+    const COPY: &str = "copy-bug-diagnostics";
+    const DETAILS: &str = "about-gitturtle-details";
+    let (_fixture, app, cx, _) = open(Page::History, cx).await;
+    cx.update(|_, cx| {
+        theme_editor::init(cx);
+        native_accessibility::bind_keys(cx);
+        shortcuts::bind_keys(cx);
+        cx.set_reduce_motion(true);
+    });
+    let (width, height) = (461., 490.);
+    cx.simulate_resize(size(px(width), px(height)));
+    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+    frame(cx);
+    Dialog::About.open(&app, cx).await;
+    frame(cx);
+    let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+        cx.debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"))
+    };
+    let findings = dialog_findings(cx, width, appearance::DIALOG_MARGIN);
+    assert!(
+        findings.is_empty(),
+        "{text} pt, as About opens: {findings:?}"
+    );
+    if text == 18 {
+        // Laid out past the fold, below Done's top: only a scroll shows it.
+        let (copy, done) = (bounds(cx, COPY), bounds(cx, "dialog-ok: Done"));
+        assert!(
+            copy.bottom() > done.top(),
+            "Copy bug diagnostics at {copy:?} is laid out past the fold, below Done at {done:?}"
+        );
+    }
+
+    // The accent ring around the button, by Tab: the outline that holds
+    // the button with no more than the ring's room around it.
+    let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+    let room = cx.read(appearance::button_ring_room);
+    let ring = |cx: &mut VisualTestContext| {
+        let copy = cx.debug_bounds(COPY)?;
+        let slack = px(1.);
+        crate::focus_ring::painted_outlines_where(cx, move |color| {
+            color.a > 0.
+                && Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .into_iter()
+        .find(|outline| {
+            let (ring, copy) = (outline.bounds, copy);
+            ring.left() <= copy.left()
+                && ring.right() >= copy.right()
+                && ring.top() <= copy.top()
+                && ring.bottom() >= copy.bottom()
+                && copy.left() - ring.left() <= room + slack
+                && ring.bottom() - copy.bottom() <= room + slack
+        })
+    };
+    let mut reached = None;
+    for _ in 0..3 {
+        cx.simulate_keystrokes("tab");
+        frame(cx);
+        frame(cx);
+        reached = ring(cx);
+        if reached.is_some() {
+            break;
+        }
+    }
+    let reached = reached.unwrap_or_else(|| {
+        panic!("{text} pt: Tab reaches Copy bug diagnostics and draws its ring")
+    });
+    let (copy, details, done) = (
+        bounds(cx, COPY),
+        bounds(cx, DETAILS),
+        bounds(cx, "dialog-ok: Done"),
+    );
+    assert!(
+        reached.whole,
+        "Copy bug diagnostics' ring at {:?} is cut by a clip",
+        reached.bounds
+    );
+    assert!(
+        copy.top() >= details.top() && copy.bottom() <= details.bottom(),
+        "the details at {details:?} show Copy bug diagnostics at {copy:?} whole"
+    );
+    assert!(
+        copy.bottom() <= done.top(),
+        "Copy bug diagnostics at {copy:?} stands above Done at {done:?}"
+    );
+    let findings = dialog_findings(cx, width, appearance::DIALOG_MARGIN);
+    assert!(
+        findings.is_empty(),
+        "{text} pt, with the button revealed: {findings:?}"
+    );
+
+    // A click on its drawn centre copies the report and marks it.
+    cx.write_to_clipboard(ClipboardItem::new_string("nothing yet".into()));
+    cx.simulate_click(copy.center(), Modifiers::default());
+    frame(cx);
+    let report = clipboard(cx);
+    assert!(
+        report.starts_with('{')
+            && report.contains("\"display\"")
+            && report.contains(build_info::VERSION),
+        "a click copies the report, not {report:?}"
+    );
+    assert_eq!(shows(cx, COPY), Shows::Copied, "a click marks the copy");
+    assert_eq!(
+        announced(cx).map(|(_, said)| said),
+        Some("Copied bug diagnostics".to_owned())
+    );
+
+    // Enter on the focused button copies it too, as the key goes down, once
+    // a press: not as it comes up, not on a held key's repeats, and About
+    // stays. Each copy confirms anew, and its announcement's id carries the
+    // confirmation's generation, one more for each, so two copies on one
+    // press would count two.
+    let generation = |cx: &mut VisualTestContext| match announced(cx) {
+        Some((ElementId::NamedInteger(_, generation), said)) => {
+            assert_eq!(said, "Copied bug diagnostics", "{text} pt");
+            generation
+        }
+        other => panic!("{text} pt: the copy's announcement, not {other:?}"),
+    };
+    let enter = gpui_kit::Keystroke::parse("enter").unwrap();
+    let press = |cx: &mut VisualTestContext, is_held: bool| {
+        cx.write_to_clipboard(ClipboardItem::new_string("not copied".into()));
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held,
+            prefer_character_input: false,
+        });
+        frame(cx);
+    };
+    let release = |cx: &mut VisualTestContext| {
+        cx.write_to_clipboard(ClipboardItem::new_string("not copied".into()));
+        cx.simulate_event(gpui_kit::KeyUpEvent {
+            keystroke: enter.clone(),
+        });
+        frame(cx);
+    };
+    wait(cx, copy_feedback::RESTORE_AFTER);
+    frame(cx);
+    assert_eq!(shows(cx, COPY), Shows::Rest, "the mark rests again");
+    press(cx, false);
+    assert_eq!(clipboard(cx), report, "{text} pt: Enter copies the report");
+    assert_eq!(shows(cx, COPY), Shows::Copied, "Enter marks the copy");
+    let pressed = generation(cx);
+    press(cx, true);
+    press(cx, true);
+    assert_eq!(
+        clipboard(cx),
+        "not copied",
+        "{text} pt: a held repeat copies"
+    );
+    assert_eq!(
+        generation(cx),
+        pressed,
+        "{text} pt: a held repeat announces"
+    );
+    release(cx);
+    assert_eq!(clipboard(cx), "not copied", "{text} pt: the release copies");
+    assert_eq!(generation(cx), pressed, "{text} pt: the release announces");
+    press(cx, false);
+    assert_eq!(clipboard(cx), report, "{text} pt: a new press copies");
+    assert_eq!(
+        generation(cx),
+        pressed + 1,
+        "{text} pt: one press copies once"
+    );
+    release(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Enter on the button leaves About open"
+    );
+
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    frame(cx);
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}
+
+#[gpui::test]
+async fn about_shows_and_copies_bug_diagnostics_at_13_pt(cx: &mut TestAppContext) {
+    about_copies_bug_diagnostics(13, cx).await;
+}
+
+#[gpui::test]
+async fn about_brings_bug_diagnostics_into_view_and_copies_them_at_18_pt(cx: &mut TestAppContext) {
+    about_copies_bug_diagnostics(18, cx).await;
 }
 
 /// The rows of `list`, a scrolling list the check below reads by its
