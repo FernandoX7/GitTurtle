@@ -751,11 +751,7 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
-     - **FU18 (in flight; A and B landed 2026-11-05):** (C) dialogs:
-       every dialog within `dialog_width`'s margins (kit-width dialogs 6.5 px from a 461 px
-       window's sides), nested dialogs' height cap, Enter on a focused body Button activates
-       it, the narrow walk's dialog list guarded (`appearance.rs`, `width_walk.rs`, kit
-       `dialog.rs`), M. (D) GitHub panel reveals: QA-97's short scroll area (461 × 490,
+     - **FU18 (in flight; A, B and C landed 2026-11-05):** (D) GitHub panel reveals: QA-97's short scroll area (461 × 490,
        18 pt; verify), conversation-list and multi-line editor lines, the flush-stop sweep for
        PR/Overview/Review, FU16-B N3's O(L²) fallback, three test fixes (`github_view*`,
        `focus_reveal.rs`), M.
@@ -809,6 +805,16 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
+       - (GitHub Files, first, M; decided 2026-11-05) the panel's Files section fits a narrow
+         body: the changed-file list at most half the body's height, the patch or Source the
+         rest (never fewer than five lines), the mode row wrapping inside the body's width,
+         every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
+         607 past the body's 423; at 18 pt the patch and Source have zero height under the fixed
+         324 px `FILE_LIST_HEIGHT`; the list taller than the body); stops that paint no ring
+         (a conversation's actions, the Source editor); the sweep's never-whole lines analysed;
+         the D+E review's bounded list span, scrolled-editor test and padding rows;
+         `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
+         (`github_view*`, `focus_reveal.rs`).
        - (A) Overflow and scroll cues, M (after FU18-B): the worktree and profile managers
          cut text with no scroll cue; a worktree row's ring against its border; the branch
          chooser's Tab does not scroll rows into view (verify; `worktrees.rs`, `profiles.rs`,
@@ -852,6 +858,10 @@ cover current upstream x86-64 Omarchy.
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
        clip (brief 12).
+     - **Dialog Enter nits (FU18-C re-checks):** the window's Enter mark goes stale when the
+       release lands in another window (one ignored Enter; clear it on deactivation); a
+       single-line field's own Enter binding still runs on held repeats (no repository write
+       submits that way).
      - **Test infrastructure and nits:** `SerialExecutor::hold`'s blocking `send` on a full
        8-slot queue (`operations.rs:233`) and the hold delaying quiet jobs queued during the
        click (FU17-E); `github_view.rs`'s remaining test premises after FU18-D; tests calling
