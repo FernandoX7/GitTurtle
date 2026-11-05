@@ -97,8 +97,8 @@ and `(so)` alike): `((so)(so)(so)iiassusau)` and `(so)`. Run it with
 `native_accessibility::atspi_state_tests::Bus` models libatspi disposing a
 proxy on the cache's `RemoveAccessible`, and the Keyboard Shortcuts and
 command palette tests named in `accesskit_atspi_common`'s patch note hear
-the result through Orca's model. Native Orca checks are recorded in
-`docs/validation.md`.
+the result through Orca's model. Orca has not yet been heard on this build;
+its check goes to `docs/validation.md`.
 
 ## Removal
 
