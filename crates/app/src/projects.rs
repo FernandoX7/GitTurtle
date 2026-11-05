@@ -220,6 +220,15 @@ impl ProjectHub {
         cx.notify();
     }
 
+    /// Clears the feedback line where it still says `error`, the opening
+    /// error of a repository a quiet read has since found readable.
+    pub fn clear_error_matching(&mut self, error: &str, cx: &mut Context<Self>) {
+        if self.error.as_deref() == Some(error) {
+            self.error = None;
+            cx.notify();
+        }
+    }
+
     pub fn set_can_go_back(&mut self, can_go_back: bool, cx: &mut Context<Self>) {
         self.can_go_back = can_go_back;
         cx.notify();

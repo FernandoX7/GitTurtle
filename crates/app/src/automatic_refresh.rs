@@ -358,7 +358,11 @@ impl GitTurtle {
             return;
         };
         let change = std::mem::take(&mut self.automatic.pending);
-        let history = change.git || change.rescan;
+        // A tab whose Open failed shows no history: the read that finds its
+        // repository again reads the history Refresh would, so clearing the
+        // mark brings back what Open would have shown
+        // ([`Self::tab_found_readable`]).
+        let history = change.git || change.rescan || self.shown_tab_unavailable();
         let selected = (self.mode == WorkspaceMode::Working)
             .then(|| {
                 let (index, area) = self.working_selected?;
@@ -410,9 +414,26 @@ impl GitTurtle {
                 }
                 match result {
                     Ok(Ok(Output::QuietRefresh(refresh))) => {
+                        // Read whole, the repository is readable again: a
+                        // tab marked by a failed Open states that, as an
+                        // explicit Refresh's accepted snapshot does. A read
+                        // that fails keeps the mark.
+                        // Only a read that brings History back counts: one
+                        // whose scope vanished (`Retained`) leaves the
+                        // History the failed Open cleared empty, and cleared
+                        // over it, the mark left "No commits yet" with
+                        // nothing to say why where an earlier read's error
+                        // held the banner. Refresh opens All history then.
+                        let readable = matches!(
+                            refresh.snapshot,
+                            None | Some(Ok(worker::QuietHistory::Refreshed(_)))
+                        );
                         let shown = this.shows_quiet_refresh(&refresh);
                         let entries = this.apply_quiet_refresh(*refresh, requested, window, cx);
                         found = !shown || entries;
+                        if readable && this.tab_found_readable(cx) {
+                            found = true;
+                        }
                         // A failed native watch gets one local state read. A
                         // later event, manual Refresh, or regained focus may
                         // reconnect; do not spin on a persistent watch error.

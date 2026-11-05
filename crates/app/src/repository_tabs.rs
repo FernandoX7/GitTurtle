@@ -1419,6 +1419,41 @@ impl GitTurtle {
             tab.error = self.error.clone();
         }
     }
+    /// Whether the shown tab is marked " · unavailable", its Open having
+    /// failed ([`Self::tab_opening_failed`]).
+    pub(super) fn shown_tab_unavailable(&self) -> bool {
+        self.repository_tabs
+            .active
+            .and_then(|index| self.repository_tabs.tabs.get(index))
+            .is_some_and(|tab| tab.error.is_some())
+    }
+    /// Clears the shown tab's " · unavailable" as a quiet read finds its
+    /// repository readable again, with the opening error the window shows
+    /// for it, and returns whether there was a mark to clear. A tab's mark
+    /// states the repository's current state, so the read the watcher asks
+    /// for clears it as an explicit Refresh's accepted snapshot does
+    /// ([`Self::tab_snapshot_accepted`]); one that still fails keeps it.
+    /// Cleared only by Refresh, a repository moved back or repaired outside
+    /// the app stayed "unavailable" while the window read it.
+    pub(super) fn tab_found_readable(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(error) = self
+            .repository_tabs
+            .active
+            .and_then(|index| self.repository_tabs.tabs.get_mut(index))
+            .and_then(|tab| tab.error.take())
+        else {
+            return false;
+        };
+        if self.error.as_ref() == Some(&error) {
+            self.error = None;
+        }
+        // The Projects page's error is the same opening error: left, closing
+        // the last tab met the person with an alert that the repository it
+        // had just read was not available.
+        self.hub
+            .update(cx, |hub, cx| hub.clear_error_matching(&error, cx));
+        true
+    }
     pub(super) fn switch_repository_tab(
         &mut self,
         index: usize,
@@ -3019,6 +3054,159 @@ mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
         settle_tab_test(&app, cx).await;
         assert_eq!(label(cx), ("arriving".into(), false), "opened, it clears");
+    }
+
+    /// Asks for a quiet read as the local watcher does for a change made
+    /// outside the app, and waits for it to land.
+    fn quiet_read_landed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        // The subscription is made on the operation thread.
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        app.update(cx, |app, _| {
+            app.automatic
+                .report_local_change(crate::local_refresh::LocalChange {
+                    worktree: true,
+                    ..Default::default()
+                })
+        });
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                crate::views::tests::draw(cx);
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        panic!("the quiet read never landed");
+    }
+
+    /// A tab's mark states its repository's current state: Refresh that
+    /// cannot open the repository, its `.git` moved away, marks the tab; a
+    /// quiet read the watcher asks for while it is still away keeps the
+    /// mark, and so does one that reads the working state but not History
+    /// (a branch naming a missing commit); once it reads whole, the next
+    /// quiet read clears the mark and the opening error the window and the
+    /// Projects page showed, and brings History back, as an explicit
+    /// Refresh does, so closing the last tab shows Projects without that
+    /// error. Only Refresh cleared it.
+    #[gpui::test]
+    async fn a_quiet_read_that_finds_the_repository_clears_its_tab_mark(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let (git, away) = (root.join(".git"), root.join(".git-away"));
+        let shown = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let tab = &app.repository_tabs.tabs[0];
+                (
+                    app.tab_label(tab).0.ends_with(" · unavailable"),
+                    app.error.is_some(),
+                    app.commits.len(),
+                )
+            })
+        };
+        std::fs::rename(&git, &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(shown(cx), (true, true, 0), "Refresh cannot open it");
+        quiet_read_landed(&app, cx);
+        assert_eq!(
+            shown(cx),
+            (true, true, 0),
+            "a quiet read that fails keeps it"
+        );
+        // Back, but with a branch naming a missing commit: the working state
+        // reads, History does not, so the repository is not readable whole.
+        std::fs::rename(&away, &git).unwrap();
+        let broken = git.join("refs/heads/broken");
+        std::fs::write(&broken, "1111111111111111111111111111111111111111\n").unwrap();
+        quiet_read_landed(&app, cx);
+        assert_eq!(
+            shown(cx),
+            (true, true, 0),
+            "a quiet read whose History fails keeps it"
+        );
+        std::fs::remove_file(&broken).unwrap();
+        quiet_read_landed(&app, cx);
+        assert_eq!(
+            shown(cx),
+            (false, false, 1),
+            "one that finds the repository clears it, History back"
+        );
+        // The Projects page's opening error went with it: closing the last
+        // tab meets the person with no alert about the repository.
+        let close = cx
+            .debug_bounds("repository-tab-close-0")
+            .expect("the tab's close button");
+        cx.simulate_click(close.center(), gpui::Modifiers::default());
+        crate::native_accessibility::written::forget();
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(app.read_with(cx, |app, _| app.page), AppPage::Projects);
+        assert_eq!(
+            crate::native_accessibility::written::announced_from("project-hub-error"),
+            Vec::new(),
+            "no stale opening error on Projects"
+        );
+    }
+
+    /// A tab scoped to a branch is readable whole only once History reads
+    /// that branch: back, but with the branch gone, a quiet read finds the
+    /// working state and the branches but not the History the failed Open
+    /// cleared (`Retained`), so the mark and the opening error stay rather
+    /// than leave "No commits yet" with nothing to say why. Refresh opens
+    /// All history then.
+    #[gpui::test]
+    async fn a_quiet_read_whose_scope_vanished_keeps_the_tab_mark(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::fixture_git(&root, &["branch", "topic"]);
+        let topic = worker::Scope::Branch {
+            name: "topic".into(),
+            remote: false,
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open(
+                    root.clone(),
+                    Some(("topic".into(), topic.clone())),
+                    window,
+                    cx,
+                )
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        let shown = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let tab = &app.repository_tabs.tabs[0];
+                (
+                    app.tab_label(tab).0.ends_with(" · unavailable"),
+                    app.error.is_some(),
+                    app.scope.as_ref().map(|scope| scope.1.clone()),
+                )
+            })
+        };
+        assert_eq!(
+            shown(cx),
+            (false, false, Some(topic.clone())),
+            "scoped to topic"
+        );
+        let (git, away) = (root.join(".git"), root.join(".git-away"));
+        std::fs::rename(&git, &away).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            shown(cx),
+            (true, true, Some(topic.clone())),
+            "Refresh cannot open it"
+        );
+        std::fs::rename(&away, &git).unwrap();
+        crate::views::tests::fixture_git(&root, &["branch", "-D", "topic"]);
+        quiet_read_landed(&app, cx);
+        assert_eq!(
+            shown(cx),
+            (true, true, Some(topic)),
+            "a quiet read whose scope vanished keeps it"
+        );
+        assert_eq!(app.read_with(cx, |app, _| app.commits.len()), 0);
     }
 
     #[gpui::test]
