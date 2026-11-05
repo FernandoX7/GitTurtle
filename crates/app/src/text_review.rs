@@ -36,6 +36,28 @@ pub(crate) const OPTIONS_TOOLTIP: &str = "Hide whitespace-only changes, expand u
 /// closes the Options menu below a separator it reads as state rather than
 /// as the title of an empty group, as "Original Git diff" did.
 pub(crate) const ORIGINAL_CAPTION: &str = "Showing the original Git diff";
+/// The caption while a read's error replaces the diff, as a review past its
+/// limits does: the content area shows no diff, original or reviewed, so the
+/// caption says the review is unavailable; the body gives the reason, and
+/// Reset review beside it brings the diff back. It once said
+/// [`ORIGINAL_CAPTION`] beside the error (QA-101 O1).
+pub(crate) const UNAVAILABLE_CAPTION: &str = "Review unavailable";
+
+/// The review bar's caption for `options`, or for a read whose error
+/// replaces the diff (`unavailable`), and whether it reads in the colour of
+/// a modified review rather than muted: it names what the content area
+/// shows.
+fn review_caption(options: Options, unavailable: bool) -> (&'static str, bool) {
+    if unavailable {
+        (UNAVAILABLE_CAPTION, true)
+    } else if options.hide_whitespace {
+        ("Review filter active · exact source retained", true)
+    } else if options != Options::default() {
+        ("Expanded context · partial staging unavailable", true)
+    } else {
+        (ORIGINAL_CAPTION, false)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -512,18 +534,15 @@ impl GitTurtle {
         // The caption takes a small button's text inset, which the control
         // before it gives back: beside that control nothing moves, and on a
         // line of its own the caption starts where the buttons' labels do.
-        let caption_text = if options.hide_whitespace {
-            "Review filter active · exact source retained"
-        } else if modified {
-            "Expanded context · partial staging unavailable"
-        } else {
-            ORIGINAL_CAPTION
-        };
+        // While a read's error replaces the diff the content area shows
+        // none (`render_preview`), so neither does the caption.
+        let (caption_text, accented) = review_caption(options, self.error.is_some());
         let caption = |text: AnyElement| {
             div()
+                .debug_selector(move || format!("text-review-caption/{caption_text}"))
                 .pl_2()
                 .text_size(crate::appearance::ui_text(11.))
-                .text_color(rgb(if modified { colors.hunk } else { colors.muted }))
+                .text_color(rgb(if accented { colors.hunk } else { colors.muted }))
                 .child(text)
         };
         let previous = Button::new("previous-text-change")
@@ -653,7 +672,7 @@ impl GitTurtle {
                     .on_click(cx.listener(move |this, _, window, cx| this.set_text_review(Options { hide_whitespace: !options.hide_whitespace, ..options }, window, cx))))
                 .child(context_button(options, busy, looks_busy)
                     .on_click(cx.listener(move |this, _, window, cx| { if let Some(options) = more_context(options) { this.set_text_review(options, window, cx); } })))
-                .child(Button::new("reset-text-review").small().ghost().label("Reset review")
+                .child(Button::new("reset-text-review").debug_selector(|| "reset-text-review".into()).small().ghost().label("Reset review")
                     .map(|reset| crate::workspace::refusing(reset, || "reset-text-review".into(), reset_disabled, looks_busy || unmodified)).mr_neg_2()
                     .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
                 .child(caption(div().debug_selector(|| "text-review-caption".into()).child(caption_text).into_any_element()))
@@ -921,6 +940,40 @@ mod tests {
                 .iter()
                 .all(|item| item.disabled)
         );
+    }
+    /// Each caption names what the content area shows, and every one but
+    /// the original diff's reads in the modified review's colour: a read
+    /// whose error replaces the diff says the review is unavailable, under
+    /// any options.
+    #[test]
+    fn captions_name_what_the_content_area_shows() {
+        let hidden = Options {
+            hide_whitespace: true,
+            context: 3,
+        };
+        let expanded = Options {
+            hide_whitespace: false,
+            context: 12,
+        };
+        assert_eq!(
+            review_caption(Options::default(), false),
+            (ORIGINAL_CAPTION, false)
+        );
+        assert_eq!(
+            review_caption(hidden, false),
+            ("Review filter active · exact source retained", true)
+        );
+        assert_eq!(
+            review_caption(expanded, false),
+            ("Expanded context · partial staging unavailable", true)
+        );
+        for options in [Options::default(), hidden, expanded] {
+            assert_eq!(
+                review_caption(options, true),
+                (UNAVAILABLE_CAPTION, true),
+                "{options:?}"
+            );
+        }
     }
     #[test]
     fn review_removes_actionable_partial_ids_and_reset_retains_the_exact_snapshot() {
@@ -1283,11 +1336,27 @@ mod tests {
         gpui::Entity<GitTurtle>,
         &'a mut gpui::VisualTestContext,
     ) {
+        working_diff_edited(cx, script, &[("notes.txt", "edited\n")]).await
+    }
+
+    /// [`working_diff`] in a repository `script` imports, each of `edits`
+    /// written over its tracked file, showing the first changed file.
+    async fn working_diff_edited<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        script: &str,
+        edits: &[(&str, &str)],
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &'a mut gpui::VisualTestContext,
+    ) {
         use crate::views::tests::{fixture_git, history_window_from, settle};
         let (fixture, app, cx) = history_window_from(cx, script).await;
         let root = fixture.path().join("narrow");
         fixture_git(&root, &["reset", "--hard", "--quiet"]);
-        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        for (path, text) in edits {
+            std::fs::write(root.join(path), text).unwrap();
+        }
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         settle(&app, cx).await;
         crate::path_filter::filters_land(&app, cx);
@@ -1321,6 +1390,100 @@ mod tests {
                 app.review.pending.is_some(),
             )
         })
+    }
+
+    /// QA-101's route to a failed review: Working Changes showing a tracked
+    /// file of 50,001 lines with one line changed, its diff small but its
+    /// two sides past the review's 100,000-line limit, in QA's 1480 × 973
+    /// window, and Hide whitespace pressed in the review bar. The review's
+    /// read fails, and its error replaces the diff.
+    async fn review_past_the_limit(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        gpui::Entity<GitTurtle>,
+        &mut gpui::VisualTestContext,
+    ) {
+        use gpui::{Modifiers, px, size};
+        let long: String = (1..=MAX_REVIEW_ROWS / 2 + 1)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let script = crate::views::tests::history_script(40, 3).replace(
+            "done\n",
+            &format!(
+                "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000100 \
+                 +0000\ndata 10\nadd a long\nM 100644 inline long.txt\ndata {}\n{long}\ndone\n",
+                long.len()
+            ),
+        );
+        let edited = long.replacen("1\n", "one\n", 1);
+        let (fixture, app, cx) =
+            working_diff_edited(cx, &script, &[("long.txt", edited.as_str())]).await;
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        crate::tags::tests::draw(cx);
+        let hide = cx
+            .debug_bounds("hide-whitespace-changes")
+            .expect("the full row's Hide whitespace");
+        cx.simulate_click(hide.center(), Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("100,000-line review limit")),
+                "the review fails: {:?}",
+                app.error
+            );
+        });
+        let body = crate::native_accessibility::written::get("empty-state:Preview unavailable")
+            .expect("the error replaces the diff");
+        assert!(
+            body.node
+                .value()
+                .is_some_and(|text| text.contains("100,000-line review limit")),
+            "{:?}",
+            body.node.value()
+        );
+        (fixture, app, cx)
+    }
+
+    /// The selector of the review bar's caption reading `caption`.
+    fn caption_shown(caption: &str) -> &'static str {
+        format!("text-review-caption/{caption}").leak()
+    }
+
+    /// QA-101 O1: while a failed review's error replaces the diff, the
+    /// review bar says the review is unavailable, never that it shows the
+    /// original Git diff, which nothing shows; Reset review brings the diff
+    /// back, and with it the caption its options give.
+    #[gpui::test]
+    async fn a_failed_review_reads_unavailable_until_reset(cx: &mut gpui::TestAppContext) {
+        use gpui::Modifiers;
+        let (_fixture, app, cx) = review_past_the_limit(cx).await;
+        assert!(
+            cx.debug_bounds(caption_shown(UNAVAILABLE_CAPTION))
+                .is_some(),
+            "the bar says the review is unavailable"
+        );
+        assert!(
+            cx.debug_bounds(caption_shown(ORIGINAL_CAPTION)).is_none(),
+            "not that it shows the original Git diff"
+        );
+        let reset = cx.debug_bounds("reset-text-review").expect("Reset review");
+        cx.simulate_click(reset.center(), Modifiers::default());
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.error, None, "the diff is back");
+            assert_eq!(app.review.options, Options::default());
+        });
+        assert!(
+            cx.debug_bounds(caption_shown(ORIGINAL_CAPTION)).is_some(),
+            "the original diff's caption is back"
+        );
+        assert!(
+            cx.debug_bounds(caption_shown(UNAVAILABLE_CAPTION))
+                .is_none()
+        );
     }
 
     /// Presses Stage on the shown diff's first hunk, as its partial action
