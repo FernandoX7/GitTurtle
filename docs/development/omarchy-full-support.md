@@ -751,11 +751,7 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
-     - **FU18 (in flight, BASE `7eb00c46`):** (A) the line-tint extent across the editor's
-       whole row (decided 2026-11-05; `text.rs`, `split_diff.rs`, kit background pass), L.
-       (B) ghost Buttons at a text edge align their content (FU17-C item 3: ~22 sites + 6
-       uncertain across Settings, commit message, profiles, branch actions, worktrees,
-       activity, LFS, rewrite review, revision inspection, recovery drafts), M. (C) dialogs:
+     - **FU18 (in flight; A and B landed 2026-11-05):** (C) dialogs:
        every dialog within `dialog_width`'s margins (kit-width dialogs 6.5 px from a 461 px
        window's sides), nested dialogs' height cap, Enter on a focused body Button activates
        it, the narrow walk's dialog list guarded (`appearance.rs`, `width_walk.rs`, kit
@@ -789,7 +785,9 @@ cover current upstream x86-64 Omarchy.
          between the selection, matches and word tints confirmed by a test over every palette
          (2026-10-29 follow-up); with no reserved Find layer (over 64 retained editors) the
          FU17-B rule draws under every match's underline (`text.rs`, `split_diff.rs`); no app
-         test of Split's Find path with the rule; One Light's and Braden's hovered row beside
+         test of Split's Find path with the rule; under More contrast the Diff view's patch text
+         takes the fitted roles as Split does (decided 2026-11-05, design review of QA-104;
+         `text.rs`, `appearance.rs`); One Light's and Braden's hovered row beside
          the selected row reads heavier than the selected row (`appearance.rs`).
        - (later, after FU18-C) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
          text-field and checkbox focus rings at 2.27:1, under the 3:1 non-text rule (verify);
