@@ -362,9 +362,11 @@ The information flags work without a graphical session and do not open a
 repository or load saved app state. In the app, **Main Menu → About GitTurtle**
 (or **Command Palette → About GitTurtle**) shows the version, source revision,
 target and build profile. **Copy bug diagnostics** copies build information,
-display backend/scale, theme, density and text sizes. It includes no repository
-paths, source text, branch names, account details or credentials. Paste this
-with reproduction steps and the observed/expected behavior in a
+display backend/scale, theme and whether it follows the system appearance,
+density, text sizes and code font choice, and Reduce motion and Increase
+contrast as chosen and as in effect. It includes no
+repository paths, source text, branch names, account details or credentials.
+Paste this with reproduction steps and the observed/expected behavior in a
 [GitHub issue](https://github.com/FernandoX7/GitTurtle/issues).
 
 With no repository argument, the startup setting opens Projects or restores

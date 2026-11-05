@@ -713,9 +713,11 @@ impl GitTurtle {
         shortcuts::open_help(&mut self.dialog_hints, window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
-        // Diagnostics report fixed keys only: a custom theme reports its base,
-        // so a user-chosen theme name never enters a copied bug report, and the
-        // Omarchy theme reports "omarchy", not the desktop theme's name.
+        // Diagnostics report fixed keys only (`build_info::DisplaySettings`
+        // states the rule): a custom theme reports its base, so a user-chosen
+        // theme name never enters a copied bug report, and the Omarchy theme
+        // reports "omarchy", not the desktop theme's name. Reduce motion and
+        // Increase contrast report the choice and what the window does now.
         use appearance::custom::ThemeSelection;
         let theme = match self.effective_theme(cx).selection {
             ThemeSelection::Custom(id) => ThemeSelection::BuiltIn(
@@ -726,13 +728,20 @@ impl GitTurtle {
             ),
             selection => selection,
         };
-        let report = build_info::diagnostics(
-            window.scale_factor(),
+        let report = build_info::diagnostics(&build_info::DisplaySettings {
+            scale_factor: window.scale_factor(),
             theme,
-            self.settings.density,
-            self.settings.interface_text_size,
-            self.settings.code_text_size,
-        );
+            follow_system: self.settings.follow_system,
+            density: self.settings.density,
+            interface_text_size: self.settings.interface_text_size,
+            code_text_size: self.settings.code_text_size,
+            system_code_font: self.settings.system_code_font,
+            reduce_motion: (self.settings.reduce_motion, cx.reduce_motion()),
+            increase_contrast: (
+                self.settings.increase_contrast,
+                appearance::more_contrast(cx),
+            ),
+        });
         let details = cx.new(|_| AboutDetails { report });
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
