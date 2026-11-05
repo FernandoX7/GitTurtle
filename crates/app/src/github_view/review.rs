@@ -102,6 +102,8 @@ pub(super) struct ReviewState {
     source_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// The Changes box's height inside its border in the last layout, set as Source's is.
     patch_height: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// What Files measured in the last layout to fit the body ([`Panel::files_fit`]).
+    files_fit: std::rc::Rc<std::cell::Cell<FilesFit>>,
     /// The selected file's patch presentation, prepared with its rows on the read worker
     /// within Compare's text bounds; `None` while preparing and above them.
     presentation: Option<text::PatchPresentation>,
@@ -153,6 +155,7 @@ impl ReviewState {
             source_view: None,
             source_height: Default::default(),
             patch_height: Default::default(),
+            files_fit: Default::default(),
             presentation: None,
             // Compare's patch is redecorated where the app applies a palette; this panel
             // follows the applied palette itself.
@@ -1853,10 +1856,16 @@ impl Panel {
             .review
             .selected_file
             .and_then(|n| self.review.files.get(n));
+        let fit = self.files_fit(selected.is_some(), window, cx);
         let file_list = self
             .part("file-list", div(), cx)
-            .w(appearance::ui_size(210.))
-            .min_w(px(150.))
+            .map(|list| {
+                if fit.stacked {
+                    list.w_full()
+                } else {
+                    list.w(appearance::ui_size(210.)).min_w(px(150.))
+                }
+            })
             .flex_shrink_0()
             .flex()
             .flex_col()
@@ -1902,7 +1911,7 @@ impl Panel {
                         this.review_key("enter", false, window, cx);
                         cx.stop_propagation();
                     }))
-                    .h(FILE_LIST_HEIGHT)
+                    .h(fit.list)
                     .border_1()
                     .border_color(rgb(if self.ringed(&self.review.file_focus, cx) {
                         p.accent
@@ -2051,8 +2060,15 @@ impl Panel {
             // modes keeps the box's edge; Changes' range hint lies below it, beside the list's
             // pager, where it took the box's last 26 px only in Changes. Its first line centres
             // on the pager's row, where the page buttons centre their labels, wrapped or not.
-            // The column's text starts at one left edge, where the mode buttons at its edge
-            // start their labels, as the panel's does; the boxes keep the column's edge.
+            // Stacked below the list in a narrow body, the box takes the rest of the body
+            // ([`Panel::files_fit`]). The column's text starts at one left edge, where the mode
+            // buttons at its edge start their labels, as the panel's does; the boxes keep the
+            // column's edge.
+            let measured = self.review.files_fit.clone();
+            let (top_line, pinned) = (
+                self.review.top_line.clone(),
+                self.review.top_line_pinned.get(),
+            );
             self.part("file-content", div(), cx)
                 .debug_selector(|| "github-file-column".into())
                 .flex_1()
@@ -2065,7 +2081,25 @@ impl Panel {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .when(self.review.mode < 2, |content| content.h(FILE_LIST_HEIGHT))
+                        .when(self.review.mode < 2, |content| content.h(fit.content))
+                        // The title and the mode row above the box, which the box's height
+                        // leaves its five lines below, and the top line standing above the
+                        // body, prepainted before it, which takes the body's height.
+                        .on_children_prepainted(move |children, window, cx| {
+                            if let [title, _, content] = children[..] {
+                                let above = content.top() - title.top();
+                                let top_line = if pinned { top_line.get() } else { px(0.) };
+                                FilesFit::update(
+                                    &measured,
+                                    |fit| {
+                                        fit.above = above;
+                                        fit.top_line = top_line;
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            }
+                        })
                         .child(
                             label("github-file-title", title)
                                 .debug_selector(|| "github-file-title".into())
@@ -2148,15 +2182,36 @@ impl Panel {
         } else {
             div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().p_5().pl(super::text_inset()).flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").debug_selector(||"github-choose-file".into()).font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
         };
+        let measured = self.review.files_fit.clone();
         div()
             .flex()
             .flex_col()
             .gap_2()
             .child(
                 div()
+                    .debug_selector(|| "github-files".into())
                     .flex()
-                    .gap_3()
+                    .when(fit.stacked, |columns| columns.flex_col().gap_2())
+                    .when(!fit.stacked, |columns| columns.gap_3())
                     .min_w_0()
+                    // How much narrower than the dialog the columns are, from which each frame
+                    // takes their width as it starts ([`Panel::files_fit`]).
+                    .on_children_prepainted(move |children, window, cx| {
+                        let (Some(left), Some(right)) = (
+                            children
+                                .iter()
+                                .map(|child| child.left())
+                                .reduce(Pixels::min),
+                            children
+                                .iter()
+                                .map(|child| child.right())
+                                .reduce(Pixels::max),
+                        ) else {
+                            return;
+                        };
+                        let chrome = super::panel_width(window) - (right - left);
+                        FilesFit::update(&measured, |fit| fit.chrome = Some(chrome), window, cx);
+                    })
                     .child(file_list)
                     .child(content),
             )
@@ -2175,9 +2230,8 @@ impl Panel {
             .child(self.render_comment_composer(cx))
             .into_any_element()
     }
-    /// The exact patch, filling its column down to the file list's bottom edge in whole lines:
-    /// what a line does not fill, less than a line, lies below the text, in the editor's own
-    /// background.
+    /// The exact patch, filling its box ([`Panel::files_fit`]) in whole lines: what a line does
+    /// not fill, less than a line, lies below the text, in the editor's own background.
     fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(source) = &self.review.source else {
             return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").ml(super::text_inset()).into_any_element();
@@ -2287,10 +2341,10 @@ impl Panel {
                 )
                 .into_any_element();
         }
-        // Whole rows down to the file list's bottom edge, as Source shows whole lines, below
-        // the top inset Source's editor keeps above its text: what a row does not fill lies
-        // below them, measured from the box's height in the last layout, which the insets
-        // cannot change.
+        // Whole rows down to the box's foot ([`Panel::files_fit`]), as Source shows whole
+        // lines, below the top inset Source's editor keeps above its text: what a row does not
+        // fill lies below them, measured from the box's height in the last layout, which the
+        // insets cannot change.
         let laid_out = self.review.patch_height.clone();
         let measured = laid_out.clone();
         let row_height = patch_row_height(window.scale_factor());
@@ -2344,6 +2398,181 @@ impl Panel {
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }
+/// What Files measured in the last layout to fit the panel's body ([`Panel::files_fit`]): how
+/// much narrower than the dialog the width its columns share is, the dialog's sides, the body's
+/// ring room and its scroll cue's gutter, which no window or text size changes, the height of
+/// the file's title and mode row above the file's box, and the height of the top line while it
+/// stands above the body, as it does while a conversation is open, which the body gives up.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(super) struct FilesFit {
+    /// `None` until Files has been laid out.
+    chrome: Option<Pixels>,
+    above: Pixels,
+    top_line: Pixels,
+}
+#[cfg(test)]
+thread_local! {
+    /// How many times Files' measures changed and drew the window again ([`FilesFit::update`]),
+    /// for a test to count the frames a resize takes to settle.
+    pub(super) static FILES_FIT_REDRAWS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+impl FilesFit {
+    /// Applies `change` to the measures in `fit`, drawing the window again where they change, so
+    /// the next frame lays Files out from them. They settle in that frame: the dialog's width
+    /// and the body's height come from the window as each frame starts, the chrome beside the
+    /// columns never changes once measured, and the height above the box follows from the
+    /// width the frame lays the columns out at, which nothing measured here moves.
+    fn update(
+        fit: &std::rc::Rc<std::cell::Cell<FilesFit>>,
+        change: impl FnOnce(&mut FilesFit),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mut next = fit.get();
+        change(&mut next);
+        if next != fit.get() {
+            fit.set(next);
+            #[cfg(test)]
+            FILES_FIT_REDRAWS.with(|redraws| redraws.set(redraws.get() + 1));
+            window.defer(cx, |window, _| window.refresh());
+        }
+    }
+}
+/// How Files lays its columns out in the body ([`Panel::files_fit`]): stacked or side by side,
+/// the changed-file list's height and the height of the file's box, its title, mode row and
+/// patch or Source.
+pub(super) struct FilesLayout {
+    stacked: bool,
+    list: Pixels,
+    content: Pixels,
+}
+impl Panel {
+    /// How Files lays its columns out in the body, from the window and what the last frame
+    /// measured ([`FilesFit`]), with `file` selected or not. Side by side where the file's
+    /// column beside the 210 px changed-file list (scaled with the text) holds its mode row,
+    /// Changes, Source, Threads and Comment on selection, on one line, measured from the
+    /// interface font at the interface size; otherwise stacked, the list above the file, where
+    /// the mode row wraps inside the body's width. Stacked, the list takes at most half the
+    /// body's height, scrolling inside it, and the file's box the rest of the body below the
+    /// list's pager, so with the list's top at the body's top the two fill the body inside the
+    /// ring's room; side by side, both boxes take the body's height less the pager's row and
+    /// the ring's room, at most 324 px. Either way the patch or Source keeps at least five
+    /// lines. With the file's column always beside the list and both boxes a fixed 324 px, the
+    /// mode row ran past the body's right edge with its rings (at 13 pt in a 461 × 490 window
+    /// the column was 153 px wide, and the rings reached 26 px past the edge), the list was
+    /// taller than the body, its ring's top cut, and at 18 pt the patch and Source had no
+    /// height at all.
+    pub(super) fn files_fit(&self, file: bool, window: &Window, cx: &App) -> FilesLayout {
+        let measured = self.review.files_fit.get();
+        let room = appearance::button_ring_room(cx);
+        let rem = window.rem_size();
+        // The body takes the room the dialog leaves it, less the top line standing above it while
+        // a conversation is open, which Files fills, on whole pixels. Sized from the dialog's
+        // room alone, at 13 pt in a 461 × 490 window with a reply open and a notice above the
+        // body, the stacked list took 146.5 px of a 266.5 px body.
+        let body = window.pixel_snap(super::body_max_height(window) - measured.top_line);
+        let width = match measured.chrome {
+            Some(chrome) => super::panel_width(window) - chrome,
+            None => {
+                self.review.body_scroll.bounds().size.width
+                    - room * 2.
+                    - crate::tags::ScrollCue::gutter()
+            }
+        };
+        let beside = appearance::ui_size(210.).max(px(150.)) + rem * 0.75;
+        let stacked = width < beside + mode_row_width(self.review.composing.is_some(), window);
+        let inner = body - room * 2.;
+        let pager = appearance::ui_size(PAGER_ROW);
+        let least = measured.above
+            + if file {
+                self.five_lines(window, cx)
+            } else {
+                px(0.)
+            };
+        if stacked {
+            let list = FILE_LIST_HEIGHT.min(body / 2.);
+            let rest = inner - list - pager - rem;
+            FilesLayout {
+                stacked,
+                list,
+                content: rest.max(least),
+            }
+        } else {
+            let list = FILE_LIST_HEIGHT.min(inner - pager - rem * 0.5);
+            FilesLayout {
+                stacked,
+                list,
+                content: list.max(least),
+            }
+        }
+    }
+    /// The height of the selected file's box in Changes or Source that shows five whole lines
+    /// of its patch inside its border, below its top inset and Source's Find bar, with a pixel
+    /// to spare for layout's rounding; none in Threads, whose box takes its content's height.
+    fn five_lines(&self, window: &Window, cx: &App) -> Pixels {
+        let edges = px(2.) + px(1.);
+        match self.review.mode {
+            0 => patch_row_height(window.scale_factor()) * 5. + EDITOR_PADDING + edges,
+            1 => match &self.review.source {
+                Some(source) => {
+                    let line = source
+                        .read(cx)
+                        .line_height()
+                        .unwrap_or(appearance::code_text() * EDITOR_LINE_HEIGHT);
+                    line * 5. + EDITOR_PADDING + editor_find::panel_height(source, cx) + edges
+                }
+                None => px(0.),
+            },
+            _ => px(0.),
+        }
+    }
+}
+/// The width the file's mode row takes on one line: Changes, Source and Threads, then Comment
+/// on selection, or Continue comment while a comment is open, with its icon, each as the
+/// shared Button lays it out ([`crate::labelled_button_width`]), and the row's gaps between
+/// its five children, the spacer before the last among them. Measured again only when the font,
+/// the sizes, the display's scale or the last Button's label change: the key they are read by
+/// is read once a render (a view's render builds the font's default features at each read, an
+/// allocation), where each of the four labels read it.
+fn mode_row_width(composing: bool, window: &Window) -> Pixels {
+    /// The font and sizes, the display's scale and whether a comment is open.
+    type RowKey = (crate::views::LineKey, f32, bool);
+    thread_local! {
+        static ROW: std::cell::RefCell<Option<(RowKey, Pixels)>> =
+            const { std::cell::RefCell::new(None) };
+        static CHANGES: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+        static SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+        static THREADS: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+        static COMMENT: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    }
+    let key = (
+        crate::views::LineKey::current(window),
+        window.scale_factor(),
+        composing,
+    );
+    if let Some(width) = ROW.with(|row| match &*row.borrow() {
+        Some((measured, width)) if *measured == key => Some(*width),
+        _ => None,
+    }) {
+        return width;
+    }
+    let plain = |label: &str, cache| {
+        crate::placed_button_width(crate::label_text_width(label, cache, window), false, window)
+    };
+    let comment = if composing {
+        "Continue comment"
+    } else {
+        "Comment on selection"
+    };
+    let width = plain("Changes", &CHANGES)
+        + plain("Source", &SOURCE)
+        + plain("Threads", &THREADS)
+        + crate::labelled_button_width(comment, &COMMENT, window)
+        + window.rem_size() * 0.25 * 4.;
+    ROW.with(|row| *row.borrow_mut() = Some((key, width)));
+    width
+}
 fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
     div()
         .id(("github-patch-line", index))
@@ -2364,7 +2593,7 @@ fn range_hint() -> String {
     )
 }
 
-/// The changed-file list's height; Source fills its column down to the same edge.
+/// The tallest the changed-file list and the file's box beside it grow ([`Panel::files_fit`]).
 const FILE_LIST_HEIGHT: Pixels = px(324.);
 /// The file list's pager row: a compact Button's height at the default interface size.
 const PAGER_ROW: f32 = 28.;

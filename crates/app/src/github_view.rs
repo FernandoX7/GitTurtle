@@ -180,6 +180,11 @@ fn dialog_chrome(window: &Window) -> Pixels {
     const PADDING: Pixels = px(16.);
     EDGE * 2. + PADDING * 3. + window.rem_size() * 1.5 + appearance::ui_size(28.)
 }
+/// The panel's width in `window`: at most 1,100 px, less where the window is narrower
+/// ([`appearance::dialog_width`]).
+fn panel_width(window: &Window) -> Pixels {
+    appearance::dialog_width(px(1100.), window)
+}
 /// The tallest the panel's scrolling body grows in `window`, its padding included: the room
 /// the dialog's height cap leaves it ([`appearance::dialog_max_height`], the bound every
 /// dialog takes, from a tenth of the window down to the margin above the status bar), less
@@ -350,7 +355,7 @@ impl GitTurtle {
                         .ml(text_inset()),
                 )
                 .on_ok(|_, _, _| false)
-                .width(appearance::dialog_width(px(1100.), window))
+                .width(panel_width(window))
                 // No `appearance::dialog_max_height` here: the panel bounds
                 // its own scrolling body to the room that cap leaves it
                 // (`body_max_height`), and reveals the control Tab moves onto
@@ -8925,8 +8930,14 @@ mod tests {
                     }
                 }
                 let listed = rows.len();
-                assert!(listed > 1, "{at}: the file list shows its rows: {rows:?}");
-                let (clip, room) = if mode == 1 {
+                // At 18 pt a file's row is 75 px tall, and the list, at most half the body,
+                // shows one of them whole ([`files_fits_a_narrow_body`]); at 13 pt, several.
+                let least = if interface == 18 { 1 } else { 2 };
+                assert!(
+                    listed >= least,
+                    "{at}: the file list shows its rows: {rows:?}"
+                );
+                let clip = if mode == 1 {
                     let clip = cx.debug_bounds("github-source-text");
                     let (view, text, line) = cx.read(|cx| {
                         let source = panel.read(cx).review.source.clone().expect("Source");
@@ -8951,7 +8962,7 @@ mod tests {
                         }
                         top += line;
                     }
-                    (clip, line)
+                    clip
                 } else {
                     let clip = cx.debug_bounds("github-patch-rows");
                     for selector in &patch_rows {
@@ -8961,13 +8972,13 @@ mod tests {
                             rows.push((selector.to_string(), row.top(), row.bottom()));
                         }
                     }
-                    (clip, px(18.))
+                    clip
                 };
-                // At 18 pt the file column's fixed height leaves the file's content less than
-                // a row in a 461 px window, an open finding of FU18-F's reveal sweep.
-                let content = clip.map_or(px(0.), |clip| clip.size.height);
+                // The file's content shows five lines at least, at 18 pt too, where the file
+                // column's fixed 324 px once left it less than a row
+                // ([`files_fits_a_narrow_body`]).
                 assert!(
-                    content < room * 2. || rows.len() > listed + 1,
+                    rows.len() >= listed + 5,
                     "{at}: the file's content shows its rows in {clip:?}: {rows:?}"
                 );
                 let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
@@ -8990,7 +9001,293 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// What Files' lists and clips hide is no line of the body, at 13 pt in a 461 × 490 window: the changed-file list, holding twelve files, scrolled half a row inside itself
+    /// Files fits a narrow body (decision, 2026-11-05), at 13, 17 and 18 pt in windows 430 to
+    /// 500 px wide, every 10 px, 490 px tall, in Changes and in Source: the changed-file list
+    /// stands above the file and takes at most half the body's height, its box with its ring's
+    /// room inside the body; the mode row, Changes, Source, Threads and Comment on selection,
+    /// wraps inside the body's width, each control's ring inside the body's right edge; and the
+    /// patch or Source shows at least five whole lines, with the list's top at the body's top
+    /// the two filling the body unless five lines need more. In a 1,480 × 800 window the file
+    /// stays beside the list, the boxes' feet level. Beside the list in every window, the mode
+    /// row ran past the body's right edge (its rings reached x 449.5 at 13 pt and 607 at 18 pt
+    /// in a 461 px window, the body's edge at 423), the list's 324 px box was taller than the
+    /// body, its ring's top cut, and at 18 pt the patch and Source had no height (FU18-F's
+    /// sweep).
+    #[gpui::test]
+    async fn files_fits_a_narrow_body(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let slack = px(0.5);
+        let controls = [
+            "github-file-mode-0",
+            "github-file-mode-1",
+            "github-file-mode-2",
+            "github-inline-start",
+        ];
+        let mut sizes: Vec<(u8, f32, f32)> = [13u8, 17, 18]
+            .into_iter()
+            .flat_map(|size| (430..=500).step_by(10).map(move |w| (size, w as f32, 490.)))
+            .collect();
+        sizes.extend([(13, 1480., 800.), (18, 1480., 800.)]);
+        for (interface, width, height) in sizes {
+            for mode in [0, 1] {
+                let at = format!("mode {mode} at {interface} pt in {width} × {height}");
+                crate::focus_ring::sweep::interface_size(cx, interface);
+                cx.simulate_resize(size(px(width), px(height)));
+                let (pull, files) = (pull.clone(), files.clone());
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull);
+                        panel.review.show_list = false;
+                        panel.review.section = Section::Files;
+                        panel.review.files = files;
+                        panel.review.selected_file = None;
+                        panel.select_review_file(0, window, cx);
+                    })
+                });
+                settle_panel(&app, cx).await;
+                if mode == 1 {
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| panel.review_source(1, window, cx))
+                    });
+                    settle_panel(&app, cx).await;
+                }
+                for _ in 0..4 {
+                    crate::width_walk::frame(cx);
+                }
+                // The list's top at the body's top, inside the ring's room.
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let list = cx.debug_bounds("github-file-focus").expect("the file list");
+                let offset = (scroll.offset().y - (list.top() - body.top() - room))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), offset));
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let list = cx.debug_bounds("github-file-focus").expect("the file list");
+                let column = cx.debug_bounds("github-file-column").expect("the file");
+                let (clip, line, name) = if mode == 1 {
+                    let line = cx.read(|cx| {
+                        let source = panel.read(cx).review.source.clone().expect("Source");
+                        source.read(cx).line_height().expect("Source has painted")
+                    });
+                    (
+                        cx.debug_bounds("github-source-text"),
+                        line,
+                        "github-source-patch",
+                    )
+                } else {
+                    let row = cx.debug_bounds("github-patch-line-0").expect("a patch row");
+                    (
+                        cx.debug_bounds("github-patch-rows"),
+                        row.size.height,
+                        "github-patch",
+                    )
+                };
+                let clip = clip.expect("the file's text");
+                let content = cx.debug_bounds(name).expect("the file's box");
+                assert!(
+                    clip.size.height >= line * 5. - slack,
+                    "{at}: the file's text {clip:?} shows five lines of {line:?}"
+                );
+                for control in controls {
+                    let bounds = cx.debug_bounds(control).expect("a mode control");
+                    assert!(
+                        bounds.left() - room >= body.left() - slack
+                            && bounds.right() + room <= body.right() + slack,
+                        "{at}: {control} {bounds:?} with its ring's room lies inside the body \
+                         {body:?}"
+                    );
+                }
+                if width > 1000. {
+                    assert!(
+                        column.left() > list.right()
+                            && (content.bottom() - list.bottom()).abs() <= slack,
+                        "{at}: the file {column:?}, its box {content:?}, stands beside the list \
+                         {list:?}, their feet level"
+                    );
+                    continue;
+                }
+                assert!(
+                    column.top() > list.bottom(),
+                    "{at}: the file {column:?} stands below the list {list:?}"
+                );
+                assert!(
+                    list.size.height <= body.size.height / 2. + slack
+                        && list.top() >= body.top() + room - slack,
+                    "{at}: the list {list:?} takes at most half the body {body:?}, its ring's \
+                     room inside it"
+                );
+                // The file's box takes the rest of the body, but five lines may need more.
+                let five = clip.size.height < line * 6.;
+                assert!(
+                    (content.bottom() - (body.bottom() - room)).abs() <= px(1.)
+                        || (five && content.bottom() > body.bottom() - room),
+                    "{at}: the file's box {content:?} ends at the body's foot {body:?}, less \
+                     the ring's room, or shows its five lines past it"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Files fits the body a conversation's pinned top line leaves it, at 13 and 18 pt in a
+    /// 461 × 490 window: with a reply open, which the section change keeps, and a notice on
+    /// the top line, which then stands above the body and takes its height, the stacked list
+    /// takes at most half the body drawn and the file's box ends at its foot, less the ring's
+    /// room, unless five lines need more.
+    #[gpui::test]
+    async fn files_fits_the_body_a_pinned_top_line_leaves(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let slack = px(0.5);
+        for interface in [13, 18] {
+            let at = format!("{interface} pt in 461 × 490");
+            show_overview(&panel, &pull, (interface, 461., 490.), cx);
+            let files = files.clone();
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    let target = panel.conversations.threads[0].target.clone();
+                    panel.begin_reply(target, window, cx);
+                    // After the reply opens, which clears a stale notice.
+                    panel.notice = Some("Fixture PRs refreshed.".into());
+                    panel.review.files = files;
+                    panel.review.selected_file = None;
+                    panel.change_section(Section::Files, window, cx);
+                    panel.select_review_file(0, window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let pinned = cx.read(|cx| {
+                let panel = panel.read(cx);
+                (
+                    panel.conversations.active.is_some(),
+                    panel.review.top_line.get(),
+                )
+            });
+            assert!(
+                pinned.0 && pinned.1 > px(0.),
+                "{at}: the reply stays open in Files, its top line above the body: {pinned:?}"
+            );
+            // The list's top at the body's top, inside the ring's room.
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let list = cx.debug_bounds("github-file-focus").expect("the file list");
+            let offset = (scroll.offset().y - (list.top() - body.top() - room))
+                .clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let list = cx.debug_bounds("github-file-focus").expect("the file list");
+            let content = cx.debug_bounds("github-patch").expect("the file's box");
+            let clip = cx.debug_bounds("github-patch-rows").expect("the rows");
+            let row = cx.debug_bounds("github-patch-line-0").expect("a patch row");
+            assert!(
+                list.size.height <= body.size.height / 2. + slack,
+                "{at}: the list {list:?} takes at most half the body {body:?}"
+            );
+            let five = clip.size.height < row.size.height * 6.;
+            assert!(
+                (content.bottom() - (body.bottom() - room)).abs() <= px(1.)
+                    || (five && content.bottom() > body.bottom() - room),
+                "{at}: the file's box {content:?} ends at the body's foot {body:?}, less the \
+                 ring's room, or shows its five lines past it"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Files settles in one frame after a resize or a text size change and then holds still,
+    /// from side by side to stacked and back, at 13 and 18 pt: the frame drawn at the new size
+    /// lays it out from the window, and only the height of the file's title and mode row, which
+    /// wrap anew at the new width, can ask for one more ([`review::FilesFit`]). Measured from
+    /// the last frame, the columns' width and the body's height took a frame to follow a
+    /// resize, and the height above the box, measured in the layout they replaced, another.
+    #[gpui::test]
+    async fn files_settles_in_a_frame_after_a_resize(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull.clone());
+                panel.review.show_list = false;
+                panel.review.section = Section::Files;
+                panel.review.files = files.clone();
+                panel.review.selected_file = None;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        settle_panel(&app, cx).await;
+        let redraws = || review::FILES_FIT_REDRAWS.with(|redraws| redraws.replace(0));
+        let steps: [(u8, f32, f32); 7] = [
+            (13, 461., 490.),
+            (13, 1480., 800.),
+            (18, 1480., 800.),
+            (18, 461., 490.),
+            (18, 500., 490.),
+            (13, 500., 490.),
+            (13, 1480., 800.),
+        ];
+        for (interface, width, height) in steps {
+            let at = format!("{interface} pt in {width} × {height}");
+            redraws();
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            settle_panel(&app, cx).await;
+            let after_text = redraws();
+            cx.simulate_resize(size(px(width), px(height)));
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let after_resize = redraws();
+            assert!(
+                after_text <= 1 && after_resize <= 1,
+                "{at}: Files drew {after_text} more frames after the text size changed and \
+                 {after_resize} after the resize"
+            );
+            let list = cx.debug_bounds("github-file-focus").expect("the file list");
+            let column = cx.debug_bounds("github-file-column").expect("the file");
+            assert!(
+                if width > 1000. {
+                    column.left() > list.right()
+                } else {
+                    column.top() > list.bottom()
+                },
+                "{at}: the file {column:?} beside the list {list:?} in a wide window, below it \
+                 in a narrow one"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// What Files' lists and clips hide is no line of the body, at 13 and 18 pt in a 461 × 490
+    /// window: the changed-file list, holding twelve files, scrolled half a row inside itself
     /// and standing past the body's top edge, and Source's text, standing past the body's
     /// foot, each tell the body their viewport ([`review::clipped`]), so the row the list's own
     /// edge cuts beyond the body's, and the part of a row under Source's clip, inside the
@@ -9043,7 +9340,7 @@ mod tests {
                 .filter(|line| ours(line))
                 .collect::<Vec<_>>()
         };
-        for interface in [13] {
+        for interface in [13, 18] {
             let at = format!("{interface} pt in 461 × 490");
             crate::focus_ring::sweep::interface_size(cx, interface);
             cx.simulate_resize(size(px(461.), px(490.)));
