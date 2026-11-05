@@ -362,7 +362,11 @@ fn check_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-fn scaled_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+/// The size of a preview of a `width` × `height` image at `max_edge`: never
+/// enlarged, its aspect ratio kept and each side at least one pixel.
+/// `decode_image` applies it after capping `max_edge` at
+/// [`MAX_PREVIEW_EDGE`], and the confined Linux helper at its own 1,600.
+pub fn scaled_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
     let edge = width.max(height);
     if edge <= max_edge {
         return (width, height);
@@ -374,14 +378,70 @@ fn scaled_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
     (scale(width), scale(height))
 }
 
-fn decode_raster(bytes: &[u8], format: ImageFormat, max_edge: u32) -> Result<ImagePreview> {
+/// The dimensions `bytes`' image decodes to, read from its header without
+/// decoding a pixel, so that a caller can bound the work before it starts.
+/// It is never more than the decoder produces from that header, so a
+/// budget checked against it refuses nothing the decoder would fit: a
+/// raster's through the header read `decode_image` itself begins with, and
+/// on Linux a JPEG 2000 image's (JP2 or a raw codestream) as the confined
+/// helper decodes it ([`jpeg2000`]'s bounded box and SIZ reader, never
+/// hayro). `None` where nothing is read here: SVG, AVIF and HEIF; a JP2
+/// file whose brand is not `jp2 `, including a JP2-compatible JPX the helper
+/// decodes; JPEG 2000 on macOS, whose ImageIO may draw any size up to the
+/// reference grid, and on platforms that do not decode it. `None` too where
+/// the header cannot be read, and where the decoder refuses the image from
+/// its header anyway (the input, source and allocation bounds), so that its
+/// own refusal stays the one shown. The size is the stored one, before any
+/// orientation, which can swap the sides but never changes their product or
+/// a preview's. A header can lie: a caller that budgets decoded pixels
+/// still checks the pixels a decode returns.
+pub fn declared_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.is_empty() || bytes.len() > MAX_INPUT_BYTES {
+        return None;
+    }
+    let (width, height) = match image::guess_format(bytes) {
+        Ok(
+            format @ (ImageFormat::Png
+            | ImageFormat::Jpeg
+            | ImageFormat::WebP
+            | ImageFormat::Gif
+            | ImageFormat::Bmp
+            | ImageFormat::Tiff
+            | ImageFormat::Ico),
+        ) => {
+            let decoder = raster_decoder(bytes, format).ok()?;
+            if decoder.total_bytes() > MAX_DECODER_BYTES {
+                return None;
+            }
+            decoder.dimensions()
+        }
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        _ if metadata::jpeg2000_format(bytes).is_some() => {
+            jpeg2000::dimensions(bytes).ok()??.declared()
+        }
+        _ => return None,
+    };
+    check_dimensions(width, height).ok()?;
+    Some((width, height))
+}
+
+/// A decoder for a raster `format` that has read `bytes`' header, within the
+/// source-edge and allocation limits.
+fn raster_decoder(bytes: &[u8], format: ImageFormat) -> Result<impl ImageDecoder + '_> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_SOURCE_EDGE);
     limits.max_image_height = Some(MAX_SOURCE_EDGE);
     limits.max_alloc = Some(MAX_DECODER_BYTES);
     reader.limits(limits);
-    let mut decoder = reader.into_decoder().context("Cannot read image header")?;
+    reader.into_decoder().context("Cannot read image header")
+}
+
+fn decode_raster(bytes: &[u8], format: ImageFormat, max_edge: u32) -> Result<ImagePreview> {
+    let mut decoder = raster_decoder(bytes, format)?;
     let (width, height) = decoder.dimensions();
     check_dimensions(width, height)?;
     ensure!(
@@ -1308,5 +1368,100 @@ mod tests {
         assert!(is_image_path(Path::new("icon.svg")));
         assert!(!is_image_path(Path::new("photo.svg.exe")));
         assert!(!is_image_path(Path::new("photo")));
+    }
+
+    /// A tiny PNG whose header declares `width` × `height`, with the
+    /// header's CRC recomputed and its one-pixel image data left as it was.
+    fn png_declaring(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = encoded(RgbaImage::new(1, 1), ImageFormat::Png);
+        bytes[16..20].copy_from_slice(&width.to_be_bytes());
+        bytes[20..24].copy_from_slice(&height.to_be_bytes());
+        let mut crc = !0_u32;
+        for &byte in &bytes[12..29] {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 & (0_u32.wrapping_sub(crc & 1)));
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        bytes
+    }
+
+    /// The declared size is read from the header alone, for every raster
+    /// format `decode_image` decodes and for JPEG 2000 (JP2 and a raw
+    /// codestream): a PNG that declares 3,000 × 2,000 over one pixel of image
+    /// data reads as that size, which its decode refuses. Nothing is
+    /// reported for the formats no header reader covers here, for a header
+    /// cut short, and for one past the source bounds, whose decode refuses
+    /// it with its own sentence.
+    #[test]
+    fn declared_dimensions_read_headers_without_decoding_pixels() {
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::WebP,
+            ImageFormat::Gif,
+            ImageFormat::Bmp,
+            ImageFormat::Tiff,
+            ImageFormat::Ico,
+        ] {
+            let bytes = encoded(RgbaImage::new(7, 5), format);
+            assert_eq!(declared_dimensions(&bytes), Some((7, 5)), "{format:?}");
+        }
+        let lying = png_declaring(3000, 2000);
+        assert_eq!(declared_dimensions(&lying), Some((3000, 2000)));
+        assert!(decode_image(&lying, "lying.png", 100).is_err());
+        // JPEG 2000 is read where the confined helper decodes it, at the
+        // size it decodes to: a 4,000 × 1,000 codestream whose component
+        // samples every fourth row decodes to 4,000 × 250, not the default
+        // size's 4,000 × 1,000. macOS's ImageIO may draw any size up to the
+        // grid, so nothing is read there.
+        let helper = cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ));
+        let mut subsampled = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+        for value in [4000_u32, 1000, 0, 0, 4000, 1000, 0, 0] {
+            subsampled.extend(value.to_be_bytes());
+        }
+        subsampled.extend([0, 1, 7, 1, 4]);
+        assert_eq!(
+            declared_dimensions(&subsampled),
+            helper.then_some((4000, 250))
+        );
+        let fixtures: [(&[u8], (u32, u32)); 4] = [
+            (
+                include_bytes!("../tests/fixtures/half-red-blue.jp2"),
+                (64, 64),
+            ),
+            (
+                include_bytes!("../tests/fixtures/half-red-blue.j2k"),
+                (64, 64),
+            ),
+            (
+                include_bytes!("../tests/fixtures/jpeg2000-large.jp2"),
+                (1024, 768),
+            ),
+            (
+                include_bytes!("../tests/fixtures/jpeg2000-subsampled.jp2"),
+                (64, 48),
+            ),
+        ];
+        for (bytes, size) in fixtures {
+            assert_eq!(declared_dimensions(bytes), helper.then_some(size));
+        }
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"/>"#;
+        let unread: [&[u8]; 7] = [
+            include_bytes!("../tests/fixtures/half-red-blue.avif"),
+            include_bytes!("../tests/fixtures/half-red-blue.heic"),
+            svg,
+            b"",
+            &lying[..20],
+            &png_declaring(8000, 8000),
+            &include_bytes!("../tests/fixtures/half-red-blue.j2k")[..30],
+        ];
+        for bytes in unread {
+            assert_eq!(declared_dimensions(bytes), None);
+        }
     }
 }

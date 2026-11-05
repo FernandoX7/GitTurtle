@@ -9,6 +9,12 @@ const MAX_SOURCE: usize = 256 * 1024;
 const MAX_NODES: usize = 16_384;
 const MAX_BLOCKS: usize = 2048;
 const MAX_BLOCK_BYTES: usize = 16 * 1024;
+/// The longer edge, in pixels, a document's local images are decoded to.
+const IMAGE_EDGE: u32 = 1000;
+/// The decoded RGBA, in bytes, a document's local images may hold together.
+const PIXEL_BUDGET: usize = 16 * 1024 * 1024;
+/// What an image says in its place once the others have used the budget.
+const OVER_BUDGET: &str = "Markdown images exceed the 16 MiB decoded-pixel budget";
 
 #[derive(Clone, Copy, Default)]
 struct Style {
@@ -413,7 +419,7 @@ pub fn capture_assets(
             cancellation,
         );
         check()?;
-        let mut pixel_budget = 16 * 1024 * 1024usize;
+        let mut pixel_budget = PIXEL_BUDGET;
         // Once one of this document's AVIF or JPEG 2000 images times out or
         // stops its helper, the rest are not sent to one (requirement 17).
         let mut images = crate::image_helper::DocumentImages::default();
@@ -429,24 +435,22 @@ pub fn capture_assets(
                     if let Some(asset) = result.asset {
                         let decoded = (|| {
                             check()?;
-                            anyhow::ensure!(
-                                pixel_budget > 0,
-                                "Markdown images exceed the 16 MiB decoded-pixel budget"
-                            );
-                            // The document's own check kills a helper as
-                            // soon as the document is closed or replaced.
-                            let decoded = images.decode(
-                                &asset.bytes,
-                                &asset.path.to_string_lossy(),
-                                1000,
-                                &check,
-                            )?;
+                            let decoded = decode_within(pixel_budget, &asset.bytes, || {
+                                #[cfg(test)]
+                                DECODED.with_borrow_mut(|decoded| {
+                                    decoded.push(asset.path.to_string_lossy().into_owned());
+                                });
+                                // The document's own check kills a helper as
+                                // soon as the document is closed or replaced.
+                                images.decode(
+                                    &asset.bytes,
+                                    &asset.path.to_string_lossy(),
+                                    IMAGE_EDGE,
+                                    &check,
+                                )
+                            })?;
                             check()?;
                             let bytes = decoded.rgba.len();
-                            anyhow::ensure!(
-                                bytes <= pixel_budget,
-                                "Markdown images exceed the 16 MiB decoded-pixel budget"
-                            );
                             let render = worker::render_image(&decoded)?;
                             check()?;
                             pixel_budget -= bytes;
@@ -485,6 +489,39 @@ pub fn capture_assets(
         }
     }
     check()
+}
+
+/// One of a document's local images, `bytes`, decoded by `decode` within
+/// the `remaining` bytes of its decoded-pixel budget. The size the image's
+/// header declares (`gitturtle_preview::declared_dimensions`), at the edge
+/// it is decoded to, bounds the work before it starts: an image that cannot
+/// fit is refused without being decoded, where QA-93's document of 32 JPEG
+/// 2000 images spent about 8 s decoding the images it then refused. A
+/// header can lie, so the decoded pixels are checked again; an image whose
+/// header is not read here is decoded as before.
+fn decode_within(
+    remaining: usize,
+    bytes: &[u8],
+    decode: impl FnOnce() -> anyhow::Result<gitturtle_preview::ImagePreview>,
+) -> anyhow::Result<gitturtle_preview::ImagePreview> {
+    anyhow::ensure!(remaining > 0, OVER_BUDGET);
+    if let Some((width, height)) = gitturtle_preview::declared_dimensions(bytes) {
+        let (width, height) = gitturtle_preview::scaled_dimensions(width, height, IMAGE_EDGE);
+        anyhow::ensure!(
+            u64::from(width) * u64::from(height) * 4 <= remaining as u64,
+            OVER_BUDGET
+        );
+    }
+    let decoded = decode()?;
+    anyhow::ensure!(decoded.rgba.len() <= remaining, OVER_BUDGET);
+    Ok(decoded)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The local images this thread's captures sent to their decoder, by
+    /// path, in order.
+    static DECODED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 struct Builder<'a, F> {
@@ -1752,6 +1789,185 @@ mod tests {
         assert_eq!(std::fs::read(path.join(".git/index")).unwrap(), index);
         control.cancel();
         assert!(capture_assets(&mut next, &repo, &file, &origins, &control).is_err());
+    }
+    /// A raw JPEG 2000 codestream of one 8-bit component sampled every
+    /// `sampling` columns and rows that declares `width` × `height` in its
+    /// SIZ marker and holds nothing after it.
+    fn codestream_declaring(width: u32, height: u32, sampling: (u8, u8)) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+        for value in [width, height, 0, 0, width, height, 0, 0] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes.extend([0, 1, 7, sampling.0, sampling.1]);
+        bytes
+    }
+    /// QA-93: a document's image is refused before it is decoded once the
+    /// size its header declares, at the 1,000-pixel edge images are decoded
+    /// to, would take more than is left of the decoded-pixel budget. Four
+    /// 1,000 × 1,000 PNGs take 16,000,000 of its 16,777,216 bytes, so a
+    /// fifth, and a JPEG 2000 codestream declaring 2,000 × 1,500 (1,000 ×
+    /// 750 at that edge, as QA-93's were), each say the budget is spent
+    /// without reaching a decoder, while a 10 × 10 PNG after them still fits
+    /// and renders. The 32 JPEG 2000 images of QA-93's document were each
+    /// decoded, about 8 s, before 28 of them were refused.
+    #[test]
+    fn images_past_the_pixel_budget_are_refused_before_they_are_decoded() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "Markdown Fixture"]);
+        git(path, &["config", "user.email", "fixture@example.invalid"]);
+        std::fs::create_dir(path.join("docs")).unwrap();
+        // JPEG 2000's size is read where the confined helper decodes it
+        // (Linux): macOS's ImageIO may draw any size up to the grid.
+        let helper = cfg!(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ));
+        let mut names = vec!["a.png", "b.png", "c.png", "d.png", "e.png"];
+        names.extend(helper.then_some("f.j2k"));
+        names.push("g.png");
+        let source = names
+            .iter()
+            .map(|name| format!("![{name}]({name})\n\n"))
+            .collect::<String>();
+        std::fs::write(path.join("docs/readme.md"), &source).unwrap();
+        for (shade, name) in (0_u8..).zip(&names[..5]) {
+            image::RgbaImage::from_pixel(1000, 1000, image::Rgba([shade * 40, 0, 0, 255]))
+                .save(path.join("docs").join(name))
+                .unwrap();
+        }
+        if helper {
+            std::fs::write(
+                path.join("docs/f.j2k"),
+                codestream_declaring(2000, 1500, (1, 1)),
+            )
+            .unwrap();
+        }
+        image::RgbaImage::from_pixel(10, 10, image::Rgba([0, 255, 0, 255]))
+            .save(path.join("docs/g.png"))
+            .unwrap();
+        git(path, &["add", "."]);
+        git(path, &["commit", "-qm", "figures"]);
+        let head = git(path, &["rev-parse", "HEAD"]);
+        let oid = git(path, &["rev-parse", "HEAD:docs/readme.md"]);
+        let repo = GitRepository::open(path).unwrap();
+        let file = FileChange {
+            old_oid: None,
+            new_oid: Some(oid),
+            old_path: None,
+            new_path: Some("docs/readme.md".into()),
+            old_mode: "000000".into(),
+            new_mode: "100644".into(),
+            status: gitturtle_core::ChangeStatus::Added,
+        };
+        let control = gitturtle_core::HistoryCancellation::default();
+        let mut comparison = prepare(&source, &source, &file, || Ok(()))
+            .unwrap()
+            .unwrap();
+        DECODED.take();
+        capture_assets(
+            &mut comparison,
+            &repo,
+            &file,
+            &Origins::revisions(None, Some(head)),
+            &control,
+        )
+        .unwrap();
+        assert_eq!(
+            comparison
+                .new
+                .image_identities()
+                .map(|(pixels, error)| (pixels.is_some(), error))
+                .collect::<Vec<_>>(),
+            [
+                [(true, None); 4].as_slice(),
+                &[(false, Some(OVER_BUDGET))],
+                if helper {
+                    &[(false, Some(OVER_BUDGET))]
+                } else {
+                    &[]
+                },
+                &[(true, None)],
+            ]
+            .concat()
+        );
+        let decoded = DECODED.take();
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|path| path.rsplit('/').next().unwrap())
+                .collect::<Vec<_>>(),
+            ["a.png", "b.png", "c.png", "d.png", "g.png"],
+            "the images past the budget never reach a decoder"
+        );
+    }
+    /// A header can lie, so the pixels a decode returns are checked against
+    /// what is left of the budget too: an image whose header declares 10 ×
+    /// 10 but decodes to 1,000 × 1,000 is refused once decoded, as is one
+    /// whose header is not read here (an SVG), while a header that declares
+    /// more than is left is refused before its decoder runs.
+    #[test]
+    fn a_lying_header_still_meets_the_decoded_pixel_check() {
+        let png = |side| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(side, side)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let decodes = std::cell::Cell::new(0);
+        let large = || {
+            decodes.set(decodes.get() + 1);
+            Ok(gitturtle_preview::ImagePreview {
+                width: 1000,
+                height: 1000,
+                original_width: 1000,
+                original_height: 1000,
+                rgba: vec![0; 4_000_000],
+                format: "PNG".into(),
+            })
+        };
+        let small = png(10);
+        let error = decode_within(1_000_000, &small, large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(decodes.get(), 1, "the lying header's image was decoded");
+        assert!(decode_within(4_000_000, &small, large).is_ok());
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#;
+        let error = decode_within(1_000_000, svg, large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(decodes.get(), 3);
+        let error = decode_within(1_000_000, &png(1000), large).unwrap_err();
+        assert_eq!(error.to_string(), OVER_BUDGET);
+        assert_eq!(
+            decodes.get(),
+            3,
+            "a declared size past the budget is not decoded"
+        );
+    }
+    /// The size read before decoding is never more than the decode: a JPEG
+    /// 2000 codestream of 4,000 × 1,000 whose one component samples every
+    /// fourth row decodes on Linux to 4,000 × 250, 1,000 × 63 at the edge
+    /// (252,000 bytes), which fits the 300,000 left, so it is decoded. Read
+    /// at its default size, 4,000 × 1,000 (1,000,000 bytes at the edge), it
+    /// was refused undecoded with room for its decode. Where no header
+    /// bounds the decode (JPEG 2000 on macOS) it is decoded and checked.
+    #[test]
+    fn a_subsampled_image_is_budgeted_at_the_size_it_decodes_to() {
+        let decodes = std::cell::Cell::new(0);
+        let decoded = decode_within(300_000, &codestream_declaring(4000, 1000, (1, 4)), || {
+            decodes.set(decodes.get() + 1);
+            Ok(gitturtle_preview::ImagePreview {
+                width: 1000,
+                height: 63,
+                original_width: 4000,
+                original_height: 250,
+                rgba: vec![0; 252_000],
+                format: "JPEG 2000 / J2K codestream".into(),
+            })
+        });
+        assert!(decoded.is_ok(), "{:#}", decoded.unwrap_err());
+        assert_eq!(decodes.get(), 1, "the image is decoded");
     }
     /// Requirement 17: once one of a document's AVIF or JPEG 2000 images
     /// runs past its helper's deadline, the document's later ones start no

@@ -146,10 +146,20 @@ The Markdown path is the base directory, and the scope is explicit:
 
 The app requests at most 32 images per side, at most 4 MiB per image and 16 MiB
 of aggregate captured asset bytes. A separate 16 MiB rendered-pixel budget and
-1,000-pixel image edge cap apply after decoding. Source dimensions remain subject
-to the decoder's independent bounds. Missing or rejected images show their alt
-text/destination and an error; comparisons with image errors skip immutable
-caching so unavailable resources can be retried.
+1,000-pixel image edge cap apply to the decoded images. Before an image is
+decoded, the size its header says it decodes to
+(`gitturtle_preview::declared_dimensions`: the raster formats' own header read
+and, on Linux, the size the confined helper decodes a JPEG 2000 image to, from
+the bounded box and SIZ reader) is scaled to that edge, never more than the
+decode, and an image that would not fit what is left of the
+budget is refused without being decoded; a document of many large JPEG 2000
+images once spent seconds decoding the ones it then refused. A header can lie,
+so the decoded pixels are checked again, and an image whose header is not read
+there (SVG, AVIF, HEIF, and JPEG 2000 on macOS, whose ImageIO may draw any
+size up to the image's grid) is decoded and checked as before. Source dimensions
+remain subject to the decoder's independent bounds. Missing or rejected images
+show their alt text/destination and an error; comparisons with image errors skip
+immutable caching so unavailable resources can be retried.
 
 Resource paths are literal repository paths, not Git pathspec patterns.
 Percent-encoded filename bytes are preserved. Relative `.`/`..` components may

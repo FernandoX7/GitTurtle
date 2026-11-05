@@ -9,15 +9,36 @@ use super::*;
 const JP2_SIGNATURE: &[u8] = b"\x00\x00\x00\x0cjP  \r\n\x87\n";
 const CODESTREAM_SIGNATURE: &[u8] = b"\xff\x4f\xff\x51";
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Dimensions {
     grid: (u32, u32),
     default: (u32, u32),
+    /// The size the confined Linux helper decodes the image to, as its
+    /// preflight derives it (`Preflight::original`).
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    helper: (u32, u32),
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl Dimensions {
+    /// The size the confined Linux helper decodes the image to, which
+    /// `declared_dimensions` reports: the area divided, rounding up, by the
+    /// components' sampling on each axis where every component shares it,
+    /// and the whole area where they differ, as `Preflight::original` has
+    /// it. It can be smaller than the default size (T.800 I.5.3.1.1), which
+    /// divides both axes by one factor: a 4,000 × 1,000 image whose one
+    /// component samples every fourth row is decoded to 4,000 × 250.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    pub(super) fn declared(self) -> (u32, u32) {
+        self.helper
+    }
+
+    #[cfg(any(target_os = "macos", test))]
     pub(super) fn image_dimensions(
         self,
         width: Option<u32>,
@@ -39,7 +60,6 @@ impl Dimensions {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 pub(super) fn dimensions(bytes: &[u8]) -> Result<Option<Dimensions>> {
     if bytes.starts_with(CODESTREAM_SIGNATURE) {
         return codestream_dimensions(bytes).map(Some);
@@ -114,7 +134,6 @@ fn next_box<'a>(remaining: &mut &'a [u8]) -> Result<([u8; 4], &'a [u8])> {
     Ok((kind, &bytes[header_length..length]))
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
     ensure!(
         bytes.starts_with(CODESTREAM_SIGNATURE) && bytes.len() >= 42,
@@ -173,10 +192,37 @@ fn codestream_dimensions(bytes: &[u8]) -> Result<Dimensions> {
     Ok(Dimensions {
         grid: (width, height),
         default,
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        helper: {
+            let shrink = uniform_sampling(bytes[42..segment_end].as_chunks::<3>().0);
+            (width.div_ceil(shrink.0), height.div_ceil(shrink.1))
+        },
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+/// The sampling every component of a SIZ table shares, or 1 × 1 where they
+/// differ: the divisor the preflight records for `hayro-jpeg2000`.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn uniform_sampling(table: &[[u8; 3]]) -> (u32, u32) {
+    let first = table
+        .first()
+        .map_or((1, 1), |component| (component[1], component[2]));
+    if table
+        .iter()
+        .all(|component| (component[1], component[2]) == first)
+    {
+        (u32::from(first.0), u32::from(first.1))
+    } else {
+        (1, 1)
+    }
+}
+
 fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         (left, right) = (right, left % right);
@@ -672,6 +718,29 @@ fn palette_mapping(
 
 #[cfg(test)]
 mod tests {
+    /// The size the app reads before decoding is the size the helper's
+    /// preflight decodes to, for every JPEG 2000 fixture: shared and
+    /// differing component sampling, JP2 and raw codestreams.
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn declared_size_is_the_helpers_decoded_size() {
+        let fixtures: [&[u8]; 6] = [
+            include_bytes!("../tests/fixtures/half-red-blue.jp2"),
+            include_bytes!("../tests/fixtures/half-red-blue.j2k"),
+            include_bytes!("../tests/fixtures/jpeg2000-rgb.jp2"),
+            include_bytes!("../tests/fixtures/jpeg2000-rgb.j2k"),
+            include_bytes!("../tests/fixtures/jpeg2000-large.jp2"),
+            include_bytes!("../tests/fixtures/jpeg2000-subsampled.jp2"),
+        ];
+        for bytes in fixtures {
+            let declared = super::dimensions(bytes).unwrap().unwrap().declared();
+            assert_eq!(declared, super::preflight(bytes).unwrap().original());
+        }
+    }
+
     use super::*;
 
     const JP2: &[u8] = include_bytes!("../tests/fixtures/half-red-blue.jp2");

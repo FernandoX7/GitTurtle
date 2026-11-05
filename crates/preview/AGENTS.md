@@ -8,7 +8,7 @@ These instructions supplement the root agreements for `crates/preview`. The [sup
 | --- | --- |
 | Raster/SVG decode, alpha and orientation | [src/lib.rs](src/lib.rs); [src/svg_limits.rs](src/svg_limits.rs) for SVG preflight |
 | Composited GIF animation and budgets | [src/animation.rs](src/animation.rs) |
-| Supplied-byte ImageIO/PDF pages and selected-page text | [src/native.rs](src/native.rs), [src/jpeg2000.rs](src/jpeg2000.rs) for bounded JP2/J2K dimensions, [src/native/pdf_text.rs](src/native/pdf_text.rs) |
+| Supplied-byte ImageIO/PDF pages and selected-page text | [src/native.rs](src/native.rs), [src/jpeg2000.rs](src/jpeg2000.rs) for bounded JP2/J2K dimensions (`jpeg2000::dimensions`, its box and SIZ reader and never hayro, runs in the app process on both platforms, for ImageIO on macOS and for `declared_dimensions` on Linux, so a change to it is reviewed as unconfined code), [src/native/pdf_text.rs](src/native/pdf_text.rs) |
 | Linux PDF pages and page text for the helper process | [src/pdf_hayro.rs](src/pdf_hayro.rs) (hayro), [src/pdf_helper.rs](src/pdf_helper.rs) (message format, `serve`); [architecture](../../docs/development/2026-11-02-linux-pdf-pages-architecture.md) |
 | Linux AVIF and JPEG 2000 images for the helper process | [src/image_helper.rs](src/image_helper.rs) (image frame), [src/avif.rs](src/avif.rs) (mp4parse, dav1d), [src/jpeg2000_hayro.rs](src/jpeg2000_hayro.rs) and the preflight in [src/jpeg2000.rs](src/jpeg2000.rs); [fixtures](tests/fixtures/README.md) from `scripts/create-image-codec-fixtures.py`; [architecture](../../docs/development/2026-11-02-linux-avif-jpeg2000-architecture.md) |
 | Container metadata, name-free container signatures and transformed text | [src/metadata.rs](src/metadata.rs) |
