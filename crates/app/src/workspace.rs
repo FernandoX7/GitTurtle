@@ -2357,6 +2357,7 @@ impl GitTurtle {
     /// once opened over the working list.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
+        self.forget_page_return();
         if self.repository.is_none() {
             self.show_projects(window, cx);
             return;

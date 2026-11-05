@@ -1160,6 +1160,7 @@ impl GitTurtle {
             self.restore_tab_widths(&saved);
         }
         self.page = AppPage::Repository;
+        self.forget_page_return();
         self.restore_inspection_context(warm.context, window, cx);
         if let Some(saved) = warm.document_restore {
             self.resume_tab_documents(saved, window, cx);
@@ -7971,6 +7972,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Another warm tab shown from Settings forgets the control Back would
+    /// have returned focus to in the tab Settings was opened from, as every
+    /// way out of Settings to a page that places focus itself does
+    /// (`forget_page_return`): the tab gives focus back to its own control.
+    /// The return once stayed set, the left tab's control, for no Back.
+    #[gpui::test]
+    async fn a_warm_tab_shown_from_settings_forgets_backs_return(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let list = app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(1));
+            assert!(
+                app.repository_tabs.tabs[0].warm.is_some(),
+                "the first is warm"
+            );
+            app.focus.clone()
+        });
+        cx.update(|window, cx| window.focus(&list, cx));
+        draw_tab_frames(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings shows");
+            assert_eq!(app.page_return_focus, Some(list.clone()), "Back's return");
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(0), "the first tab shows");
+            assert!(app.page == AppPage::Repository, "on the repository page");
+            assert!(app.page_return_focus.is_none(), "forgotten");
+        });
     }
 
     /// A menu opened while a cold tab's snapshot is read, by a click on the

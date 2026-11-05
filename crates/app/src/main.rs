@@ -1349,7 +1349,7 @@ impl GitTurtle {
         self.close_blame(window, cx);
         self.blame = blame::State::default();
         self.discard_history_search();
-        self.page_return_focus = None;
+        self.forget_page_return();
         self.restore_commit = if self.path.as_ref() == Some(&path) && self.scope == scope {
             self.selected_commit.map(|i| self.commits[i].oid.clone())
         } else {
@@ -1929,10 +1929,12 @@ impl GitTurtle {
     /// remains a one-level return so comparisons keep their navigation context.
     fn show_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.repository.is_none() {
+            self.forget_page_return();
             self.show_projects(window, cx);
             return;
         }
         self.close_inspections(window, cx);
+        self.forget_page_return();
         self.back_to_history(window, cx);
         self.repaint_page(window, cx);
     }

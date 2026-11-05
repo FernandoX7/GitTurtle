@@ -668,6 +668,21 @@ impl GitTurtle {
         self.try_automatic_refresh(window, cx);
     }
 
+    /// Forgets the control Back would return focus to from Settings or
+    /// Projects (`page_return_focus`), as a route other than Back or the
+    /// repository's own tab (`resume_repository_page`) shows the repository
+    /// page and places focus itself: opening a repository (`open`), another
+    /// warm tab shown (`restore_warm_tab`), and History's and Changes'
+    /// shortcuts, toggles and commands (`show_history`, `show_working`).
+    /// Every way out of Settings or Projects treats it alike; History's and
+    /// Changes' left it set, though unused, where `open` cleared it. A
+    /// route that closes the retained inspections forgets it after they
+    /// close, since an inspection closed behind Settings or Projects keeps
+    /// its return there (`restore_inspection_context`).
+    pub(super) fn forget_page_return(&mut self) {
+        self.page_return_focus = None;
+    }
+
     pub(super) fn navigate_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -4349,6 +4364,66 @@ mod tests {
         draw(cx);
         assert!(!dialog_open(cx), "Escape closes the palette");
         assert_eq!(focused(cx), Some(commits), "the commit list");
+    }
+
+    /// Every way from Settings to the repository page treats the control
+    /// Back would return to alike: History's and Changes' shortcuts forget
+    /// it, as opening a repository does (`forget_page_return`), since each
+    /// places focus itself. They once left it set, unused.
+    #[gpui::test]
+    async fn page_shortcuts_from_settings_forget_backs_return(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        for (key, mode) in [("1", WorkspaceMode::History), ("2", WorkspaceMode::Working)] {
+            cx.update(|window, cx| window.focus(&files, cx));
+            draw(cx);
+            cx.simulate_keystrokes(&primary(","));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Settings, "{key}: Settings shows");
+                assert_eq!(app.page_return_focus, Some(files.clone()), "{key}");
+            });
+            cx.simulate_keystrokes(&primary(key));
+            settle(&app, cx).await;
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository && app.mode == mode, "{key}");
+                assert!(app.page_return_focus.is_none(), "{key}: forgotten");
+            });
+        }
+    }
+
+    /// History's and Changes' shortcuts from Settings opened over File
+    /// history forget Back's return too: they close File history first,
+    /// whose close behind Settings keeps the control it returns to as
+    /// Back's (`restore_inspection_context`), and forget after it. They
+    /// once forgot before that close, which set the return again.
+    #[gpui::test]
+    async fn page_shortcuts_from_settings_over_file_history_forget_backs_return(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx) = two_files_checked_out(cx).await;
+        // History's shortcut leaves History shown for the second round.
+        for (key, mode) in [("1", WorkspaceMode::History), ("2", WorkspaceMode::Working)] {
+            file_history_from_the_commit_list(&app, cx).await;
+            cx.simulate_keystrokes(&primary(","));
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Settings, "{key}: Settings shows");
+                assert!(app.file_history.is_active(), "{key}: over File history");
+                assert!(app.page_return_focus.is_some(), "{key}: Back's return");
+            });
+            cx.simulate_keystrokes(&primary(key));
+            settle(&app, cx).await;
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.page == AppPage::Repository && app.mode == mode, "{key}");
+                assert!(!app.file_history.is_active(), "{key}: File history closed");
+                assert!(app.page_return_focus.is_none(), "{key}: forgotten");
+            });
+        }
     }
 
     /// Opens Settings with nothing focused and the window naming `pane`,
