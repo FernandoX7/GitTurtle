@@ -147,14 +147,40 @@ pub(crate) fn walk_back(
     interface: u8,
     failures: &mut Vec<String>,
 ) -> Vec<Bounds<Pixels>> {
-    walk_keyed(
+    walk_each(
         app,
         cx,
         "shift-tab",
         surface,
         interface,
         failures,
+        &mut |_, _, _| {},
+    )
+}
+
+/// [`walk`] with `key`, "tab" or "shift-tab", running `each` at every stop
+/// that holds focus once its ring is read ([`ring`]), with the stop's name
+/// and that ring, the stop's frame drawn again with focus on it: for a
+/// caller that checks more at each stop, as the GitHub panel's reveal sweep
+/// checks the lines its scrolling body cuts.
+pub(crate) fn walk_each(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    key: &str,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
+) -> Vec<Bounds<Pixels>> {
+    walk_keyed(
+        app,
+        cx,
+        key,
+        surface,
+        interface,
+        failures,
         &mut |_, _| {},
+        each,
     )
 }
 
@@ -168,10 +194,21 @@ fn walk_with(
     failures: &mut Vec<String>,
     between: &mut dyn FnMut(&mut VisualTestContext, bool),
 ) -> Vec<Bounds<Pixels>> {
-    walk_keyed(app, cx, "tab", surface, interface, failures, between)
+    walk_keyed(
+        app,
+        cx,
+        "tab",
+        surface,
+        interface,
+        failures,
+        between,
+        &mut |_, _, _| {},
+    )
 }
 
-/// [`walk_with`], moving focus with `key`: "tab" or "shift-tab".
+/// [`walk_with`], moving focus with `key`, "tab" or "shift-tab", and
+/// running `each` as [`walk_each`] does.
+#[allow(clippy::too_many_arguments)]
 fn walk_keyed(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
@@ -180,6 +217,7 @@ fn walk_keyed(
     interface: u8,
     failures: &mut Vec<String>,
     between: &mut dyn FnMut(&mut VisualTestContext, bool),
+    each: &mut dyn FnMut(&mut VisualTestContext, &str, &[PaintedOutline]),
 ) -> Vec<Bounds<Pixels>> {
     let name = if key == "tab" { "Tab" } else { "Shift+Tab" };
     let root = app.read_with(cx, |app, _| app.app_focus.clone());
@@ -224,6 +262,7 @@ fn walk_keyed(
             ));
         } else {
             let ring = ring(cx, &focused, between);
+            each(cx, &at, &ring);
             rings.extend(ring.iter().map(|outline| outline.bounds));
             if ring.is_empty() {
                 failures.push(format!("{at}: the focused element paints no ring"));

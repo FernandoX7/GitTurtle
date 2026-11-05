@@ -8226,6 +8226,312 @@ mod tests {
             .collect()
     }
 
+    /// A line the last frame drew in the panel's body ([`frame_lines`]): what it is, where it
+    /// lies, its place in the body's content (its left edge and its top with the body at its
+    /// top, in half pixels), which names it from one stop to the next, and whether a list
+    /// inside the body holds it, whose own scroll moves it.
+    #[derive(Clone, Debug)]
+    struct FrameLine {
+        name: String,
+        top: Pixels,
+        bottom: Pixels,
+        place: (i32, i32),
+        nested: bool,
+    }
+
+    /// The lists and clips inside the panel's body that scroll or cut their own rows.
+    const BODY_LISTS: [&str; 10] = [
+        "github-pr-list",
+        "github-threads",
+        "github-file-rows",
+        "github-patch-rows",
+        "github-source-text",
+        "github-collected-comments",
+        "github-confirm-text-scroll",
+        "github-saved-drafts",
+        "github-attempt-list",
+        "github-reply-outcome",
+    ];
+
+    /// The selector of the part of the body named `part` (`review::revealing`), made once for
+    /// the whole test run.
+    fn part_selector(part: &str) -> &'static str {
+        thread_local! {
+            static MADE: RefCell<std::collections::HashMap<String, &'static str>> =
+                RefCell::default();
+        }
+        MADE.with(|made| {
+            *made
+                .borrow_mut()
+                .entry(part.to_string())
+                .or_insert_with(|| format!("github-part-{part}").leak())
+        })
+    }
+
+    /// `count` selectors `{prefix}{index}`, each made once for the whole test run.
+    fn indexed(prefix: &'static str, count: usize) -> Vec<&'static str> {
+        thread_local! {
+            static MADE: RefCell<std::collections::HashMap<(&'static str, usize), &'static str>> =
+                RefCell::default();
+        }
+        (0..count)
+            .map(|index| {
+                MADE.with(|made| {
+                    *made
+                        .borrow_mut()
+                        .entry((prefix, index))
+                        .or_insert_with(|| format!("{prefix}{index}").leak())
+                })
+            })
+            .collect()
+    }
+
+    /// The body and the lines the last frame drew in it, after a fresh draw, read from the
+    /// frame rather than from the body's record of its lines ([`review::Blocks::lines`]), so a
+    /// surface that reports no lines shows as lines a reveal of the body cuts: each line of
+    /// text, its run marked by the window's root (`width_walk::text_mark`, [`fixture_panel`]);
+    /// each Button and each of `fields`, its frame; each row of the changed-file list and of
+    /// Changes' patch; and each row of a multi-line editor drawn, Source's among them, read
+    /// from the editor's layout. What a list or a clip inside the body cuts or hides is that
+    /// list's or clip's, as the body counts it: a row or a Button only where its list shows it
+    /// whole, a line of text only where no clip inside the body cuts it.
+    fn frame_lines(
+        cx: &mut VisualTestContext,
+        panel: &Entity<Panel>,
+        fields: &[&'static str],
+    ) -> (Bounds<Pixels>, Vec<FrameLine>) {
+        use crate::native_accessibility::written;
+        written::forget();
+        crate::tags::tests::draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let origin = body.top() + scroll.offset().y;
+        let scale = cx.update(|window, _| window.scale_factor());
+        let slack = px(0.5);
+        let lists: Vec<Bounds<Pixels>> = BODY_LISTS
+            .iter()
+            .filter_map(|list| cx.debug_bounds(list))
+            .collect();
+        let mut lines = Vec::new();
+        let mut push = |name: String, bounds: Bounds<Pixels>| {
+            let nested = lists.iter().any(|list| list.intersects(&bounds));
+            let half = |value: Pixels| (f32::from(value) * 2.).round() as i32;
+            lines.push(FrameLine {
+                name,
+                top: bounds.top(),
+                bottom: bounds.bottom(),
+                place: (half(bounds.left()), half(bounds.top() - origin)),
+                nested,
+            });
+        };
+        // Whole inside the list or clip it lies in, if any.
+        let shown = |bounds: Bounds<Pixels>| {
+            lists
+                .iter()
+                .filter(|list| list.intersects(&bounds))
+                .all(|list| {
+                    bounds.top() >= list.top() - slack && bounds.bottom() <= list.bottom() + slack
+                })
+        };
+        // The texts and Buttons, read from the accessibility nodes the frame wrote, which name
+        // the lines of text in them.
+        let nodes: Vec<(String, Role, Bounds<Pixels>)> = written::inside("github-panel")
+            .into_iter()
+            .filter_map(|id| {
+                let text = written::get(&id)?;
+                let role = text.node.role();
+                let layout = text.layout?;
+                matches!(role, Role::Label | Role::Button).then(|| {
+                    let bounds = Bounds::from_corners(
+                        point(px(layout.x0 as f32 / scale), px(layout.y0 as f32 / scale)),
+                        point(px(layout.x1 as f32 / scale), px(layout.y1 as f32 / scale)),
+                    );
+                    (id, role, bounds)
+                })
+            })
+            .collect();
+        let named = |line: Bounds<Pixels>| {
+            nodes
+                .iter()
+                .filter(|(_, _, bounds)| bounds.contains(&line.center()))
+                .min_by(|a, b| {
+                    let area = |bounds: &Bounds<Pixels>| {
+                        f32::from(bounds.size.height) * f32::from(bounds.size.width)
+                    };
+                    area(&a.2).total_cmp(&area(&b.2))
+                })
+                .map_or("text".to_string(), |(id, _, _)| id.clone())
+        };
+        // Each line of text, where nothing inside the body clips it but the body's own edge.
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+        for (line, quad) in quads(cx) {
+            if quad.background != mark {
+                continue;
+            }
+            let mask = quad.content_mask.bounds;
+            let (top, bottom) = (logical(mask.top()), logical(mask.bottom()));
+            let (left, right) = (logical(mask.left()), logical(mask.right()));
+            if top < body.top() - slack
+                || bottom > body.bottom() + slack
+                || left < body.left() - slack
+                || right > body.right() + slack
+            {
+                continue;
+            }
+            if (line.top() < top - slack && top > body.top() + slack)
+                || (line.bottom() > bottom + slack && bottom < body.bottom() - slack)
+            {
+                continue;
+            }
+            let name = format!("{} text at {:?}", named(line), line.left());
+            push(name, line);
+        }
+        // Each Button, its frame.
+        for (id, role, bounds) in &nodes {
+            if *role == Role::Button && shown(*bounds) {
+                push(id.clone(), *bounds);
+            }
+        }
+        for field in fields {
+            if let Some(bounds) = cx.debug_bounds(field) {
+                push(field.to_string(), bounds);
+            }
+        }
+        // Each row of the changed-file list and of Changes' patch its list shows whole.
+        let (files, rows) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            let rows = review
+                .selected_file
+                .and_then(|index| review.files.get(index))
+                .map_or(0, |file| file.rows.len());
+            (review.files.len(), rows)
+        });
+        for selector in indexed("github-file-row-", files)
+            .into_iter()
+            .chain(indexed("github-patch-line-", rows))
+        {
+            if let Some(bounds) = cx.debug_bounds(selector)
+                && shown(bounds)
+            {
+                push(selector.to_string(), bounds);
+            }
+        }
+        // Each row of a multi-line editor drawn, the part of it its viewport shows, where the
+        // clip it lies in shows that part whole.
+        type Layout = (Bounds<Pixels>, Option<Bounds<Pixels>>, Option<Pixels>);
+        let editors: Vec<(&str, Layout)> = cx.read(|cx| {
+            let panel = panel.read(cx);
+            let textarea = |editor: &Entity<TextareaState>| {
+                let editor = editor.read(cx);
+                (
+                    editor.input_bounds(),
+                    editor.text_bounds(),
+                    editor.line_height(),
+                )
+            };
+            let mut editors = vec![
+                ("github-review-summary", textarea(&panel.body)),
+                ("github-inline-composer", textarea(&panel.review.input)),
+                (
+                    "github-reply-composer",
+                    textarea(&panel.conversations.input),
+                ),
+            ];
+            if let Some(source) = &panel.review.source {
+                let source = source.read(cx);
+                editors.push((
+                    "github-source-text",
+                    (
+                        source.input_bounds(),
+                        source.text_bounds(),
+                        source.line_height(),
+                    ),
+                ));
+            }
+            editors
+        });
+        for (drawn, (view, text, line)) in editors {
+            let (Some(_), Some(text), Some(line)) = (cx.debug_bounds(drawn), text, line) else {
+                continue;
+            };
+            let mut top = text.top();
+            let mut row = 0;
+            while top < view.bottom() {
+                let part = Bounds::from_corners(
+                    point(view.left(), top.max(view.top())),
+                    point(view.right(), (top + line).min(view.bottom())),
+                );
+                if part.bottom() > part.top() && shown(part) {
+                    push(format!("{drawn} row {row}"), part);
+                }
+                top += line;
+                row += 1;
+            }
+        }
+        (body, lines)
+    }
+
+    /// The names of `lines` cut at the edges of `body`: a line an edge falls inside, by more
+    /// than half a pixel either way, layout's rounding.
+    fn cut_at_edges(body: Bounds<Pixels>, lines: &[FrameLine]) -> Vec<String> {
+        let slack = px(0.5);
+        lines
+            .iter()
+            .filter(|line| {
+                [body.top(), body.bottom()]
+                    .into_iter()
+                    .any(|edge| line.top < edge - slack && line.bottom > edge + slack)
+            })
+            .map(|line| format!("{} {:?}..{:?}", line.name, line.top, line.bottom))
+            .collect()
+    }
+
+    /// Where the top edge of `body`, scrolled from `first` (its content's top) to `last` (as
+    /// far as it scrolls), could stop, in this frame's coordinates, keeping `top..bottom` whole
+    /// with neither edge inside one of `lines` by more than the reveal's hundredth of a pixel:
+    /// every place the frame offers, each line's top and foot (the top edge between lines),
+    /// each less the body's height (the bottom edge between lines), each line's top less
+    /// `ring` (a block a line starts, its ring's room above it) and both ends of the content
+    /// ([`assert_reveal_rule`]).
+    fn clear_stops(
+        body: Bounds<Pixels>,
+        lines: &[FrameLine],
+        (top, bottom): (Pixels, Pixels),
+        ring: Pixels,
+        (first, last): (Pixels, Pixels),
+    ) -> Vec<Pixels> {
+        let slack = px(0.5);
+        let within = px(0.01);
+        let height = body.size.height;
+        let inside = |edge: Pixels| {
+            lines
+                .iter()
+                .any(|line| line.top < edge - within && line.bottom > edge + within)
+        };
+        lines
+            .iter()
+            .flat_map(|line| {
+                [
+                    line.top,
+                    line.bottom,
+                    line.top - height,
+                    line.bottom - height,
+                    line.top - ring,
+                ]
+            })
+            .chain([first, last])
+            .filter(|edge| {
+                *edge >= first - slack
+                    && *edge <= last + slack
+                    && *edge <= top + slack
+                    && *edge + height >= bottom - slack
+                    && !inside(*edge)
+                    && !inside(*edge + height)
+            })
+            .collect()
+    }
+
     /// The conversation list and the lines drawn in it, each named, with where it lies, after
     /// a fresh draw: each line of every text in it and each of its labelled Buttons, read from
     /// the accessibility nodes the frame wrote, the rows it has scrolled out of itself among
@@ -8610,6 +8916,374 @@ mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A surface of the panel the reveal sweep walks ([`sweep_reveals`]) on the offline
+    /// fixture: the connection pane above the PR list, the PR list, a PR's Overview with its
+    /// Conversations pane, its Review, and Files in Changes, Source and Threads, the file's
+    /// Conversations pane.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Surface {
+        Connection,
+        Pulls,
+        Overview,
+        Review,
+        Changes,
+        Source,
+        Threads,
+    }
+
+    /// Every surface the reveal sweep walks.
+    const SURFACES: [Surface; 7] = [
+        Surface::Connection,
+        Surface::Pulls,
+        Surface::Overview,
+        Surface::Review,
+        Surface::Changes,
+        Surface::Source,
+        Surface::Threads,
+    ];
+
+    /// What the reveal sweep found ([`sweep_reveals`]), each finding named by its surface,
+    /// size and stop.
+    #[derive(Default)]
+    struct Swept {
+        /// Reveals that left a line cut at an edge of the body where a place clears every line
+        /// with the focused control whole with its ring.
+        cuts: Vec<String>,
+        /// Stops that show no whole ring (`focus_ring::sweep::walk_each`), but for a control
+        /// too tall for the body with its ring's room, which shows the ring's top edge.
+        rings: Vec<String>,
+        /// Lines outside the lists inside the body that no stop of a surface's walks shows
+        /// whole, and texts and Buttons part of which no stop shows at all.
+        unseen: Vec<String>,
+        /// How many stops the walks took, how many of them moved the body, and how many of
+        /// those revealed a part too tall for the body, whose cuts the sweep leaves alone.
+        stops: usize,
+        moves: usize,
+        tall: usize,
+    }
+
+    /// Shows `surface` on the offline fixture at `interface` pt in a `width` × `height`
+    /// window, with `files` listed in Files and the first selected, the body and the
+    /// conversation list at their tops and focus where the surface opens it.
+    async fn show_surface(
+        (app, panel, pull, files): (
+            &Entity<GitTurtle>,
+            &Entity<Panel>,
+            &PullRequest,
+            &[crate::github::review::PullFile],
+        ),
+        surface: Surface,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        crate::focus_ring::sweep::interface_size(cx, interface);
+        cx.simulate_resize(size(px(width), px(height)));
+        let (pull, files) = (pull.clone(), files.to_vec());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let listed = matches!(surface, Surface::Connection | Surface::Pulls);
+                panel.review.connection_open = surface == Surface::Connection;
+                panel.pull = (!listed).then_some(pull);
+                panel.review.show_list = listed;
+                panel.review.section = match surface {
+                    Surface::Review => Section::Review,
+                    Surface::Changes | Surface::Source | Surface::Threads => Section::Files,
+                    _ => Section::Overview,
+                };
+                panel.review.files = files;
+                panel.review.selected_file = None;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        settle_panel(app, cx).await;
+        let mode = match surface {
+            Surface::Source => 1,
+            Surface::Threads => 2,
+            _ => 0,
+        };
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                if mode > 0 {
+                    panel.review_source(mode, window, cx);
+                }
+                panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                panel
+                    .conversations
+                    .list_scroll
+                    .set_offset(point(px(0.), px(0.)));
+                panel.focus_visible_section(window, cx);
+                cx.notify();
+            })
+        });
+        settle_panel(app, cx).await;
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+    }
+
+    /// Walks each of `surfaces` on the offline fixture, at each of `sizes` (an interface size
+    /// and a window width, 490 px tall), with Tab through every stop and then with Shift+Tab,
+    /// each walk from the surface opened at the body's top (`focus_ring::sweep::walk_each`),
+    /// and returns what it found ([`Swept`]): every stop's ring that is not whole; every reveal
+    /// that left a line drawn in the frame ([`frame_lines`]) cut at an edge of the body where
+    /// a place the body's top edge can take ([`clear_stops`]) keeps the focused control whole
+    /// with its ring and clears every line, but at the content's top, which a reveal keeps
+    /// ([`review::clear_of_lines`]); and every line outside the lists inside the body that no
+    /// stop of the surface's two walks shows whole, with every text and Button outside them
+    /// part of which no stop shows at all.
+    async fn sweep_reveals(
+        cx: &mut TestAppContext,
+        surfaces: &[Surface],
+        sizes: impl IntoIterator<Item = (u8, f32)>,
+    ) -> Swept {
+        use crate::native_accessibility::written;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let slack = px(0.5);
+        let mut swept = Swept::default();
+        for (interface, width) in sizes {
+            for &surface in surfaces {
+                let at = format!("{surface:?} at {interface} pt in {width} × 490");
+                // Each line outside the lists by its place, and whether a stop showed it whole;
+                // each text and Button outside them by its place and extent in the content; and
+                // the extent of the content each stop showed.
+                let mut lines: std::collections::BTreeMap<(i32, i32), (String, bool)> =
+                    Default::default();
+                let mut boxes: std::collections::BTreeMap<(i32, i32), (String, Pixels, Pixels)> =
+                    Default::default();
+                let mut views: Vec<(Pixels, Pixels)> = Vec::new();
+                for key in ["tab", "shift-tab"] {
+                    show_surface(
+                        (&app, &panel, &pull, &files),
+                        surface,
+                        (interface, width, 490.),
+                        cx,
+                    )
+                    .await;
+                    let mut before = scroll.offset().y;
+                    let mut each =
+                        |cx: &mut VisualTestContext,
+                         stop: &str,
+                         ring: &[crate::focus_ring::PaintedOutline]| {
+                            let now = scroll.offset().y;
+                            let (body, drawn) = frame_lines(cx, &panel, &["github-destination"]);
+                            swept.stops += 1;
+                            let origin = body.top() + now;
+                            views.push((body.top() - origin, body.bottom() - origin));
+                            for line in drawn.iter().filter(|line| !line.nested) {
+                                let whole = line.top >= body.top() - slack
+                                    && line.bottom <= body.bottom() + slack;
+                                let seen = lines
+                                    .entry(line.place)
+                                    .or_insert_with(|| (line.name.clone(), false));
+                                seen.1 |= whole;
+                            }
+                            let lists: Vec<Bounds<Pixels>> = BODY_LISTS
+                                .iter()
+                                .filter_map(|list| cx.debug_bounds(list))
+                                .collect();
+                            let scale = cx.update(|window, _| window.scale_factor());
+                            for id in written::inside("github-panel") {
+                                let Some(text) = written::get(&id) else {
+                                    continue;
+                                };
+                                let (Role::Label | Role::Button, Some(layout)) =
+                                    (text.node.role(), text.layout)
+                                else {
+                                    continue;
+                                };
+                                let bounds = Bounds::from_corners(
+                                    point(
+                                        px(layout.x0 as f32 / scale),
+                                        px(layout.y0 as f32 / scale),
+                                    ),
+                                    point(
+                                        px(layout.x1 as f32 / scale),
+                                        px(layout.y1 as f32 / scale),
+                                    ),
+                                );
+                                if bounds.size.height <= px(0.)
+                                    || lists.iter().any(|list| list.intersects(&bounds))
+                                {
+                                    continue;
+                                }
+                                let half = |value: Pixels| (f32::from(value) * 2.).round() as i32;
+                                boxes
+                                    .entry((half(bounds.left()), half(bounds.top() - origin)))
+                                    .or_insert((
+                                        id,
+                                        bounds.top() - origin,
+                                        bounds.bottom() - origin,
+                                    ));
+                            }
+                            // A ring a clip cuts: a control that cannot fit the body with its ring's
+                            // room shows its top, the ring's top edge drawn, as the Conversations
+                            // pane does; any other ring is whole.
+                            for outline in ring.iter().filter(|outline| !outline.whole) {
+                                let tall = outline.bounds.size.height + room * 2.
+                                    > body.size.height + slack;
+                                if !tall || !outline.sides[0] {
+                                    swept.rings.push(format!(
+                                    "{stop}: a clip cuts its ring {:?}, sides whole {:?}, in the \
+                                     body {body:?}",
+                                    outline.bounds, outline.sides
+                                ));
+                                }
+                            }
+                            let moved = now != before;
+                            before = now;
+                            if !moved {
+                                return;
+                            }
+                            swept.moves += 1;
+                            if now == px(0.) {
+                                return;
+                            }
+                            let cut = cut_at_edges(body, &drawn);
+                            let Some(mut shown) = ring
+                                .iter()
+                                .map(|outline| outline.bounds)
+                                .reduce(|a, b| a.union(&b))
+                            else {
+                                return;
+                            };
+                            if cut.is_empty() {
+                                return;
+                            }
+                            // The part the reveal shows whole with its ring's room, as the
+                            // body's reveals do; one too tall for the body keeps the half of
+                            // the body on the side it shows, which the reveal's own tests hold.
+                            let part = cx.update(|window, _| {
+                                window
+                                    .context_stack()
+                                    .iter()
+                                    .rev()
+                                    .find_map(|context| context.get(review::PART).cloned())
+                            });
+                            if let Some(part) = part
+                                && let Some(bounds) = cx.debug_bounds(part_selector(&part))
+                            {
+                                if bounds.size.height + room * 2. > body.size.height + slack {
+                                    swept.tall += 1;
+                                    return;
+                                }
+                                shown = shown.union(&bounds.dilate(room));
+                            }
+                            let first = body.top() + now;
+                            let last = first + scroll.max_offset().y;
+                            let stops = clear_stops(
+                                body,
+                                &drawn,
+                                (shown.top(), shown.bottom()),
+                                room,
+                                (first, last),
+                            );
+                            if !stops.is_empty() {
+                                swept.cuts.push(format!(
+                                "{stop}: {cut:?} cut at the edges of the body {body:?}, the focus \
+                                 {shown:?} whole, where its top edge could stop clear of every \
+                                 line at {stops:?}"
+                            ));
+                            }
+                        };
+                    // The walk's own findings but its clipped rings, which `each` reads above.
+                    let mut walked = Vec::new();
+                    crate::focus_ring::sweep::walk_each(
+                        &app,
+                        cx,
+                        key,
+                        &at,
+                        interface,
+                        &mut walked,
+                        &mut each,
+                    );
+                    swept.rings.extend(
+                        walked
+                            .into_iter()
+                            .filter(|failure| !failure.contains(": a clip cuts the ")),
+                    );
+                }
+                swept.unseen.extend(
+                    lines
+                        .iter()
+                        .filter(|(_, (_, whole))| !whole)
+                        .map(|(place, (name, _))| {
+                            format!("{at}: {name} at {place:?} is never whole")
+                        }),
+                );
+                // What of each text and Button no stop showed at all.
+                views.sort_by(|a, b| a.0.as_f32().total_cmp(&b.0.as_f32()));
+                for (name, top, bottom) in boxes.values() {
+                    let mut reach = *top;
+                    for (shown, ends) in &views {
+                        if *shown > reach + slack {
+                            break;
+                        }
+                        reach = reach.max(*ends);
+                    }
+                    if reach < *bottom - slack {
+                        swept.unseen.push(format!(
+                            "{at}: no stop shows {name} {top:?}..{bottom:?} below {reach:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        swept
+    }
+
+    /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
+    /// at 13, 17, 18 and 19 pt (19 is clamped to the largest interface size, 18, as the
+    /// preference is) in windows 430 to 500 px wide, every 5 px, 490 px tall, with Tab
+    /// through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
+    /// control draws its ring whole, or its top edge where it cannot fit the body; no reveal
+    /// leaves a line cut at either of the body's edges where a place clears every line with
+    /// the revealed part whole; and every line outside the lists inside the body is whole at
+    /// some stop. Each surface and size takes about 8 s in a debug build, so the sweep is
+    /// opt-in; it prints every finding before it fails. Its findings on Linux at 13 and 18 pt
+    /// in a 461 × 490 window (FU18-F) are open: Files' file column, its file list 210 px wide
+    /// scaled with the text beside a column of controls that do not wrap below it, runs past
+    /// the body's right edge, where the clip cuts the rings of Changes, Source, Threads,
+    /// Comment on selection and the file's Conversations pane; at 18 pt the column's fixed
+    /// 324 px leaves Changes' patch and Source no height; and lines outside the lists that no
+    /// stop shows whole.
+    #[gpui::test]
+    #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
+    async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
+        let sizes = [13u8, 17, 18, 19].into_iter().flat_map(|size| {
+            (430..=500)
+                .step_by(5)
+                .map(move |width| (size, width as f32))
+        });
+        let swept = sweep_reveals(cx, &SURFACES, sizes).await;
+        let findings: Vec<&String> = swept
+            .cuts
+            .iter()
+            .chain(&swept.rings)
+            .chain(&swept.unseen)
+            .collect();
+        for finding in &findings {
+            eprintln!("{finding}");
+        }
+        assert!(swept.moves > 0, "the walks move the body");
+        assert!(
+            findings.is_empty(),
+            "{} findings in {} stops, {} of them moving the body ({} onto a part too tall for it)",
+            findings.len(),
+            swept.stops,
+            swept.moves,
+            swept.tall
+        );
     }
 
     /// Tab through a PR's Overview on the offline fixture, at 13 and 18 pt in a 461 × 490

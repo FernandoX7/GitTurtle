@@ -985,8 +985,11 @@ fn revealing(
 ) -> Div {
     let mut context = KeyContext::default();
     context.set(key, name.clone());
+    let part = name.clone();
     element
         .key_context(context)
+        // Where tests find the part (`github_view::tests::sweep_reveals`).
+        .debug_selector(move || format!("github-part-{part}"))
         .on_children_prepainted(move |bounds, window, cx| {
             let innermost = window
                 .context_stack()
