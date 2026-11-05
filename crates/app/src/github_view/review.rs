@@ -289,13 +289,191 @@ pub(super) fn record_shown(
 /// may bring to its top edge, so the edge cuts no line ([`reveal`]). The container's own
 /// children are its scroll handle's; elements inside it report their children through
 /// [`Blocks::starts`] or [`Blocks::report`] while a frame prepaints, and the container keeps
-/// that frame's once everything in it has prepainted ([`Blocks::finish`]).
+/// that frame's once everything in it has prepainted ([`Blocks::finish`]). The panel's body
+/// also keeps the lines drawn in it, each line of its text and each control of one line, from
+/// top to bottom, which neither of its edges may fall inside once a reveal lands
+/// ([`clear_of_lines`]); they report themselves while the body collects them
+/// ([`Blocks::collect_lines`], [`text_lines`], [`one_line`]).
 #[derive(Clone, Default)]
 pub(super) struct Blocks {
     drawing: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
     drawn: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
+    lines_drawing: std::rc::Rc<std::cell::RefCell<Vec<(Pixels, Pixels)>>>,
+    lines_drawn: std::rc::Rc<std::cell::RefCell<Vec<(Pixels, Pixels)>>>,
+}
+/// The body collecting the lines its content draws ([`Blocks::collect_lines`]).
+struct Collecting {
+    blocks: Blocks,
+    /// The clip the body draws its content in.
+    clip: Bounds<Pixels>,
+    /// The viewports of the lists inside the body around what is prepainting, outermost
+    /// first ([`clipped`]).
+    lists: Vec<Bounds<Pixels>>,
+}
+impl Collecting {
+    /// The span of the body's content, top to bottom, where a person can see a line drawn
+    /// under `mask`: inside the viewport of every list around it ([`clipped`]) and inside
+    /// any other clip within the body, which `mask` shows where it stands inside the body's
+    /// clip. The body's own clip bounds nothing: a reveal brings what lies beyond it into
+    /// view. A list's rows it has scrolled out of itself are hidden wherever the body
+    /// scrolls, even where the list runs past the body's edge and its clip there is the
+    /// body's, where the body once kept their lines.
+    fn visible(&self, mask: Bounds<Pixels>) -> (Pixels, Pixels) {
+        let slack = px(0.5);
+        let mut top = if mask.top() > self.clip.top() + slack {
+            mask.top()
+        } else {
+            px(f32::NEG_INFINITY)
+        };
+        let mut bottom = if mask.bottom() < self.clip.bottom() - slack {
+            mask.bottom()
+        } else {
+            px(f32::INFINITY)
+        };
+        for list in &self.lists {
+            top = top.max(list.top());
+            bottom = bottom.min(list.bottom());
+        }
+        (top, bottom)
+    }
+    /// Keeps the line from `top` to `bottom` where a person can see it whole in `visible`
+    /// ([`Collecting::visible`]): a line a list or a clip inside the body hides or cuts is
+    /// that container's to show, not the body's.
+    fn line(&self, top: Pixels, bottom: Pixels, (shown, ends): (Pixels, Pixels)) {
+        let slack = px(0.5);
+        if top >= shown - slack && bottom <= ends + slack && bottom > top {
+            self.blocks.lines_drawing.borrow_mut().push((top, bottom));
+        }
+    }
+}
+thread_local! {
+    /// The body whose content is prepainting while it collects its lines
+    /// ([`Blocks::collect_lines`]): GPUI prepaints a window's elements on its thread one at a
+    /// time, so what reports here between the body's first child and its own
+    /// `on_children_prepainted` lies inside the body.
+    static COLLECTING: std::cell::RefCell<Option<Collecting>> =
+        const { std::cell::RefCell::new(None) };
+}
+/// For the `on_children_prepainted` of a text element of the panel ([`super::label`],
+/// [`super::phrases`]): each of `children`, text in the element's own style, reports each of
+/// its lines a person can see to the body collecting them ([`Blocks::collect_lines`]), if one
+/// is. GPUI lays a text's lines out one under another from its top, each as tall as its
+/// style's line height snapped to a device pixel, which the element's text style gives while
+/// it prepaints. Only the lines inside what can be seen are counted, so a long text in a list,
+/// as a 65,536-character comment can be, costs the lines the list shows.
+pub(super) fn text_lines(children: Vec<Bounds<Pixels>>, window: &mut Window, _: &mut App) {
+    COLLECTING.with(|collecting| {
+        let Some(collecting) = &*collecting.borrow() else {
+            return;
+        };
+        let height = window.pixel_snap(window.line_height());
+        if height <= Pixels::ZERO {
+            return;
+        }
+        let visible = collecting.visible(window.content_mask().bounds);
+        for child in children {
+            // A text with nothing in it, as an empty status, is no line.
+            let count = (child.size.height / height).round();
+            let first = ((visible.0 - child.top()) / height)
+                .floor()
+                .clamp(0., count);
+            let last = ((visible.1 - child.top()) / height).ceil().clamp(0., count);
+            for index in first as usize..last as usize {
+                let top = child.top() + height * index as f32;
+                collecting.line(top, top + height, visible);
+            }
+        }
+    });
+}
+/// `list`, a list that scrolls inside the panel's body and clips its rows, in an element that
+/// tells the body collecting lines the list's viewport while the list prepaints, so the rows
+/// it has scrolled out of itself report no lines ([`Collecting::visible`]). The element is as
+/// tall as the list and stands where it would.
+pub(super) fn clipped(list: impl IntoElement) -> Div {
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .on_children_prepainted(|_, _, _| {
+            COLLECTING.with(|collecting| {
+                if let Some(collecting) = &mut *collecting.borrow_mut() {
+                    collecting.lists.pop();
+                }
+            });
+        })
+        // Prepainted before the list, laid over it at its place in the body.
+        .child(
+            canvas(
+                |bounds, _, _| {
+                    COLLECTING.with(|collecting| {
+                        if let Some(collecting) = &mut *collecting.borrow_mut() {
+                            collecting.lists.push(bounds);
+                        }
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .child(list)
+}
+/// An element laid over its parent, a control of one line such as a Button or a field, that
+/// reports the parent as one line of the body collecting them ([`Blocks::collect_lines`]): an
+/// edge that cut its frame would cut its label too. Absolutely placed, it takes no room and
+/// moves nothing in its parent.
+pub(super) fn one_line() -> impl IntoElement {
+    canvas(
+        |bounds, window, _| {
+            COLLECTING.with(|collecting| {
+                if let Some(collecting) = &*collecting.borrow() {
+                    let visible = collecting.visible(window.content_mask().bounds);
+                    collecting.line(bounds.top(), bounds.bottom(), visible);
+                }
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+/// An element laid over its parent, a control in a row that wraps such as the toolbar's, that
+/// reports the parent's top as the start of a block of the body collecting lines
+/// ([`Blocks::collect_lines`]), so a reveal can bring the body's top edge to the row it starts.
+pub(super) fn starts_block() -> impl IntoElement {
+    canvas(
+        |bounds, _, _| {
+            COLLECTING.with(|collecting| {
+                if let Some(collecting) = &*collecting.borrow() {
+                    collecting.blocks.drawing.borrow_mut().push(bounds.top());
+                }
+            });
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
 }
 impl Blocks {
+    /// The body's first child: an empty element whose prepaint starts collecting the lines
+    /// the body's content draws, until the body's own `on_children_prepainted` keeps them
+    /// ([`Blocks::finish`]). `clip` is the clip the body draws its content in.
+    pub(super) fn collect_lines(&self) -> Div {
+        let blocks = self.clone();
+        div().on_children_prepainted(move |_, window, _| {
+            let collecting = Collecting {
+                blocks: blocks.clone(),
+                clip: window.content_mask().bounds,
+                lists: Vec::new(),
+            };
+            COLLECTING.with(|slot| *slot.borrow_mut() = Some(collecting));
+        })
+    }
+    /// The lines of the last prepainted frame, in its coordinates with the body's scroll at
+    /// its offset then.
+    pub(super) fn lines(&self) -> Vec<(Pixels, Pixels)> {
+        self.lines_drawn.borrow().clone()
+    }
     /// For an element's `on_children_prepainted`: each of its children starts a block.
     pub(super) fn starts(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let blocks = self.clone();
@@ -312,6 +490,18 @@ impl Blocks {
     pub(super) fn finish(&self) {
         let drawing = std::mem::take(&mut *self.drawing.borrow_mut());
         *self.drawn.borrow_mut() = drawing;
+        // Only the container that collects ends its collection: a list inside the body, such
+        // as the conversation list, finishes its own blocks while the body still collects.
+        COLLECTING.with(|collecting| {
+            let mut collecting = collecting.borrow_mut();
+            if collecting.as_ref().is_some_and(|collecting| {
+                std::rc::Rc::ptr_eq(&collecting.blocks.lines_drawing, &self.lines_drawing)
+            }) {
+                *collecting = None;
+            }
+        });
+        let lines = std::mem::take(&mut *self.lines_drawing.borrow_mut());
+        *self.lines_drawn.borrow_mut() = lines;
     }
     /// The starts of the last prepainted frame, in its coordinates with `scroll` at its
     /// offset then: the container's children and those reported from inside it.
@@ -374,6 +564,79 @@ fn landing(
         .filter(|edge| *edge <= end)
         .reduce(Pixels::max)
         .unwrap_or(end)
+}
+
+/// Where the top edge of `viewport` lands instead of `edge`, where a reveal brought it
+/// ([`landing`]), so that neither of the view's edges falls inside one of `lines`, the lines of
+/// text and controls of one line drawn in it: a half line reads as a rendering fault, and its
+/// words cannot be read. `kept`, the part the reveal shows with its ring's room, stays whole,
+/// and the edge stays within `range`, where the content lets it scroll; it stops only at one
+/// of `starts`, where blocks start less the ring's room, or at an end of the content, as
+/// [`landing`] does, so it never falls inside text no line reports. Where `edge`
+/// leaves a line cut, the view scrolls the least less that shows that line whole or takes it
+/// out of view, so the part still shows whole and no other line is cut; otherwise the least more,
+/// until the line is wholly out of view; where neither can, the part whole wins and the edge
+/// stays at `edge`. A part taller than the view keeps the half of the view on the side the
+/// reveal shows. At 18 pt in a 461 × 490 window, Tab onto Connect once left the connection
+/// help's second line cut at the body's top edge.
+fn clear_of_lines(
+    viewport: Bounds<Pixels>,
+    edge: Pixels,
+    (top, bottom): (Pixels, Pixels),
+    lines: &[(Pixels, Pixels)],
+    starts: &[Pixels],
+    (first, last): (Pixels, Pixels),
+) -> Pixels {
+    let height = viewport.size.height;
+    // The part's and the content's ends allow layout's rounding.
+    let slack = px(0.5);
+    // A line is cut by any edge strictly inside it: an edge that stopped half a pixel inside
+    // a line, as at its other end, could cut a pixel of it once the scroll is laid out.
+    let within = px(0.01);
+    let (top, bottom) = if bottom - top <= height {
+        (top, bottom)
+    } else if (edge - top).abs() <= slack {
+        (top, top + height / 2.)
+    } else {
+        (edge + height / 2., edge + height)
+    };
+    let cuts = |at: Pixels| {
+        lines
+            .iter()
+            .any(|(line_top, line_bottom)| at > *line_top + within && at < *line_bottom - within)
+    };
+    let lands = |at: Pixels| {
+        at >= first - slack
+            && at <= last + slack
+            && at <= top + slack
+            && at + height >= bottom - slack
+            && !cuts(at)
+            && !cuts(at + height)
+    };
+    if lands(edge) {
+        return edge;
+    }
+    // The top edge stops only where a reveal may bring it, never through a line, whatever
+    // drew it: the start of a block or an end of the content. The part's own top lies inside
+    // its frame: Tab wrapping to the banner stopped there, 9 px down, at 18 pt.
+    let candidates = starts
+        .iter()
+        .copied()
+        .chain([first, last])
+        .filter(|at| lands(*at));
+    // Less scrolling moves the edge back toward where the view stood.
+    let from = viewport.top();
+    let less = |at: Pixels| (at > edge) == (from > edge);
+    let nearest = |candidates: Vec<Pixels>| {
+        candidates.into_iter().min_by(|a, b| {
+            (*a - edge)
+                .abs()
+                .as_f32()
+                .total_cmp(&(*b - edge).abs().as_f32())
+        })
+    };
+    let (fewer, more): (Vec<_>, Vec<_>) = candidates.partition(|at| less(*at));
+    nearest(fewer).or_else(|| nearest(more)).unwrap_or(edge)
 }
 
 /// Scrolls `scroll`, the panel's body or a list inside it, to show `bounds`, the children of
@@ -452,16 +715,13 @@ pub(super) fn show(
         if !still(window, cx) || scroll.offset() != previous || scroll.bounds() != viewport {
             return;
         }
-        let end = viewport.top() + previous.y + scroll.max_offset().y;
-        let edge = landing(
-            viewport,
-            top,
-            bottom,
-            &blocks.at(&scroll),
-            inset,
-            end,
-            ringed,
-        );
+        let start = viewport.top() + previous.y;
+        let end = start + scroll.max_offset().y;
+        let starts = blocks.at(&scroll);
+        let edge = landing(viewport, top, bottom, &starts, inset, end, ringed);
+        let starts: Vec<_> = starts.into_iter().map(|start| start - inset).collect();
+        let lines = blocks.lines();
+        let edge = clear_of_lines(viewport, edge, (top, bottom), &lines, &starts, (start, end));
         scroll_edge_to(&scroll, viewport, previous, edge, window);
     });
 }
@@ -1818,11 +2078,11 @@ impl Panel {
         div().flex().flex_col().gap_2()
             .child(label("github-review-heading",format!("{} in this review",crate::counted(self.review.comments.len(),"inline comment","inline comments"))).ml(super::text_inset()).font_weight(FontWeight::SEMIBOLD))
             .when(self.review.comments.is_empty(),|element|element.child(label("github-review-empty","Select changed lines in Files to add inline feedback, or send a review summary below.").ml(super::text_inset()).text_color(rgb(p.muted))))
-            .child(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+            .child(clipped(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
                 .child(div().flex().gap_2().child(button(("github-edit-inline",index),"Edit","",false).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,_,window,cx|this.edit_comment(index,window,cx))))
-                    .child(button(("github-remove-inline",index),"Remove","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}}))))))))
+                    .child(button(("github-remove-inline",index),"Remove","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }
@@ -1939,6 +2199,110 @@ mod tests {
     use core::prelude::v1::test;
     use gpui_kit::component::Root;
     use std::{cell::RefCell, rc::Rc};
+
+    /// A reveal scrolling down from a view at 100..300 lands its top edge at 150, inside the
+    /// line at 140..160: it stops the least less that shows the line whole where the part it
+    /// shows stays whole, otherwise goes on until the line is out of view, and, where the
+    /// content ends before that, leaves the part whole where the reveal put it. A line its
+    /// bottom edge cuts is shown whole or left out of view the same way.
+    #[test]
+    fn a_reveal_stops_clear_of_the_lines_at_its_edges() {
+        let viewport = Bounds::new(point(px(0.), px(100.)), size(px(300.), px(200.)));
+        let top_line = [(px(140.), px(160.))];
+        let range = (px(0.), px(1000.));
+        let part = |bottom: f32| (px(300.), px(bottom));
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(340.),
+                &top_line,
+                &[px(140.)],
+                range
+            ),
+            px(140.),
+            "a little less shows the line whole, the part still whole"
+        );
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(345.),
+                &top_line,
+                &[px(140.), px(160.)],
+                range
+            ),
+            px(160.),
+            "where less would cut the part, a little more takes the line out of view"
+        );
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(345.),
+                &top_line,
+                &[px(140.), px(160.)],
+                (px(0.), px(150.))
+            ),
+            px(150.),
+            "where the content ends, the part whole wins"
+        );
+        let bottom_line = [(px(340.), px(360.))];
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(335.),
+                &bottom_line,
+                &[px(140.)],
+                range
+            ),
+            px(140.),
+            "a little less takes the line the bottom edge cut out of view"
+        );
+        assert_eq!(
+            clear_of_lines(
+                viewport,
+                px(150.),
+                part(345.),
+                &bottom_line,
+                &[px(140.), px(160.)],
+                range
+            ),
+            px(160.),
+            "a little more shows it whole"
+        );
+        // A part taller than the view, shown from its top at 150 as a pane that draws its own
+        // ring is: it keeps the half of the view below its top, so with no block to stop at
+        // the reveal stays where it landed, and where one starts above it, the view stops
+        // there, the part's top, its leading edge, still in view.
+        let tall = (px(150.), px(500.));
+        assert_eq!(
+            clear_of_lines(viewport, px(150.), tall, &bottom_line, &[], range),
+            px(150.),
+            "with nowhere clear to stop, the tall part stays where it landed"
+        );
+        assert_eq!(
+            clear_of_lines(viewport, px(150.), tall, &bottom_line, &[px(120.)], range),
+            px(120.),
+            "a little less clears the line, the tall part's top still in view"
+        );
+        // Shift+Tab: a reveal scrolling up from a view at 400..600 lands at 190, its bottom
+        // edge inside the line at 380..400, and less and more are mirrored: less stops lower.
+        let below = Bounds::new(point(px(0.), px(400.)), size(px(300.), px(200.)));
+        let line = [(px(380.), px(400.))];
+        let starts = [px(170.), px(200.)];
+        assert_eq!(
+            clear_of_lines(below, px(190.), (px(200.), px(260.)), &line, &starts, range),
+            px(200.),
+            "scrolling up, a little less shows the line whole"
+        );
+        assert_eq!(
+            clear_of_lines(below, px(190.), (px(190.), px(260.)), &line, &starts, range),
+            px(170.),
+            "scrolling up, where less would cut the part, a little more takes the line out"
+        );
+    }
 
     #[gpui::test]
     fn patch_lines_use_the_code_font(cx: &mut TestAppContext) {

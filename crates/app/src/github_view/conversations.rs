@@ -569,7 +569,7 @@ impl Panel {
             // The draft and the outcome under it, which the body shows together as it appears.
             .child(div().debug_selector(||"github-reply-draft".into()).flex().flex_col().gap_2().on_children_prepainted(self.reveal_outcome())
                 .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
-                .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line))))
+                .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(super::review::clipped(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
@@ -635,7 +635,7 @@ impl Panel {
                 .child(super::phrases("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).min_w_0().font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
-            .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(crate::native_accessibility::clips_children(div()
+            .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(super::review::clipped(crate::native_accessibility::clips_children(div()
                 .on_children_prepainted(move |_, window, cx| {
                     super::review::record_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
                     list_blocks.finish();
@@ -673,7 +673,7 @@ impl Panel {
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
                             .child(label(("github-thread-count",index),comments_shown(thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
                         .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
-                })))))
+                }))))))
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
             .child(self.part("conversations-pager", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(button("github-threads-previous","Previous conversations","",false).disabled(self.pending||previous.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(cursor)=previous.clone(){this.thread_page(cursor,window,cx);}})))

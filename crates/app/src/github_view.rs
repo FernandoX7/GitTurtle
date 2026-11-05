@@ -21,33 +21,51 @@ mod review;
 use crate::github::review::UiTransport;
 use review::Section;
 
-/// [`native_accessibility::text`] at the panel's 12 pt.
+/// [`native_accessibility::text`] at the panel's 12 pt, whose lines a reveal of the body never
+/// leaves cut at its edge ([`review::text_lines`]).
 fn label(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
-    native_accessibility::text(id, text).text_size(crate::appearance::ui_text(12.))
+    let (id, text) = (id.into(), text.into());
+    let selector = id.clone();
+    native_accessibility::static_text(
+        div()
+            .on_children_prepainted(review::text_lines)
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .child(text.clone()),
+        text,
+    )
+    .text_size(crate::appearance::ui_text(12.))
 }
 /// A [`label`] of " · "-separated phrases that keeps each phrase whole: a line
 /// breaks after a separator, between two phrases, and inside a phrase only
 /// where that phrase alone is wider than the line. Each phrase draws as
 /// `{id}-{index}`, the separator ending the phrase before it; on one line
 /// they read as the text does, and the accessible name is the whole text.
+/// Like a [`label`]'s, its lines are never left cut at the body's edge.
 fn phrases(
     id: &'static str,
     text: impl Into<SharedString>,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
     let parts = crate::phrase_runs(&text);
-    native_accessibility::static_text(div().id(id).debug_selector(move || id.into()), text)
-        .flex()
-        .flex_wrap()
-        .text_size(crate::appearance::ui_text(12.))
-        .children(parts.into_iter().enumerate().map(move |(index, phrase)| {
-            div()
-                .debug_selector(move || format!("{id}-{index}"))
-                .child(phrase)
-        }))
+    native_accessibility::static_text(
+        div()
+            .on_children_prepainted(review::text_lines)
+            .id(id)
+            .debug_selector(move || id.into()),
+        text,
+    )
+    .flex()
+    .flex_wrap()
+    .text_size(crate::appearance::ui_text(12.))
+    .children(parts.into_iter().enumerate().map(move |(index, phrase)| {
+        div()
+            .debug_selector(move || format!("{id}-{index}"))
+            .child(phrase)
+    }))
 }
 /// Where the panel's text starts, in from its edge: a compact Button's label
 /// inset, [`crate::LABEL_INSET`] at the interface size. The dialog's title, the
@@ -188,22 +206,34 @@ fn row_text(selector: String, text: String) -> Div {
 }
 /// Preserve native focused-button Enter/Space activation inside this long-lived
 /// dialog; its default Return-to-confirm action must not bypass Panel::close.
+/// A labelled one is one line of the body, which a reveal never leaves cut at the
+/// body's edge ([`review::one_line`]); an icon-only one keeps its square frame,
+/// which a child would turn into a labelled Button's.
 fn button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     symbol: &str,
     active: bool,
 ) -> Button {
-    crate::button(id, label, symbol, active).key_context("GitTurtleGithubButton")
+    let label = label.into();
+    let labelled = !label.is_empty();
+    crate::button(id, label, symbol, active)
+        .key_context("GitTurtleGithubButton")
+        .when(labelled, |button| button.child(review::one_line()))
 }
-/// [`copy_feedback::copy_button`] with the same activation as [`button`].
+/// [`copy_feedback::copy_button`] with the same activation as [`button`], one
+/// line of the body as a labelled [`button`] is.
 fn copy_button(
     mark: copy_feedback::Mark,
     label: impl Into<SharedString>,
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    copy_feedback::copy_button(mark, label, tooltip, cx).key_context("GitTurtleGithubButton")
+    let label = label.into();
+    let labelled = !label.is_empty();
+    copy_feedback::copy_button(mark, label, tooltip, cx)
+        .key_context("GitTurtleGithubButton")
+        .when(labelled, |button| button.child(review::one_line()))
 }
 
 #[derive(Default)]
@@ -2170,17 +2200,24 @@ impl Render for Panel {
                 // window while the body stopped short of the dialog's cap, and revealing the
                 // whole row scrolled a field already whole, and the banner above it out of
                 // view.
-                .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
-                .child(self.part("refresh",div(),cx).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
-                .child(self.part("create",div(),cx).child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
-                .child(div().flex_1()).child(self.part("account",div(),cx).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
-            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).map(bordered_pane).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+                .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(review::one_line()).child(review::starts_block()).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
+                .child(self.part("refresh",div(),cx).child(review::starts_block()).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).debug_selector(||"github-refresh".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
+                .child(self.part("create",div(),cx).child(review::starts_block()).child(button("github-create","New pull request","plus",false).debug_selector(||"github-create".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
+                .child(div().flex_1()).child(self.part("account",div(),cx).child(review::starts_block()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
+            // The connection pane. Each of its controls is a part of its own, as the toolbar's
+            // are, so Tab onto one shows that control whole, and its lines and its controls, as
+            // the toolbar's do, start blocks of the body, so the reveal can bring the pane's
+            // first line, or the row of controls it wraps to, to the body's top with it:
+            // revealed as one part, the pane, taller than the body at 18 pt in a 461 × 490
+            // window, showed its foot and left the help's second line cut at the body's top.
+            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).map(bordered_pane).border_1().border_color(rgb(p.border)).rounded(px(6.))
+                .child(div().flex().flex_col().gap_2().on_children_prepainted(self.review.body_blocks.starts())
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
-                    .child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
-                    .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
-                    .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
+                    .child(self.part("connect",div(),cx).child(review::starts_block()).child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx)))))
+                    .child(self.part("sign-in-help",div(),cx).child(review::starts_block()).child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into()))))
+                    .child(self.part("disconnect",div(),cx).child(review::starts_block()).child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))))
             .children(flowing_line)
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
@@ -2188,7 +2225,7 @@ impl Render for Panel {
                 // margin, so the rows' text keeps the panel's edge, and above the first row and
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
-                .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
+                .child(review::clipped(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
                         // the selected one on the selected surface, and lifts to the row hover under
@@ -2205,7 +2242,7 @@ impl Render for Panel {
                         let flat=gpui_kit::component::button::ButtonVariant::Custom(gpui_kit::component::button::ButtonCustomVariant::new(cx).foreground(rgb(p.control_label()).into()));
                         let title=crate::button_frame(("github-pr",number),&name,"",false).with_variant(flat).selected(selected);
                         let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
-                        div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
+                        div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).child(review::one_line()).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
                             .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
                             .child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
@@ -2214,7 +2251,9 @@ impl Render for Panel {
                     // the destination first, and one with a destination reads its PRs with
                     // Refresh PRs, above. Opening the panel itself contacts nothing. Name
                     // repository moves to a name field, not a search, so it draws no glyph.
-                    .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
+                    // The empty state, its line and action, is one line of the body: the body's
+                    // reveals leave neither cut at its edge.
+                    .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).child(div().child(review::one_line()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
                         EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
                             .action(crate::empty_state::action("github-choose-destination","Name repository","").disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);
                                 // The field may hold focus already, as it does once the panel opens:
@@ -2222,14 +2261,14 @@ impl Render for Panel {
                                 *this.review.revealed_focus.borrow_mut()=Default::default();cx.notify();})))
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
-                    }.block(cx))))))
+                    }.block(cx))))))))
                 // A row that cannot hold its controls wraps them below, whole. A label after a
                 // Button takes the panel's text inset, which the Button gives back, so beside it
                 // nothing moves and on a line of its own the label starts at the panel's edge
                 // for text.
                 .child(self.part("pr-pager",div(),cx).flex().flex_wrap().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).mr(-text_inset()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
                     .child(phrases("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).min_w_0().ml(text_inset()).text_color(rgb(p.muted)))
-                    .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
+                    .child(button("github-next","Next PR page","",false).debug_selector(||"github-next".into()).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
                 // The PR's header and its section tabs, shown from the title's line as the PR
                 // opens.
@@ -2255,8 +2294,9 @@ impl Render for Panel {
             .when(self.create,|element|element
                 .child(button("github-create-back","Pull requests","arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
                 .child(label("github-create-fields","New pull request · published head → destination base").font_weight(FontWeight::SEMIBOLD))
-                .child(Input::new(&self.title).aria_label("Pull request title").disabled(pending))
-                .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
+                // Each one-line field is one line of the body, which its reveals leave whole.
+                .child(div().child(review::one_line()).child(Input::new(&self.title).aria_label("Pull request title").disabled(pending)))
+                .child(div().flex().gap_2().child(div().flex_1().child(review::one_line()).child(Input::new(&self.head).aria_label("Published head branch").disabled(pending))).child(div().flex_1().child(review::one_line()).child(Input::new(&self.base).aria_label("Destination base branch").disabled(pending))))
                 .child(div().flex().gap_2().children([(true,"Draft"),(false,"Ready")].map(|(draft,name)|button(name,name,"",self.draft==draft).toggled(self.draft==draft).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.draft=draft;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-load-templates","Load local base templates","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
                 .children(self.templates.iter().enumerate().map(|(index,template)|{let template=template.clone();button(("github-template",index),format!("Append {} · {}",template.path,&template.revision[..8]),"",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{let body=format!("{}{}{}",this.body.read(cx).value(),if this.body.read(cx).value().is_empty(){""}else{"\n\n"},template.body);this.body.update(cx,|input,cx|input.set_value(body,window,cx));this.save_draft(window,cx);} ))})))
@@ -2274,7 +2314,7 @@ impl Render for Panel {
             .child(self.render_reply_composer(cx))
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).map(bordered_pane).border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
-                .child(div().id("github-confirm-text-scroll").debug_selector(||"github-confirm-text-scroll".into()).flex_shrink_0().max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}|Action::Reply{body,..}=>body.clone(),Action::SetThreadResolved{resolved,..}=>if *resolved{"Resolve this conversation"}else{"Reopen this conversation"}.into(),Action::Review(review)=>format!("{} review · {}\n\n{}{}",review.event.label(),crate::counted(review.comments.len(),"inline comment","inline comments"),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())})))
+                .child(review::clipped(div().id("github-confirm-text-scroll").debug_selector(||"github-confirm-text-scroll".into()).flex_shrink_0().max_h(px(180.)).overflow_y_scroll().child(label("github-confirm-text",match &confirmation.action{Action::Create(pull)=>format!("{}\n\n{}",pull.title,pull.body),Action::Comment{body,..}|Action::Reply{body,..}=>body.clone(),Action::SetThreadResolved{resolved,..}=>if *resolved{"Resolve this conversation"}else{"Reopen this conversation"}.into(),Action::Review(review)=>format!("{} review · {}\n\n{}{}",review.event.label(),crate::counted(review.comments.len(),"inline comment","inline comments"),review.body,review.comments.iter().map(|comment|format!("\n\n{}\n{}",github::review::position_label(comment),comment.body)).collect::<String>())}))))
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
                 .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
                     .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.confirm=None;this.focus_visible_section(window,cx);cx.notify();}))))))
@@ -2282,11 +2322,11 @@ impl Render for Panel {
                 .child(phrases("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).min_w_0().ml(text_inset()).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").ml(text_inset()).text_color(rgb(p.muted)))
-                .child(crate::native_accessibility::clips_children(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();let mark=copy_feedback::Mark::new(("github-copy-draft",index),draft.key());let copy_mark=mark.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).ml(text_inset()).text_color(rgb(p.muted)))
+                .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();let mark=copy_feedback::Mark::new(("github-copy-draft",index),draft.key());let copy_mark=mark.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).ml(text_inset()).text_color(rgb(p.muted)))
                     .child(div().flex().gap_2().child(copy_button(mark,"Copy complete draft", "", cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),"draft",draft.recovery_text())))
-                        .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))}))))
+                        .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))})))))
                 .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating").ml(text_inset()))
-                    .child(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0()))))));
+                    .child(review::clipped(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0())))))));
         // The body scrolls inside the room its controls' focus rings take, which its sides
         // give back through their margin; above and below, the dialog's clip of its body
         // allows no margin, so the room is the body's own. While the body overflows, its
@@ -2295,6 +2335,9 @@ impl Render for Panel {
         // change what it holds, never move its right edge: kept only while the body
         // overflowed, the gutter moved that edge 19 px between Overview and Files.
         let cue = crate::tags::ScrollCue::new(&scroll, room);
+        // Before the content: collects the lines it draws for the body's reveals, until the
+        // body's own listener keeps them ([`review::Blocks::finish`]).
+        let collect = blocks.collect_lines();
         let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
@@ -2320,6 +2363,7 @@ impl Render for Panel {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
+                .child(collect)
                 .child(content),
             "github-panel-scrollbar",
         );
@@ -4040,6 +4084,319 @@ mod tests {
             assert!(
                 inside(connect, body),
                 "{at}: Tab shows Connect {connect:?} whole in the body {body:?}"
+            );
+            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+            settle_panel(&app, cx).await;
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The lines drawn in the panel's body that its top or bottom edge cuts, each named, with
+    /// where it lies, after a fresh draw: each line of every text inside the body, read from
+    /// the accessibility nodes the frame wrote, with its lines at the panel's 12 pt line height
+    /// (a text of another height counts as one line), and each control of one line in
+    /// `controls`. A line whole inside the body, or wholly outside it, is not cut; half a pixel
+    /// either way is layout's rounding.
+    fn cut_lines(cx: &mut VisualTestContext, controls: &[&'static str]) -> Vec<String> {
+        use crate::native_accessibility::written;
+        written::forget();
+        crate::tags::tests::draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let (scale, line) = cx.update(|window, _| {
+            // GPUI's default line height, the golden ratio of the text size.
+            let size = appearance::ui_text(12.);
+            let line = gpui_kit::phi().to_pixels(size.into(), window.rem_size());
+            (window.scale_factor(), window.pixel_snap(line))
+        });
+        let mut lines = Vec::new();
+        for id in written::inside("github-panel") {
+            let Some(text) = written::get(&id) else {
+                continue;
+            };
+            let (Role::Label, Some(layout)) = (text.node.role(), text.layout) else {
+                continue;
+            };
+            let (top, bottom) = (px(layout.y0 as f32 / scale), px(layout.y1 as f32 / scale));
+            let count = (bottom - top) / line;
+            if (count - count.round()).abs() < 0.05 && count.round() >= 1. {
+                for index in 0..count.round() as usize {
+                    let at = top + line * index as f32;
+                    lines.push((format!("{id} line {}", index + 1), at, at + line));
+                }
+            } else {
+                lines.push((id, top, bottom));
+            }
+        }
+        for control in controls {
+            if let Some(frame) = cx.debug_bounds(control) {
+                lines.push((control.to_string(), frame.top(), frame.bottom()));
+            }
+        }
+        assert!(
+            lines
+                .iter()
+                .any(|(name, ..)| name.starts_with("github-connection-help")),
+            "the body draws the connection help"
+        );
+        let slack = px(0.5);
+        let cut =
+            |edge: Pixels, top: Pixels, bottom: Pixels| top < edge - slack && bottom > edge + slack;
+        lines
+            .into_iter()
+            .filter(|(_, top, bottom)| {
+                cut(body.top(), *top, *bottom) || cut(body.bottom(), *top, *bottom)
+            })
+            .map(|(name, top, bottom)| format!("{name} {top:?}..{bottom:?} in {body:?}"))
+            .collect()
+    }
+
+    /// A list inside the body clips its rows to its own viewport, so the lines of the rows
+    /// it has scrolled out of itself are no lines of the body, which its reveals stop clear of:
+    /// only lines a person can see count. The previous attempts' list, at the content's end
+    /// and scrolled to its own top, its later rows below its foot, here runs past the body's
+    /// bottom edge, where the list's clip and the body's coincide, and the body once kept the
+    /// hidden rows' lines all the same (FU15-D's review): phantom lines that could leave a
+    /// reveal no place to stop, so it stayed where it cut a line the person sees.
+    #[gpui::test]
+    async fn lines_a_list_in_the_body_hides_are_no_lines_of_the_body(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        open_panel(&app, cx).await;
+        panel.update(cx, |panel, cx| {
+            panel.attempts = (0..10)
+                .map(|index| drafts::Attempt {
+                    destination: format!("GitHub fixture attempt {index}"),
+                    outcome: "Previous outbound result".into(),
+                    completed_reply_sha256: None,
+                })
+                .collect();
+            panel.review.recovery_open = true;
+            cx.notify();
+        });
+        draw(cx);
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        // The list's top 40 px above the body's foot, the rest of it below.
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let list = cx.debug_bounds("github-attempt-list").expect("the list");
+        let offset = scroll.offset().y + (body.bottom() - px(40.) - list.top());
+        scroll.set_offset(point(px(0.), offset));
+        draw(cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").unwrap();
+        let list = cx.debug_bounds("github-attempt-list").unwrap();
+        assert!(
+            list.top() < body.bottom() && list.bottom() > body.bottom(),
+            "the list {list:?} runs past the body's foot {body:?}"
+        );
+        let last = cx
+            .debug_bounds("github-attempt-9")
+            .expect("the last attempt, drawn");
+        assert!(
+            last.top() > list.bottom(),
+            "the list {list:?} hides its last row {last:?} below its foot"
+        );
+        let lines = panel.read_with(cx, |panel, _| panel.review.body_blocks.lines());
+        let hidden: Vec<_> = lines
+            .iter()
+            .filter(|(top, bottom)| *bottom > list.bottom() + px(0.5) && *top < last.bottom())
+            .collect();
+        assert_eq!(
+            hidden,
+            Vec::<&(Pixels, Pixels)>::new(),
+            "no line below the list's foot {list:?} is the body's"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// The conversation list clips its conversations to its own viewport as the attempts'
+    /// list does: scrolled to its top on a PR's Overview at 13 pt in a 461 × 490 window and
+    /// running past the body's foot, the lines of its conversations it hides below its own
+    /// foot are no lines of the body, where they once counted (FU15-D's review).
+    #[gpui::test]
+    async fn conversations_the_list_hides_are_no_lines_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
+        let (body_scroll, list_scroll) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.body_scroll.clone(),
+                panel.conversations.list_scroll.clone(),
+            )
+        });
+        show_overview(&panel, &pull, (13, 461., 490.), cx);
+        let frames = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        // The list's top 40 px above the body's foot, the rest of it below.
+        list_scroll.set_offset(point(px(0.), px(0.)));
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let list = cx.debug_bounds("github-threads").expect("the list");
+        let offset = (body_scroll.offset().y + (body.bottom() - px(40.) - list.top()))
+            .clamp(-body_scroll.max_offset().y, px(0.));
+        body_scroll.set_offset(point(px(0.), offset));
+        frames(cx);
+        let body = cx.debug_bounds("github-panel").unwrap();
+        let list = cx.debug_bounds("github-threads").unwrap();
+        assert!(
+            list.top() < body.bottom() && list.bottom() > body.bottom(),
+            "the list {list:?} runs past the body's foot {body:?}"
+        );
+        // Where each text the list hides below its own foot starts, read from the
+        // accessibility nodes a fresh frame writes.
+        use crate::native_accessibility::written;
+        written::forget();
+        crate::tags::tests::draw(cx);
+        let scale = cx.update(|window, _| window.scale_factor());
+        let mut hidden = Vec::new();
+        for id in written::inside("github-threads") {
+            let Some(text) = written::get(&id) else {
+                continue;
+            };
+            let (Role::Label, Some(layout)) = (text.node.role(), text.layout) else {
+                continue;
+            };
+            // A text's box can stand a little taller than the lines it paints, so only its
+            // first line's top is certain: where the text is wholly below the list's foot.
+            let top = px(layout.y0 as f32 / scale);
+            if top >= list.bottom() - px(0.5) {
+                hidden.push(top);
+            }
+        }
+        assert!(
+            !hidden.is_empty(),
+            "the list {list:?} hides text below its foot"
+        );
+        let lines = panel.read_with(cx, |panel, _| panel.review.body_blocks.lines());
+        let kept: Vec<_> = lines
+            .iter()
+            .filter(|(top, _)| {
+                hidden
+                    .iter()
+                    .any(|hidden| (*top - *hidden).abs() < px(0.01))
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            Vec::<&(Pixels, Pixels)>::new(),
+            "no line the list hides below its foot {list:?} is the body's"
+        );
+    }
+
+    /// Tab onto Connect, enabled in a panel that is no offline fixture and runs no request,
+    /// as opening it over a repository leaves it (it reads local settings and drafts only),
+    /// shows Connect whole and leaves no line cut at the body's edges at 18 pt and at 13 pt
+    /// in a 461 × 490 window: each line of the body's text and each of its one-line controls
+    /// lies wholly inside the body or wholly outside it, where the reveal stopped a little
+    /// short or went a little further. Shift+Tab back up onto Account options does the same.
+    /// Revealed as one part, the connection pane, taller than the body at 18 pt, showed its
+    /// foot and left the help's second line cut at the body's top edge (FU14-E's review).
+    #[gpui::test]
+    async fn a_reveal_leaves_no_line_cut_at_the_body_edges(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        // Tab's bindings, the installed focus ring and motion at rest.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            panel
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let controls = [
+            "github-destination",
+            "github-refresh",
+            "github-create",
+            "github-account-options",
+            "github-connect",
+            "github-sign-in-help",
+            "github-disconnect",
+            "github-list-empty",
+            "github-previous",
+            "github-next",
+            "github-recovery-toggle",
+        ];
+        let whole = |control: Bounds<Pixels>, body: Bounds<Pixels>| {
+            control.top() >= body.top() - px(0.5) && control.bottom() <= body.bottom() + px(0.5)
+        };
+        let tab_onto = |cx: &mut VisualTestContext, keys: &str, control: &'static str| {
+            let mut stops = 0;
+            while !ringed(cx, control) {
+                stops += 1;
+                assert!(stops <= 12, "{keys} reaches {control}");
+                cx.simulate_keystrokes(keys);
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+            }
+        };
+        for interface in [18, 13] {
+            let at = format!("{interface} pt in 461 × 490");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            open_panel(&app, cx).await;
+            if !panel.read_with(cx, |panel, _| panel.review.connection_open) {
+                crate::copy_feedback::tests::click(cx, "github-account-options");
+                cx.run_until_parked();
+            }
+            // Connect is enabled: no request runs and the panel is no offline fixture.
+            assert!(
+                panel.read_with(cx, |panel, _| !panel.pending && !panel.review.fixture),
+                "{at}: Connect is enabled"
+            );
+            scroll.set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            draw(cx);
+            assert!(scroll.max_offset().y > px(0.), "{at}: the body scrolls");
+
+            tab_onto(cx, "tab", "github-connect");
+            let body = cx.debug_bounds("github-panel").unwrap();
+            let connect = cx.debug_bounds("github-connect").unwrap();
+            assert!(
+                whole(connect, body),
+                "{at}: Tab shows Connect {connect:?} whole in the body {body:?}"
+            );
+            assert_eq!(
+                cut_lines(cx, &controls),
+                Vec::<String>::new(),
+                "{at}: after Tab onto Connect, no line is cut at the body's edges"
+            );
+            // On through the pane's other controls, each a part starting a block.
+            for control in ["github-sign-in-help", "github-disconnect"] {
+                tab_onto(cx, "tab", control);
+                let shown = cx.debug_bounds(control).unwrap();
+                assert!(
+                    whole(shown, body),
+                    "{at}: Tab shows {control} {shown:?} whole in the body {body:?}"
+                );
+                assert_eq!(
+                    cut_lines(cx, &controls),
+                    Vec::<String>::new(),
+                    "{at}: after Tab onto {control}, no line is cut at the body's edges"
+                );
+            }
+
+            tab_onto(cx, "shift-tab", "github-account-options");
+            let account = cx.debug_bounds("github-account-options").unwrap();
+            assert!(
+                whole(account, body),
+                "{at}: Shift+Tab shows Account options {account:?} whole in the body {body:?}"
+            );
+            assert_eq!(
+                cut_lines(cx, &controls),
+                Vec::<String>::new(),
+                "{at}: after Shift+Tab back onto Account options, no line is cut"
             );
             cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
             settle_panel(&app, cx).await;
