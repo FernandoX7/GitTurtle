@@ -1093,6 +1093,12 @@ impl Palette {
     /// removed line tints [`Self::more_contrast_fit`] decides, and secondary
     /// text, gutter numbers and `border` raised on them
     /// ([`Self::with_raised_floors`]). Every other token stays.
+    ///
+    /// Built only where it is called, through [`Self::as_applied`] and by
+    /// tests, and for documentation, which links to it: [`Self::apply`] takes
+    /// its palette from [`Self::more_contrast_fit`] itself, so a macOS build
+    /// left it never used and hosted clippy denied the warning.
+    #[cfg(any(test, doc, target_os = "linux"))]
     pub fn with_more_contrast(self) -> Self {
         self.more_contrast_fit().0
     }
@@ -2581,6 +2587,13 @@ impl Palette {
     /// global: adjusted by [`Self::with_more_contrast`] while
     /// [`MoreContrast`] is on, and itself otherwise. A caller that compares a
     /// resolved theme with the applied global compares through it.
+    ///
+    /// Built only where it is called, by the Linux Omarchy revision check
+    /// (`GitTurtle::omarchy_changed`) and by tests, and for documentation,
+    /// which links to it: [`Self::apply`] adjusts through
+    /// [`Self::more_contrast_fit`] itself, so a macOS build left it never used
+    /// and hosted clippy denied the warning.
+    #[cfg(any(test, doc, target_os = "linux"))]
     pub fn as_applied(self, cx: &App) -> Self {
         if more_contrast(cx) {
             self.with_more_contrast()
