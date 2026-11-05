@@ -4417,6 +4417,311 @@ mod tests {
         assert_eq!(painted_dialog_edge(cx), vec![edge], "set: the dialog edge");
     }
 
+    /// Enter on a Button Tab focused in a dialog's body presses that Button,
+    /// once, as the key goes down, and runs no default action: the ring
+    /// shows the control the keyboard acts on (`DESIGN.md`, "Keyboard").
+    /// A held Enter's repeats and its release press nothing more. In a
+    /// single-line field and on the default Button, Enter is the dialog's
+    /// default action, as before, and a multi-line field takes it as a new
+    /// line. Bound to the kit's Confirm, Enter on the body's Button ran the
+    /// default action and pressed nothing.
+    #[gpui::test]
+    fn enter_presses_the_focused_button_in_a_dialog(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+        use gpui_kit::component::{Root, WindowExt as _};
+        use gpui_kit::{
+            AppContext as _, Focusable as _, KeyDownEvent, Keystroke, ParentElement as _,
+        };
+        use std::{cell::Cell, rc::Rc};
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| DialogProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+        let (presses, confirms) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let press = cx.update(|_, cx| cx.focus_handle());
+        let (field, notes) = cx.update(|window, cx| {
+            (
+                cx.new(|cx| InputState::new(window, cx)),
+                cx.new(|cx| TextareaState::new(window, cx)),
+            )
+        });
+        cx.update(|window, cx| {
+            let (presses, confirms) = (presses.clone(), confirms.clone());
+            let (press, field, notes) = (press.clone(), field.clone(), notes.clone());
+            window.open_alert_dialog(cx, move |dialog, _, _| {
+                let (presses, confirms) = (presses.clone(), confirms.clone());
+                dialog
+                    .title("Probe")
+                    .child(Textarea::new(&notes))
+                    .child(Input::new(&field))
+                    .child(
+                        crate::button("probe-press", "Press", "", false)
+                            .track_focus(&press)
+                            .on_click(move |_, _, _| presses.set(presses.get() + 1)),
+                    )
+                    .footer(crate::tags::dialog_footer("OK", Some("Cancel")))
+                    .on_ok(move |_, _, _| {
+                        confirms.set(confirms.get() + 1);
+                        false
+                    })
+            })
+        });
+        crate::tags::tests::draw(cx);
+        let focused = |cx: &mut gpui::VisualTestContext, handle: &gpui::FocusHandle| {
+            cx.update(|window, _| handle.is_focused(window))
+        };
+        let field_focus = cx.update(|_, cx| field.read(cx).focus_handle(cx));
+        cx.update(|window, cx| window.focus(&field_focus, cx));
+        crate::tags::tests::draw(cx);
+        cx.simulate_keystrokes("tab");
+        crate::tags::tests::draw(cx);
+        assert!(focused(cx, &press), "Tab moves from the field onto Press");
+
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (1, 0),
+            "Enter presses Press"
+        );
+        for _ in 0..2 {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse("enter").unwrap(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+        }
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (2, 0),
+            "a held Enter's repeats press nothing; a fresh press presses once"
+        );
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+
+        cx.update(|window, cx| window.focus(&field_focus, cx));
+        crate::tags::tests::draw(cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (2, 1),
+            "in the field, the default"
+        );
+
+        let notes_focus = cx.update(|_, cx| notes.read(cx).focus_handle(cx));
+        cx.update(|window, cx| window.focus(&notes_focus, cx));
+        crate::tags::tests::draw(cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (2, 1),
+            "in the notes, no default"
+        );
+        assert_eq!(cx.update(|_, cx| notes.read(cx).value().to_string()), "\n");
+
+        // The default Button: the footer's last, after Cancel.
+        cx.update(|window, cx| window.focus(&press, cx));
+        crate::tags::tests::draw(cx);
+        cx.simulate_keystrokes("tab tab");
+        crate::tags::tests::draw(cx);
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            (presses.get(), confirms.get()),
+            (2, 2),
+            "on OK, the default"
+        );
+    }
+
+    /// A window holding the dialog layer, 800 × 600, with nothing open.
+    fn enter_probe(cx: &mut gpui::TestAppContext) -> &mut gpui::VisualTestContext {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| DialogProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+        cx
+    }
+
+    fn key_down(cx: &mut gpui::VisualTestContext, key: &str, is_held: bool) {
+        cx.simulate_event(gpui_kit::KeyDownEvent {
+            keystroke: gpui_kit::Keystroke::parse(key).unwrap(),
+            is_held,
+            prefer_character_input: false,
+        });
+        crate::tags::tests::draw(cx);
+    }
+
+    fn key_up(cx: &mut gpui::VisualTestContext, key: &str) {
+        cx.simulate_event(gpui_kit::KeyUpEvent {
+            keystroke: gpui_kit::Keystroke::parse(key).unwrap(),
+        });
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Opens dialog A, its focused body Button Delete… opening confirmation
+    /// B, whose default action counts a write: over A where `nested`, else
+    /// once A has closed, as Git profiles' Delete… opens Delete saved
+    /// profile. Returns the writes B ran.
+    fn open_delete(
+        cx: &mut gpui::VisualTestContext,
+        nested: bool,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
+        use gpui_kit::ParentElement as _;
+        use gpui_kit::component::WindowExt as _;
+        let writes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let press = cx.update(|_, cx| cx.focus_handle());
+        cx.update(|window, cx| {
+            let (writes, press) = (writes.clone(), press.clone());
+            window.open_alert_dialog(cx, move |dialog, _, _| {
+                let writes = writes.clone();
+                dialog
+                    .title("A")
+                    .child(
+                        crate::button("delete", "Delete…", "", false)
+                            .track_focus(&press)
+                            .on_click(move |_, window, cx| {
+                                if !nested {
+                                    window.close_dialog(cx);
+                                }
+                                let writes = writes.clone();
+                                window.open_alert_dialog(cx, move |dialog, _, _| {
+                                    let writes = writes.clone();
+                                    dialog
+                                        .title("B")
+                                        .footer(crate::tags::dialog_footer(
+                                            "Delete profile",
+                                            Some("Cancel"),
+                                        ))
+                                        .on_ok(move |_, _, _| {
+                                            writes.set(writes.get() + 1);
+                                            true
+                                        })
+                                });
+                            }),
+                    )
+                    .footer(crate::tags::dialog_footer("Close", None))
+            })
+        });
+        crate::tags::tests::draw(cx);
+        cx.update(|window, cx| window.focus(&press, cx));
+        crate::tags::tests::draw(cx);
+        writes
+    }
+
+    /// Enter held on a body Button that opens a confirmation, over its
+    /// dialog (`nested`) or in its place, runs no write: the press opens it,
+    /// and the held key's repeats reach a dialog that waits for that press
+    /// to come up and confirms only on a fresh one. A released press leaves
+    /// it open, and a fresh Enter then confirms it. The dialog's `Confirm`
+    /// binding took every repeat, so one press ran the write.
+    fn held_enter_on_a_button_that_opens_a_confirmation(
+        cx: &mut gpui::TestAppContext,
+        nested: bool,
+    ) {
+        use gpui_kit::component::WindowExt as _;
+        let cx = enter_probe(cx);
+        let writes = open_delete(cx, nested);
+        key_down(cx, "enter", false);
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        key_down(cx, "enter", true);
+        key_down(cx, "enter", true);
+        key_up(cx, "enter");
+        assert_eq!(
+            writes.get(),
+            0,
+            "nested {nested}: a held Enter ran no write"
+        );
+        key_down(cx, "enter", false);
+        key_up(cx, "enter");
+        assert_eq!(writes.get(), 1, "nested {nested}: a fresh Enter confirms");
+    }
+
+    #[gpui::test]
+    fn a_held_enter_never_confirms_what_it_opened_over_its_dialog(cx: &mut gpui::TestAppContext) {
+        held_enter_on_a_button_that_opens_a_confirmation(cx, true);
+    }
+
+    #[gpui::test]
+    fn a_held_enter_never_confirms_what_it_opened_in_its_dialogs_place(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        held_enter_on_a_button_that_opens_a_confirmation(cx, false);
+    }
+
+    /// Under X11 a held key's repeats arrive as fresh presses with no
+    /// release between them: a second Enter going down before the first
+    /// comes up confirms nothing in the confirmation the first opened.
+    #[gpui::test]
+    fn a_repeat_that_looks_fresh_waits_for_the_enter_that_opened_the_dialog(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = enter_probe(cx);
+        let writes = open_delete(cx, true);
+        key_down(cx, "enter", false);
+        key_down(cx, "enter", false);
+        key_down(cx, "enter", false);
+        assert_eq!(
+            writes.get(),
+            0,
+            "no confirm before the opening Enter comes up"
+        );
+        key_up(cx, "enter");
+        key_down(cx, "enter", false);
+        assert_eq!(writes.get(), 1, "a fresh press after it confirms");
+    }
+
+    /// A dialog opened with no Enter down takes its first Enter, once, as
+    /// the key goes down; the held key's repeats confirm nothing more, and
+    /// Space on a body Button acts as it comes up, opening nothing early.
+    #[gpui::test]
+    fn a_dialog_opened_with_no_enter_down_confirms_on_the_first_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::component::WindowExt as _;
+        let cx = enter_probe(cx);
+        let confirms = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|window, cx| {
+            let confirms = confirms.clone();
+            window.open_alert_dialog(cx, move |dialog, _, _| {
+                let confirms = confirms.clone();
+                dialog
+                    .title("Opened by a click")
+                    .footer(crate::tags::dialog_footer("OK", Some("Cancel")))
+                    .on_ok(move |_, _, _| {
+                        confirms.set(confirms.get() + 1);
+                        false
+                    })
+            })
+        });
+        crate::tags::tests::draw(cx);
+        key_down(cx, "enter", false);
+        assert_eq!(confirms.get(), 1, "the first Enter confirms");
+        key_down(cx, "enter", true);
+        key_down(cx, "enter", true);
+        key_up(cx, "enter");
+        assert_eq!(confirms.get(), 1, "a held Enter's repeats confirm nothing");
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::tags::tests::draw(cx);
+
+        let writes = open_delete(cx, true);
+        key_down(cx, "space", false);
+        key_down(cx, "space", true);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "A stays open"
+        );
+        key_up(cx, "space");
+        assert_eq!(
+            writes.get(),
+            0,
+            "Space opened the confirmation and ran nothing"
+        );
+    }
+
     /// In every palette a dialog's edge holds 3:1 against the dialog's
     /// surface and against every page surface its backdrop dims, keeping
     /// `border` where that already does and otherwise taking the least step

@@ -368,6 +368,7 @@ Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [user guide
 | Page Up / Page Down | Move through the focused list by viewport |
 | Left / Right | Collapse/expand a focused navigation section |
 | Return | Open the highlighted file in Compare from either history or the file list |
+| Return in a dialog | Press the focused Button, once, as the key goes down, never on a held key's repeats (under X11 a held key arrives as fresh presses), since the ring marks the control the keyboard acts on; in a single-line field, on the dialog itself or on its default Button, run the default action, as the key goes down and never on a held key's repeats; a multi-line field takes a new line. A dialog an Enter press opened takes no Enter until that press comes up, so a held Enter never confirms what it opened, under X11 too (decisions, 2026-11-05: Enter on a focused body Button, or on Cancel, ran the default action and pressed nothing; held on a Button that opened a confirmation, Enter's next repeat ran its write) |
 | Option/Alt + Up / Down in text | Previous/next change |
 | Option/Alt + Up / Down in the rebase sequence | Reorder the selected commit |
 | P / R / S / F / D in the rebase sequence | Pick / Reword / Squash / Fixup / Drop |
