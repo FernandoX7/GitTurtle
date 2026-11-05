@@ -1527,11 +1527,13 @@ async fn a_changed_file_row_ends_a_line_it_cannot_hold_inside_its_room(cx: &mut 
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
 
-/// The dialogs the narrow walk opens: every one that opens from History
-/// on the fixture, with a width of its own or the kit's, listed by hand, so
-/// a dialog left off the list is not walked (About was not, and drew 761 px
-/// wide at 18 pt in a 461 px window).
-#[derive(Clone, Copy, Debug)]
+/// The dialogs the narrow walk opens: every one that opens from History on
+/// the fixture, with a width of its own or the kit's. Every function that
+/// opens a dialog is walked as one of these or left out by name, with why
+/// ([`DIALOG_SITES`]), so a new dialog fails the walk's guard until it is
+/// either (About was left off a list kept by hand, and drew 761 px wide at
+/// 18 pt in a 461 px window).
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Dialog {
     /// About GitTurtle, its details scrolled under the dialog's height cap.
     About,
@@ -1554,10 +1556,19 @@ enum Dialog {
     RepositoryLibrary,
     /// A custom theme's delete confirmation, which sets no width of its own.
     DeleteTheme,
+    /// A Git error's details.
+    ErrorDetails,
+    /// A reviewed Git write's last step.
+    GitWrite,
+    CreateTag,
+    /// Add remote.
+    RemoteForm,
+    /// The GitHub panel, on a repository with no GitHub remote.
+    GitHub,
 }
 
 impl Dialog {
-    const ALL: [Dialog; 18] = [
+    const ALL: [Dialog; 23] = [
         Dialog::About,
         Dialog::Reflog,
         Dialog::Rebase,
@@ -1576,6 +1587,11 @@ impl Dialog {
         Dialog::Profiles,
         Dialog::RepositoryLibrary,
         Dialog::DeleteTheme,
+        Dialog::ErrorDetails,
+        Dialog::GitWrite,
+        Dialog::CreateTag,
+        Dialog::RemoteForm,
+        Dialog::GitHub,
     ];
 
     /// The room it keeps from either side of a window narrower than it:
@@ -1749,11 +1765,48 @@ impl Dialog {
                 })
                 .await
             }
+            Dialog::ErrorDetails => {
+                open_dialog(app, cx, &name, |_, window, cx| {
+                    crate::integration::show_error_details(WALK_ERROR, window, cx)
+                })
+                .await
+            }
+            Dialog::GitWrite => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.confirm_git_write(
+                        "Stage every file".into(),
+                        "Stage every working change.".into(),
+                        "Stage all",
+                        gitturtle_core::WriteCommand::StageAll,
+                        window,
+                        cx,
+                    )
+                })
+                .await
+            }
+            Dialog::CreateTag => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    crate::tags::open_tag_annotation(app, window, cx);
+                })
+                .await
+            }
+            Dialog::RemoteForm => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_remote_form(None, window, cx)
+                })
+                .await
+            }
+            Dialog::GitHub => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_github(window, cx)
+                })
+                .await
+            }
         }
     }
 }
 
-/// A Git error, as a failed fetch reports it, which a nested dialog shows.
+/// The Git error [`Dialog::ErrorDetails`] shows, as a failed fetch reports it.
 const WALK_ERROR: &str = "fatal: unable to access 'https://example.invalid/walk.git/': Could not resolve host: example.invalid";
 
 /// The kit's dialog padding, inside which a dialog's text lies.
@@ -2090,6 +2143,529 @@ async fn a_nested_dialog_keeps_its_foot_above_the_status_bar_at_13_pt(cx: &mut T
 #[gpui::test]
 async fn a_nested_dialog_keeps_its_foot_above_the_status_bar_at_18_pt(cx: &mut TestAppContext) {
     nested_dialog_keeps_its_foot(18, cx).await;
+}
+
+/// Where a function that opens a dialog stands in the narrow walk.
+#[derive(Clone, Copy, Debug)]
+enum Walked {
+    /// The walk opens it as this dialog.
+    As(Dialog),
+    /// The walk leaves it out, for the reason given: state the fixture does
+    /// not hold, a page other than History, or an opener the walk cannot
+    /// reach. Each is a follow-up's to walk.
+    Left(&'static str),
+}
+
+/// Every function in the app's own code that opens a dialog (a call of
+/// `open_alert_dialog` or `open_dialog`, whatever its receiver, a window's
+/// or `WindowExt::`), by its file under `src/` and its name, once per dialog
+/// it opens, with the [`Dialog`] the walk opens it as or why the walk leaves
+/// it out. Tests are not listed. A dialog opened through a listed helper,
+/// as every reviewed Git write's last step goes through `confirm_git_write`
+/// and every error's details through `show_error_details`, is covered by
+/// that helper's entry. A dialog opened
+/// anywhere else fails [`every_dialog_is_walked_or_left_out_by_name`] until
+/// it is listed here.
+const DIALOG_SITES: &[(&str, &str, Walked)] = {
+    use Walked::{As, Left};
+    const BRANCH: &str = "opens from a branch's action, prepared on the worker by an opener private to branch_actions";
+    const MARKDOWN: &str = "opens from a Markdown preview in Compare, not History";
+    const PDF: &str = "opens from a PDF preview in Compare, not History";
+    &[
+        ("activity.rs", "open_activity", As(Dialog::Activity)),
+        (
+            "authentication.rs",
+            "show_authentication_prompt",
+            Left("opens for a credential a running network operation asks for"),
+        ),
+        (
+            "automatic_refresh.rs",
+            "show_automatic_refresh_details",
+            Left("needs the local watch's warning, which the fixture does not raise"),
+        ),
+        (
+            "branch_actions.rs",
+            "show_prepared_branch_action",
+            Left(BRANCH),
+        ),
+        (
+            "branch_actions.rs",
+            "show_prepared_branch_action",
+            Left(BRANCH),
+        ),
+        ("branch_actions.rs", "show_local_branch", Left(BRANCH)),
+        (
+            "branch_actions.rs",
+            "show_remote_branch",
+            Left("needs a remote branch; the fixture has no remote"),
+        ),
+        (
+            "branch_actions.rs",
+            "show_branch_form",
+            Left("opens over a branch's action, which the walk does not reach"),
+        ),
+        (
+            "branch_actions.rs",
+            "show_remote_form",
+            As(Dialog::RemoteForm),
+        ),
+        (
+            "command_palette.rs",
+            "open_command_palette",
+            As(Dialog::CommandPalette),
+        ),
+        (
+            "discard/review.rs",
+            "confirm_discard",
+            Left("needs working changes; the fixture has none"),
+        ),
+        (
+            "github_view.rs",
+            "open_github_returning_to",
+            As(Dialog::GitHub),
+        ),
+        (
+            "ignore.rs",
+            "show_ignore_form",
+            Left("needs an untracked file; the fixture has none"),
+        ),
+        ("integration.rs", "confirm_git_write", As(Dialog::GitWrite)),
+        (
+            "integration.rs",
+            "show_error_details",
+            As(Dialog::ErrorDetails),
+        ),
+        (
+            "interactive_rebase.rs",
+            "open_interactive_rebase",
+            As(Dialog::Rebase),
+        ),
+        (
+            "interactive_rebase.rs",
+            "prepare_interactive_rebase_continue",
+            Left("needs a paused rebase"),
+        ),
+        (
+            "lfs_download.rs",
+            "open_lfs_download",
+            Left("needs a Git LFS pointer; the fixture has none"),
+        ),
+        (
+            "main.rs",
+            "choose_repository",
+            Left("opens only when the system's folder picker fails"),
+        ),
+        ("markdown_view.rs", "open_local_document", Left(MARKDOWN)),
+        ("markdown_view.rs", "open_link", Left(MARKDOWN)),
+        ("pdf_view.rs", "read_page_text", Left(PDF)),
+        ("pdf_view.rs", "page_picker", Left(PDF)),
+        ("platform_polish.rs", "about", As(Dialog::About)),
+        ("profiles.rs", "open_profiles", As(Dialog::Profiles)),
+        (
+            "profiles.rs",
+            "edit_profile",
+            Left("opens over Git profiles, by an opener private to profiles"),
+        ),
+        (
+            "profiles.rs",
+            "delete_profile",
+            Left("needs a saved profile; opens over Git profiles"),
+        ),
+        (
+            "project_pane.rs",
+            "open_group_form",
+            Left("opens from the project pane, not History"),
+        ),
+        (
+            "projects.rs",
+            "open_rename_project",
+            Left("opens from the project hub, not History"),
+        ),
+        (
+            "recovery.rs",
+            "choose_commit_recovery",
+            Left("needs a merge commit; the fixture's history is linear"),
+        ),
+        ("recovery.rs", "open_stash_browser", As(Dialog::Stashes)),
+        (
+            "recovery.rs",
+            "show_amend",
+            Left("needs an amend plan the commit menu prepares, by an opener private to recovery"),
+        ),
+        (
+            "recovery.rs",
+            "show_stash_form",
+            Left("opens by an opener private to recovery"),
+        ),
+        (
+            "recovery_drafts.rs",
+            "open_recovery_drafts",
+            As(Dialog::RecoveryDrafts),
+        ),
+        ("reflog.rs", "show", As(Dialog::Reflog)),
+        (
+            "repository_tabs.rs",
+            "open_repository_library",
+            As(Dialog::RepositoryLibrary),
+        ),
+        (
+            "revision_inspection.rs",
+            "open_compare_form",
+            As(Dialog::RevisionComparison),
+        ),
+        (
+            "revision_inspection.rs",
+            "open_quick_form",
+            As(Dialog::QuickOpen),
+        ),
+        (
+            "rewrite_review.rs",
+            "open_series_dialog",
+            As(Dialog::RewriteReview),
+        ),
+        ("shortcuts.rs", "open_help", As(Dialog::KeyboardShortcuts)),
+        ("tags.rs", "open_tags", As(Dialog::Tags)),
+        (
+            "tags.rs",
+            "show_tag_details",
+            Left("needs a tag; the fixture has none"),
+        ),
+        ("tags.rs", "open_create_tag", As(Dialog::CreateTag)),
+        (
+            "theme_editor.rs",
+            "open_theme_editor",
+            As(Dialog::ThemeEditor),
+        ),
+        (
+            "theme_editor.rs",
+            "confirm_delete_theme",
+            As(Dialog::DeleteTheme),
+        ),
+        (
+            "worktrees.rs",
+            "show_worktree_manager",
+            As(Dialog::Worktrees),
+        ),
+        (
+            "worktrees.rs",
+            "finish_worktree_write",
+            Left("needs a finished worktree write"),
+        ),
+        (
+            "worktrees/removal_review.rs",
+            "confirm_force_worktree_removal",
+            Left("needs a linked worktree with changes; the fixture has none"),
+        ),
+    ]
+};
+
+/// `source` with its comments and its string and character literals
+/// blanked, line breaks kept, so a scan finds only code.
+fn code_only(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut code = String::with_capacity(source.len());
+    let blank = |code: &mut String, c: char| code.push(if c == '\n' { '\n' } else { ' ' });
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        let before = i.checked_sub(1).map(|j| chars[j]);
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                blank(&mut code, chars[i]);
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0;
+            loop {
+                if chars.get(i) == Some(&'/') && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    code.push_str("  ");
+                    i += 2;
+                } else if chars.get(i) == Some(&'*') && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    code.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else if let Some(&c) = chars.get(i) {
+                    blank(&mut code, c);
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+        } else if c == 'r'
+            && !before.is_some_and(ident)
+            && matches!(next, Some('"') | Some('#'))
+            && chars[i + 1..].iter().find(|&&c| c != '#') == Some(&'"')
+        {
+            let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+            let start = i + 2 + hashes;
+            let mut end = start;
+            while end < chars.len()
+                && !(chars[end] == '"'
+                    && chars[end + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&c| c == '#')
+                        .count()
+                        == hashes)
+            {
+                end += 1;
+            }
+            for &c in &chars[i..(end + 1 + hashes).min(chars.len())] {
+                blank(&mut code, c);
+            }
+            i = end + 1 + hashes;
+        } else if c == '"' {
+            blank(&mut code, c);
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    blank(&mut code, chars[i]);
+                    i += 1;
+                }
+                if let Some(&c) = chars.get(i) {
+                    blank(&mut code, c);
+                }
+                i += 1;
+            }
+            code.push(' ');
+            i += 1;
+        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
+            // A character literal, not a lifetime.
+            blank(&mut code, c);
+            i += 1;
+            while i < chars.len() && chars[i] != '\'' {
+                if chars[i] == '\\' {
+                    blank(&mut code, chars[i]);
+                    i += 1;
+                }
+                if let Some(&c) = chars.get(i) {
+                    blank(&mut code, c);
+                }
+                i += 1;
+            }
+            code.push(' ');
+            i += 1;
+        } else {
+            code.push(c);
+            i += 1;
+        }
+    }
+    code
+}
+
+/// Which of `code`'s lines are compiled only for tests: an item under
+/// `#[cfg(test)]`, from its attribute to the end of its braces or its `;`.
+/// Also returns the modules declared that way without a body, `mod name;`,
+/// whose files are compiled only for tests.
+fn test_only_lines(code: &str) -> (Vec<bool>, Vec<String>) {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut test = vec![false; lines.len()];
+    let mut modules = Vec::new();
+    let mut line = 0;
+    while line < lines.len() {
+        let attribute = lines[line].trim_start();
+        if !(attribute.starts_with("#[cfg(test)]") || attribute.starts_with("#[cfg(all(test")) {
+            line += 1;
+            continue;
+        }
+        let (mut depth, mut opened) = (0usize, false);
+        let mut end = line;
+        'item: for (at, text) in lines.iter().enumerate().skip(line) {
+            end = at;
+            let item = if at == line {
+                &text[text.find(")]").map_or(0, |close| close + 2)..]
+            } else {
+                text
+            };
+            for c in item.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    // A field or an arm with no braces of its own ends
+                    // where the braces around it close.
+                    '}' if depth == 0 => break 'item,
+                    '}' => {
+                        depth -= 1;
+                        if opened && depth == 0 {
+                            break 'item;
+                        }
+                    }
+                    ';' if !opened => {
+                        let declared = item.trim();
+                        if let Some(name) = declared
+                            .strip_suffix(';')
+                            .and_then(|declared| declared.rsplit_once("mod "))
+                            .map(|(_, name)| name.trim())
+                        {
+                            modules.push(name.to_owned());
+                        }
+                        break 'item;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for flag in &mut test[line..=end] {
+            *flag = true;
+        }
+        line = end + 1;
+    }
+    (test, modules)
+}
+
+/// How many dialogs `line` opens: its calls of `open_alert_dialog` and
+/// `open_dialog`, whatever their receiver, not a function so named.
+fn opens_dialog(line: &str) -> usize {
+    ["open_alert_dialog(", "open_dialog("]
+        .iter()
+        .map(|call| {
+            line.match_indices(call)
+                .filter(|(at, _)| {
+                    let before = line[..*at].trim_end();
+                    !before.ends_with("fn")
+                        && !line[..*at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// Every site in the app's own code, outside tests, that opens a dialog:
+/// its file under `src/` and the function it lies in, once per site.
+fn dialog_sites() -> Vec<(String, String)> {
+    use std::path::{Path, PathBuf};
+    fn files(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the crate's sources") {
+            let path = entry.expect("a source entry").path();
+            if path.is_dir() {
+                files(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut paths = Vec::new();
+    files(&src, &mut paths);
+    paths.sort();
+    let sources: Vec<(PathBuf, String)> = paths
+        .into_iter()
+        .map(|path| {
+            let code = code_only(&std::fs::read_to_string(&path).expect("a source file"));
+            (path, code)
+        })
+        .collect();
+    // A module declared under `#[cfg(test)]` is compiled only for tests,
+    // with every module inside it.
+    let mut test_dirs = Vec::new();
+    for (path, code) in &sources {
+        let named = path
+            .file_stem()
+            .is_some_and(|stem| stem == "main" || stem == "mod");
+        let dir = if named {
+            path.parent().unwrap().to_owned()
+        } else {
+            path.with_extension("")
+        };
+        for module in test_only_lines(code).1 {
+            test_dirs.push(dir.join(&module));
+        }
+    }
+    let mut sites = Vec::new();
+    for (path, code) in &sources {
+        if test_dirs
+            .iter()
+            .any(|dir| path.starts_with(dir) || path.with_extension("") == *dir)
+        {
+            continue;
+        }
+        let test = test_only_lines(code).0;
+        let lines: Vec<&str> = code.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if test[at] {
+                continue;
+            }
+            let opens = opens_dialog(line);
+            if opens == 0 {
+                continue;
+            }
+            let function = lines[..=at]
+                .iter()
+                .rev()
+                .find_map(|line| {
+                    let (_, rest) = line.split_once("fn ")?;
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    (!name.is_empty()).then_some(name)
+                })
+                .unwrap_or_default();
+            let file = path
+                .strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            for _ in 0..opens {
+                sites.push((file.clone(), function.clone()));
+            }
+        }
+    }
+    sites
+}
+
+/// Every function that opens a dialog is in [`DIALOG_SITES`], walked as a
+/// [`Dialog`] the narrow walk opens or left out by name, and every entry
+/// still opens one: a new dialog, or one taken off the walk, fails here
+/// until it is walked or listed with why it is left out (About was left off
+/// the walk's list, kept by hand, and drew 761 px wide at 18 pt in a 461 px
+/// window).
+#[test]
+fn every_dialog_is_walked_or_left_out_by_name() {
+    let mut unlisted: Vec<(String, String)> = Vec::new();
+    let mut listed: Vec<(&str, &str)> = DIALOG_SITES
+        .iter()
+        .map(|(file, function, _)| (*file, *function))
+        .collect();
+    for (file, function) in dialog_sites() {
+        match listed
+            .iter()
+            .position(|(f, n)| *f == file && *n == function)
+        {
+            Some(at) => {
+                listed.remove(at);
+            }
+            None => unlisted.push((file, function)),
+        }
+    }
+    let unwalked: Vec<_> = DIALOG_SITES
+        .iter()
+        .filter_map(|(file, function, walked)| match walked {
+            Walked::As(dialog) if !Dialog::ALL.contains(dialog) => Some(format!(
+                "{file} {function}: {dialog:?} is not in Dialog::ALL"
+            )),
+            Walked::Left(why) if why.trim().is_empty() => {
+                Some(format!("{file} {function}: left out with no reason"))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        unlisted.is_empty() && listed.is_empty() && unwalked.is_empty(),
+        "dialogs the narrow walk neither opens nor leaves out by name in DIALOG_SITES: \
+         {unlisted:?}; entries that open no dialog: {listed:?}; {unwalked:?}"
+    );
 }
 
 /// About in a 461 × 490 half tile at `text` pt: Tab reaches Copy bug
