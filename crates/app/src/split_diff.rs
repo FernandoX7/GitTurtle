@@ -909,6 +909,111 @@ mod tests {
         }
     }
 
+    /// Under More contrast the Diff view draws a patch's text in the syntax roles fitted from
+    /// the diff colours, as Split does (decision, 2026-11-05: one file never draws one change in
+    /// two colours by view): a compared patch file's removed line, added line and hunk location
+    /// draw one colour each in the Diff view, through its decorations, and on Split's sides,
+    /// through the diff grammar under each side's tints, in a dark and a light built-in whose
+    /// raised roles differ from their diff colours. Off, the Diff view keeps the palette's diff
+    /// colours (`text::tests::patch_headers_and_changes_draw_palette_colors_in_every_built_in`).
+    #[gpui::test]
+    fn more_contrast_draws_a_change_in_one_colour_in_diff_and_split(cx: &mut gpui::TestAppContext) {
+        use crate::appearance::{ThemeChoice, packed, palette, set_more_contrast};
+        use gpui::{
+            combine_highlights,
+            component::{Rope, Theme, highlighter::SyntaxHighlighter},
+        };
+
+        // A patch file whose old side holds a removed line and whose new side an added one.
+        let (before, after) = ("@@ -1 +1 @@\n-old\n", "@@ -1 +1 @@\n+new\n");
+        let patch = "@@ -1,2 +1,2 @@\n @@ -1 +1 @@\n--old\n++new\n";
+        let unified = crate::text::PatchPresentation::prepare(patch);
+        let presentation = Arc::new(prepare(before, after, patch));
+        cx.update(gpui::init);
+        let cx = cx.add_empty_window();
+        // The Diff view's editor is held for the test's life, as Compare holds it.
+        let (_editor, diff, split) = cx.update(|window, cx| {
+            let (editor, decorations) =
+                crate::text::editor_with_decorations(patch, "diff", Some(&unified), window, cx);
+            let split = new(
+                Arc::clone(&presentation),
+                "diff",
+                FocusRing::default(),
+                window,
+                cx,
+            );
+            let decorations = decorations.expect("a prepared patch is decorated");
+            (editor, decorations, split)
+        });
+        for choice in [ThemeChoice::SolarizedDark, ThemeChoice::SolarizedLight] {
+            cx.update(|_, cx| {
+                set_more_contrast(true, cx);
+                choice.apply(None, cx);
+                crate::text::refresh_theme(&diff, &unified, cx);
+                split.update(cx, |split, cx| split.refresh_theme(cx));
+                let theme = Theme::global(cx).highlight_theme.clone();
+                let compose = |syntax: Vec<(Range<usize>, HighlightStyle)>,
+                               decorations: Vec<TextDecoration>| {
+                    combine_highlights(
+                        syntax,
+                        decorations
+                            .into_iter()
+                            .map(|decoration| (decoration.range, decoration.style)),
+                    )
+                    .collect::<Vec<_>>()
+                };
+                // The colour drawn at the first byte of `needle` in `text`, where a style sets
+                // one.
+                let color_at =
+                    |text: &str, styles: &[(Range<usize>, HighlightStyle)], needle: &str| {
+                        let at = text.find(needle).expect("the text holds it");
+                        styles
+                            .iter()
+                            .find(|(range, _)| range.contains(&at))
+                            .and_then(|(_, style)| style.color)
+                            .map(packed)
+                    };
+                // The Diff view draws a patch as plain text, so its decorations decide.
+                let unified_drawn = compose(Vec::new(), diff.drawn(cx));
+                let sides = [0, 1].map(|side| {
+                    let text = presentation.sides[side].text.as_str();
+                    let mut highlighter = SyntaxHighlighter::new("diff");
+                    highlighter.update(None, &Rope::from(text), None);
+                    let syntax = highlighter.styles(&(0..text.len()), theme.as_ref());
+                    let syntax = combine_highlights(Vec::new(), syntax).collect();
+                    compose(syntax, split.read(cx).decorations[side].drawn(cx))
+                });
+                let chosen = choice.palette();
+                for (what, in_diff, (side, needle), off) in [
+                    ("removed line", "--old", (0, "-old"), chosen.removed),
+                    ("added line", "++new", (1, "+new"), chosen.added),
+                    ("hunk location", "@@ -1,2", (1, "@@ -1 +1"), chosen.hunk),
+                ] {
+                    let text = presentation.sides[side].text.as_str();
+                    let drawn = (
+                        color_at(patch, &unified_drawn, in_diff),
+                        color_at(text, &sides[side], needle),
+                    );
+                    assert!(
+                        drawn.0.is_some() && drawn.0 == drawn.1,
+                        "{choice:?}: the {what} draws #{:06x} in the Diff view and #{:06x} in \
+                         Split",
+                        drawn.0.unwrap_or_default(),
+                        drawn.1.unwrap_or_default(),
+                    );
+                    // The raised role differs from the diff colour drawn off, so the Diff view's
+                    // colour drawn off would fail here.
+                    assert_ne!(drawn.0, Some(off), "{choice:?}: the {what} is raised");
+                }
+                assert_eq!(
+                    palette(cx).added,
+                    chosen.added,
+                    "{choice:?}: More contrast keeps the diff colours"
+                );
+            });
+        }
+    }
+
     /// Each side of Split carries a changed line's tint across its editor's whole row, so a
     /// replacement reads as one block a side with a straight right edge (decision, 2026-11-05):
     /// a short changed line, a blank one, which drew no tint at all, and one wider than the view

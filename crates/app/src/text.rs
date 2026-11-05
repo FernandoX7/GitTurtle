@@ -168,7 +168,10 @@ pub fn refresh_theme(
 /// (`TextDecoration::with_row_background`), on one decoration of its own without a background,
 /// which Find keeps whole, so a hunk's changed lines read as one block with a straight right
 /// edge and a blank changed line is tinted across its row, not under its `-` or `+` alone
-/// (decision, 2026-11-05). Off, there is one decoration a prepared range and one a block.
+/// (decision, 2026-11-05). Off, there is one decoration a prepared range and one a block. The
+/// patch's text takes the fitted highlights' colours (`EditorHighlights::patch_text`): the
+/// palette's diff and hunk colours off, and under More contrast the syntax roles fitted from
+/// them, as Split draws a patch's lines.
 fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDecoration> {
     let palette = palette(cx);
     let highlights = crate::appearance::editor_highlights(cx);
@@ -227,7 +230,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
         };
         let style = match decoration.kind {
             Kind::Added | Kind::AddedWord => HighlightStyle {
-                color: Some(rgb(palette.added).into()),
+                color: Some(rgb(highlights.patch_text.added).into()),
                 background_color: Some(
                     rgb(if decoration.kind == Kind::AddedWord {
                         highlights.added_word
@@ -239,7 +242,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                 ..Default::default()
             },
             Kind::Removed | Kind::RemovedWord => HighlightStyle {
-                color: Some(rgb(palette.removed).into()),
+                color: Some(rgb(highlights.patch_text.removed).into()),
                 background_color: Some(
                     rgb(if decoration.kind == Kind::RemovedWord {
                         highlights.removed_word
@@ -251,7 +254,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                 ..Default::default()
             },
             Kind::Hunk => HighlightStyle {
-                color: Some(rgb(palette.hunk).into()),
+                color: Some(rgb(highlights.patch_text.hunk).into()),
                 font_weight: Some(FontWeight::MEDIUM),
                 ..Default::default()
             },

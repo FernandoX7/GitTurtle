@@ -3179,6 +3179,23 @@ pub struct EditorHighlights {
     pub added_rule: Option<u32>,
     /// The removed word's rule, as [`Self::added_rule`].
     pub removed_rule: Option<u32>,
+    /// The colours the unified patch draws its text in, as `text::theme_decorations` decorates
+    /// it: added lines and their words, removed lines and their words, and hunk headers. With
+    /// More contrast off these are the palette's `added`, `removed` and `hunk` as chosen, so a
+    /// patch draws as it always has; under More contrast they are the syntax roles fitted from
+    /// them, `string`, `removed` and `function` ([`SyntaxRoles`]), the colours Split, Before and
+    /// After draw a patch's lines in, so one file never draws one change in two colours by view
+    /// (decision, 2026-11-05: off, the Diff view kept its colours drawn off beside Split's
+    /// raised roles, and a removed word read 4.82:1 in Omarchy tokyo-night).
+    pub patch_text: PatchText,
+}
+
+/// The unified patch's text colours ([`EditorHighlights::patch_text`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatchText {
+    pub added: u32,
+    pub removed: u32,
+    pub hunk: u32,
 }
 
 impl Global for EditorHighlights {}
@@ -3293,6 +3310,11 @@ impl EditorHighlights {
             ),
             added_rule: None,
             removed_rule: None,
+            patch_text: PatchText {
+                added: palette.added,
+                removed: palette.removed,
+                hunk: palette.hunk,
+            },
         }
     }
 
@@ -3346,6 +3368,11 @@ impl EditorHighlights {
             removed_word,
             added_rule: Some(Self::word_rule(palette, palette.added, added_word)),
             removed_rule: Some(Self::word_rule(palette, palette.removed, removed_word)),
+            patch_text: PatchText {
+                added: roles.string,
+                removed: roles.removed,
+                hunk: roles.function,
+            },
         }
     }
 
