@@ -4135,6 +4135,84 @@ mod list_tests {
         close(cx);
     }
 
+    /// The first Down after a search took away the row Orca last spoke
+    /// speaks only the entry it moves to. Orca keeps its locus on the row it
+    /// last heard selected: typing "tab" 60 ms a key, the one "t" selects,
+    /// since its spam filter drops the changes of selection of the keys
+    /// after it. "a" takes that row out of the list, and at Down Orca asks
+    /// the row for its parent. Answered nothing, it found no ancestor the
+    /// two share and read the window, the dialog and the list first, then
+    /// "Close Repository Tab: Ctrl+W" (QA-94); the row now answers the list
+    /// it left (the vendored AT-SPI adapter's patch).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_first_down_after_a_search_took_the_heard_row_speaks_only_the_entry(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let mut heard = Heard::new(cx);
+        let mut locus = None;
+        let mut orca = |cx: &mut VisualTestContext, heard: &mut Heard| {
+            let now = cx.executor().now();
+            heard.bus.heard_by_orca_from(now, &mut locus)
+        };
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let rows = help_matches("");
+        let first = (2..rows.len())
+            .find(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .unwrap();
+        let spoken = entry_reading(&rows, first).to_string();
+        assert_eq!(
+            orca(cx, &mut heard),
+            std::slice::from_ref(&spoken),
+            "Down speaks its entry"
+        );
+        heard.wait(cx, 1000);
+        orca(cx, &mut heard);
+        let mut typed = Vec::new();
+        for key in ["t", "a", "b"] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            typed.extend(orca(cx, &mut heard));
+            heard.wait(cx, 60);
+            typed.extend(orca(cx, &mut heard));
+        }
+        heard.wait(cx, 2000);
+        typed.extend(orca(cx, &mut heard));
+        assert!(
+            !typed.iter().any(|said| said == "<context>"),
+            "nothing of the window, the dialog or the list while typing: {typed:?}"
+        );
+        let entries: Vec<_> = (0..rows.len())
+            .map(|row| entry_reading(&rows, row))
+            .collect();
+        let last = typed
+            .iter()
+            .rev()
+            .find(|said| entries.iter().any(|entry| entry.as_ref() == said.as_str()))
+            .unwrap_or(&spoken);
+        let tab = help_matches("tab");
+        assert!(
+            (0..tab.len()).all(|row| entry_reading(&tab, row).as_ref() != last.as_str()),
+            "the search takes away the row Orca last spoke, {last:?}"
+        );
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let next = (2..tab.len())
+            .find(|&row| matches!(tab[row], HelpRow::Entry(_)))
+            .unwrap();
+        assert_eq!(
+            orca(cx, &mut heard),
+            [entry_reading(&tab, next).to_string()],
+            "only the entry, with nothing of the window, the dialog or the list before it"
+        );
+        close(cx);
+    }
+
     /// Closing Keyboard Shortcuts while its count rests announces nothing:
     /// "p" typed and Escape pressed 100 ms later, the rest passes in silence,
     /// and the dialog opened again announces only its own whole count and

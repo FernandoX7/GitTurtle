@@ -851,7 +851,24 @@ impl PlatformNode {
     }
 
     pub fn parent(&self) -> Result<NodeIdOrRoot> {
-        self.resolve(|node| {
+        self.with_tree_and_context(|tree, context| {
+            let state = tree.state();
+            let Some(node) = state.node_by_id(self.id) else {
+                // GitTurtle patch (GITTURTLE-PATCH.md): a selectable item
+                // that left the tree answers the parent it had there while
+                // that parent stays, included, as Orca asks of the list row
+                // it last spoke once a search took the row away.
+                return context
+                    .lock_removed()
+                    .parent(self.id)
+                    .filter(|&parent| {
+                        state
+                            .node_by_id(parent)
+                            .is_some_and(|parent| filter(&parent) == FilterResult::Include)
+                    })
+                    .map(NodeIdOrRoot::Node)
+                    .ok_or(Error::Defunct);
+            };
             let parent = node
                 .filtered_parent(&filter)
                 .map_or(NodeIdOrRoot::Root, |node| NodeIdOrRoot::Node(node.id()));

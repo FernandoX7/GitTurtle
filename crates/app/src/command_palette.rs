@@ -3101,6 +3101,10 @@ mod render_tests {
         listed: Vec<String>,
         #[cfg(target_os = "linux")]
         orca: Vec<String>,
+        /// Orca's locus of focus, where a test follows it
+        /// (`atspi_state_tests::Bus::heard_by_orca_from`).
+        #[cfg(target_os = "linux")]
+        locus: Option<Option<accesskit_atspi_common::NodeId>>,
         /// The name of each list item the AT-SPI adapter reported renamed,
         /// as it read then.
         #[cfg(target_os = "linux")]
@@ -3130,6 +3134,8 @@ mod render_tests {
                 listed: Vec::new(),
                 #[cfg(target_os = "linux")]
                 orca: Vec::new(),
+                #[cfg(target_os = "linux")]
+                locus: None,
                 #[cfg(target_os = "linux")]
                 items_renamed: Vec::new(),
             };
@@ -3200,7 +3206,11 @@ mod render_tests {
                 self.adapter.extend(self.bus.announced());
                 self.listed.extend(self.bus.selection_changed());
                 let now = cx.executor().now();
-                self.orca.extend(self.bus.heard_by_orca(now));
+                let orca = match &mut self.locus {
+                    Some(locus) => self.bus.heard_by_orca_from(now, locus),
+                    None => self.bus.heard_by_orca(now),
+                };
+                self.orca.extend(orca);
                 self.items_renamed.extend(
                     self.bus
                         .renamed()
@@ -3402,6 +3412,60 @@ mod render_tests {
         moved(cx, &mut heard, "up", "go", first);
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+    }
+
+    /// A search that takes away the command Orca last spoke leaves Orca
+    /// nothing to say but the command each move reaches: the row it left
+    /// answers the list as its parent (the vendored AT-SPI adapter's
+    /// patch), so Orca finds the list they share and reads no window,
+    /// dialog or list before the command, as it did in Keyboard Shortcuts
+    /// once a search took away its row (QA-94).
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_search_that_takes_the_spoken_command_away_leaves_moves_bare(cx: &mut TestAppContext) {
+        let (_app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        heard.locus = Some(None);
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let spoken = heard.take_listed();
+        assert_eq!(
+            heard.take_orca(),
+            spoken,
+            "Down speaks the command it reaches"
+        );
+        heard.wait(cx, 1000);
+        let row = spoken.first().expect("Down selects a command");
+        assert!(
+            !matches("go")
+                .iter()
+                .any(|&command| COMMANDS[command].label == row.as_str()),
+            "\"go\" takes away {row:?}"
+        );
+        for key in ["g", "o"] {
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, 60);
+        }
+        heard.wait(cx, 2000);
+        heard.take();
+        heard.take_listed();
+        let typed = heard.take_orca();
+        assert!(
+            !typed.iter().any(|said| said == "<context>"),
+            "nothing of the window, the dialog or the list while typing: {typed:?}"
+        );
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let listed = heard.take_listed();
+        assert_eq!(listed.len(), 1, "Down selects one command: {listed:?}");
+        assert_eq!(
+            heard.take_orca(),
+            listed,
+            "only the command Down reaches, with nothing before it"
+        );
+        cx.simulate_keystrokes("escape");
+        heard.frame(cx);
     }
 
     /// Typing "go" into the palette's query 60 ms a key, as steady typing

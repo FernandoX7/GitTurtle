@@ -15,8 +15,9 @@ match the supplemental notices in `docs/licenses/dependencies.json`.
 
 ## Changes
 
-Two files are modified: `src/node.rs`, with three changes, and `src/adapter.rs`.
-No other source, manifest or dependency changes.
+Three files are modified: `src/node.rs`, with four changes, `src/adapter.rs`,
+with two, and `src/context.rs`. No other source, manifest or dependency
+changes.
 
 ### Disabled controls (`src/node.rs`)
 
@@ -138,6 +139,43 @@ it is still added, and announced, by the existing branch. The work is one walk
 of the page's included nodes when a dialog opens or closes while an assistive
 technology is active.
 
+### A removed list row answers its list (`src/adapter.rs`, `src/context.rs`, `src/node.rs`)
+
+A GitTurtle change, not a backport. When a search takes the row Orca last
+spoke out of a list, Orca asks that row for its parent at the next move. It
+speaks the ancestors the new row does not share with the old one
+(`speech_generator.py`, `_generate_ancestors`, Orca 51.1), so with no answer
+it read the window, the dialog and the list before the row Down reached
+(QA-94). GTK4's removed rows are dead to Orca and say nothing more: libatspi
+disposes their proxies on the cache's `RemoveAccessible`, and GDBus answers a
+gone path with a text Orca recognises. `accesskit_unix` 0.22.1 sends
+`RemoveAccessible` with the body signature `so`, which libatspi 2.60
+rejects ("Unknown signature so for RemoveAccessible"), and zbus answers the
+unregistered path with "Unknown object", which Orca does not take as dead
+([research](../../docs/development/2026-11-05-orca-removed-list-rows.md)).
+
+`node_removed` now keeps a selectable item that left the tree, with the
+parent it had there, when that parent is still in the tree and included once
+the update is applied (`keep_removed`). The item keeps its `Accessible`
+interface on the bus, and every other interface leaves it as before.
+`PlatformNode::parent` answers a node no longer in the tree with that parent
+while it stays and included, and otherwise with `Defunct`, as before.
+Everything else the item answers is unchanged: `Defunct` errors and the
+defunct state. Removal still emits `state-changed:defunct`, the cache's
+`RemoveAccessible` and the parent's `children-changed:remove`. A node hidden
+beneath a modal dialog, which stays in the tree, is never kept. The context
+keeps at most 256 items (`Removed::KEPT`) and unregisters the oldest beyond
+that. An item that comes back into the tree is forgotten, and leaves the bus
+if it came back excluded. The work is a map lookup for each added node while
+any item is kept, and one tree read after an update that removed a selectable
+item.
+
+Upstream status: not proposed upstream. AccessKit #819 (`bffadacde`,
+released in `accesskit_unix` 0.24.1) sends the cache signals with the `(so)`
+signature libatspi accepts, so libatspi disposes a removed row's proxy and
+never asks this crate about it. Whether Orca then takes the row as dead
+before the next move needs its own check.
+
 ## Consumer and coverage
 
 GPUI's Linux backend `gpui-pre-linux` 0.3.4 creates an `accesskit_unix` 0.22.1
@@ -176,7 +214,17 @@ reads the GitHub panel's notice through the adapter at 13 and 18 pt in a
 it, `Visible` without `Showing` at its layout's extents below the fold at
 18 pt), and `views::tests::message_pieces_report_the_part_the_details_draw`
 the inspector's commit message, whose pieces, each drawn at least in part,
-show at the part drawn. Run
+show at the part drawn. This crate's own
+`adapter::tests::a_row_taken_out_of_its_list_answers_the_list_while_it_stays`
+and `rows_kept_as_removed_are_bounded_and_forgotten_on_return` (run with
+`scripts/vendor-crate-test.sh vendor/accesskit_atspi_common`) cover the
+removed row's answers, its interfaces, the bound and the return. The
+application's
+`shortcuts::list_tests::the_first_down_after_a_search_took_the_heard_row_speaks_only_the_entry`
+and
+`command_palette::render_tests::a_search_that_takes_the_spoken_command_away_leaves_moves_bare`
+feed real frames to the adapter and model Orca's ancestor presentation
+(`atspi_state_tests::Bus::heard_by_orca_from`). Run
 `cargo test --locked -p gitturtle --bin gitturtle native_accessibility::atspi_state_tests`
 on Linux. Native AT-SPI reads are recorded in `docs/validation.md`.
 
@@ -194,7 +242,11 @@ property that GitTurtle sets instead; until then carry it too. The
 point-query change can go only once AccessKit's own hit test passes over a
 node its clips leave out at the queried point, not with the off-screen
 change: an adapter that withholds `Showing` can still answer a point query
-with a node nothing is drawn of there. Retire this patch, the
+with a node nothing is drawn of there. The removed-row change can go once
+Orca, with the adapter GitTurtle then uses (`accesskit_unix` 0.24.1 or later
+sends cache signals libatspi accepts), is heard speaking only the row Down
+reaches after a search took away the row it last spoke, in Keyboard
+Shortcuts and the command palette. Retire this patch, the
 `[patch.crates-io]` entry, the workspace exclusion and the `vendor/AGENTS.md`
 row when no change remains. Keep the application tests; they then cover the
 upstream crate.

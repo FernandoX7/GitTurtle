@@ -329,20 +329,75 @@ impl Bus {
     /// for "g" and dropped the one for "go", sent 51 ms after it ("Ignoring
     /// object:announcement due to multiple instances in short time", QA-94).
     pub(crate) fn heard_by_orca(&mut self, at: std::time::Instant) -> Vec<String> {
+        self.hear(at, None)
+    }
+
+    /// As [`Self::heard_by_orca`], with Orca's locus of focus, which each
+    /// change of selection it hears moves to the selected item. Before that
+    /// item Orca speaks the ancestors it does not share with the item it
+    /// left (`speech_generator.py`, `_generate_ancestors`, Orca 51.1): none
+    /// when both answer the same parent, all of them, here "<context>",
+    /// when the item it left cannot answer its parent, as an object no
+    /// longer on the bus answers nothing ("Unknown object"). QA-94 heard
+    /// "GitTurtle", "Keyboard Shortcuts dialog …" and "Keyboard shortcuts
+    /// by group List with 11 items" before the row Down moved to, once
+    /// typing a search had taken away the row Orca last spoke. Orca would
+    /// speak none for an item it knows is dead, which this does not model:
+    /// libatspi still held the row's name there, so Orca took it as alive.
+    pub(crate) fn heard_by_orca_from(
+        &mut self,
+        at: std::time::Instant,
+        locus: &mut Option<NodeId>,
+    ) -> Vec<String> {
+        self.hear(at, Some(locus))
+    }
+
+    fn hear(
+        &mut self,
+        at: std::time::Instant,
+        mut locus: Option<&mut Option<NodeId>>,
+    ) -> Vec<String> {
         let emitted = std::mem::take(&mut *self.registry.emitted.lock().unwrap());
         let mut heard = Vec::new();
         for event in emitted {
-            let (kind, said) = match event {
-                Emitted::Announced(text) => ("object:announcement", vec![text]),
-                Emitted::Selection(id) => ("object:selection-changed", self.selected(id)),
+            let kind = match &event {
+                Emitted::Announced(_) => "object:announcement",
+                Emitted::Selection(_) => "object:selection-changed",
             };
             let last = self.orca.insert(kind, at);
             if last.is_some_and(|last| at.duration_since(last) < ORCA_SPAM_WINDOW) {
                 continue;
             }
-            heard.extend(said.into_iter().take(1));
+            match event {
+                Emitted::Announced(text) => heard.push(text),
+                Emitted::Selection(list) => {
+                    let item = self.adapter.platform_node(list).selected_child(0).unwrap();
+                    let Some(item) = item else { continue };
+                    if let Some(locus) = locus.as_deref_mut()
+                        && let Some(left) = locus.replace(item)
+                        && self.orca_parent(left) != self.orca_parent(item)
+                    {
+                        heard.push("<context>".into());
+                    }
+                    heard.push(self.adapter.platform_node(item).name().unwrap());
+                }
+            }
         }
         heard
+    }
+
+    /// The parent Orca reads for `id`: none when its object is not on the
+    /// bus, or the adapter answers it with an error.
+    fn orca_parent(&self, id: NodeId) -> Option<NodeIdOrRoot> {
+        let on_bus = self
+            .registry
+            .objects
+            .lock()
+            .unwrap()
+            .contains_key(&id.into());
+        on_bus
+            .then(|| self.adapter.platform_node(id).parent().ok())
+            .flatten()
     }
 
     /// The objects reported renamed since the last call, each by its role
