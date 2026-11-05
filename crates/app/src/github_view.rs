@@ -712,17 +712,35 @@ mod account {
     /// The account the stand-in connects.
     pub(super) const LOGIN: &str = "stand-in-reviewer";
     /// Every control a removal got, so a test can tell it was the request's own, whose
-    /// Cancel stops the keyring's prompt.
-    pub(super) static REMOVED_WITH: Mutex<Vec<OperationControl>> = Mutex::new(Vec::new());
+    /// Cancel stops the keyring's prompt, each with the settings directory of the test whose
+    /// operation executor ran it, which an executor inherits from the test that started it
+    /// ([`crate::preferences::test_settings_directory`]), so a test reads its own removals
+    /// only ([`removed_with`]). Every test in the process shares the record: read whole, a
+    /// test running beside another that disconnects could take the other's control for its
+    /// own.
+    static REMOVED_WITH: Mutex<Vec<(std::path::PathBuf, OperationControl)>> =
+        Mutex::new(Vec::new());
     pub(super) fn connect(_: &OperationControl) -> anyhow::Result<String> {
         Ok(LOGIN.into())
     }
     pub(super) fn remove(control: &OperationControl) -> anyhow::Result<()> {
+        let test = crate::preferences::test_settings_directory();
         REMOVED_WITH
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(control.clone());
+            .push((test.path().to_owned(), control.clone()));
         Ok(())
+    }
+    /// The controls the removals this test's executors ran got ([`REMOVED_WITH`]).
+    pub(super) fn removed_with() -> Vec<OperationControl> {
+        let test = crate::preferences::test_settings_directory();
+        REMOVED_WITH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(directory, _)| directory == test.path())
+            .map(|(_, control)| control.clone())
+            .collect()
     }
 }
 /// What a request's reply says when none arrives.
@@ -3558,17 +3576,15 @@ mod tests {
                 "the stand-in emptied the store"
             );
         });
-        let got: Vec<OperationControl> = account::REMOVED_WITH
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .filter(|got| !got.is_cancelled())
-            .cloned()
-            .collect();
-        assert!(!got.is_empty(), "Disconnect reached the stand-in");
+        let got = account::removed_with();
+        assert_eq!(got.len(), 1, "Disconnect reached the stand-in once");
+        assert!(
+            !got[0].is_cancelled(),
+            "nothing cancelled the removal's control"
+        );
         control.cancel();
         assert!(
-            got.iter().any(OperationControl::is_cancelled),
+            got[0].is_cancelled(),
             "the removal got the request's own control, which its Cancel reaches"
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
@@ -4091,6 +4107,18 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// How far apart the panel's 12 pt text ([`label`]) draws its lines: GPUI's default line
+    /// height, the golden ratio of the text size, snapped to a device pixel, as the text
+    /// element lays its lines out. Not [`Window::line_height`], the root style's, which is the
+    /// interface size's and rounds to a whole point.
+    fn label_line(cx: &mut VisualTestContext) -> Pixels {
+        cx.update(|window, _| {
+            let size = appearance::ui_text(12.);
+            let line = gpui_kit::phi().to_pixels(size.into(), window.rem_size());
+            window.pixel_snap(line)
+        })
+    }
+
     /// The body and the lines drawn in it, each named, with where it lies, after a fresh draw:
     /// each line of every text inside the body, read from the accessibility nodes the frame
     /// wrote, with its lines at the panel's 12 pt line height (a text of another height counts
@@ -4103,12 +4131,8 @@ mod tests {
         written::forget();
         crate::tags::tests::draw(cx);
         let body = cx.debug_bounds("github-panel").expect("the body");
-        let (scale, line) = cx.update(|window, _| {
-            // GPUI's default line height, the golden ratio of the text size.
-            let size = appearance::ui_text(12.);
-            let line = gpui_kit::phi().to_pixels(size.into(), window.rem_size());
-            (window.scale_factor(), window.pixel_snap(line))
-        });
+        let line = label_line(cx);
+        let scale = cx.update(|window, _| window.scale_factor());
         let mut lines = Vec::new();
         for id in written::inside("github-panel") {
             let Some(text) = written::get(&id) else {
@@ -6609,12 +6633,15 @@ mod tests {
                     "{sizes:?}: the line stands above the body only beside a conversation"
                 );
                 let notice = cx.debug_bounds("github-notice").expect("the notice");
-                let line = cx.update(|window, _| window.line_height());
-                drawn.push((
-                    notice.size.width,
-                    (notice.size.height / line).round(),
-                    notice.size.height,
-                ));
+                // Counted at the height the notice's text draws its lines, a whole number of
+                // them: the root style's line height is the interface size's, not the
+                // notice's 12 pt, and rounds to a whole point.
+                let lines = notice.size.height / label_line(cx);
+                assert!(
+                    (lines - lines.round()).abs() < 0.05,
+                    "{sizes:?}: the notice {notice:?} is {lines} of its lines tall"
+                );
+                drawn.push((notice.size.width, lines.round(), notice.size.height));
             }
             assert!(
                 drawn[0].1 > 1.,
@@ -8156,6 +8183,20 @@ mod tests {
             let (interface, width, height) = sizes;
             let at = format!("{interface} pt in {width} × {height}");
             show_overview(&panel, &pull, sizes, cx);
+            // The case the narrow window is here for, which the rings' known failures below
+            // count on: the conversations pane, with its ring's room above and below it,
+            // taller than the body, so it shows its top there and its foot below the fold.
+            // At 13 pt it is taller by about 9 px, and a layout change that let it fit would
+            // otherwise fail only as known failures that no longer happen.
+            if width < 1000. {
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let pane = cx.debug_bounds("github-thread-section").expect("the pane");
+                let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+                assert!(
+                    pane.size.height + room * 2. > body.size.height,
+                    "{at}: the pane {pane:?} with its ring's room is taller than the body {body:?}"
+                );
+            }
             let mut offsets = (body_scroll.offset().y, list_scroll.offset().y);
             let mut wrapped = false;
             let mut list_moves = 0;
