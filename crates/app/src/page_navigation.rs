@@ -408,7 +408,13 @@ impl GitTurtle {
                         this.keep_closing_modal_return(previous, replaced);
                         return;
                     }
-                    if window.focused(cx).map(|focus| focus.downgrade()) != left {
+                    // Only a live focus elsewhere is the person's: the
+                    // control the close gave focus back to can drop before
+                    // this frame, as a kit Button's own handle does once a
+                    // frame stops drawing it, which leaves nothing focused.
+                    if let Some(now) = window.focused(cx)
+                        && Some(now.downgrade()) != left
+                    {
                         return;
                     }
                     this.restore_detached_modal_focus(
@@ -4322,6 +4328,43 @@ mod tests {
         click_an_empty_spot(&app, cx);
         animation(cx);
         assert_eq!(focused(cx), Some(root), "before the repair, kept");
+    }
+
+    /// A control the close gave focus back to that drops before the next
+    /// frame, as a kit Button's own handle does once no frame draws it,
+    /// leaves nothing focused, which the frame's repair gives to the shown
+    /// list the window recorded, History's changed files. The repair once
+    /// counted that loss as a focus the person gave and left the window
+    /// with nothing focused, where no key acted.
+    #[gpui::test]
+    async fn a_dialog_closing_onto_a_dropped_control_repairs_focus(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let files = app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History && !app.files.is_empty());
+            app.file_focus.clone()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        let control = cx.update(|_, cx| cx.focus_handle());
+        open_probe_dialog(&app, cx, &control, Pane::Files);
+        assert_eq!(recorded_return(&app, cx), Some(files.clone()), "recorded");
+        // Closed as its Cancel or Close button closes it. The frame that
+        // sees the dialog gone asks for the repair, which runs as the next
+        // frame starts; the control drops between.
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor().run_until_parked();
+        assert!(!dialog_open(cx), "the dialog closed");
+        assert_eq!(focused(cx), Some(control.clone()), "the close gave it back");
+        drop(control);
+        assert_eq!(focused(cx), None, "nothing focused");
+        draw(cx);
+        assert_eq!(focused(cx), Some(files), "the repair gives the file list");
     }
 
     /// A dialog opened while another closes, before the window's repair
