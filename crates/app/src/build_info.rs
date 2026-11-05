@@ -75,12 +75,20 @@ pub struct DisplaySettings {
     pub density: crate::appearance::Density,
     pub interface_text_size: u8,
     pub code_text_size: u8,
+    /// Settings' Use the desktop's monospace font, reported only where Settings offers it
+    /// ([`REPORTS_SYSTEM_CODE_FONT`]).
     pub system_code_font: bool,
     /// Settings' Reduce motion, and whether motion is reduced now.
     pub reduce_motion: (crate::preferences::DisplayChoice, bool),
     /// Settings' Increase contrast, and whether More contrast is on now.
     pub increase_contrast: (crate::preferences::DisplayChoice, bool),
 }
+
+/// Whether the report carries `system_code_font`: only on Linux, the one platform whose
+/// Settings offers Use the desktop's monospace font (fontconfig's `monospace` family).
+/// Elsewhere the switch does not exist and the stored value changes nothing drawn, so
+/// reporting it misled whoever read the report, as macOS reports once did.
+const REPORTS_SYSTEM_CODE_FONT: bool = cfg!(target_os = "linux");
 
 /// Settings' choice for a display preference, `system` where it follows the desktop's (or
 /// macOS's) answer, with what the app does now.
@@ -111,10 +119,12 @@ pub fn diagnostics(display: &DisplaySettings) -> String {
         "density": display.density,
         "interface_text_size": display.interface_text_size,
         "code_text_size": display.code_text_size,
-        "system_code_font": display.system_code_font,
         "reduce_motion": choice(display.reduce_motion),
         "increase_contrast": choice(display.increase_contrast),
     });
+    if REPORTS_SYSTEM_CODE_FONT {
+        report["display"]["system_code_font"] = json!(display.system_code_font);
+    }
     pretty(&report)
 }
 
@@ -131,8 +141,9 @@ mod tests {
 
     /// The report is pasted into public issues: its display object holds exactly these keys,
     /// each an enumerated choice, a boolean or a number, so a new one fails here until it is
-    /// added deliberately under the rule [`DisplaySettings`] states.
-    const DISPLAY_KEYS: [&str; 10] = [
+    /// added deliberately under the rule [`DisplaySettings`] states. Linux adds
+    /// [`LINUX_DISPLAY_KEYS`].
+    const DISPLAY_KEYS: [&str; 9] = [
         "backend",
         "scale_factor",
         "theme",
@@ -140,10 +151,27 @@ mod tests {
         "density",
         "interface_text_size",
         "code_text_size",
-        "system_code_font",
         "reduce_motion",
         "increase_contrast",
     ];
+    /// The display keys only Linux reports: settings only its Settings offers.
+    const LINUX_DISPLAY_KEYS: [&str; 1] = ["system_code_font"];
+
+    /// The display object's keys on the platform the test runs on, sorted.
+    fn display_keys() -> Vec<String> {
+        let linux: &[&str] = if cfg!(target_os = "linux") {
+            &LINUX_DISPLAY_KEYS
+        } else {
+            &[]
+        };
+        let mut keys: Vec<_> = DISPLAY_KEYS
+            .iter()
+            .chain(linux)
+            .map(|key| key.to_string())
+            .collect();
+        keys.sort();
+        keys
+    }
 
     /// The report for `theme`, `reduce_motion` and `increase_contrast`, the rest fixed.
     fn report(
@@ -183,12 +211,21 @@ mod tests {
         assert_eq!(display["interface_text_size"], 13);
         assert_eq!(display["code_text_size"], 15);
         assert_eq!(display["follow_system"], true);
-        assert_eq!(display["system_code_font"], true);
+        // Use the desktop's monospace font exists only in Linux's Settings: reported there,
+        // and not at all on macOS, where it changes nothing drawn.
+        if cfg!(target_os = "linux") {
+            assert_eq!(display["system_code_font"], true);
+        } else {
+            assert_eq!(display.get("system_code_font"), None);
+        }
         let mut keys: Vec<_> = display.as_object().unwrap().keys().cloned().collect();
-        let mut allowed = DISPLAY_KEYS.map(String::from).to_vec();
         keys.sort();
-        allowed.sort();
-        assert_eq!(keys, allowed, "the display object's keys are the allowlist");
+        assert_eq!(
+            keys,
+            display_keys(),
+            "the display object's keys are the allowlist"
+        );
+        assert_eq!(keys.len(), if cfg!(target_os = "linux") { 10 } else { 9 });
         assert_eq!(midnight_report.as_object().unwrap().len(), 9);
         assert!(!summary().contains('/'));
         // Each display choice reports what Settings chose, `system` for following the
