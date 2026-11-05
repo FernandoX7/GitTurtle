@@ -326,14 +326,20 @@ pub(super) struct Blocks {
     lines_drawn: std::rc::Rc<std::cell::RefCell<Vec<(Pixels, Pixels)>>>,
     /// The multi-line editors drawn in the container while a frame prepaints, and those of
     /// the last frame, each with the span where the container keeps a line
-    /// ([`Collecting::spans`]): an editor lays its rows out as it paints, after the container
-    /// has prepainted, so [`Blocks::lines`] reads them from it then ([`editor_rows`]).
+    /// ([`Collecting::spans`]) and its box: an editor lays its rows out as it paints, after the
+    /// container has prepainted, so [`Blocks::lines`] reads them from it then
+    /// ([`editor_rows`]).
     editors_drawing: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
     editors_drawn: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
 }
 /// A multi-line editor drawn in a container collecting lines, as a reader of its layout, with
-/// the span where the container keeps a line ([`Blocks::editors_drawing`]).
-type DrawnEditor = (std::rc::Rc<dyn Fn(&App) -> EditorLayout>, (Pixels, Pixels));
+/// the span where the container keeps a line and the editor's box, its padding inside it
+/// ([`Blocks::editors_drawing`]).
+type DrawnEditor = (
+    std::rc::Rc<dyn Fn(&App) -> EditorLayout>,
+    (Pixels, Pixels),
+    Bounds<Pixels>,
+);
 /// What a multi-line editor laid out when it last painted ([`editor_lines`]): its viewport, the
 /// bounds of its scrolled text and its line height, the last two once it has painted.
 type EditorLayout = (Bounds<Pixels>, Option<Bounds<Pixels>>, Option<Pixels>);
@@ -543,8 +549,10 @@ pub(super) fn one_line() -> impl IntoElement {
 /// [`clipped_lines`]), so the container's reveals read each of its rows as a line
 /// ([`Blocks::lines`]): an edge inside a row would cut its text, which reported no lines
 /// before, so a reveal could stop with a row of a draft, or of Source's patch, cut at the
-/// body's edge. Laid inside the clip that cuts the editor's rows, as Source's is, it counts
-/// only the rows that clip shows whole. Absolutely placed, it takes no room and moves nothing.
+/// body's edge. Laid over the editor's box, padding and edge included, it counts the rows
+/// drawn in that box; laid inside the clip that cuts the editor's rows, as Source's is, only
+/// the part of each row that clip shows. Absolutely placed, it takes no room and moves
+/// nothing.
 pub(super) fn editor_rows<M: gpui_kit::base::input::MultiLineMode>(
     editor: &Entity<gpui_kit::base::input::InputBaseState<M>>,
 ) -> impl IntoElement {
@@ -558,11 +566,11 @@ pub(super) fn editor_rows<M: gpui_kit::base::input::MultiLineMode>(
         )
     });
     canvas(
-        move |_, window, _| {
+        move |bounds, window, _| {
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
                     for (blocks, span) in collecting.spans(window.content_mask().bounds) {
-                        let drawn = (layout.clone(), span);
+                        let drawn = (layout.clone(), span, bounds);
                         blocks.editors_drawing.borrow_mut().push(drawn);
                     }
                 }
@@ -574,13 +582,21 @@ pub(super) fn editor_rows<M: gpui_kit::base::input::MultiLineMode>(
     .inset_0()
 }
 /// The rows of an editor that last painted `layout`, in that frame's coordinates, each a line
-/// where a person can see some of it: the part of each row the editor's viewport shows, kept
-/// where it lies whole in `span` ([`whole_in`]), added to `lines`. The editor draws its rows
-/// one under another from the top of its scrolled text, each as tall as its laid-out line
-/// height; each place for a row in its viewport counts, the empty ones past its text among
-/// them, as the frame of rows the editor is.
+/// where a person can see some of it, added to `lines`: each row the editor draws in `frame`,
+/// its box, the part of it inside that box, cut too where `span` ends ([`Collecting::spans`]),
+/// at a list or a clip that ends inside the body. The editor draws its rows one under another
+/// from the top of its scrolled text, each as tall as its laid-out line height, from the row
+/// at its viewport's top to two past the row at its foot, and clips them only sideways, so a
+/// row it has scrolled partly out of its viewport draws into its padding, and a row below the
+/// viewport's foot can start there too: counted only inside the viewport, such a row
+/// let a reveal stop with the body's edge at the viewport's edge, through the row's text in
+/// the padding, as at 13 pt in a 461 × 490 window, where the review summary scrolled 14 px
+/// drew its ninth row from 2 px below its viewport into its padding, 7 px deep, which no line
+/// held. Each place for a row in its box counts, the empty ones past its text among them, as
+/// the frame of rows the editor is; a part thinner than layout's rounding is none.
 fn editor_lines(
     (view, text, line): EditorLayout,
+    frame: Bounds<Pixels>,
     span: (Pixels, Pixels),
     lines: &mut Vec<(Pixels, Pixels)>,
 ) {
@@ -591,11 +607,16 @@ fn editor_lines(
         return;
     }
     let first = ((view.top() - text.top()) / line).floor().max(0.);
-    let last = ((view.bottom() - text.top()) / line).ceil().max(first);
+    // The rows it draws that start before its box's foot.
+    let last = ((frame.bottom() - text.top()) / line)
+        .ceil()
+        .min(((view.bottom() - text.top()) / line).ceil() + 2.)
+        .max(first);
+    let (shown, ends) = (span.0.max(frame.top()), span.1.min(frame.bottom()));
     for row in first as usize..last as usize {
         let top = text.top() + line * row as f32;
-        let (top, bottom) = (top.max(view.top()), (top + line).min(view.bottom()));
-        if whole_in(top, bottom, span) {
+        let (top, bottom) = (top.max(shown), (top + line).min(ends));
+        if bottom - top > px(0.5) {
             lines.push((top, bottom));
         }
     }
@@ -638,8 +659,8 @@ impl Blocks {
     /// ([`editor_rows`]), so a reveal deferred until that frame has painted reads that frame's.
     pub(super) fn lines(&self, cx: &App) -> Vec<(Pixels, Pixels)> {
         let mut lines = self.lines_drawn.borrow().clone();
-        for (layout, span) in self.editors_drawn.borrow().iter() {
-            editor_lines(layout(cx), *span, &mut lines);
+        for (layout, span, frame) in self.editors_drawn.borrow().iter() {
+            editor_lines(layout(cx), *frame, *span, &mut lines);
         }
         lines
     }

@@ -8456,8 +8456,8 @@ mod tests {
                 push(selector.to_string(), bounds);
             }
         }
-        // Each row of a multi-line editor drawn, the part of it its viewport shows, where the
-        // clip it lies in shows that part whole.
+        // Each row of a multi-line editor drawn, as the editor draws it into its padding, the
+        // part of it inside its box and the lists and clips it lies in.
         type Layout = (Bounds<Pixels>, Option<Bounds<Pixels>>, Option<Pixels>);
         let editors: Vec<(&str, Layout)> = cx.read(|cx| {
             let panel = panel.read(cx);
@@ -8497,18 +8497,30 @@ mod tests {
             editors
         });
         for (drawn, (view, text, line)) in editors {
-            let (Some(_), Some(text), Some(line)) = (cx.debug_bounds(drawn), text, line) else {
+            let (Some(frame), Some(text), Some(line)) = (cx.debug_bounds(drawn), text, line) else {
                 continue;
             };
             let mut top = text.top();
             let mut row = 0;
-            while top < view.bottom() {
-                let part = Bounds::from_corners(
-                    point(view.left(), top.max(view.top())),
-                    point(view.right(), (top + line).min(view.bottom())),
-                );
-                if part.bottom() > part.top() && shown(part) {
-                    push(format!("{drawn} row {row}"), part);
+            // The rows it draws, to two past the row at its viewport's foot, that start inside
+            // its box, the part of each inside the box.
+            while top < frame.bottom().min(view.bottom() + line * 2.) {
+                if top + line > view.top() {
+                    let (shown, ends) = lists
+                        .iter()
+                        .filter(|list| list.left() < view.right() && list.right() > view.left())
+                        .filter(|list| list.top() < top + line && list.bottom() > top)
+                        .fold(
+                            (top.max(frame.top()), (top + line).min(frame.bottom())),
+                            |(shown, ends), list| (shown.max(list.top()), ends.min(list.bottom())),
+                        );
+                    if ends - shown > slack {
+                        let part = Bounds::from_corners(
+                            point(view.left(), shown),
+                            point(view.right(), ends),
+                        );
+                        push(format!("{drawn} row {row}"), part);
+                    }
                 }
                 top += line;
                 row += 1;
@@ -8877,6 +8889,282 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A row a multi-line editor draws below its viewport, starting in its bottom padding, is a
+    /// line of the body inside the editor's box, at 13 and 18 pt in a 461 × 490 window: the
+    /// review summary, scrolled so its ninth row starts 2 px below its viewport, its caret on
+    /// that row. The body counted rows only to the viewport's foot, so a reveal could stop with
+    /// the body's edge through that row's text in the padding (FU20-GH2's review: the summary
+    /// scrolled 14 px at 13 pt drew the row from 228.5 px, its viewport ending at 226.5 and its
+    /// box at 235.5).
+    #[gpui::test]
+    async fn an_editors_row_in_its_bottom_padding_is_a_line_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, _app, panel, pull, cx) = fixture_panel(cx).await;
+        let summary = cx.read(|cx| panel.read(cx).body.clone());
+        let rows: Vec<String> = (1..=12)
+            .map(|line| format!("Line {line} of the text"))
+            .collect();
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let slack = px(0.5);
+        for interface in [13, 18] {
+            let at = format!("the summary at {interface} pt in 461 × 490");
+            show_overview(&panel, &pull, (interface, 461., 490.), cx);
+            cx.update(|window, cx| {
+                // An inactive window draws no caret.
+                window.activate_window();
+                panel.update(cx, |panel, _| panel.review.section = Section::Review);
+                let text = rows.join("\n");
+                summary.update(cx, |input, cx| {
+                    input.set_value(text, window, cx);
+                    input.set_selected_range(0..0, cx);
+                });
+                window.focus(&summary.read(cx).focus_handle(cx), cx);
+            });
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            // The summary's top 20 px below the body's top.
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let field = cx
+                .debug_bounds("github-review-summary")
+                .expect("the editor");
+            let offset = (scroll.offset().y - (field.top() - body.top() - px(20.)))
+                .clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            // The first row below the viewport's foot starts 2 px below it, the caret on it.
+            let (view, line) = cx.read(|cx| {
+                let summary = summary.read(cx);
+                (
+                    summary.input_bounds(),
+                    summary.line_height().expect("painted"),
+                )
+            });
+            let row = ((view.size.height + px(2.)) / line).ceil() as usize;
+            let by = line * row as f32 - view.size.height - px(2.);
+            let start: usize = rows[..row].iter().map(|text| text.len() + 1).sum();
+            cx.update(|_, cx| {
+                summary.update(cx, |editor, cx| {
+                    editor.set_selected_range(start..start, cx);
+                    editor.set_scroll_offset(point(px(0.), -by), cx);
+                })
+            });
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let view = cx.read(|cx| summary.read(cx).input_bounds());
+            let field = cx
+                .debug_bounds("github-review-summary")
+                .expect("the editor");
+            crate::tags::tests::draw(cx);
+            let carets: Vec<Bounds<Pixels>> = quads(cx)
+                .into_iter()
+                .map(|(bounds, _)| bounds)
+                .filter(|bounds| {
+                    bounds.size.width > px(0.)
+                        && bounds.size.width <= px(3.)
+                        && bounds.size.height >= px(8.)
+                        && bounds.size.height <= px(48.)
+                        && bounds.left() >= view.left() - slack
+                        && bounds.right() <= view.right() + slack
+                        && bounds.top() >= view.bottom() - slack
+                        && bounds.top() < field.bottom()
+                })
+                .collect();
+            let [caret] = carets[..] else {
+                panic!("{at}: one caret below the viewport {view:?} in {field:?}: {carets:?}");
+            };
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            assert!(
+                field.bottom() < body.bottom(),
+                "{at}: the summary {field:?} ends inside the body {body:?}"
+            );
+            let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+            assert!(
+                lines.iter().any(|(top, bottom)| {
+                    *top <= caret.top() + slack
+                        && *bottom >= caret.bottom().min(field.bottom()) - slack
+                        && *bottom <= field.bottom() + slack
+                }),
+                "{at}: the row the caret {caret:?} stands on below the viewport {view:?} is a \
+                 line of the body inside the summary {field:?}: {lines:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A row a multi-line editor has scrolled partly out of its viewport is a whole line of the
+    /// body, at 13 and 18 pt in a 461 × 490 window, cut only where a clip inside the body cuts
+    /// it: the editor clips its rows only sideways, so the row draws whole into the editor's
+    /// padding, where the body counted only the part inside the viewport, and a reveal could
+    /// stop with the body's edge at the viewport's edge, through the row's text in the padding
+    /// (FU20-GH's review). The review summary, scrolled 4 px inside itself, reports its first
+    /// row from the top the frame draws the caret at, in the summary's top padding; Source,
+    /// scrolled 4 px past its 8 px top padding, reports its first row from the top of the clip
+    /// it lies in, which cuts the row's top above it.
+    #[gpui::test]
+    async fn an_editors_row_in_its_padding_is_a_whole_line_of_the_body(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let summary = cx.read(|cx| panel.read(cx).body.clone());
+        let text: String = (1..=12)
+            .map(|line| format!("Line {line} of the text"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let slack = px(0.5);
+        for interface in [13, 18] {
+            for source in [false, true] {
+                let at = format!(
+                    "{} at {interface} pt in 461 × 490",
+                    if source { "Source" } else { "the summary" }
+                );
+                show_overview(&panel, &pull, (interface, 461., 490.), cx);
+                if source {
+                    let (pull, files) = (pull.clone(), files.clone());
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| {
+                            panel.pull = Some(pull);
+                            panel.review.section = Section::Files;
+                            panel.review.files = files;
+                            panel.review.selected_file = None;
+                            panel.select_review_file(0, window, cx);
+                        })
+                    });
+                    settle_panel(&app, cx).await;
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| panel.review_source(1, window, cx))
+                    });
+                    settle_panel(&app, cx).await;
+                }
+                // The editor focused, its caret on its first row, and how to scroll it and read
+                // its viewport as it last painted.
+                type Scroll = Box<dyn Fn(Pixels, &mut App)>;
+                type Viewport = Box<dyn Fn(&App) -> Bounds<Pixels>>;
+                let (scroll_to, layout, part): (Scroll, Viewport, &'static str) =
+                    cx.update(|window, cx| {
+                        // An inactive window draws no caret.
+                        window.activate_window();
+                        if source {
+                            let editor = panel.read(cx).review.source.clone().expect("Source");
+                            editor.update(cx, |editor, cx| editor.set_selected_range(0..0, cx));
+                            window.focus(&editor.read(cx).focus_handle(cx), cx);
+                            let scrolled = editor.clone();
+                            (
+                                Box::new(move |by: Pixels, cx: &mut App| {
+                                    scrolled.update(cx, |editor, cx| {
+                                        editor.set_scroll_offset(point(px(0.), -by), cx)
+                                    })
+                                }) as Scroll,
+                                Box::new(move |cx: &App| editor.read(cx).input_bounds())
+                                    as Viewport,
+                                "github-source-patch",
+                            )
+                        } else {
+                            panel.update(cx, |panel, _| panel.review.section = Section::Review);
+                            let text = text.clone();
+                            summary.update(cx, |input, cx| {
+                                input.set_value(text, window, cx);
+                                input.set_selected_range(0..0, cx);
+                            });
+                            window.focus(&summary.read(cx).focus_handle(cx), cx);
+                            let (scrolled, read) = (summary.clone(), summary.clone());
+                            (
+                                Box::new(move |by: Pixels, cx: &mut App| {
+                                    scrolled.update(cx, |editor, cx| {
+                                        editor.set_scroll_offset(point(px(0.), -by), cx)
+                                    })
+                                }) as Scroll,
+                                Box::new(move |cx: &App| read.read(cx).input_bounds()) as Viewport,
+                                "github-review-summary",
+                            )
+                        }
+                    });
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                // The editor's top 20 px below the body's top.
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let field = cx.debug_bounds(part).expect("the editor");
+                let offset = (scroll.offset().y - (field.top() - body.top() - px(20.)))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), offset));
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                // Past its top padding, 8 px, in Source.
+                let by = if source { px(12.) } else { px(4.) };
+                cx.update(|_, cx| scroll_to(by, cx));
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let view = cx.read(|cx| layout(cx));
+                // The caret on the first row, drawn above the viewport's top by the scroll.
+                crate::tags::tests::draw(cx);
+                let carets: Vec<Bounds<Pixels>> = quads(cx)
+                    .into_iter()
+                    .map(|(bounds, _)| bounds)
+                    .filter(|bounds| {
+                        bounds.size.width > px(0.)
+                            && bounds.size.width <= px(3.)
+                            && bounds.size.height >= px(8.)
+                            && bounds.size.height <= px(48.)
+                            && bounds.left() >= view.left() - slack
+                            && bounds.right() <= view.right() + slack
+                            && bounds.bottom() > view.top()
+                            && bounds.top() < view.top()
+                    })
+                    .collect();
+                let [caret] = carets[..] else {
+                    panic!("{at}: one caret across the viewport's top {view:?}: {carets:?}");
+                };
+                assert!(
+                    caret.top() < view.top() - slack * 2.,
+                    "{at}: the editor scrolled its first row {caret:?} partly above its \
+                     viewport {view:?}"
+                );
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                assert!(
+                    caret.top() > body.top() && caret.bottom() < body.bottom(),
+                    "{at}: the row {caret:?} lies inside the body {body:?}"
+                );
+                // Where the row shows: in the summary, above the viewport's top, from the row's
+                // top above the caret's; in Source, from the top of the clip that cuts it.
+                let clip = source.then(|| {
+                    let clip = cx
+                        .debug_bounds("github-source-text")
+                        .expect("Source's clip");
+                    assert!(
+                        clip.top() > caret.top() + slack && clip.top() < view.top() - slack,
+                        "{at}: Source's clip {clip:?} cuts the row {caret:?} above the viewport \
+                         {view:?}"
+                    );
+                    clip.top()
+                });
+                let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+                assert!(
+                    lines.iter().any(|(top, bottom)| {
+                        let from = match clip {
+                            Some(clip) => (*top - clip).abs() <= slack,
+                            None => *top <= caret.top() + slack && *top < view.top() - slack,
+                        };
+                        from && *bottom >= caret.bottom() - slack
+                            && *bottom - *top < caret.size.height * 2.
+                    }),
+                    "{at}: the row the caret {caret:?} stands on is a line of the body from \
+                     {clip:?} or above the viewport {view:?}: {lines:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Files reports each of its rows as a line of the body, at 13 and 18 pt in a 461 × 490
