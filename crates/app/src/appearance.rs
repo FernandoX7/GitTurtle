@@ -1089,8 +1089,139 @@ impl Palette {
 
     /// This palette as More contrast draws it, the one adjustment
     /// [`Self::apply`] makes while [`MoreContrast`] is on, before it derives
-    /// anything else, derived on the fly and never saved. Secondary text
-    /// (`muted`) and gutter numbers (`line_number`) move toward `text` until each reads
+    /// anything else, derived on the fly and never saved: the added and
+    /// removed line tints [`Self::more_contrast_fit`] decides, and secondary
+    /// text, gutter numbers and `border` raised on them
+    /// ([`Self::with_raised_floors`]). Every other token stays.
+    pub fn with_more_contrast(self) -> Self {
+        self.more_contrast_fit().0
+    }
+
+    /// [`Self::with_more_contrast`] with the changed-word tints decided beside its
+    /// line tints: the one place that decides the diff's tints under More
+    /// contrast. Each word tint is the one drawn with More contrast off, lifted
+    /// from its line in OKLab lightness where it stands faintest
+    /// ([`EditorHighlights::lifted_word_tint`]), measured on the line tints as
+    /// chosen with the syntax raised on them. Where a word tint still stands
+    /// nearer its line than [`WORD_LIGHTNESS_GAP`], that side's line tint moves
+    /// away from it ([`line_moves`]), the added side first, through the steps on
+    /// which every color drawn on the diff's lines and words reads at least as
+    /// it does with More contrast off, with secondary text, gutter numbers and
+    /// syntax raised on the moved line ([`Self::diff_reads_as_off`]), the
+    /// selection and Find's matches stand apart from it as they do off
+    /// ([`EditorHighlights::stay_apart_from`]), and the word stands from it in
+    /// colour-blind vision at least as far as from the line drawn off
+    /// ([`keeps_colour_blind_gaps`]): to the step before the first that would
+    /// not, never past it. Every line of that side draws the moved
+    /// tint: whole added or removed lines, changed lines around their words,
+    /// in Diff and Split, and the gutter beside them.
+    ///
+    /// Why the line: a word tint between its line and the text on it can only
+    /// lift toward that text, which lowers the text's contrast, and one that
+    /// lifts toward the canvas stops at half its line's gap from it, so where
+    /// the word has no room left the line may still have some.
+    fn more_contrast_fit(self) -> (Self, Chosen) {
+        let own = self.syntax_roles(false);
+        let raised = self.with_raised_floors();
+        let roles = raised.syntax_roles(true);
+        let sides = [
+            (self.added, self.added_background),
+            (self.removed, self.removed_background),
+        ];
+        let highlights = EditorHighlights::fit(self, own, None);
+        let off = [highlights.added_word, highlights.removed_word];
+        let words = [0, 1].map(|side| {
+            let (diff, line) = sides[side];
+            EditorHighlights::lifted_word_tint(roles, own, off[side], diff, line, self.canvas)
+        });
+        let with_lines = |[added_background, removed_background]: [u32; 2]| {
+            Self {
+                added_background,
+                removed_background,
+                ..self
+            }
+            .with_raised_floors()
+        };
+        let mut lines = sides.map(|(_, line)| line);
+        for side in 0..2 {
+            let off_pair = (off[side], sides[side].1);
+            let moved = line_moves(lines[side], words[side], off_pair, self.canvas)
+                .into_iter()
+                .take_while(|&line| {
+                    let mut moved = lines;
+                    moved[side] = line;
+                    highlights.stay_apart_from(line, sides[side].1)
+                        && keeps_colour_blind_gaps(words[side], line, sides[side].1)
+                        && self.diff_reads_as_off(own, with_lines(moved), off, words)
+                })
+                .last();
+            if let Some(line) = moved {
+                lines[side] = line;
+            }
+        }
+        let palette = if lines == sides.map(|(_, line)| line) {
+            raised
+        } else {
+            with_lines(lines)
+        };
+        let chosen = Chosen {
+            palette: self,
+            off: highlights,
+            words,
+        };
+        (palette, chosen)
+    }
+
+    /// Whether every color drawn on the diff's line and changed-word tints in
+    /// `adjusted`, this palette under More contrast with `words` its word tints,
+    /// reads there at least as the same color reads with More contrast off, on
+    /// this palette's line tints and `off`, the word tints drawn off, with
+    /// `own` this palette's syntax: on each line tint `text`, every syntax role,
+    /// the side's diff color, secondary text and gutter numbers; on each word
+    /// tint `text`, every syntax role but `removed` and the side's diff color
+    /// ([`SyntaxRoles::word_colors`]).
+    fn diff_reads_as_off(
+        self,
+        own: SyntaxRoles,
+        adjusted: Self,
+        off: [u32; 2],
+        words: [u32; 2],
+    ) -> bool {
+        fn reads(mut drawn: impl Iterator<Item = (u32, u32)>, on: u32, off_on: u32) -> bool {
+            drawn.all(|(is, was)| custom::contrast(is, on) >= custom::contrast(was, off_on))
+        }
+        let roles = adjusted.syntax_roles(true);
+        let on_line = |palette: Self, roles: SyntaxRoles, diff: u32| {
+            roles
+                .colors()
+                .into_iter()
+                .chain([diff, palette.muted, palette.line_number])
+        };
+        let on_word = |roles: SyntaxRoles, diff: u32| roles.word_colors().into_iter().chain([diff]);
+        [
+            (
+                self.added,
+                (adjusted.added_background, self.added_background),
+                (words[0], off[0]),
+            ),
+            (
+                self.removed,
+                (adjusted.removed_background, self.removed_background),
+                (words[1], off[1]),
+            ),
+        ]
+        .into_iter()
+        .all(|(diff, (line, off_line), (word, off_word))| {
+            reads(
+                on_line(adjusted, roles, diff).zip(on_line(self, own, diff)),
+                line,
+                off_line,
+            ) && reads(on_word(roles, diff).zip(on_word(own, diff)), word, off_word)
+        })
+    }
+
+    /// This palette with secondary text (`muted`) and gutter numbers
+    /// (`line_number`) moved toward `text` until each reads
     /// [`MORE_CONTRAST_TEXT`] on the six surfaces the readability rules
     /// judge, measured as they rest: on canvas, panel, subtle and the
     /// selected row, and on the raised surface and the added and removed
@@ -1103,12 +1234,12 @@ impl Palette {
     /// fields' outlines and the popup edge fitted from it
     /// ([`Self::raised_edge`]) hold [`MORE_CONTRAST_EDGE`]; the disabled edge,
     /// the unchecked Switch track and a dark field's fill keep the unadjusted
-    /// palette's ([`Self::configure`]). Every other
-    /// token stays: the hues, the accent with its foreground, hover and
-    /// pressed fills, the selection, the status and diff colours. A token
+    /// palette's ([`Self::configure`]). Every other token stays: the hues,
+    /// the accent with its foreground, hover and pressed fills, the
+    /// selection, the status and diff colours and their line tints. A token
     /// already past its floor keeps its value, and nothing the floors are
-    /// measured on changes, so a second adjustment changes nothing.
-    pub fn with_more_contrast(self) -> Self {
+    /// measured on changes, so raising them again changes nothing.
+    fn with_raised_floors(self) -> Self {
         let resting = [
             self.canvas,
             self.panel,
@@ -2393,9 +2524,10 @@ impl Palette {
     /// [`sync_text_sizes`]).
     ///
     /// While [`MoreContrast`] is on, the palette is adjusted first
-    /// ([`Self::as_applied`]), so the `Palette` global, its [`Labels`], the
-    /// shared button's colors and the kit theme are all built from the
-    /// adjusted one, and the floors derived here rise with it: syntax is
+    /// ([`Self::more_contrast_fit`], as [`Self::as_applied`] gives it), so the
+    /// `Palette` global, its [`Labels`], the shared button's colors and the
+    /// kit theme are all built from the adjusted one, and the floors derived
+    /// here rise with it: syntax is
     /// fitted at [`MORE_CONTRAST_TEXT`] and the disabled label at
     /// [`MORE_CONTRAST_DISABLED`]. The changed-word tints never read worse
     /// than this palette's own ([`EditorHighlights::fit`]), and the disabled
@@ -2404,7 +2536,12 @@ impl Palette {
     /// applied as it is.
     pub fn apply(self, is_light: bool, window: Option<&mut Window>, cx: &mut App) {
         let more_contrast = more_contrast(cx);
-        let palette = self.as_applied(cx);
+        let (palette, chosen) = if more_contrast {
+            let (palette, chosen) = self.more_contrast_fit();
+            (palette, Some(chosen))
+        } else {
+            (self, None)
+        };
         Theme::change(
             if is_light {
                 ThemeMode::Light
@@ -2415,7 +2552,7 @@ impl Palette {
             cx,
         );
         let roles = palette.syntax_roles(more_contrast);
-        let highlights = EditorHighlights::fit(palette, roles, more_contrast.then_some(self));
+        let highlights = EditorHighlights::fit(palette, roles, chosen);
         palette.configure(
             is_light,
             more_contrast,
@@ -2995,8 +3132,9 @@ impl EditorHighlights {
     /// More contrast off: the selection and Find's matches raised ([`Self::raised`],
     /// [`Self::fit_raised`]), the current match no nearer the other matches than off, and each
     /// word tint lifted from its line in lightness where it stands nearer than
-    /// [`WORD_LIGHTNESS_GAP`] ([`Self::lifted_word_tint`]). Off, `chosen` is `None`.
-    fn fit(palette: Palette, roles: SyntaxRoles, chosen: Option<Palette>) -> Self {
+    /// [`WORD_LIGHTNESS_GAP`] ([`Self::lifted_word_tint`]), which [`Palette::more_contrast_fit`]
+    /// decides beside the line tints and hands in `chosen`. Off, `chosen` is `None`.
+    fn fit(palette: Palette, roles: SyntaxRoles, chosen: Option<Chosen>) -> Self {
         if let Some(chosen) = chosen {
             return Self::fit_raised(palette, roles, chosen);
         }
@@ -3031,8 +3169,9 @@ impl EditorHighlights {
     /// [`Self::fit`] under More contrast. The selection and current match are raised from the
     /// ones `chosen` draws with More contrast off ([`Self::raised`]), or else are those: the
     /// selection, which Find's other matches share, from `selected`, and the current match from
-    /// `selected` a quarter of the way to `accent`. Each word tint is the one drawn off, lifted
-    /// from its line where it stands faintest ([`Self::lifted_word_tint`]). Fitted only to
+    /// `selected` a quarter of the way to `accent`. Each word tint is the one `chosen` carries,
+    /// the one drawn off lifted from its line where it stands faintest
+    /// ([`Self::lifted_word_tint`], [`Palette::more_contrast_fit`]). Fitted only to
     /// the text rule against the raised syntax, the selection and Find's matches settled
     /// lighter, nearer their seeds, and the colors on them read worse than off (Midnight's
     /// strings on the current match 6.18:1 where they read 6.63:1).
@@ -3045,9 +3184,13 @@ impl EditorHighlights {
     /// (Omarchy ristretto 0.090 to 0.039). Where no current match stands that far from the
     /// raised selection and the off one stands nearer it than off, both keep their off
     /// highlights.
-    fn fit_raised(palette: Palette, roles: SyntaxRoles, chosen: Palette) -> Self {
+    fn fit_raised(palette: Palette, roles: SyntaxRoles, chosen: Chosen) -> Self {
+        let Chosen {
+            palette: chosen,
+            off,
+            words: [added_word, removed_word],
+        } = chosen;
         let own_roles = chosen.syntax_roles(false);
-        let off = Self::fit(chosen, own_roles, None);
         let (away, lines) = (Self::away(palette), Self::lines(palette));
         let patch = Self::patch_colors(palette, roles, &lines);
         let own: Vec<u32> = Self::patch_colors(chosen, own_roles, &Self::lines(chosen))
@@ -3065,19 +3208,12 @@ impl EditorHighlights {
                     .apart_from(selection, distance)
                     .raise(current, away, palette.accent)
             });
-        let word = |off: u32, diff: u32, line: u32| {
-            Self::lifted_word_tint(roles, own_roles, off, diff, line)
-        };
         Self {
             selection,
             find_match: selection,
             find_current,
-            added_word: word(off.added_word, palette.added, palette.added_background),
-            removed_word: word(
-                off.removed_word,
-                palette.removed,
-                palette.removed_background,
-            ),
+            added_word,
+            removed_word,
         }
     }
 
@@ -3208,6 +3344,25 @@ impl EditorHighlights {
             .unwrap_or_else(|| fit.readable(seed, away))
     }
 
+    /// Whether the selection and Find's matches, these highlights drawn with More contrast off,
+    /// stand from `line`, a moved line tint, at least [`HIGHLIGHT_DISTANCE`] in OKLab, or as far
+    /// as from `off_line`, the line drawn off, where that is less. A raised highlight stands from
+    /// every line at least as far as the one drawn off ([`HighlightFit::at_least_as_apart_as`]),
+    /// and where none is raised the one drawn off stays, so a line held to this keeps every
+    /// highlight on it [`HIGHLIGHT_DISTANCE`] apart, as [`Self::fit`] keeps them off. A line
+    /// moved toward the canvas, free of it, came within 0.034 of Omarchy miasma's selection,
+    /// which stands 0.044 from the line drawn off.
+    fn stay_apart_from(self, line: u32, off_line: u32) -> bool {
+        let (line, off_line) = (oklab(line), oklab(off_line));
+        [self.selection, self.find_current]
+            .into_iter()
+            .all(|highlight| {
+                let highlight = oklab(highlight);
+                let off_apart = oklab_distance(highlight, off_line);
+                oklab_distance(highlight, line) >= HIGHLIGHT_DISTANCE.min(off_apart)
+            })
+    }
+
     /// The changed-word tint for `diff` on its line tint `line` under More contrast: `off`, the
     /// tint drawn with More contrast off, where it stands at least [`WORD_LIGHTNESS_GAP`] from
     /// `line` in OKLab lightness, and otherwise `off` lifted away from `line`, on the side of it
@@ -3220,7 +3375,15 @@ impl EditorHighlights {
     /// reads worse than that, never past it, even where a step beyond would read well again;
     /// where the first step reads worse, `off` stays. A lift that runs out of lightness, where
     /// white or black stands nearer `line` than [`WORD_LIGHTNESS_GAP`], stops at the last step
-    /// before it.
+    /// before it. A lift never brings the tint nearer `canvas`, the editor background, in OKLab
+    /// lightness than half `line`'s own gap from it, nor past it: it stops at the last step that
+    /// keeps that far on its side of `canvas`, and a tint drawn off already nearer does not lift
+    /// toward it. A lift away from `canvas` is not bound by it.
+    ///
+    /// The canvas bound keeps the order canvas, line, word: lifted onto the canvas, a changed
+    /// word reads as a hole in its line rather than a mark on it (Omarchy flexoki-light's added
+    /// word #f7ffdf at 1.005:1 against its canvas, Solarized Dark's #0c2f00 at 1.017:1, apart by
+    /// hue alone).
     ///
     /// More contrast lifts only the faintest tints because their lightness gap is what
     /// colour-blind vision keeps of them; a tint already that far keeps `off` exactly. A lift
@@ -3235,6 +3398,7 @@ impl EditorHighlights {
         off: u32,
         diff: u32,
         line: u32,
+        canvas: u32,
     ) -> u32 {
         let targets: Vec<_> = roles
             .word_colors()
@@ -3244,12 +3408,34 @@ impl EditorHighlights {
             .map(|(color, own)| (color, custom::contrast(own, off)))
             .collect();
         let reads = HighlightFit::targeted(&targets, &[]);
+        let canvas = oklab(canvas)[0];
+        let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
+        let side = |color: u32| oklab(color)[0].total_cmp(&canvas);
+        let bound = (from_canvas(line) / 2.).min(from_canvas(off));
+        // Measured on the tint's own side of the canvas: a step past it lifted toward it.
+        let keeps_off_canvas = |lift: u32| {
+            from_canvas(lift) >= bound && (side(off).is_eq() || side(lift) == side(off))
+        };
         lightness_lifts(off, line)
             .into_iter()
-            .take_while(|&lift| reads.reading(lift) == Reading::Target)
+            .take_while(|&lift| keeps_off_canvas(lift) && reads.reading(lift) == Reading::Target)
             .last()
             .unwrap_or(off)
     }
+}
+
+/// What [`EditorHighlights::fit`] fits from under More contrast, from
+/// [`Palette::more_contrast_fit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Chosen {
+    /// The palette as chosen.
+    palette: Palette,
+    /// Its editor highlights with More contrast off, which the selection and Find's matches are
+    /// raised from.
+    off: EditorHighlights,
+    /// The added and removed changed-word tints under More contrast, decided beside the line
+    /// tints.
+    words: [u32; 2],
 }
 
 /// The steps that lift `tint` away from `line` in OKLab lightness, on the side of it `tint`
@@ -3301,6 +3487,107 @@ fn lightness_lifts(tint: u32, line: u32) -> Vec<u32> {
         }
     }
     lifts
+}
+
+/// The steps that move the line tint `line` away from `word`, the changed-word tint drawn on it,
+/// in OKLab lightness, on the line's far side from the word, nearest first, until the word stands
+/// [`WORD_LIGHTNESS_GAP`] from it: lightness moves a thousandth at a time, keeping `line`'s hue
+/// and chroma, or where sRGB cannot hold that chroma at that lightness, the most of it sRGB
+/// holds, in the same hue. Each step is rounded to sRGB and listed only where it stands further
+/// from `word` in lightness than the last one listed, and `word` stands from it at least as far
+/// as `off_word` stands from `off_line`, the pair drawn with More contrast off, in OKLab and in
+/// luminance contrast, on that pair's side in luminance. The steps end before the first that
+/// stands nearer `canvas` in lightness than [`WORD_LIGHTNESS_GAP`], or than `line` does where
+/// `line` already stands nearer, so such a line never moves toward the canvas, and at the first
+/// whose gap reaches [`WORD_LIGHTNESS_GAP`]. Empty where `word` already stands that far or is
+/// level with `line`, and where it lies on one side of `line` in lightness and on the other in
+/// luminance, since every step away in lightness then nears `word` in luminance or crosses it.
+///
+/// Why the canvas floor: the line tint is itself the mark of an added or removed line, so it
+/// keeps from the editor background the two just-noticeable differences a word keeps from it.
+fn line_moves(line: u32, word: u32, (off_word, off_line): (u32, u32), canvas: u32) -> Vec<u32> {
+    use std::cmp::Ordering;
+    let ([lightness, a, b], word_lab) = (oklab(line), oklab(word));
+    let gap = |color: u32| (oklab(color)[0] - word_lab[0]).abs();
+    let canvas = oklab(canvas)[0];
+    let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
+    let floor = WORD_LIGHTNESS_GAP.min(from_canvas(line));
+    let word_luminance = custom::luminance(word);
+    let side = |color: u32| word_luminance.total_cmp(&custom::luminance(color));
+    let off_side = custom::luminance(off_word).total_cmp(&custom::luminance(off_line));
+    let (apart, contrast) = (
+        oklab_distance(oklab(off_word), oklab(off_line)),
+        custom::contrast(off_word, off_line),
+    );
+    let direction = match (word_lab[0].total_cmp(&lightness), side(line)) {
+        (Ordering::Equal, _) => return Vec::new(),
+        (lighter, luminance) if luminance.is_ne() && luminance != lighter => return Vec::new(),
+        (Ordering::Greater, _) => -1.,
+        (Ordering::Less, _) => 1.,
+    };
+    let (mut moves, mut last) = (Vec::new(), line);
+    for step in 1..=1000 {
+        if gap(last) >= WORD_LIGHTNESS_GAP {
+            break;
+        }
+        let lab = [lightness + direction * f64::from(step) / 1000., a, b];
+        if !(0. ..=1.).contains(&lab[0]) {
+            break;
+        }
+        let moved = from_linear(linear_in_gamut(lab));
+        if from_canvas(moved) < floor {
+            break;
+        }
+        if gap(moved) > gap(last)
+            && oklab_distance(word_lab, oklab(moved)) >= apart
+            && custom::contrast(word, moved) >= contrast
+            && (off_side.is_eq() || side(moved) == off_side)
+        {
+            last = moved;
+            moves.push(moved);
+        }
+    }
+    moves
+}
+
+/// The OKLab lightness of `color` as protanopia and deuteranopia see it, in that order: the
+/// color through Machado, Oliveira and Fernandes' model (2009, severity 1, on linear sRGB), the
+/// model the design reviews measured, rounded to sRGB.
+fn colour_blind_lightness(color: u32) -> [f64; 2] {
+    const MODELS: [[[f64; 3]; 3]; 2] = [
+        [
+            [0.152_286, 1.052_583, -0.204_868],
+            [0.114_503, 0.786_281, 0.099_216],
+            [-0.003_882, -0.048_116, 1.051_998],
+        ],
+        [
+            [0.367_322, 0.860_646, -0.227_968],
+            [0.280_085, 0.672_501, 0.047_413],
+            [-0.011_820, 0.042_940, 0.968_881],
+        ],
+    ];
+    let linear = [16, 8, 0].map(|shift| custom::linear_channel((color >> shift) & 0xff));
+    MODELS.map(|model| {
+        let seen = from_linear(model.map(|row| {
+            let channel: f64 = row.iter().zip(linear).map(|(m, c)| m * c).sum();
+            channel.clamp(0., 1.)
+        }));
+        oklab(seen)[0]
+    })
+}
+
+/// Whether `word`, a changed-word tint, stands from `line`, a moved line tint, in OKLab
+/// lightness at least as far as from `off_line`, the line drawn off, as protanopia and as
+/// deuteranopia see the three ([`colour_blind_lightness`]).
+///
+/// Why: the word's lightness gap is what colour-blind vision keeps of it, so a line moved for
+/// it must not narrow that gap there. Moved by normal vision alone, red-ish words, which read
+/// darker in a protanopia model than their lines where they read lighter in normal vision, drew
+/// nearer their lines there (Omarchy kanagawa's removed word 0.020 to 0.018 from its line,
+/// alacritty-dark's 0.016 to 0.013, catppuccin-latte's added word crossing its line).
+fn keeps_colour_blind_gaps(word: u32, line: u32, off_line: u32) -> bool {
+    let [word, line, off_line] = [word, line, off_line].map(colour_blind_lightness);
+    (0..2).all(|model| (word[model] - line[model]).abs() >= (word[model] - off_line[model]).abs())
 }
 
 /// The linear-light sRGB channels of OKLab coordinates, with their chroma lowered, hue kept,
@@ -6345,9 +6632,13 @@ mod tests {
     /// stay apart from `text` wherever `text` reads 7:1 on every resting
     /// surface, a hover falling short included; dividers hold 3:1 on the
     /// canvas, panel, subtle and raised surfaces, and so do the popup and
-    /// resting edges fitted from them. No other token moves, a
-    /// token already past its floor keeps its value, and adjusting twice is
-    /// adjusting once.
+    /// resting edges fitted from them. Secondary text and gutter numbers are
+    /// measured on the line tints as adjusted, where a line moved from a
+    /// changed word it is drawn under
+    /// (`more_contrast_moves_a_line_its_word_cannot_stand_apart_from`). No
+    /// other token moves, a token already past its floor keeps its value, so
+    /// raising the floors of an adjusted palette changes nothing, and where
+    /// no line tint moves, adjusting twice is adjusting once.
     #[test]
     fn more_contrast_raises_secondary_text_gutters_and_dividers_alone() {
         let mut failures = Vec::new();
@@ -6356,7 +6647,7 @@ mod tests {
         let mut hover_short = Vec::new();
         for (name, palette) in more_contrast_palettes() {
             let adjusted = palette.with_more_contrast();
-            let surfaces = more_contrast_text_surfaces(palette);
+            let surfaces = more_contrast_text_surfaces(adjusted);
             let reads = |color: u32| {
                 surfaces.iter().all(|&(_, surface, momentary)| {
                     contrast(color, surface)
@@ -6436,12 +6727,20 @@ mod tests {
                 muted: palette.muted,
                 line_number: palette.line_number,
                 border: palette.border,
+                added_background: palette.added_background,
+                removed_background: palette.removed_background,
                 ..adjusted
             };
             if untouched != palette {
                 failures.push(format!("{name} moved another token: {untouched:x?}"));
             }
-            if adjusted.with_more_contrast() != adjusted {
+            if adjusted.with_raised_floors() != adjusted {
+                failures.push(format!(
+                    "{name} raises its floors again on the adjusted palette"
+                ));
+            }
+            let lines = |palette: Palette| (palette.added_background, palette.removed_background);
+            if lines(adjusted) == lines(palette) && adjusted.with_more_contrast() != adjusted {
                 failures.push(format!("{name} moves again when adjusted twice"));
             }
         }
@@ -6667,30 +6966,11 @@ mod tests {
         oklab(tint)[0] - oklab(line)[0]
     }
 
-    /// [`lightness_gap`] as protanopia and deuteranopia see the two colors,
-    /// in Machado, Oliveira and Fernandes' model (2009, severity 1, on
-    /// linear sRGB), the model the design reviews measured.
+    /// [`lightness_gap`] as protanopia and deuteranopia see the two colors
+    /// ([`colour_blind_lightness`]).
     fn colour_blind_gaps(tint: u32, line: u32) -> [f64; 2] {
-        const MODELS: [[[f64; 3]; 3]; 2] = [
-            [
-                [0.152_286, 1.052_583, -0.204_868],
-                [0.114_503, 0.786_281, 0.099_216],
-                [-0.003_882, -0.048_116, 1.051_998],
-            ],
-            [
-                [0.367_322, 0.860_646, -0.227_968],
-                [0.280_085, 0.672_501, 0.047_413],
-                [-0.011_820, 0.042_940, 0.968_881],
-            ],
-        ];
-        let seen = |color: u32, model: [[f64; 3]; 3]| {
-            let linear = [16, 8, 0].map(|shift| custom::linear_channel((color >> shift) & 0xff));
-            from_linear(model.map(|row| {
-                let channel: f64 = row.iter().zip(linear).map(|(m, c)| m * c).sum();
-                channel.clamp(0., 1.)
-            }))
-        };
-        MODELS.map(|model| lightness_gap(seen(tint, model), seen(line, model)))
+        let [tint, line] = [tint, line].map(colour_blind_lightness);
+        [0, 1].map(|model| tint[model] - line[model])
     }
 
     /// The colors drawn on a word tint, as `roles` carry them, and `diff`.
@@ -6742,8 +7022,9 @@ mod tests {
             text: color,
         };
         let line = 0x30343a;
+        // A canvas level with the line sets no canvas bound.
         let lifted = |(raised, own): (u32, u32), off: u32, diff: u32| {
-            EditorHighlights::lifted_word_tint(all(raised), all(own), off, diff, line)
+            EditorHighlights::lifted_word_tint(all(raised), all(own), off, diff, line, line)
         };
         let hue = |color: u32| oklab(color)[2].atan2(oklab(color)[1]);
         let chroma = |color: u32| oklab(color)[1].hypot(oklab(color)[2]);
@@ -6807,7 +7088,8 @@ mod tests {
         // Black text reads on #1d362c at least as #000302 reads off, and
         // not on the next step.
         let (raised, own) = (0x000000, 0x000302);
-        let tint = EditorHighlights::lifted_word_tint(all(raised), all(own), off, 0xffffff, line);
+        let tint =
+            EditorHighlights::lifted_word_tint(all(raised), all(own), off, 0xffffff, line, line);
         assert_eq!(tint, off, "#{tint:06x}, off #{off:06x}");
         let path = lightness_lifts(off, line);
         assert!(!path.is_empty() && !path.contains(&near));
@@ -6873,7 +7155,7 @@ mod tests {
             removed: text,
             text,
         };
-        let tint = EditorHighlights::lifted_word_tint(roles, roles, off, text, line);
+        let tint = EditorHighlights::lifted_word_tint(roles, roles, off, text, line, line);
         assert_eq!(lightness_lifts(off, line).last(), Some(&tint));
         let gap = lightness_gap(tint, line);
         assert!(
@@ -6912,21 +7194,30 @@ mod tests {
     /// every syntax role but `removed` and the tint's diff color each read
     /// at least the contrast the same role reads on the tint drawn with it
     /// off; each tint stands from its line tint, in OKLab and in luminance
-    /// contrast, at least as far as the tint drawn off does and on the same
-    /// side of it, and the line tints beneath stay. A tint drawn off at
-    /// least [`WORD_LIGHTNESS_GAP`] from its line in OKLab lightness stays
-    /// exactly; a nearer one stands at least that far, or is the last step
-    /// of its lift ([`lightness_lifts`]) before one on which some color
-    /// would read worse than off, or before lightness runs out, or has no
-    /// lift, lying on one side of its line in lightness and on the other
-    /// in luminance. Re-fitted at 4.75:1 against syntax raised
-    /// to 7:1, the added word tint grew heavier, and the added text on it
-    /// read 5.81:1 where it read 6.45:1 (Midnight); held only to the
-    /// readings, it drew nearer its line (Midnight's added words 0.077 to
-    /// 0.041 from it, removed 0.094 to 0.056); held to the distance alone,
-    /// it could cross to the line's other side (Midnight's added words
-    /// #0f1d19, darker than their line #19322d, where the tint drawn off is
-    /// lighter).
+    /// contrast, at least as far as the tint drawn off stands from the line
+    /// drawn off, and on the same side of it, the line moved or not, and its
+    /// lightness gap from the line drawn off in a protanopia and
+    /// deuteranopia model is no smaller than off. A tint
+    /// drawn off at least [`WORD_LIGHTNESS_GAP`] from its line in OKLab
+    /// lightness stays exactly; a nearer one stands at least that far from
+    /// the line drawn off, or is the last step of its lift
+    /// ([`lightness_lifts`]) before one on which some color would read worse
+    /// than off, or before one nearer the canvas than half the line's gap
+    /// from it, or before lightness runs out, or has no lift, lying on one
+    /// side of its line in lightness and on the other in luminance. No
+    /// lifted tint stands nearer the canvas than half its line's gap from
+    /// it, nor past it, unless it lifted away from the canvas, and a tint
+    /// drawn off already nearer that does not lift toward it. Re-fitted at
+    /// 4.75:1
+    /// against syntax raised to 7:1, the added word tint grew heavier, and
+    /// the added text on it read 5.81:1 where it read 6.45:1 (Midnight);
+    /// held only to the readings, it drew nearer its line (Midnight's added
+    /// words 0.077 to 0.041 from it, removed 0.094 to 0.056); held to the
+    /// distance alone, it could cross to the line's other side (Midnight's
+    /// added words #0f1d19, darker than their line #19322d, where the tint
+    /// drawn off is lighter); lifted without the canvas bound, Omarchy
+    /// flexoki-light's added word reached #f7ffdf, 1.005:1 against its
+    /// canvas.
     #[gpui::test]
     fn more_contrast_never_reads_worse_on_a_changed_word(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -6936,6 +7227,7 @@ mod tests {
         ];
         let mut failures = Vec::new();
         let (mut lifted, mut bound, mut level, mut edged, mut kept) = (0, 0, 0, 0, 0);
+        let (mut canvased, mut held_off) = (0, 0);
         for (name, chosen) in more_contrast_palettes() {
             let [off, on] = [false, true].map(|more| {
                 cx.update(|cx| {
@@ -6946,18 +7238,23 @@ mod tests {
                 })
             });
             let ((before, off_tints, off_roles), (after, on_tints, on_roles)) = (off, on);
-            for (tint, diff, line, off_tint, on_tint) in [
+            // The syntax the lift is judged under: raised on the line tints
+            // as chosen, before any line moves.
+            let lift_roles = chosen.with_raised_floors().syntax_roles(true);
+            let canvas = oklab(chosen.canvas)[0];
+            let from_canvas = |tint: u32| (oklab(tint)[0] - canvas).abs();
+            for (tint, diff, (off_line, on_line), off_tint, on_tint) in [
                 (
                     "added",
                     after.added,
-                    after.added_background,
+                    (before.added_background, after.added_background),
                     off_tints.added_word,
                     on_tints.added_word,
                 ),
                 (
                     "removed",
                     after.removed,
-                    after.removed_background,
+                    (before.removed_background, after.removed_background),
                     off_tints.removed_word,
                     on_tints.removed_word,
                 ),
@@ -6972,7 +7269,38 @@ mod tests {
                         ));
                     }
                 }
-                let gap = |tint: u32| lightness_gap(tint, line).abs();
+                // The canvas bound: half the line's gap from the canvas, or
+                // the tint's own where it stands nearer.
+                let half = from_canvas(off_line) / 2.;
+                let canvas_bound = half.min(from_canvas(off_tint));
+                let toward_canvas = lightness_gap(off_tint, off_line).signum()
+                    == (canvas - oklab(off_tint)[0]).signum();
+                let canvas_side = |tint: u32| oklab(tint)[0].total_cmp(&canvas);
+                // Nearer the canvas than the bound, or past it.
+                let inside = |tint: u32| {
+                    from_canvas(tint) < canvas_bound
+                        || (canvas_side(off_tint).is_ne()
+                            && canvas_side(tint) != canvas_side(off_tint))
+                };
+                if on_tint != off_tint && inside(on_tint) {
+                    failures.push(format!(
+                        "{name} {tint} word #{on_tint:06x} {:.4} from the canvas, half its \
+                         line's gap {half:.4}, off #{off_tint:06x} {:.4}",
+                        from_canvas(on_tint),
+                        from_canvas(off_tint)
+                    ));
+                }
+                if from_canvas(off_tint) < half && toward_canvas {
+                    held_off += 1;
+                    if on_tint != off_tint {
+                        failures.push(format!(
+                            "{name} {tint} word #{on_tint:06x} lifted toward the canvas, off \
+                             #{off_tint:06x} {:.4} from it, inside half its line's gap {half:.4}",
+                            from_canvas(off_tint)
+                        ));
+                    }
+                }
+                let gap = |tint: u32| lightness_gap(tint, off_line).abs();
                 if gap(off_tint) >= WORD_LIGHTNESS_GAP {
                     if on_tint != off_tint {
                         failures.push(format!(
@@ -6986,29 +7314,31 @@ mod tests {
                     lifted += 1;
                 } else {
                     // Short of the gap, the next step of the lift would read
-                    // some color worse than off; or the tint has no lift: it
-                    // lies on one side of its line in lightness and on the
-                    // other in luminance, so any step away in lightness would
-                    // near the line in luminance or cross it; or the lift ran
-                    // out of lightness, white or black on its side standing
-                    // nearer the line than the gap.
-                    let path = lightness_lifts(off_tint, line);
+                    // some color worse than off, or stand nearer the canvas
+                    // than the bound; or the tint has no lift: it lies on one
+                    // side of its line in lightness and on the other in
+                    // luminance, so any step away in lightness would near the
+                    // line in luminance or cross it; or the lift ran out of
+                    // lightness, white or black on its side standing nearer
+                    // the line than the gap.
+                    let path = lightness_lifts(off_tint, off_line);
                     let next = match path.iter().position(|&lift| lift == on_tint) {
                         Some(at) => path.get(at + 1),
                         None => path.first().filter(|_| on_tint == off_tint),
                     };
-                    let disagrees = lightness_gap(off_tint, line).signum()
-                        != (luminance(off_tint) - luminance(line)).signum();
-                    let edge = if lightness_gap(off_tint, line) > 0. {
+                    let disagrees = lightness_gap(off_tint, off_line).signum()
+                        != (luminance(off_tint) - luminance(off_line)).signum();
+                    let edge = if lightness_gap(off_tint, off_line) > 0. {
                         0xffffff
                     } else {
                         0x000000
                     };
                     let ran_out = path.last() == Some(&on_tint) && gap(edge) < WORD_LIGHTNESS_GAP;
                     match next {
+                        Some(&next) if inside(next) => canvased += 1,
                         Some(&next)
                             if reads_worse_on_a_word(
-                                (on_roles, next),
+                                (lift_roles, next),
                                 (off_roles, off_tint),
                                 diff,
                             )
@@ -7021,39 +7351,53 @@ mod tests {
                         }
                         None if ran_out => edged += 1,
                         _ => failures.push(format!(
-                            "{name} {tint} word #{on_tint:06x} {:.4} from its line #{line:06x} \
+                            "{name} {tint} word #{on_tint:06x} {:.4} from its line #{off_line:06x} \
                              in lightness, off #{off_tint:06x} {:.4}, short of the gap, not \
-                             where the text binds and not at the end of lightness (next step \
-                             {next:x?})",
+                             where the text or the canvas binds and not at the end of lightness \
+                             (next step {next:x?})",
                             gap(on_tint),
                             gap(off_tint)
                         )),
                     }
                 }
-                let apart = |tint: u32| oklab_distance(oklab(tint), oklab(line));
-                if apart(on_tint) < apart(off_tint) {
+                let apart = |tint: u32, line: u32| oklab_distance(oklab(tint), oklab(line));
+                if apart(on_tint, on_line) < apart(off_tint, off_line) {
                     failures.push(format!(
-                        "{name} {tint} word #{on_tint:06x} {:.3} from its line #{line:06x}, \
-                         off #{off_tint:06x} {:.3}",
-                        apart(on_tint),
-                        apart(off_tint)
+                        "{name} {tint} word #{on_tint:06x} {:.3} from its line #{on_line:06x}, \
+                         off #{off_tint:06x} {:.3} from #{off_line:06x}",
+                        apart(on_tint, on_line),
+                        apart(off_tint, off_line)
                     ));
                 }
-                let side = |tint: u32| oklab(tint)[0].total_cmp(&oklab(line)[0]);
-                if side(on_tint) != side(off_tint) {
+                let side = |tint: u32, line: u32| oklab(tint)[0].total_cmp(&oklab(line)[0]);
+                if side(on_tint, on_line) != side(off_tint, off_line) {
                     failures.push(format!(
-                        "{name} {tint} word #{on_tint:06x} {:?} its line #{line:06x} in \
-                         lightness, off #{off_tint:06x} {:?}",
-                        side(on_tint),
-                        side(off_tint)
+                        "{name} {tint} word #{on_tint:06x} {:?} its line #{on_line:06x} in \
+                         lightness, off #{off_tint:06x} {:?} #{off_line:06x}",
+                        side(on_tint, on_line),
+                        side(off_tint, off_line)
                     ));
                 }
-                if let Some(failure) = fainter_on_its_line(on_tint, off_tint, line) {
-                    failures.push(format!("{name} {tint} word {failure}"));
+                let luminance_side =
+                    |tint: u32, line: u32| luminance(tint).total_cmp(&luminance(line));
+                let off_side = luminance_side(off_tint, off_line);
+                if contrast(on_tint, on_line) < contrast(off_tint, off_line)
+                    || (off_side.is_ne() && luminance_side(on_tint, on_line) != off_side)
+                {
+                    failures.push(format!(
+                        "{name} {tint} word #{on_tint:06x} {:.3}:1 on its line #{on_line:06x}, \
+                         {:?} it in luminance, off #{off_tint:06x} {:.3}:1 on #{off_line:06x}, \
+                         {off_side:?}",
+                        contrast(on_tint, on_line),
+                        luminance_side(on_tint, on_line),
+                        contrast(off_tint, off_line)
+                    ));
                 }
-                let seen = colour_blind_gaps(on_tint, line)
+                // The lift's own gap in colour-blind vision, from the line
+                // drawn off; a moved line is held to normal vision.
+                let seen = colour_blind_gaps(on_tint, off_line)
                     .into_iter()
-                    .zip(colour_blind_gaps(off_tint, line));
+                    .zip(colour_blind_gaps(off_tint, off_line));
                 for (vision, (on, off)) in ["protanopia", "deuteranopia"].into_iter().zip(seen) {
                     if on.abs() < off.abs() {
                         failures.push(format!(
@@ -7063,20 +7407,590 @@ mod tests {
                     }
                 }
             }
-            if (after.added_background, after.removed_background)
-                != (before.added_background, before.removed_background)
-            {
-                failures.push(format!("{name} line tints moved"));
+        }
+        cx.update(|cx| set_more_contrast(false, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        // Every case is reached: tints kept, lifted to the gap, stopped where
+        // the text binds and where the canvas does, and held off inside the
+        // canvas bound.
+        assert!(
+            kept > 0 && lifted > 0 && bound > 0 && canvased > 0 && held_off > 0,
+            "word tints kept {kept}, lifted {lifted}, at the text's bound {bound}, at the \
+             canvas bound {canvased} ({held_off} held off inside it), with no lift {level}, at \
+             the end of lightness {edged}"
+        );
+    }
+
+    /// Of the colors drawn on a diff side's line and word tints under More
+    /// contrast, `after` with `on_roles`, the first that reads below the same
+    /// color drawn with More contrast off, `before` with `off_roles`, as a
+    /// message: on the line `text`, every syntax role, the side's diff color,
+    /// secondary text and line numbers; on the word `text`, every role but
+    /// `removed` and the diff color.
+    fn diff_side_reads_worse(
+        (after, on_roles, on_line, on_word): (Palette, SyntaxRoles, u32, u32),
+        (before, off_roles, off_line, off_word): (Palette, SyntaxRoles, u32, u32),
+        diff: u32,
+    ) -> Option<String> {
+        let on_line_colors = |palette: Palette, roles: SyntaxRoles| {
+            roles
+                .colors()
+                .into_iter()
+                .chain([diff, palette.muted, palette.line_number])
+        };
+        let line = on_line_colors(after, on_roles)
+            .zip(on_line_colors(before, off_roles))
+            .map(|pair| (pair, (on_line, off_line)));
+        let word = on_a_word(on_roles, diff)
+            .zip(on_a_word(off_roles, diff))
+            .map(|pair| (pair, (on_word, off_word)));
+        line.chain(word)
+            .find(|&((is, was), (on, off))| contrast(is, on) < contrast(was, off))
+            .map(|((is, was), (on, off))| {
+                format!(
+                    "#{is:06x} {:.3}:1 on #{on:06x}, off #{was:06x} {:.3}:1 on #{off:06x}",
+                    contrast(is, on),
+                    contrast(was, off)
+                )
+            })
+    }
+
+    /// Under More contrast a changed word that cannot stand
+    /// [`WORD_LIGHTNESS_GAP`] from its line in OKLab lightness moves its line
+    /// instead, in every palette ([`Palette::more_contrast_fit`]). A side
+    /// whose word stands that far from the line drawn off keeps that line,
+    /// and where the word's lift alone reaches the gap within the canvas
+    /// bound, the word is the lift the canvas bound never limited. Every
+    /// other side stands that far from its moved line, or has its line at a
+    /// bound: the next step of its move ([`line_moves`]) would stand nearer
+    /// the selection or Find's matches drawn off than they allow, narrow the
+    /// word's lightness gap in a protanopia or deuteranopia model, or read
+    /// some color on the diff's lines or words worse than off; or the move
+    /// ended at the line's 0.04 from the canvas, or has no step, the line
+    /// standing within 0.04 of the canvas on the side it would move toward,
+    /// or the word lying on one side of it in lightness and the other in
+    /// luminance. On every side every color drawn on line and word reads at
+    /// least as off (the word's own place is read in
+    /// `more_contrast_never_reads_worse_on_a_changed_word`). A moved line
+    /// stands 0.04 from the canvas in lightness, or no nearer than off, the
+    /// selection and Find's current match drawn off stand 0.04 from it, or as
+    /// far as from the line drawn off, the word stands from it in a
+    /// protanopia and a deuteranopia model at least as far as from the line
+    /// drawn off, and secondary text and line numbers read 7:1 on it, or as
+    /// `text` does.
+    #[gpui::test]
+    fn more_contrast_moves_a_line_its_word_cannot_stand_apart_from(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        let (mut full, mut floored, mut within, mut text_bound, mut apart_bound, mut level) =
+            (0, 0, 0, 0, 0, 0);
+        let mut colour_blind_bound = 0;
+        for (name, chosen) in more_contrast_palettes() {
+            let [off, on] = [false, true].map(|more| {
+                cx.update(|cx| {
+                    set_more_contrast(more, cx);
+                    chosen.apply(chosen.is_light(), None, cx);
+                    let applied = palette(cx);
+                    (applied, editor_highlights(cx), applied.syntax_roles(more))
+                })
+            });
+            let ((before, off_tints, off_roles), (after, on_tints, on_roles)) = (off, on);
+            let own = chosen.syntax_roles(false);
+            let lift_roles = chosen.with_raised_floors().syntax_roles(true);
+            let canvas = oklab(chosen.canvas)[0];
+            let from_canvas = |color: u32| (oklab(color)[0] - canvas).abs();
+            let off_words = [off_tints.added_word, off_tints.removed_word];
+            let on_words = [on_tints.added_word, on_tints.removed_word];
+            let sides = [
+                (
+                    "added",
+                    chosen.added,
+                    (before.added_background, after.added_background),
+                ),
+                (
+                    "removed",
+                    chosen.removed,
+                    (before.removed_background, after.removed_background),
+                ),
+            ];
+            let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
+            let drawn = |palette: Palette, roles: SyntaxRoles, line: u32, word: u32| {
+                (palette, roles, line, word)
+            };
+            // The bound a step of side `index`'s move fails, if any: the
+            // highlights' distance, the word's colour-blind gaps or a color
+            // on the diff's lines and words reading worse than off, measured
+            // as the fit measures it, the added line moving beside the
+            // removed line drawn off.
+            let failing_bound = |index: usize, step: u32| -> Option<&'static str> {
+                let off_line = sides[index].2.0;
+                let off_line_lab = oklab(off_line);
+                let nearer = [off_tints.selection, off_tints.find_current]
+                    .into_iter()
+                    .any(|highlight| {
+                        let highlight = oklab(highlight);
+                        oklab_distance(highlight, oklab(step))
+                            < HIGHLIGHT_DISTANCE.min(oklab_distance(highlight, off_line_lab))
+                    });
+                let narrows = colour_blind_gaps(on_words[index], step)
+                    .into_iter()
+                    .zip(colour_blind_gaps(on_words[index], off_line))
+                    .any(|(moved, off)| moved.abs() < off.abs());
+                let mut lines = [after.added_background, after.removed_background];
+                if index == 0 {
+                    lines[1] = before.removed_background;
+                }
+                lines[index] = step;
+                let candidate = Palette {
+                    added_background: lines[0],
+                    removed_background: lines[1],
+                    ..chosen
+                }
+                .with_raised_floors();
+                let roles = candidate.syntax_roles(true);
+                let worse = || {
+                    sides.iter().enumerate().any(|(at, &(_, diff, (off, _)))| {
+                        diff_side_reads_worse(
+                            drawn(candidate, roles, lines[at], on_words[at]),
+                            drawn(before, off_roles, off, off_words[at]),
+                            diff,
+                        )
+                        .is_some()
+                    })
+                };
+                if nearer {
+                    Some("highlights")
+                } else if narrows {
+                    Some("colour-blind")
+                } else if worse() {
+                    Some("text")
+                } else {
+                    None
+                }
+            };
+            for (index, &(side, diff, (off_line, on_line))) in sides.iter().enumerate() {
+                let (off_word, on_word) = (off_words[index], on_words[index]);
+                if let Some(worse) = diff_side_reads_worse(
+                    drawn(after, on_roles, on_line, on_word),
+                    drawn(before, off_roles, off_line, off_word),
+                    diff,
+                ) {
+                    failures.push(format!("{name} {side}: {worse}"));
+                }
+                // The lift a canvas level with the line leaves unbounded.
+                let unbounded = EditorHighlights::lifted_word_tint(
+                    lift_roles, own, off_word, diff, off_line, off_line,
+                );
+                let canvas_bound = (from_canvas(off_line) / 2.).min(from_canvas(off_word));
+                let canvas_side = |color: u32| oklab(color)[0].total_cmp(&canvas);
+                let keeps_off_canvas = from_canvas(unbounded) >= canvas_bound
+                    && (canvas_side(off_word).is_eq()
+                        || canvas_side(unbounded) == canvas_side(off_word));
+                if gap(unbounded, off_line) >= WORD_LIGHTNESS_GAP
+                    && keeps_off_canvas
+                    && (on_word, on_line) != (unbounded, off_line)
+                {
+                    failures.push(format!(
+                        "{name} {side} word #{on_word:06x} on #{on_line:06x}, its lift \
+                         #{unbounded:06x} on #{off_line:06x} stands apart within the canvas bound"
+                    ));
+                }
+                if gap(on_word, off_line) >= WORD_LIGHTNESS_GAP && on_line != off_line {
+                    failures.push(format!(
+                        "{name} {side} line #{off_line:06x} moved to #{on_line:06x}, its word \
+                         #{on_word:06x} {:.4} from it",
+                        gap(on_word, off_line)
+                    ));
+                }
+                if on_line != off_line {
+                    if from_canvas(on_line) < WORD_LIGHTNESS_GAP.min(from_canvas(off_line)) {
+                        failures.push(format!(
+                            "{name} {side} line #{on_line:06x} {:.4} from the canvas, off \
+                             #{off_line:06x} {:.4}",
+                            from_canvas(on_line),
+                            from_canvas(off_line)
+                        ));
+                    }
+                    for (highlight, color) in [
+                        ("selection", off_tints.selection),
+                        ("current Find match", off_tints.find_current),
+                    ] {
+                        let apart = |line: u32| oklab_distance(oklab(color), oklab(line));
+                        if apart(on_line) < HIGHLIGHT_DISTANCE.min(apart(off_line)) {
+                            failures.push(format!(
+                                "{name} {side} line #{on_line:06x} {:.4} from the {highlight} \
+                                 drawn off #{color:06x}, off #{off_line:06x} {:.4}",
+                                apart(on_line),
+                                apart(off_line)
+                            ));
+                        }
+                    }
+                    let seen = colour_blind_gaps(on_word, on_line)
+                        .into_iter()
+                        .zip(colour_blind_gaps(on_word, off_line));
+                    for (vision, (on, off)) in ["protanopia", "deuteranopia"].into_iter().zip(seen)
+                    {
+                        if on.abs() < off.abs() {
+                            failures.push(format!(
+                                "{name} {side} word #{on_word:06x} {on:+.4} from its moved line \
+                                 #{on_line:06x} in {vision}, {off:+.4} from #{off_line:06x}"
+                            ));
+                        }
+                    }
+                    let floor = MORE_CONTRAST_TEXT.min(contrast(after.text, on_line));
+                    for (token, color) in
+                        [("muted", after.muted), ("line_number", after.line_number)]
+                    {
+                        if contrast(color, on_line) < floor {
+                            failures.push(format!(
+                                "{name} {token} #{color:06x} {:.3}:1 on the moved {side} line \
+                                 #{on_line:06x}, needs {floor:.3}",
+                                contrast(color, on_line)
+                            ));
+                        }
+                    }
+                }
+                let moves = line_moves(off_line, on_word, (off_word, off_line), chosen.canvas);
+                // No step up to the line drawn fails a bound: the move never
+                // passes a step that would, even where a later one would not.
+                if let Some(at) = moves.iter().position(|&line| line == on_line) {
+                    for &step in &moves[..=at] {
+                        if let Some(bound) = failing_bound(index, step) {
+                            failures.push(format!(
+                                "{name} {side} line #{on_line:06x} passed #{step:06x}, which \
+                                 fails the {bound} bound"
+                            ));
+                        }
+                    }
+                }
+                if gap(on_word, on_line) >= WORD_LIGHTNESS_GAP {
+                    full += usize::from(on_line != off_line);
+                    continue;
+                }
+                let next = match moves.iter().position(|&line| line == on_line) {
+                    Some(at) => moves.get(at + 1).copied(),
+                    None if on_line == off_line => moves.first().copied(),
+                    None => {
+                        failures.push(format!(
+                            "{name} {side} line #{on_line:06x} is no step of its move {moves:x?}"
+                        ));
+                        continue;
+                    }
+                };
+                let disagrees = lightness_gap(on_word, off_line).signum()
+                    != (luminance(on_word) - luminance(off_line)).signum();
+                let toward_canvas = (oklab(off_line)[0] - oklab(on_word)[0]).signum()
+                    == (canvas - oklab(off_line)[0]).signum();
+                match next {
+                    Some(next) => match failing_bound(index, next) {
+                        Some("highlights") => apart_bound += 1,
+                        Some("colour-blind") => colour_blind_bound += 1,
+                        Some(_) => text_bound += 1,
+                        None => failures.push(format!(
+                            "{name} {side} line #{on_line:06x} stopped short of #{next:06x}, its \
+                             word #{on_word:06x} {:.4} from it, where every bound holds",
+                            gap(on_word, on_line)
+                        )),
+                    },
+                    None if moves.is_empty() && disagrees => level += 1,
+                    None if moves.is_empty()
+                        && toward_canvas
+                        && from_canvas(off_line) < WORD_LIGHTNESS_GAP =>
+                    {
+                        within += 1;
+                    }
+                    // The move ended at the canvas floor: the line stands
+                    // within a step and its rounding of 0.04 from the canvas.
+                    None if toward_canvas && from_canvas(on_line) < WORD_LIGHTNESS_GAP + 0.004 => {
+                        floored += 1;
+                    }
+                    None => failures.push(format!(
+                        "{name} {side} line #{on_line:06x}, its word #{on_word:06x} {:.4} from \
+                         it, ended its move {moves:x?} at no bound",
+                        gap(on_word, on_line)
+                    )),
+                }
             }
         }
         cx.update(|cx| set_more_contrast(false, cx));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-        // Every case is reached: tints kept, lifted to the gap and stopped
-        // where the text binds.
+        // Each bound is reached by a built-in palette but the selection's,
+        // which the Omarchy palettes and a synthetic case reach
+        // (`a_moved_line_stops_at_its_bounds`); the colour-blind gaps stop One
+        // Dark's and Dracula's removed lines.
         assert!(
-            kept > 0 && lifted > 0 && bound > 0,
-            "word tints kept {kept}, lifted {lifted}, at the text's bound {bound}, with no lift \
-             {level}, at the end of lightness {edged}"
+            full > 0
+                && floored > 0
+                && within > 0
+                && text_bound > 0
+                && colour_blind_bound > 0
+                && level > 0,
+            "lines moved to the gap {full}, at the canvas floor {floored}, within it {within}, \
+             at the text's bound {text_bound}, the highlights' {apart_bound}, the colour-blind \
+             gaps' {colour_blind_bound}, with no move {level}"
+        );
+    }
+
+    /// The diff tints [`Palette::more_contrast_fit`] decides for a palette,
+    /// with the editor highlights drawn off: the adjusted palette, the word
+    /// tints under More contrast and those drawn off, added then removed.
+    fn diff_tints(chosen: Palette) -> (Palette, [u32; 2], [u32; 2]) {
+        let (adjusted, fit) = chosen.more_contrast_fit();
+        let off = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        (adjusted, fit.words, [off.added_word, off.removed_word])
+    }
+
+    /// A color's OKLab lightness gap from `palette`'s canvas.
+    fn from_canvas(palette: Palette, color: u32) -> f64 {
+        (oklab(color)[0] - oklab(palette.canvas)[0]).abs()
+    }
+
+    /// Under More contrast a word tint's lift toward the canvas stops at
+    /// half its line's own lightness gap from the canvas, in built-in
+    /// palettes. One Dark's added word, lifted unbounded, reaches the gap at
+    /// #223820, 0.022 from the canvas where half its line's gap is 0.031; it
+    /// stops at the last step that keeps 0.031, short of the gap, the next
+    /// step nearer. Rosé Pine Dawn's removed word, drawn off 0.001 from its
+    /// canvas, inside the bound, keeps the tint drawn off, where unbounded it
+    /// lifted past the canvas. Daylight's removed word, lighter than its
+    /// canvas, lifts away from it to the gap, unbounded.
+    #[test]
+    fn a_word_tint_lift_stops_at_half_its_lines_gap_from_the_canvas() {
+        let unbounded = |chosen: Palette, off: u32, diff: u32, line: u32| {
+            let roles = chosen.with_raised_floors().syntax_roles(true);
+            let own = chosen.syntax_roles(false);
+            EditorHighlights::lifted_word_tint(roles, own, off, diff, line, line)
+        };
+        let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
+
+        let chosen = ThemeChoice::OneDark.palette();
+        let (_, words, off) = diff_tints(chosen);
+        let (line, word, half) = (
+            chosen.added_background,
+            words[0],
+            from_canvas(chosen, chosen.added_background) / 2.,
+        );
+        let free = unbounded(chosen, off[0], chosen.added, line);
+        assert!(gap(free, line) >= WORD_LIGHTNESS_GAP && from_canvas(chosen, free) < half);
+        assert_ne!(word, off[0], "One Dark's added word lifts");
+        assert!(
+            from_canvas(chosen, word) >= half && gap(word, line) < WORD_LIGHTNESS_GAP,
+            "#{word:06x} {:.4} from the canvas, half the line's gap {half:.4}",
+            from_canvas(chosen, word)
+        );
+        let path = lightness_lifts(off[0], line);
+        let next = path[path.iter().position(|&lift| lift == word).unwrap() + 1];
+        assert!(
+            from_canvas(chosen, next) < half,
+            "#{next:06x} keeps the bound"
+        );
+
+        let chosen = ThemeChoice::RosePineDawn.palette();
+        let (_, words, off) = diff_tints(chosen);
+        let line = chosen.removed_background;
+        assert!(from_canvas(chosen, off[1]) < from_canvas(chosen, line) / 2.);
+        let free = unbounded(chosen, off[1], chosen.removed, line);
+        let side = |color: u32| oklab(color)[0].total_cmp(&oklab(chosen.canvas)[0]);
+        assert_ne!(
+            side(free),
+            side(off[1]),
+            "unbounded, #{free:06x} lifts past the canvas"
+        );
+        assert_eq!(words[1], off[1], "Rosé Pine Dawn's removed word");
+
+        let chosen = ThemeChoice::Daylight.palette();
+        let (_, words, off) = diff_tints(chosen);
+        let line = chosen.removed_background;
+        assert!(oklab(off[1])[0] > oklab(chosen.canvas)[0]);
+        assert_eq!(words[1], unbounded(chosen, off[1], chosen.removed, line));
+        assert!(gap(words[1], line) >= WORD_LIGHTNESS_GAP);
+    }
+
+    /// Under More contrast a word that cannot lift moves its line, in
+    /// built-in palettes. Tokyo Night's added word lies between its line and
+    /// the text, 0.013 from the line, so no step of a lift keeps the text;
+    /// the line, 0.089 from the canvas, moves away from the word to the first
+    /// step at the gap, its hue kept, and the word keeps the tint drawn off.
+    /// The text reads better on it, and where a line tint binds secondary
+    /// text and line numbers, as with a darker selected row, they are fitted
+    /// on the moved line. Solarized Light's added line, 0.047 from its
+    /// canvas, has less room than its word needs: it stops at the last step
+    /// that stands 0.04 from the canvas, short of the gap.
+    #[test]
+    fn a_word_that_cannot_lift_moves_its_line_to_the_gap() {
+        let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
+        let chosen = ThemeChoice::TokyoNight.palette();
+        let (adjusted, words, off) = diff_tints(chosen);
+        let (line, moved, word) = (chosen.added_background, adjusted.added_background, words[0]);
+        assert_eq!(
+            word, off[0],
+            "Tokyo Night's added word keeps the tint drawn off"
+        );
+        assert!(gap(word, line) < 0.02);
+        assert!(
+            gap(word, moved) >= WORD_LIGHTNESS_GAP,
+            "#{moved:06x} {:.4} from #{word:06x}",
+            gap(word, moved)
+        );
+        let moves = line_moves(line, word, (off[0], line), chosen.canvas);
+        assert_eq!(moves.last(), Some(&moved));
+        assert!(
+            moves[..moves.len() - 1]
+                .iter()
+                .all(|&step| gap(word, step) < WORD_LIGHTNESS_GAP)
+        );
+        assert!(from_canvas(chosen, moved) >= WORD_LIGHTNESS_GAP);
+        assert!(hue_difference(moved, line) < 0.05);
+        assert!(contrast(chosen.text, moved) > contrast(chosen.text, line));
+
+        // Where a line tint binds secondary text and line numbers, they are
+        // fitted on the moved line: with a selected row #1a2030 darker than
+        // Tokyo Night's line tints, each is the least step toward `text` that
+        // reads on the surfaces as adjusted, nearer its own token than the
+        // step the lines drawn off need.
+        let chosen = Palette {
+            selected: 0x1a2030,
+            ..ThemeChoice::TokyoNight.palette()
+        };
+        let adjusted = chosen.with_more_contrast();
+        let lines = |palette: Palette| (palette.added_background, palette.removed_background);
+        assert_ne!(lines(adjusted), lines(chosen), "the line tints move");
+        let on_lines_drawn_off = chosen.with_raised_floors();
+        let surfaces = more_contrast_text_surfaces(adjusted);
+        let reads = |color: u32| {
+            surfaces.iter().all(|&(_, surface, momentary)| {
+                contrast(color, surface) >= more_contrast_text_floor(adjusted, surface, momentary)
+            })
+        };
+        for (token, own, fitted, drawn_off) in [
+            (
+                "muted",
+                chosen.muted,
+                adjusted.muted,
+                on_lines_drawn_off.muted,
+            ),
+            (
+                "line_number",
+                chosen.line_number,
+                adjusted.line_number,
+                on_lines_drawn_off.line_number,
+            ),
+        ] {
+            assert_ne!(fitted, drawn_off, "{token} fitted on the lines drawn off");
+            let step = (0..=256)
+                .find(|&step| mix(own, chosen.text, step) == fitted)
+                .expect("a step toward text");
+            assert!(
+                reads(fitted) && (step == 0 || !reads(mix(own, chosen.text, step - 1))),
+                "{token} #{fitted:06x} is the least step that reads"
+            );
+        }
+
+        let chosen = ThemeChoice::SolarizedLight.palette();
+        let (adjusted, words, off) = diff_tints(chosen);
+        let (line, moved, word) = (chosen.added_background, adjusted.added_background, words[0]);
+        assert_ne!(moved, line, "Solarized Light's added line moves");
+        assert!(gap(word, moved) < WORD_LIGHTNESS_GAP && gap(word, moved) > gap(word, line));
+        let moves = line_moves(line, word, (off[0], line), chosen.canvas);
+        assert_eq!(moves.last(), Some(&moved));
+        let reach = from_canvas(chosen, moved);
+        assert!(
+            (WORD_LIGHTNESS_GAP..WORD_LIGHTNESS_GAP + 0.004).contains(&reach),
+            "#{moved:06x} {reach:.4} from the canvas"
+        );
+    }
+
+    /// Under More contrast a moved line stops at each of its bounds, in
+    /// built-in palettes and one built from Tokyo Night. Nord's added line
+    /// stands 0.025 from its canvas, within 0.04, so though its word stands
+    /// 0.032 from it between the line and the text, the line keeps its tint.
+    /// One Dark's added word, its lift stopped by the canvas bound, lies on
+    /// the canvas side of its line, which would move toward the text: the
+    /// first step reads `text` worse than the line drawn off, so the line
+    /// keeps its tint. Tokyo Night with a selected row #002c28 near its
+    /// added line's path stops the line where the next step would stand
+    /// nearer the selection than 0.04, short of the gap it reaches with its
+    /// own selection.
+    #[test]
+    fn a_moved_line_stops_at_its_bounds() {
+        let gap = |word: u32, line: u32| lightness_gap(word, line).abs();
+        let chosen = ThemeChoice::Nord.palette();
+        let (adjusted, words, off) = diff_tints(chosen);
+        let line = chosen.added_background;
+        assert!(from_canvas(chosen, line) < WORD_LIGHTNESS_GAP);
+        assert!(gap(words[0], line) < WORD_LIGHTNESS_GAP);
+        assert!(line_moves(line, words[0], (off[0], line), chosen.canvas).is_empty());
+        assert_eq!(adjusted.added_background, line, "Nord's added line");
+
+        let chosen = ThemeChoice::OneDark.palette();
+        let (adjusted, words, off) = diff_tints(chosen);
+        let line = chosen.added_background;
+        assert!(oklab(words[0])[0] < oklab(line)[0] && gap(words[0], line) < WORD_LIGHTNESS_GAP);
+        let moves = line_moves(line, words[0], (off[0], line), chosen.canvas);
+        assert!(contrast(chosen.text, moves[0]) < contrast(chosen.text, line));
+        assert_eq!(adjusted.added_background, line, "One Dark's added line");
+
+        let tokyo = ThemeChoice::TokyoNight.palette();
+        let chosen = Palette {
+            selected: 0x002c28,
+            ..tokyo
+        };
+        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        assert_eq!(highlights.selection, 0x002c28);
+        let (adjusted, words, off) = diff_tints(chosen);
+        let (line, moved) = (chosen.added_background, adjusted.added_background);
+        let apart = |color: u32| oklab_distance(oklab(highlights.selection), oklab(color));
+        assert!(apart(line) >= HIGHLIGHT_DISTANCE && apart(moved) >= HIGHLIGHT_DISTANCE);
+        assert!(gap(words[0], moved) < WORD_LIGHTNESS_GAP);
+        assert_ne!(moved, line, "the line moves up to the selection's bound");
+        assert_eq!(tokyo.with_more_contrast().added_background, 0x1f2f25);
+        let moves = line_moves(line, words[0], (off[0], line), chosen.canvas);
+        let next = moves[moves.iter().position(|&step| step == moved).unwrap() + 1];
+        assert!(
+            apart(next) < HIGHLIGHT_DISTANCE,
+            "#{next:06x} {:.4}",
+            apart(next)
+        );
+    }
+
+    /// A line's move stops at the step before the first that fails a bound,
+    /// never passing it for a later step that holds every bound, in a palette
+    /// built from Midnight (the faint custom palette). Its removed word reads
+    /// lighter than its line in normal vision and darker in a protanopia
+    /// model, so the first steps of the line's move narrow that gap, then
+    /// cross it, and the steps past the crossing widen it again and hold
+    /// every bound, the last at the word's 0.04. The line keeps the tint drawn
+    /// off; kept to the steps that hold, it moved to #32202b.
+    #[test]
+    fn a_moved_line_never_passes_a_step_that_fails_a_bound() {
+        let chosen = faint_custom_palette();
+        let (adjusted, words, off) = diff_tints(chosen);
+        let highlights = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
+        let (line, word) = (chosen.removed_background, words[1]);
+        let holds = |step: u32| {
+            let candidate = Palette {
+                added_background: adjusted.added_background,
+                removed_background: step,
+                ..chosen
+            }
+            .with_raised_floors();
+            highlights.stay_apart_from(step, line)
+                && keeps_colour_blind_gaps(word, step, line)
+                && chosen.diff_reads_as_off(chosen.syntax_roles(false), candidate, off, words)
+        };
+        let moves = line_moves(line, word, (off[1], line), chosen.canvas);
+        assert!(
+            !keeps_colour_blind_gaps(word, moves[0], line),
+            "the first step narrows the word's gap in protanopia"
+        );
+        let past = moves.iter().copied().rev().find(|&step| holds(step));
+        assert!(
+            past.is_some_and(|step| lightness_gap(word, step).abs() >= WORD_LIGHTNESS_GAP),
+            "a later step holds every bound at the gap: {past:x?}"
+        );
+        assert_eq!(
+            adjusted.removed_background, line,
+            "the removed line keeps its tint"
         );
     }
 
@@ -7257,10 +8171,10 @@ mod tests {
             custom.palette.set(TokenKind::Selected, selected);
             custom.palette.set(TokenKind::Accent, accent);
             let chosen = custom.palette;
-            let palette = chosen.with_more_contrast();
+            let (palette, raised) = chosen.more_contrast_fit();
             let roles = palette.syntax_roles(true);
             let off = EditorHighlights::fit(chosen, chosen.syntax_roles(false), None);
-            let on = EditorHighlights::fit(palette, roles, Some(chosen));
+            let on = EditorHighlights::fit(palette, roles, Some(raised));
             let apart = |current: u32, others: u32| oklab_distance(oklab(current), oklab(others));
             let off_apart = apart(off.find_current, off.selection);
             assert!(
