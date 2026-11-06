@@ -76,8 +76,11 @@ struct CutEntries(std::rc::Rc<std::cell::RefCell<HashSet<usize>>>);
 /// the whole text, and so does a tooltip, only while the entry cuts it: the
 /// text's measured width beyond its room, as `cut` recorded at the last
 /// layout. Over a whole line a tooltip only covered the entry above.
+///
+/// `id` is the entry's own ([`log_keys`]); its debug selector is its place.
 fn entry_button(
     index: usize,
+    id: ElementId,
     text: String,
     selected: bool,
     cut: &CutEntries,
@@ -87,7 +90,7 @@ fn entry_button(
     let shown_cut = cut.0.borrow().contains(&index);
     let record = cut.clone();
     let measured = text.clone();
-    Button::new(("reflog-entry", index))
+    Button::new(id)
         .debug_selector(move || format!("reflog-entry-{index}"))
         .ghost()
         .w_full()
@@ -132,6 +135,47 @@ fn entry_button(
                 .bg(rgb(p.selected))
                 .hover(|entry| entry.bg(rgb(p.row_hover(true))))
         })
+}
+
+/// The keys of a log's `entries`, in its order, which name the entries' IDs
+/// and focus keys ([`ReflogBrowser::entry_keys`]): each entry's line, its
+/// reference, both object IDs, its time and its message, never its place or
+/// its `@{n}`, which renumber as an entry is written above it or the filter
+/// lets more entries in above it. Keyed by place, the focus an entry held
+/// passed to whichever entry moved into its place. A line written twice in
+/// one second counts apart by how many like it lie below it in the log,
+/// which neither a line written above it nor the filter changes: counted by
+/// the ones above it among those the filter let in, a third written at the
+/// top, or one the filter had hidden above it, took the key of the one
+/// below, and focus moved onto that look-alike. Hashed, as a stash's row ID
+/// is, so a key costs no allocation, and made once, as the log is read on
+/// the reader, so a frame only looks its entries' keys up.
+fn log_keys(entries: &[ReflogEntry]) -> Vec<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut below = std::collections::HashMap::<u64, usize>::new();
+    let mut keys: Vec<u64> = entries
+        .iter()
+        .rev()
+        .map(|entry| {
+            let mut line = std::hash::DefaultHasher::new();
+            (
+                &entry.reference,
+                &entry.previous_oid,
+                &entry.oid,
+                entry.timestamp,
+                &entry.message,
+            )
+                .hash(&mut line);
+            let line = line.finish();
+            let count = below.entry(line).or_default();
+            let mut key = std::hash::DefaultHasher::new();
+            (line, *count).hash(&mut key);
+            *count += 1;
+            key.finish()
+        })
+        .collect();
+    keys.reverse();
+    keys
 }
 
 /// Where a read's loading row, and the error it may end with, stand: below
@@ -357,6 +401,9 @@ pub(crate) struct ReflogBrowser {
     query: Entity<InputState>,
     name: Entity<InputState>,
     page: Option<ReflogPage>,
+    /// The keys of `page`'s entries, in its order, read and dropped with it
+    /// ([`log_keys`]).
+    keys: Vec<u64>,
     selected: Option<ReflogEntry>,
     /// The entry whose commit, message and changed files below are drawn,
     /// once its read has landed. Selecting another entry leaves the last
@@ -460,6 +507,7 @@ impl ReflogBrowser {
             query,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("recovery/my-commit")),
             page: None,
+            keys: Vec::new(),
             selected: None,
             details: None,
             commit: None,
@@ -512,11 +560,12 @@ impl ReflogBrowser {
     fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
         let to = match self.read_place() {
             ReadPlace::Log => None,
-            ReadPlace::Entry => self
-                .selected
-                .as_ref()
-                .and_then(|entry| self.matches(cx).iter().take(100).position(|e| e == entry))
-                .map(|index| self.entries.focus(("reflog-entry", index), cx)),
+            ReadPlace::Entry => self.selected.as_ref().and_then(|entry| {
+                let matches = self.matches(cx);
+                let index = matches.iter().take(100).position(|e| e == entry)?;
+                let key = self.entry_keys(&matches).swap_remove(index);
+                Some(self.entries.focus(key, cx))
+            }),
             ReadPlace::Recovery => Some(self.content.focus("review-reflog-recovery", cx)),
         };
         let to = to.unwrap_or_else(|| self.query.read(cx).focus_handle(cx));
@@ -533,13 +582,16 @@ impl ReflogBrowser {
             (Some(_), Some(_)) => ReadPlace::Recovery,
         }
     }
-    /// The entry, among the first `count` the list draws, that holds focus.
-    fn focused_entry(&self, count: usize, window: &Window, cx: &mut App) -> Option<usize> {
-        (0..count).find(|&index| {
-            self.entries
-                .focus(("reflog-entry", index), cx)
-                .is_focused(window)
-        })
+    /// The entry, among those of `matches` the list draws, that holds focus.
+    fn focused_entry(&self, matches: &[ReflogEntry], window: &Window, cx: &App) -> Option<usize> {
+        self.entry_keys(matches)
+            .into_iter()
+            .position(|key| self.entries.focus(key, cx).is_focused(window))
+    }
+    /// The place in the list of the entry that holds focus.
+    #[cfg(test)]
+    fn focused_index(&self, window: &Window, cx: &App) -> Option<usize> {
+        self.focused_entry(&self.matches(cx), window, cx)
     }
     /// Whether focus is on a control that only the selected entry's loaded
     /// commit draws: its message, the recovery branch's name or Review
@@ -556,8 +608,7 @@ impl ReflogBrowser {
     /// Whether focus is on a control that only a loaded log draws: an entry,
     /// or the selected entry's details.
     fn focus_on_log(&self, window: &Window, cx: &mut App) -> bool {
-        let count = self.matches(cx).len().min(100);
-        self.focused_entry(count, window, cx).is_some()
+        self.focused_entry(&self.matches(cx), window, cx).is_some()
             || self.content.focus("copy-reflog-oid", cx).is_focused(window)
             || self.focus_on_commit(window, cx)
     }
@@ -574,7 +625,7 @@ impl ReflogBrowser {
         }
         let matches = self.matches(cx);
         let count = matches.len().min(100);
-        let Some(current) = self.focused_entry(count, window, cx) else {
+        let Some(current) = self.focused_entry(&matches, window, cx) else {
             return;
         };
         let target = match event.keystroke.key.as_str() {
@@ -594,7 +645,9 @@ impl ReflogBrowser {
                 }),
             });
         }
-        let focus = self.entries.focus(("reflog-entry", target), cx);
+        let focus = self
+            .entries
+            .focus(self.entry_keys(&matches).swap_remove(target), cx);
         window.focus(&focus, cx);
         if self.selected.as_ref() != Some(&matches[target]) {
             self.select(matches[target].clone(), window, cx);
@@ -784,12 +837,35 @@ impl ReflogBrowser {
         self.message = None;
         self.changes.clear();
         self.page = None;
+        self.keys = Vec::new();
         self.read(
-            move |repo| repo.reflog(&reference),
-            |this, page, _, _| this.page = Some(page),
+            move |repo| {
+                let page = repo.reflog(&reference)?;
+                let keys = log_keys(&page.entries);
+                Ok((page, keys))
+            },
+            |this, (page, keys), _, _| {
+                this.page = Some(page);
+                this.keys = keys;
+            },
             window,
             cx,
         );
+    }
+    /// The IDs, and focus keys, of the entries the list draws, the first 100
+    /// of `matches`: each its entry's key in the log ([`log_keys`]), found by
+    /// its `ordinal`, its place in the log. Read with the page, every entry
+    /// has one; its place would stand in for a key that was not.
+    fn entry_keys(&self, matches: &[ReflogEntry]) -> Vec<ElementId> {
+        matches
+            .iter()
+            .take(100)
+            .map(|entry| {
+                let key = self.keys.get(entry.ordinal).copied();
+                let key = key.unwrap_or(entry.ordinal as u64);
+                ElementId::NamedInteger("reflog-entry".into(), key)
+            })
+            .collect()
     }
     fn matches(&self, cx: &App) -> Vec<ReflogEntry> {
         let query = self.query.read(cx).value().trim().to_lowercase();
@@ -824,9 +900,11 @@ impl ReflogBrowser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let count = self.matches(cx).len().min(100);
-        if self.focused_entry(count, window, cx).is_some() || self.focus_on_commit(window, cx) {
-            let focus = self.entries.focus(("reflog-entry", index), cx);
+        let matches = self.matches(cx);
+        if (self.focused_entry(&matches, window, cx).is_some() || self.focus_on_commit(window, cx))
+            && let Some(key) = self.entry_keys(&matches).into_iter().nth(index)
+        {
+            let focus = self.entries.focus(key, cx);
             window.focus(&focus, cx);
         }
         self.select(entry, window, cx);
@@ -942,8 +1020,10 @@ impl Render for ReflogBrowser {
         let name = self.name.read(cx).focus_handle(cx);
         let copy = self.content.focus("copy-reflog-oid", cx);
         let review = self.content.focus("review-reflog-recovery", cx);
-        let entries: Vec<_> = (0..matches.len().min(100))
-            .map(|index| self.entries.focus(("reflog-entry", index), cx))
+        let keys = self.entry_keys(&matches);
+        let entries: Vec<_> = keys
+            .iter()
+            .map(|key| self.entries.focus(key.clone(), cx))
             .collect();
         // The entry list is one Tab stop: the entry the keyboard is on, else
         // the selected entry, else the first. Tab from it reaches the selected
@@ -1065,9 +1145,9 @@ impl Render for ReflogBrowser {
             .child(shown(filter).py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
             .children(loading_above)
             .children(error_above)
-            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).on_key_up(cx.listener(Self::entry_key_up)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).on_key_up(cx.listener(Self::entry_key_up)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).zip(keys).enumerate().map(|(index, ((entry, focus), id))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.click_entry(index, entry.clone(), window, cx)))
+                entry_button(index, id, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.click_entry(index, entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))), "reflog-list-scrollbar")))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
@@ -1307,9 +1387,9 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), 1);
         let (_, browser, cx) = opened_browser(cx, &repo).await;
-        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let entry = |index: usize| Some(index);
         let in_list = |cx: &mut VisualTestContext| {
-            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx))
         };
         let in_content = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| browser.read(cx).content.focused(window))
@@ -1414,7 +1494,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = pruned_repository(fixture.path());
         let (_, browser, cx) = opened_browser(cx, &repo).await;
-        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let entry = |index: usize| Some(index);
         cx.simulate_keystrokes("tab");
         draw(cx);
         let list = in_content(cx, &browser, "reflog-list");
@@ -1438,7 +1518,7 @@ mod tests {
              below the list {list:?}"
         );
         assert_eq!(
-            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx)),
             entry(1),
             "focus stays on the entry"
         );
@@ -1472,9 +1552,9 @@ mod tests {
         let (app, browser, cx) = opened_browser(cx, &repo).await;
         cx.simulate_resize(size(px(461.), px(490.)));
         set_interface_text_size(cx, &app, 18);
-        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let entry = |index: usize| Some(index);
         let in_list = |cx: &mut VisualTestContext| {
-            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx))
         };
         let offset = |cx: &mut VisualTestContext| {
             browser.read_with(cx, |this, _| this.content.scroll().offset().y)
@@ -1583,9 +1663,9 @@ mod tests {
         let (app, browser, cx) = opened_browser(cx, &repo).await;
         cx.simulate_resize(size(px(461.), px(490.)));
         set_interface_text_size(cx, &app, 18);
-        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let entry = |index: usize| Some(index);
         let in_list = |cx: &mut VisualTestContext| {
-            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx))
         };
         // The window's tree as its next frame builds it: the page, hidden
         // beneath the dialog, the window root's announcement beside it, and
@@ -1911,8 +1991,8 @@ mod tests {
             this.page.as_ref().expect("the log loaded").entries[11].clone()
         });
         assert_eq!(
-            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
-            Some(ElementId::from(("reflog-entry", 11_usize))),
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx)),
+            Some(11),
             "focus moves with every press"
         );
         let (selected, pending, error) = browser.read_with(cx, |this, _| {
@@ -2228,8 +2308,8 @@ mod tests {
             settle_reads(cx, &browser);
         }
         assert_eq!(
-            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
-            Some(ElementId::from(("reflog-entry", 5_usize))),
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx)),
+            Some(5),
             "the keyboard is on the sixth entry"
         );
         let held = press_read_log(cx, &browser);
@@ -2532,9 +2612,9 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), 1);
         let (_, browser, cx) = opened_browser(cx, &repo).await;
-        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let entry = |index: usize| Some(index);
         let in_list = |cx: &mut VisualTestContext| {
-            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+            cx.update(|window, cx| browser.read(cx).focused_index(window, cx))
         };
         let selected = |cx: &mut VisualTestContext| {
             browser.read_with(cx, |this, _| {
@@ -3249,6 +3329,112 @@ mod tests {
         repo
     }
 
+    /// Focus belongs to the entry it is on, not to its place: with the
+    /// filter narrowed to "commit 1", the keyboard on its second entry,
+    /// "Commit 1", then the filter emptied under it, which lets nine
+    /// entries in above it, focus stays on "Commit 1", now eleventh, and
+    /// the list's one Tab stop goes with it. Keyed by place, focus passed
+    /// to "Commit 10", the entry that moved into the second place. Among
+    /// three identical lines, focus stays on the one it is on as the filter
+    /// lets in its look-alike above it; counted by the lines like it above
+    /// it, focus passed to that one. A fourth written at the top leaves
+    /// every entry below it its ID.
+    #[gpui::test]
+    async fn focus_stays_on_its_entry_as_entries_come_in_above_it(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let filter = |text: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let query = browser.read(cx).query.clone();
+                query.update(cx, |input, cx| input.set_value(text, window, cx));
+            });
+            draw(cx);
+        };
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let this = browser.read(cx);
+                let index = this.focused_index(window, cx)?;
+                Some((index, this.matches(cx)[index].message.clone()))
+            })
+        };
+        filter("commit 1", cx);
+        cx.simulate_keystrokes("tab down");
+        settle_reads(cx, &browser);
+        draw(cx);
+        assert_eq!(
+            focused(cx),
+            Some((1, "commit: Commit 1".to_owned())),
+            "the keyboard is on the narrowed list's second entry"
+        );
+
+        filter("", cx);
+        assert_eq!(
+            focused(cx),
+            Some((10, "commit: Commit 1".to_owned())),
+            "focus stays on its entry, now eleventh"
+        );
+        assert!(cx.debug_bounds("reflog-entry-10").is_some(), "and is drawn");
+
+        // Identical lines: one line written three times in one second, as a
+        // script repeating a command writes it, read again. With the filter
+        // narrowed to "@{1", which lets in HEAD@{1} but neither HEAD@{0}
+        // above it nor HEAD@{2} below it, the keyboard on HEAD@{1}, then the
+        // filter emptied, focus stays on HEAD@{1}, now second. Counted by the
+        // lines like it above it among the entries the filter let in, focus
+        // passed to HEAD@{0}; counted by those below it, to HEAD@{2}.
+        let tip = git(repo.path(), &["rev-parse", "HEAD"]);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let line = format!(
+            "{tip} {tip} Fixture <fixture@example.invalid> {now} +0000\treset: moving to HEAD\n"
+        );
+        let log = repo.path().join(".git/logs/HEAD");
+        let mut written = std::fs::read_to_string(&log).unwrap();
+        written.push_str(&line.repeat(3));
+        std::fs::write(&log, written).unwrap();
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.refresh(window, cx)));
+        settle_reads(cx, &browser);
+        let selector = |index: usize, cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, cx| this.matches(cx)[index].selector.clone())
+        };
+        filter("@{1", cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            focused(cx),
+            Some((0, "reset: moving to HEAD".to_owned())),
+            "the keyboard is on the narrowed list's first entry"
+        );
+        assert_eq!(selector(0, cx), "HEAD@{1}");
+
+        filter("", cx);
+        assert_eq!(
+            focused(cx),
+            Some((1, "reset: moving to HEAD".to_owned())),
+            "focus stays on its look-alike entry, now second"
+        );
+        assert_eq!(selector(1, cx), "HEAD@{1}");
+        assert!(cx.debug_bounds("reflog-entry-1").is_some(), "and is drawn");
+
+        // A fourth look-alike written at the top, and the log read again,
+        // leaves every entry below it the ID, and focus key, it had.
+        let ids = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, cx| this.entry_keys(&this.matches(cx)))
+        };
+        let before = ids(cx);
+        let mut written = std::fs::read_to_string(&log).unwrap();
+        written.push_str(&line);
+        std::fs::write(&log, written).unwrap();
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.refresh(window, cx)));
+        settle_reads(cx, &browser);
+        let after = ids(cx);
+        assert_eq!(after.len(), before.len() + 1, "{after:?}");
+        assert_eq!(after[1..], before[..], "the entries below keep their IDs");
+    }
+
     /// Lets every read the browser started land, and any read a landing
     /// reply starts: its reader answers on its own thread, which
     /// `run_until_parked` cannot wait for.
@@ -3283,8 +3469,8 @@ mod tests {
         cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
         draw(cx);
         let at = format!("{at}, {key} to entry {index}");
-        let focused = cx.update(|window, cx| browser.read(cx).entries.focused(window));
-        if focused != Some(ElementId::from(("reflog-entry", index))) {
+        let focused = cx.update(|window, cx| browser.read(cx).focused_index(window, cx));
+        if focused != Some(index) {
             failures.push(format!("{at}: focus is on {focused:?}"));
             return;
         }
@@ -3656,6 +3842,7 @@ mod tests {
         assert!(
             entry_button(
                 0,
+                "first".into(),
                 "entry".into(),
                 true,
                 &CutEntries::default(),
@@ -3667,6 +3854,7 @@ mod tests {
         assert!(
             !entry_button(
                 1,
+                "second".into(),
                 "entry".into(),
                 false,
                 &CutEntries::default(),
@@ -3680,6 +3868,7 @@ mod tests {
             vec![
                 entry_button(
                     0,
+                    "first".into(),
                     "selected entry".into(),
                     true,
                     &CutEntries::default(),
@@ -3688,6 +3877,7 @@ mod tests {
                 ),
                 entry_button(
                     1,
+                    "second".into(),
                     "other entry".into(),
                     false,
                     &CutEntries::default(),

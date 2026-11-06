@@ -1062,6 +1062,19 @@ impl TagBrowser {
         });
     }
 }
+/// A Tags row's ID, and focus key: its tag's name, which no other local tag
+/// shares, never its place, which moves as the filter lets other tags in
+/// above it, so focus stays on the tag it was on. Keyed by place, the focus
+/// a row held passed to whichever tag moved into its place. Hashed, as a
+/// stash's row ID is, so the key costs no allocation; its debug selector is
+/// its place.
+fn tag_row_id(tag: &Tag) -> ElementId {
+    use std::hash::{Hash, Hasher};
+    let mut name = std::hash::DefaultHasher::new();
+    tag.name.hash(&mut name);
+    ElementId::NamedInteger("tag-row".into(), name.finish())
+}
+
 /// Tags' line in a repository with no commits, where a tag has nothing to
 /// name.
 const NO_COMMIT_LINE: &str = "No commits to tag yet · Your first commit starts in Changes";
@@ -1089,8 +1102,10 @@ impl Render for TagBrowser {
         // the summary above it offered to inspect, delete or push a tag
         // that was not there.
         let room = appearance::button_ring_room(cx);
-        let rows: Vec<_> = (0..matches.len().min(100))
-            .map(|index| self.rows.focus(("tag-row", index), cx))
+        let rows: Vec<_> = matches
+            .iter()
+            .take(100)
+            .map(|tag| self.rows.focus(tag_row_id(tag), cx))
             .collect();
         let reveal = self.rows.items(rows.clone(), room);
         // Past its height the list cues the rest with its scrollbar.
@@ -1111,7 +1126,7 @@ impl Render for TagBrowser {
             .when(!self.list.tags.is_empty(), |element| element.child(static_text("tag-list-summary", summary(self.list.tags.len())).ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).map(|row| crate::workspace::refusing(row, || format!("tag-row-{index}"), refused, dimmed)).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+                Button::new(tag_row_id(&tag)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).map(|row| crate::workspace::refusing(row, || format!("tag-row-{index}"), refused, dimmed)).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
             })).when(matches.is_empty(), |element| element.child(div().py_3().ml(TEXT_INSET).child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
@@ -3302,7 +3317,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn tab_reveals_every_tag_row(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
-        let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
+        let (repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
         read_lands(&app, cx).await;
         draw(cx);
@@ -3310,7 +3325,8 @@ pub(crate) mod tests {
             .read_with(cx, |app, _| app.tag_actions.list.clone())
             .expect("the Tags list");
 
-        let rows: Vec<_> = (0..30).map(|index| control("tag-row", index)).collect();
+        let rows = tag_rows(&repo);
+        assert_eq!(rows.len(), 30);
         focus_filter(cx, &list, &rows[0]);
         assert_tab_reveals(cx, &list, "tags-list", &rows);
         // A click inspects nothing while an operation runs.
@@ -3324,7 +3340,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn tags_reveal_rows_in_the_frame_that_draws_focus(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
-        let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
+        let (repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
         read_lands(&app, cx).await;
         draw(cx);
@@ -3332,9 +3348,113 @@ pub(crate) mod tests {
             .read_with(cx, |app, _| app.tag_actions.list.clone())
             .expect("the Tags list");
 
-        let rows: Vec<_> = (0..30).map(|index| control("tag-row", index)).collect();
+        let rows = tag_rows(&repo);
+        assert_eq!(rows.len(), 30);
         focus_filter(cx, &list, &rows[0]);
         assert_every_frame_reveals(cx, &list, "tags-list", &rows);
+    }
+
+    /// Tags' rows as `control` names a list's controls, in the order the
+    /// dialog lists them: each tracks focus under its tag's ID and is drawn
+    /// under its place.
+    fn tag_rows(repo: &GitRepository) -> Vec<crate::focus_reveal::tests::Control> {
+        repo.tags()
+            .expect("the tags")
+            .tags
+            .iter()
+            .enumerate()
+            .map(|(index, tag)| (tag_row_id(tag), &*format!("tag-row-{index}").leak()))
+            .collect()
+    }
+
+    /// Whether the accent focus ring the last frame painted lies around the
+    /// control drawn as `selector`.
+    fn ring_on(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+        let Some(control) = cx.debug_bounds(selector) else {
+            return false;
+        };
+        let ring =
+            control.dilate(appearance::BUTTON_FOCUS_RING.gap + appearance::BUTTON_FOCUS_RING.width);
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        crate::focus_ring::painted_outlines_where(cx, |color| {
+            color.a > 0.
+                && Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .into_iter()
+        .any(|outline| {
+            outline.drawn
+                && [
+                    (outline.bounds.left(), ring.left()),
+                    (outline.bounds.top(), ring.top()),
+                    (outline.bounds.right(), ring.right()),
+                    (outline.bounds.bottom(), ring.bottom()),
+                ]
+                .into_iter()
+                .all(|(drawn, expected)| (drawn - expected).abs() <= px(0.5))
+        })
+    }
+
+    /// Focus belongs to the tag it is on, not to its row's place: with the
+    /// filter narrowed to "v1.0", Tab onto its third row, v1.02, then the
+    /// filter emptied under it, which lets three tags in above it, the ring
+    /// stays on v1.02, now sixth, and Tab from it reaches v1.03. Keyed by
+    /// place, focus passed to v0.2, the tag that moved into the third row,
+    /// and Tab went on from there.
+    #[gpui::test]
+    async fn focus_stays_on_its_tag_as_tags_come_in_above_it(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (repo, app, cx) = small_window_with_tags(cx, fixture.path(), 6);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Tags list");
+        let filter = app
+            .read_with(cx, |app, _| app.tag_actions.filter.clone())
+            .expect("the Tags filter");
+        let set_filter = |text: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                filter.update(cx, |input, cx| input.set_value(text, window, cx))
+            });
+            draw(cx);
+        };
+        let tags = repo.tags().expect("the tags").tags;
+        assert_eq!(tags[5].name, "v1.02", "v1.02 is listed sixth");
+
+        set_filter("v1.0", cx);
+        for _ in 0..4 {
+            if ring_on(cx, "tag-row-0") {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(ring_on(cx, "tag-row-0"), "Tab reaches the narrowed list");
+        cx.simulate_keystrokes("tab tab");
+        draw(cx);
+        assert!(
+            ring_on(cx, "tag-row-2"),
+            "the ring is on the third row, v1.02"
+        );
+
+        set_filter("", cx);
+        assert!(
+            ring_on(cx, "tag-row-5"),
+            "the ring stays on v1.02, now sixth"
+        );
+        assert!(!ring_on(cx, "tag-row-2"), "and leaves the third row, v0.2");
+        assert_eq!(
+            cx.update(|window, _| list.focused(window)),
+            Some(tag_row_id(&tags[5])),
+            "focus is v1.02's"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(ring_on(cx, "tag-row-6"), "and Tab goes on to v1.03");
     }
 
     /// Tab moves through every Push to… button of the tag inspector and
