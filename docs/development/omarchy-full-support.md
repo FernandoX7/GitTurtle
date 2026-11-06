@@ -751,6 +751,12 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
+     - **Held Enter through the command palette (QA-105, 2026-11-05 night; first):** holding Enter
+       on "Browse reflog and recover a commit…" in the palette opens the Reflog (~160 ms), a repeated
+       Enter closes it (~393 ms; likely its `on_ok`, `reflog.rs:357`) and the repeats open Compare on
+       a file (~632 ms); pre-existing (the pre-FU18 build does the same). FU18-C's held-Enter rule
+       (holding Enter on a control that opens a dialog never confirms it) must cover a dialog the
+       palette opens and every dialog's own Enter handler; reproduce natively first, then a test.
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
        - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
          focus returned once, never over a later click; a dialog opened as another closes keeps
@@ -821,8 +827,7 @@ cover current upstream x86-64 Omarchy.
          `settings-themes.png` retaken (with a native round).
      - **Later rounds (accessibility):** (FU19-E+H in flight with FU19-H2) AT-SPI's cache
        signals fixed at their root (AccessKit #819 backported) and the removed row kept until it
-       leaves the bus; Orca's check in QA-105. The palette may speak a move twice (native check
-       first); X11 key repeats unmarked (vendored `x11/client.rs`, verify; FU19-D5's fixups touch
+       leaves the bus; Orca's check in QA-105. The palette speaks its current row twice, plain then "· 1 of 1" (confirmed natively by QA-105); X11 key repeats unmarked (vendored `x11/client.rs`, verify; FU19-D5's fixups touch
        the Button side); at a window's close the adapter sends no `RemoveAccessible` for any node
        (upstream behaviour, libatspi keeps the proxies until the app exits; low).
      - **macOS-only (hosted run or a Mac):** Menlo's metrics for FU17-B's rule (hosted run
@@ -830,7 +835,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** `workspace.rs`'s `render_git_actions` and `branch_actions.rs` format their strings each frame (FU20-P's finding; same rule as FU20-P); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
+     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label and `empty_state.rs:131-140`'s edge tooltip and id still format each frame; FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
        release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
