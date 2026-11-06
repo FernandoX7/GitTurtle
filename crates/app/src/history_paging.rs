@@ -61,19 +61,23 @@ fn retained_bytes(commits: &[Commit], graph: &[graph::GraphRow]) -> usize {
 }
 
 impl GitTurtle {
+    /// Reads the ordinary-history page at `offset`. Returns whether it asked
+    /// for it: refused while a read, a search or a write runs, or with no
+    /// repository or captured scope, as a cold tab's restore then ends
+    /// (`finish_tab_snapshot`).
     pub(super) fn request_history_page(
         &mut self,
         offset: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.loading.is_some() || self.history_search_active() || self.operation_busy.is_some() {
-            return;
+            return false;
         }
         let (Some(repo), Some(scope)) =
             (self.repository.clone(), self.history_paging.scope.clone())
         else {
-            return;
+            return false;
         };
         self.interaction_started = Some(Instant::now());
         self.request(
@@ -87,6 +91,7 @@ impl GitTurtle {
             window,
             cx,
         );
+        true
     }
 
     pub(super) fn receive_history_page(
@@ -96,6 +101,15 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if self.history_search_active() {
+            // A search the person started meanwhile ends a cold tab's restore
+            // waiting for this page, as a read that replaces it does, and
+            // History's search asked for before it goes with it
+            // (`end_replaced_restore`). Defensive: `history_query_changed`
+            // ends the restore before it sets the search's progress, and
+            // replies are generation-checked, so no read reaches this.
+            if self.repository_tabs.restoring.take().is_some() {
+                self.repository_tabs.drop_pending_search();
+            }
             return;
         }
         let worker::HistoryPageResult {
@@ -109,6 +123,11 @@ impl GitTurtle {
         {
             self.history_paging.next_offset = None;
             self.status = "Reached the end of this captured history".into();
+            // A restore's saved page past the end, as after a rewrite
+            // shortened history, ends the restore in History. Left set, it
+            // waited for a page that never came, and held History's search
+            // asked for meanwhile.
+            self.end_restore_in_history(window, cx);
             return;
         }
         let selected = self

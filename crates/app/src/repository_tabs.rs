@@ -1927,7 +1927,11 @@ impl GitTurtle {
         {
             self.history_paging.scope = Some(pinned.scope());
             let offset = saved.offset;
-            self.request_history_page(offset, window, cx);
+            // A page refused, as while a write runs, leaves nothing to wait
+            // for: the restore ends in History.
+            if !self.request_history_page(offset, window, cx) {
+                self.end_restore_in_history(window, cx);
+            }
             return;
         }
         if !query.is_empty() {
@@ -1939,6 +1943,11 @@ impl GitTurtle {
             self.history_query_changed(window, cx);
             self.history_search.restore_pinned_scope(pinned);
             if saved.comparison.is_none() {
+                // A saved query the search refuses, past 4 KiB, starts no
+                // read: the restore ends in History.
+                if !self.history_search_pending() {
+                    self.end_restore_in_history(window, cx);
+                }
                 return;
             }
         }
@@ -8559,6 +8568,151 @@ mod tests {
             assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::History);
         });
         assert_eq!(drawn_focus(&app, cx), Some(list), "focus stays on the list");
+    }
+
+    /// A cold tab's restore whose saved page lies past the end, as after a
+    /// rewrite shortened history to the snapshot's own rows, ends in
+    /// History as the empty page lands (`receive_history_page`), and
+    /// History's search asked for while the snapshot was read opens there.
+    /// So does one whose page is refused while a write runs, one whose
+    /// saved query, past 4 KiB, the search refuses (`finish_tab_snapshot`),
+    /// and one whose saved query a write running as its typing pause ends
+    /// keeps from being searched (`continue_history_search`). Left set with
+    /// no read under way, the restore never ended, and the search it held
+    /// never opened.
+    #[gpui::test]
+    async fn a_restore_with_no_page_to_read_ends_and_opens_the_held_search(
+        cx: &mut TestAppContext,
+    ) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, search) = app.read_with(cx, |app, cx| {
+            (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+        });
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+        let tip = bookmark.selected_oid.clone().expect("the tip is selected");
+        for (round, when) in [
+            "its page past the end",
+            "its page refused",
+            "its query past 4 KiB",
+            "its search refused while a write runs",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let refused = round == 1;
+            let long_query = round == 2;
+            let search_refused = round == 3;
+            if round > 0 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle_tab_test(&app, cx).await;
+                draw_tab_frames(cx);
+            }
+            app.update(cx, |app, _| {
+                // The snapshot reads the tab's two commits as a full page,
+                // so the next one starts at the saved offset.
+                app.limit = 2;
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = if long_query || search_refused {
+                    Bookmark {
+                        comparison: None,
+                        compare: true,
+                        query: if long_query {
+                            "x".repeat(4097)
+                        } else {
+                            "first".into()
+                        },
+                        pinned: None,
+                        offset: 0,
+                        ..bookmark.clone()
+                    }
+                } else {
+                    Bookmark {
+                        comparison: None,
+                        compare: true,
+                        pinned: Some(SavedHistoryScope::Commit(tip.clone())),
+                        offset: 2,
+                        ..bookmark.clone()
+                    }
+                };
+            });
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            cx.simulate_keystrokes(find);
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_none(), "{when}: still read");
+                assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+            if refused {
+                // A write runs as the snapshot lands.
+                app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            if refused {
+                app.update(cx, |app, _| app.operation_busy = None);
+            } else if long_query {
+                assert_eq!(
+                    app.read_with(cx, |app, _| app
+                        .history_search_empty()
+                        .map(|(title, _)| title)),
+                    Some("Search could not complete"),
+                    "{when}: refused"
+                );
+            } else if search_refused {
+                // The saved query waits out its typing pause, and a write
+                // runs as it ends.
+                app.read_with(cx, |app, _| {
+                    assert!(app.repository_tabs.restoring.is_some(), "{when}: restoring");
+                    assert!(app.history_search_pending(), "{when}: its pause");
+                });
+                app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+                cx.executor()
+                    .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| {
+                    assert!(!app.history_search_pending(), "{when}: not searched");
+                    assert_eq!(app.loading, None, "{when}: nothing read");
+                });
+                app.update(cx, |app, _| app.operation_busy = None);
+            } else {
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.status.clone()),
+                    "Reached the end of this captured history",
+                    "{when}"
+                );
+            }
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_some(), "{when}: landed");
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert!(
+                    app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                    "{when}: History shows"
+                );
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+        }
     }
 
     /// Another warm tab shown from Settings forgets the control Back would

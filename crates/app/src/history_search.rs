@@ -319,10 +319,18 @@ impl GitTurtle {
     }
 
     pub(super) fn continue_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.history_search_pending()
-            || self.operation_busy.is_some()
-            || self.commits.len() >= MAX_RESULTS
-        {
+        if self.history_search_pending() || self.commits.len() >= MAX_RESULTS {
+            return;
+        }
+        if self.operation_busy.is_some() {
+            // A cold tab's restore whose saved query a running write keeps
+            // from being searched, with no read of its own under way, starts
+            // none, and nothing searches it once the write ends: the restore
+            // ends in History (`end_restore_in_history`), where the search
+            // can be run again.
+            if self.task.is_none() {
+                self.end_restore_in_history(window, cx);
+            }
             return;
         }
         let (Some(repo), Some(progress)) = (self.repository.clone(), &self.history_search.progress)
