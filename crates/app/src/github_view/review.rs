@@ -533,6 +533,22 @@ thread_local! {
     static LISTS: std::cell::RefCell<Vec<(Bounds<Pixels>, Option<Blocks>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
+#[cfg(test)]
+thread_local! {
+    /// Each control of one line drawn since the last body that collects lines started its
+    /// frame ([`one_line`], [`Blocks::collect_lines`]), its frame and the clip it was drawn
+    /// in, for the reveal sweep to read where each lies as drawn, apart from the body's record
+    /// of its lines: Buttons write no accessibility node a test can read
+    /// (`github_view::tests::frame_lines`).
+    static ONE_LINES: std::cell::RefCell<Vec<(Bounds<Pixels>, Bounds<Pixels>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+/// The controls of one line the last frame of the body drew, each with the clip it was drawn
+/// in ([`ONE_LINES`]).
+#[cfg(test)]
+pub(super) fn drawn_one_lines() -> Vec<(Bounds<Pixels>, Bounds<Pixels>)> {
+    ONE_LINES.with(|drawn| drawn.borrow().clone())
+}
 /// For the `on_children_prepainted` of a text element of the panel ([`super::label`],
 /// [`super::phrases`]): each of `children`, text in the element's own style, reports each of
 /// its lines a person can see to the body collecting them ([`Blocks::collect_lines`]), if one
@@ -654,6 +670,12 @@ fn clipped_with(list: impl IntoElement, blocks: Option<Blocks>) -> Div {
 pub(super) fn one_line() -> impl IntoElement {
     canvas(
         |bounds, window, _| {
+            #[cfg(test)]
+            ONE_LINES.with(|drawn| {
+                drawn
+                    .borrow_mut()
+                    .push((bounds, window.content_mask().bounds))
+            });
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
                     collecting.spans(window.content_mask().bounds, |blocks, span| {
@@ -768,6 +790,8 @@ impl Blocks {
     pub(super) fn collect_lines(&self) -> Div {
         let blocks = self.clone();
         div().on_children_prepainted(move |_, window, _| {
+            #[cfg(test)]
+            ONE_LINES.with(|drawn| drawn.borrow_mut().clear());
             let collecting = Collecting {
                 blocks: blocks.clone(),
                 clip: window.content_mask().bounds,

@@ -8340,16 +8340,22 @@ mod tests {
     /// The body and the lines the last frame drew in it, after a fresh draw, read from the
     /// frame rather than from the body's record of its lines ([`review::Blocks::lines`]), so a
     /// surface that reports no lines shows as lines a reveal of the body cuts: each line of
-    /// text, its run marked by the window's root (`width_walk::text_mark`, [`fixture_panel`]);
-    /// each Button and each of `fields`, its frame; each row of the changed-file list and of
-    /// Changes' patch; and each row of a multi-line editor drawn, Source's among them, read
-    /// from the editor's layout. What a list or a clip inside the body cuts or hides is that
-    /// list's or clip's, as the body counts it: a row or a Button only where its list shows it
-    /// whole, a line of text only where no clip inside the body cuts it.
+    /// text the dialog draws, its run marked by the window's root (`width_walk::text_mark`,
+    /// [`fixture_panel`]); each control of one line, a labelled Button, a field or a row of the
+    /// PR, changed-file and patch lists, its frame as it drew it (`review::drawn_one_lines`);
+    /// and each row of a multi-line editor drawn, Source's among them, read from the editor's
+    /// layout. What a list or a clip inside the body hides is that list's or clip's, as the
+    /// body counts it, and of what one of them cuts, the part it shows. Only lines drawn count:
+    /// what lies out of the body's view is not drawn at all ([`verified_stop`]).
+    ///
+    /// Read from accessibility nodes and debug selectors alone, as they first were, the lines
+    /// left out every Button, which writes no node a test reads, and took its label's run,
+    /// 12 px at 13 pt, for its line; left out the part a list shows of a row it cuts, which the
+    /// body counts; and counted the History page's text beneath the dialog where its clips lay
+    /// inside the body.
     fn frame_lines(
         cx: &mut VisualTestContext,
         panel: &Entity<Panel>,
-        fields: &[&'static str],
     ) -> (Bounds<Pixels>, Vec<FrameLine>) {
         use crate::native_accessibility::written;
         written::forget();
@@ -8364,6 +8370,30 @@ mod tests {
             .filter_map(|list| cx.debug_bounds(list))
             .collect();
         let mut lines = Vec::new();
+        // The part of `line` that `clip`, the clip it is drawn in, shows, but where that clip's
+        // edge is the body's own, which a reveal moves; none where the clip lies outside the
+        // body or shows less than layout's rounding.
+        let visible = |line: Bounds<Pixels>, clip: Bounds<Pixels>| {
+            if clip.top() < body.top() - slack
+                || clip.bottom() > body.bottom() + slack
+                || clip.left() < body.left() - slack
+                || clip.right() > body.right() + slack
+            {
+                return None;
+            }
+            let top = if clip.top() > body.top() + slack {
+                line.top().max(clip.top())
+            } else {
+                line.top()
+            };
+            let bottom = if clip.bottom() < body.bottom() - slack {
+                line.bottom().min(clip.bottom())
+            } else {
+                line.bottom()
+            };
+            (bottom - top > slack)
+                .then(|| Bounds::from_corners(point(line.left(), top), point(line.right(), bottom)))
+        };
         let mut push = |name: String, bounds: Bounds<Pixels>| {
             let nested = lists.iter().any(|list| list.intersects(&bounds));
             let half = |value: Pixels| (f32::from(value) * 2.).round() as i32;
@@ -8375,97 +8405,61 @@ mod tests {
                 nested,
             });
         };
-        // Whole inside the list or clip it lies in, if any.
-        let shown = |bounds: Bounds<Pixels>| {
-            lists
-                .iter()
-                .filter(|list| list.intersects(&bounds))
-                .all(|list| {
-                    bounds.top() >= list.top() - slack && bounds.bottom() <= list.bottom() + slack
-                })
-        };
-        // The texts and Buttons, read from the accessibility nodes the frame wrote, which name
-        // the lines of text in them.
-        let nodes: Vec<(String, Role, Bounds<Pixels>)> = written::inside("github-panel")
+        // The texts, read from the accessibility nodes the frame wrote, which name the lines
+        // in them.
+        let nodes: Vec<(String, Bounds<Pixels>)> = written::inside("github-panel")
             .into_iter()
             .filter_map(|id| {
                 let text = written::get(&id)?;
-                let role = text.node.role();
                 let layout = text.layout?;
-                matches!(role, Role::Label | Role::Button).then(|| {
+                matches!(text.node.role(), Role::Label | Role::Button).then(|| {
                     let bounds = Bounds::from_corners(
                         point(px(layout.x0 as f32 / scale), px(layout.y0 as f32 / scale)),
                         point(px(layout.x1 as f32 / scale), px(layout.y1 as f32 / scale)),
                     );
-                    (id, role, bounds)
+                    (id, bounds)
                 })
             })
             .collect();
-        let named = |line: Bounds<Pixels>| {
+        let named = |line: Bounds<Pixels>, otherwise: &str| {
             nodes
                 .iter()
-                .filter(|(_, _, bounds)| bounds.contains(&line.center()))
+                .filter(|(_, bounds)| bounds.contains(&line.center()))
                 .min_by(|a, b| {
                     let area = |bounds: &Bounds<Pixels>| {
                         f32::from(bounds.size.height) * f32::from(bounds.size.width)
                     };
-                    area(&a.2).total_cmp(&area(&b.2))
+                    area(&a.1).total_cmp(&area(&b.1))
                 })
-                .map_or("text".to_string(), |(id, _, _)| id.clone())
+                .map_or(otherwise.to_string(), |(id, _)| id.clone())
         };
-        // Each line of text, where nothing inside the body clips it but the body's own edge.
+        // Each line of text the dialog draws above its backdrop, the part of it its clips show.
         let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
         let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+        let beneath = backdrop(cx);
         for (line, quad) in quads(cx) {
-            if quad.background != mark {
+            if quad.background != mark || beneath.is_some_and(|backdrop| quad.order < backdrop) {
                 continue;
             }
             let mask = quad.content_mask.bounds;
-            let (top, bottom) = (logical(mask.top()), logical(mask.bottom()));
-            let (left, right) = (logical(mask.left()), logical(mask.right()));
-            if top < body.top() - slack
-                || bottom > body.bottom() + slack
-                || left < body.left() - slack
-                || right > body.right() + slack
-            {
-                continue;
-            }
-            if (line.top() < top - slack && top > body.top() + slack)
-                || (line.bottom() > bottom + slack && bottom < body.bottom() - slack)
-            {
-                continue;
-            }
-            let name = format!("{} text at {:?}", named(line), line.left());
-            push(name, line);
-        }
-        // Each Button, its frame.
-        for (id, role, bounds) in &nodes {
-            if *role == Role::Button && shown(*bounds) {
-                push(id.clone(), *bounds);
+            let clip = Bounds::from_corners(
+                point(logical(mask.left()), logical(mask.top())),
+                point(logical(mask.right()), logical(mask.bottom())),
+            );
+            if let Some(shown) = visible(line, clip) {
+                let name = format!("{} text at {:?}", named(line, "text"), line.left());
+                push(name, shown);
             }
         }
-        for field in fields {
-            if let Some(bounds) = cx.debug_bounds(field) {
-                push(field.to_string(), bounds);
-            }
-        }
-        // Each row of the changed-file list and of Changes' patch its list shows whole.
-        let (files, rows) = cx.read(|cx| {
-            let review = &panel.read(cx).review;
-            let rows = review
-                .selected_file
-                .and_then(|index| review.files.get(index))
-                .map_or(0, |file| file.rows.len());
-            (review.files.len(), rows)
-        });
-        for selector in indexed("github-file-row-", files)
-            .into_iter()
-            .chain(indexed("github-patch-line-", rows))
-        {
-            if let Some(bounds) = cx.debug_bounds(selector)
-                && shown(bounds)
+        // Each control of one line, its frame, the part of it its clips show, where they show
+        // some, as GPUI draws a quad only where its clip shows some of it: a list's row it has
+        // scrolled out of itself, laid out all the same, is none.
+        for (frame, clip) in review::drawn_one_lines() {
+            if frame.intersects(&clip)
+                && let Some(shown) = visible(frame, clip)
             {
-                push(selector.to_string(), bounds);
+                let name = format!("{} control at {:?}", named(frame, "a"), frame.left());
+                push(name, shown);
             }
         }
         // Each row of a multi-line editor drawn, as the editor draws it into its padding, the
@@ -8544,13 +8538,17 @@ mod tests {
     /// The names of `lines` cut at the edges of `body`: a line an edge falls inside, by more
     /// than half a pixel either way, layout's rounding.
     fn cut_at_edges(body: Bounds<Pixels>, lines: &[FrameLine]) -> Vec<String> {
-        let slack = px(0.5);
+        cut_at_edges_by(body, lines, px(0.5))
+    }
+
+    /// The names of `lines` cut at the edges of `body` by more than `within` either way.
+    fn cut_at_edges_by(body: Bounds<Pixels>, lines: &[FrameLine], within: Pixels) -> Vec<String> {
         lines
             .iter()
             .filter(|line| {
                 [body.top(), body.bottom()]
                     .into_iter()
-                    .any(|edge| line.top < edge - slack && line.bottom > edge + slack)
+                    .any(|edge| line.top < edge - within && line.bottom > edge + within)
             })
             .map(|line| format!("{} {:?}..{:?}", line.name, line.top, line.bottom))
             .collect()
@@ -8562,7 +8560,9 @@ mod tests {
     /// every place the frame offers, each line's top and foot (the top edge between lines),
     /// each less the body's height (the bottom edge between lines), each line's top less
     /// `ring` (a block a line starts, its ring's room above it) and both ends of the content
-    /// ([`assert_reveal_rule`]).
+    /// ([`assert_reveal_rule`]). The ends of the content allow layout's rounding, and
+    /// `top..bottom`, the focus with its ring, stays whole to the reveal's hundredth: a place
+    /// half a pixel inside it cuts the ring ([`review::clear_of_lines`]).
     fn clear_stops(
         body: Bounds<Pixels>,
         lines: &[FrameLine],
@@ -8593,12 +8593,136 @@ mod tests {
             .filter(|edge| {
                 *edge >= first - slack
                     && *edge <= last + slack
-                    && *edge <= top + slack
-                    && *edge + height >= bottom - slack
+                    && *edge <= top + within
+                    && *edge + height >= bottom - within
                     && !inside(*edge)
                     && !inside(*edge + height)
             })
             .collect()
+    }
+
+    /// What the reveal that brought the body to this frame left cut where it need not have
+    /// ([`sweep_reveals`]), at the stop named `stop` whose focus drew `ring`: the lines drawn
+    /// cut at the edges of `body` (`drawn`, [`frame_lines`]), where a place the body's top
+    /// edge can take keeps the focus whole with its ring, and the part the reveal shows whole
+    /// with its ring's room, and draws no line cut there ([`clear_stops`], [`verified_stop`]).
+    /// `Err(())` for a part too tall for the body with its ring's room, which keeps the half of
+    /// the body on the side it shows, as the reveal's own tests hold; `Ok(None)` where nothing
+    /// is cut or no such place exists.
+    fn needless_cut(
+        cx: &mut VisualTestContext,
+        panel: &Entity<Panel>,
+        (body, drawn): (Bounds<Pixels>, &[FrameLine]),
+        ring: &[crate::focus_ring::PaintedOutline],
+        stop: &str,
+    ) -> Result<Option<String>, ()> {
+        let cut = cut_at_edges(body, drawn);
+        let Some(mut shown) = ring
+            .iter()
+            .map(|outline| outline.bounds)
+            .reduce(|a, b| a.union(&b))
+        else {
+            return Ok(None);
+        };
+        if cut.is_empty() {
+            return Ok(None);
+        }
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let part = cx.update(|window, _| {
+            window
+                .context_stack()
+                .iter()
+                .rev()
+                .find_map(|context| context.get(review::PART).cloned())
+        });
+        if let Some(part) = part
+            && let Some(bounds) = cx.debug_bounds(part_selector(&part))
+        {
+            if bounds.size.height + room * 2. > body.size.height + px(0.5) {
+                return Err(());
+            }
+            shown = shown.union(&bounds.dilate(room));
+        }
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let first = body.top() + scroll.offset().y;
+        let last = first + scroll.max_offset().y;
+        let stops = clear_stops(
+            body,
+            drawn,
+            (shown.top(), shown.bottom()),
+            room,
+            (first, last),
+        );
+        Ok(verified_stop(cx, panel, body, stops).map(|clear| {
+            format!(
+                "{stop}: {cut:?} cut at the edges of the body {body:?}, the focus {shown:?} \
+                 whole, where its top edge could stop clear of every line at {clear:?}"
+            )
+        }))
+    }
+
+    /// The scene order of the open dialog's backdrop in the last frame, the fill in the kit's
+    /// overlay colour over the whole window, as the focus sweep reads it (`focus_ring::sweep`):
+    /// what the page beneath the dialog paints lies below it. None with no backdrop drawn.
+    fn backdrop(cx: &mut VisualTestContext) -> Option<u32> {
+        let overlay = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).colors.overlay)
+        });
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let viewport = window.viewport_size();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    !overlay.is_transparent()
+                        && quad.background == overlay
+                        && quad.bounds.size.width.as_f32() >= viewport.width.as_f32() * scale - 1.
+                        && quad.bounds.size.height.as_f32() >= viewport.height.as_f32() * scale - 1.
+                })
+                .map(|quad| quad.order)
+                .max()
+        })
+    }
+
+    /// The first of `stops`, places for the top edge of `body` in this frame's coordinates
+    /// ([`clear_stops`]), nearest first, where the body scrolled there draws no line cut at
+    /// either of its edges by more than the reveal's hundredth of a pixel ([`frame_lines`],
+    /// [`review::clear_of_lines`]), the body drawn again where it stood afterwards: a place on
+    /// the half-pixel grid the frame lays lines out on moves each line by as much, so where it
+    /// meets a line's edge it meets it exactly. Allowed half a pixel, as a reveal's landing is,
+    /// a place cut the second line of Drafts stay on this computer by half a pixel at 13 pt in
+    /// Overview. The lines a place is chosen by are those this frame drew, and a frame
+    /// draws nothing out of the body's view: a place clear of them can cut a line the body
+    /// scrolled there shows, as the sweep's places once did, at 18 pt in a 461 × 490 window,
+    /// where the top edge stopping 26 px above the review summary in Review would have cut
+    /// the review's choices above it.
+    fn verified_stop(
+        cx: &mut VisualTestContext,
+        panel: &Entity<Panel>,
+        body: Bounds<Pixels>,
+        mut stops: Vec<Pixels>,
+    ) -> Option<Pixels> {
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let stood = scroll.offset();
+        stops.sort_by(|a, b| {
+            (*a - body.top())
+                .abs()
+                .as_f32()
+                .total_cmp(&(*b - body.top()).abs().as_f32())
+        });
+        stops.dedup_by(|a, b| (*a - *b).abs() < px(0.01));
+        let slack = px(0.5);
+        let found = stops.into_iter().find(|at| {
+            let offset = stood.y - (*at - body.top());
+            scroll.set_offset(point(stood.x, offset));
+            let (there, lines) = frame_lines(cx, panel);
+            (scroll.offset().y - offset).abs() <= slack
+                && cut_at_edges_by(there, &lines, px(0.01)).is_empty()
+        });
+        scroll.set_offset(stood);
+        crate::tags::tests::draw(cx);
+        found
     }
 
     /// The conversation list and the lines drawn in it, each named, with where it lies, after
@@ -10243,6 +10367,10 @@ mod tests {
         Surface::Threads,
     ];
 
+    /// Surfaces the reveal sweep walks at one size, an interface size and a window's width and
+    /// height ([`sweep_reveals`]).
+    type Walk<'a> = ((u8, f32, f32), &'a [Surface]);
+
     /// What the reveal sweep found ([`sweep_reveals`]), each finding named by its surface,
     /// size and stop.
     #[derive(Default)]
@@ -10322,21 +10450,17 @@ mod tests {
         }
     }
 
-    /// Walks each of `surfaces` on the offline fixture, at each of `sizes` (an interface size
+    /// Walks each of `walks`' surfaces on the offline fixture at its size (an interface size
     /// and a window's width and height), with Tab through every stop and then with Shift+Tab,
     /// each walk from the surface opened at the body's top (`focus_ring::sweep::walk_each`),
     /// and returns what it found ([`Swept`]): every stop's ring that is not whole; every reveal
     /// that left a line drawn in the frame ([`frame_lines`]) cut at an edge of the body where
-    /// a place the body's top edge can take ([`clear_stops`]) keeps the focused control whole
-    /// with its ring and clears every line, but at the content's top, which a reveal keeps
-    /// ([`review::clear_of_lines`]); and every line outside the lists inside the body that no
-    /// stop of the surface's two walks shows whole, with every text and Button outside them
-    /// part of which no stop shows at all.
-    async fn sweep_reveals(
-        cx: &mut TestAppContext,
-        surfaces: &[Surface],
-        sizes: impl IntoIterator<Item = (u8, f32, f32)>,
-    ) -> Swept {
+    /// a place the body's top edge can take keeps the focused control whole with its ring and,
+    /// drawn there, cuts no line ([`needless_cut`]), but at the content's top, which a reveal
+    /// keeps ([`review::clear_of_lines`]); and every line outside the lists inside the body
+    /// that no stop of the surface's two walks shows whole, with every text and Button outside
+    /// them part of which no stop shows at all.
+    async fn sweep_reveals(cx: &mut TestAppContext, walks: &[Walk<'_>]) -> Swept {
         use crate::native_accessibility::written;
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
         crate::views::tests::hold_quiet_reads_for_test(&app, cx);
@@ -10349,7 +10473,7 @@ mod tests {
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let slack = px(0.5);
         let mut swept = Swept::default();
-        for (interface, width, height) in sizes {
+        for &((interface, width, height), surfaces) in walks {
             for &surface in surfaces {
                 let at = format!("{surface:?} at {interface} pt in {width} × {height}");
                 // Each line outside the lists by its place, and whether a stop showed it whole;
@@ -10374,7 +10498,7 @@ mod tests {
                          stop: &str,
                          ring: &[crate::focus_ring::PaintedOutline]| {
                             let now = scroll.offset().y;
-                            let (body, drawn) = frame_lines(cx, &panel, &["github-destination"]);
+                            let (body, drawn) = frame_lines(cx, &panel);
                             swept.stops += 1;
                             let origin = body.top() + now;
                             views.push((body.top() - origin, body.bottom() - origin));
@@ -10457,51 +10581,10 @@ mod tests {
                             if now == px(0.) {
                                 return;
                             }
-                            let cut = cut_at_edges(body, &drawn);
-                            let Some(mut shown) = ring
-                                .iter()
-                                .map(|outline| outline.bounds)
-                                .reduce(|a, b| a.union(&b))
-                            else {
-                                return;
-                            };
-                            if cut.is_empty() {
-                                return;
-                            }
-                            // The part the reveal shows whole with its ring's room, as the
-                            // body's reveals do; one too tall for the body keeps the half of
-                            // the body on the side it shows, which the reveal's own tests hold.
-                            let part = cx.update(|window, _| {
-                                window
-                                    .context_stack()
-                                    .iter()
-                                    .rev()
-                                    .find_map(|context| context.get(review::PART).cloned())
-                            });
-                            if let Some(part) = part
-                                && let Some(bounds) = cx.debug_bounds(part_selector(&part))
-                            {
-                                if bounds.size.height + room * 2. > body.size.height + slack {
-                                    swept.tall += 1;
-                                    return;
-                                }
-                                shown = shown.union(&bounds.dilate(room));
-                            }
-                            let first = body.top() + now;
-                            let last = first + scroll.max_offset().y;
-                            let stops = clear_stops(
-                                body,
-                                &drawn,
-                                (shown.top(), shown.bottom()),
-                                room,
-                                (first, last),
-                            );
-                            if !stops.is_empty() {
-                                swept.cuts.push(format!(
-                                "{stop}: {cut:?} cut at the edges of the body {body:?}, the focus \
-                                 {shown:?} whole, where its top edge could stop clear of every \
-                                 line at {stops:?}"
-                            ));
+                            match needless_cut(cx, &panel, (body, &drawn), ring, stop) {
+                                Err(()) => swept.tall += 1,
+                                Ok(Some(finding)) => swept.cuts.push(finding),
+                                Ok(None) => {}
                             }
                         };
                     // The walk's own findings but its clipped rings, which `each` reads above.
@@ -10600,7 +10683,7 @@ mod tests {
     /// name and status the list shows of it for room between lines: Tab onto the Review tab
     /// stopped the body's foot through that status line, as Tab onto Source's text at 13 pt
     /// stopped its top through the third row's file name, though no place the body could
-    /// scroll to cleared every line there.
+    /// scroll to cleared every line there ([`needless_cut`]).
     #[gpui::test]
     async fn a_row_a_list_cuts_is_a_line_of_the_body_where_the_list_shows_it(
         cx: &mut TestAppContext,
@@ -10642,44 +10725,28 @@ mod tests {
         );
     }
 
-    /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
-    /// at 13 and 18 pt in a 461 × 490 window and a 1,480 × 800 one ([`REVEAL_SIZES`]), with
-    /// Tab through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
-    /// control draws its ring whole, or its top edge where it cannot fit the body; no reveal
-    /// leaves a line cut at either of the body's edges where a place clears every line with
-    /// the revealed part whole; and every line outside the lists inside the body is whole at
-    /// some stop. It takes about 3.5 min in a debug build and is opt-in until its findings
-    /// close; it prints every finding before it fails.
-    ///
-    /// Run on Linux on 2026-11-05 (FU20-GH5), it found 133 in 872 stops. The 114 texts no stop
-    /// showed were the conversation list's own rows, scrolled out of the list below its foot or
-    /// above its top, which the sweep counted as the body's because only the rows crossing the
-    /// list's viewport counted as the list's; the list's reveals are
-    /// `conversation_reveals_leave_no_line_cut_at_the_lists_edges`'s, and the sweep now leaves
-    /// whatever a list in the body holds to that list. No line outside the lists was never
-    /// whole. Open, each at its stop as the finding names it:
-    /// - Reveals that leave a line cut at the body's foot where a clear place keeps the focus
-    ///   whole, at 461 × 490: at 13 pt, Tab onto Open captured local comparison in Overview
-    ///   (stop 10), a 12 px run of text at 369.5..381.5 that no label or Button holds, so it
-    ///   reports no line; at 18 pt, the review summary in Review (stop 15) above a line at
-    ///   333..360, Source in Source (stops 4 and 10) above the file's bound line at
-    ///   333.5..360.5, and the Files section's third tab in Changes, Source and Threads (stops
-    ///   0, 14 and 22) above a line at 348.5..371; at 13 pt in 1,480 × 800, Threads' file
-    ///   Conversations pane (stop 4) above the two bound lines at 678.5..698. Source's first
-    ///   line, 70..89.5, is left cut at the top at 13 pt in 461 × 490 (stops 4 and 10). Each
-    ///   such line the sweep names by no label, which reads as a label whose visible part, the
-    ///   bounds its node takes, no longer holds its run's middle, or as text outside every
-    ///   label and Button; which of them each is, and why the reveal's own record of the
-    ///   body's lines let it stop there, is not yet traced.
-    ///
-    /// Its rings a clip cut, at 18 pt in 461 × 490, closed in FU20-GH6
-    /// (`reveals_draw_the_pr_rows_and_the_files_boxes_rings_whole`): the PR list's first row,
-    /// whose ring the reveal left half a pixel above the body's top, and Changes' patch,
-    /// revealed as the file's part with its foot below the body's.
-    #[gpui::test]
-    #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
-    async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
-        let swept = sweep_reveals(cx, &SURFACES, REVEAL_SIZES).await;
+    /// The walks of the reveal sweep at whose stops its run on 2026-11-05 found what FU20-GH6
+    /// traced ([`the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn`]): at 13 pt in a
+    /// 461 × 490 window, Overview and Source; at 18 pt there, the connection pane, the PR list,
+    /// Review, Changes, Source and Threads; at 13 pt in a 1,480 × 800 window, Threads.
+    const FOUND_WALKS: [Walk<'static>; 3] = [
+        ((13, 461., 490.), &[Surface::Overview, Surface::Source]),
+        (
+            (18, 461., 490.),
+            &[
+                Surface::Connection,
+                Surface::Pulls,
+                Surface::Review,
+                Surface::Changes,
+                Surface::Source,
+                Surface::Threads,
+            ],
+        ),
+        ((13, 1480., 800.), &[Surface::Threads]),
+    ];
+
+    /// Fails with every finding of `swept` ([`sweep_reveals`]), each printed first.
+    fn assert_swept(swept: Swept) {
         let findings: Vec<&String> = swept
             .cuts
             .iter()
@@ -10698,6 +10765,72 @@ mod tests {
             swept.moves,
             swept.tall
         );
+    }
+
+    /// The reveal sweep's walks at the stops where it found reveals to trace ([`FOUND_WALKS`]),
+    /// which the whole sweep takes too long to repeat in every gate
+    /// ([`the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn`]): every stop draws its
+    /// ring whole, no reveal leaves a line cut where a place clears every line, and every line
+    /// outside the lists is whole at some stop.
+    #[gpui::test]
+    async fn the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace(
+        cx: &mut TestAppContext,
+    ) {
+        assert_swept(sweep_reveals(cx, &FOUND_WALKS).await);
+    }
+
+    /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
+    /// at 13 and 18 pt in a 461 × 490 window and a 1,480 × 800 one ([`REVEAL_SIZES`]), with
+    /// Tab through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
+    /// control draws its ring whole, or its top edge where it cannot fit the body; no reveal
+    /// leaves a line cut at either of the body's edges where a place clears every line with
+    /// the revealed part whole; and every line outside the lists inside the body is whole at
+    /// some stop. It prints every finding before it fails. It takes about 3 min in a debug
+    /// build (180 s on the Linux development host on 2026-11-06), too long for every gate:
+    /// the gate walks the stops where it found reveals to trace
+    /// ([`the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace`]), and this whole
+    /// sweep stays opt-in.
+    ///
+    /// Run on Linux on 2026-11-05 (FU20-GH5), it found 133 in 872 stops. The 114 texts no stop
+    /// showed were the conversation list's own rows, scrolled out of the list below its foot or
+    /// above its top, which the sweep counted as the body's because only the rows crossing the
+    /// list's viewport counted as the list's; the list's reveals are
+    /// `conversation_reveals_leave_no_line_cut_at_the_lists_edges`'s, and the sweep now leaves
+    /// whatever a list in the body holds to that list. No line outside the lists was never
+    /// whole. The 19 left, traced in FU20-GH6 (2026-11-06), were three defects of the panel and
+    /// three of the sweep's reading, each fixed; the sweep finds nothing since:
+    /// - The PR list's first row at 18 pt in 461 × 490 (stops 2 and 3), its ring half a pixel
+    ///   above the body's top: the reveal's stop clear of every line was allowed half a pixel
+    ///   inside the part it shows (`review::clear_of_lines`).
+    /// - Changes' patch at 18 pt in 461 × 490 (stops 4 and 10), its foot and ring below the
+    ///   body's: it was revealed as the file's part, taller than the body, and is now a part of
+    ///   its own, as Source's box is
+    ///   (`reveals_draw_the_pr_rows_and_the_files_boxes_rings_whole`).
+    /// - The Files section's third tab at 18 pt in 461 × 490 (Changes, Source and Threads,
+    ///   stops 0, 14 and 22) and Source's text at 13 pt (stops 4 and 10): the changed-file
+    ///   list's row its foot cut reported no line, so the reveals stopped through the status
+    ///   line and the file name it showed of it; a row a list cuts is now the part it shows
+    ///   (`review::keep_line`, `a_row_a_list_cuts_is_a_line_of_the_body_where_the_list_shows_it`).
+    /// - Buttons write no accessibility node, so the sweep read no Button's frame and took its
+    ///   label's run, 12 px at 13 pt, for its line: the run "no label or Button holds" at 13 pt
+    ///   in Overview (stop 10) was Recover drafts' label, whose frame the body's foot cut, and
+    ///   at 13 pt in 1,480 × 800, Threads' file pane (stop 4) had places through the frames of
+    ///   the section tabs above it, and others through a line out of view (below). It reads
+    ///   each control of one line as drawn now (`review::drawn_one_lines`).
+    /// - Its places were clear of the lines its frame drew, and a frame draws nothing out of
+    ///   the body's view: at 18 pt, the places for the review summary in Review (stop 15) and
+    ///   for Source's text in Source (stops 4 and 10) cut the row of Buttons above them, out
+    ///   of view where the reveal stopped, and Overview's at 13 pt cut the second line of
+    ///   Drafts stay on this computer by half a pixel. It draws each place now, cut to the
+    ///   reveal's hundredth of a pixel ([`verified_stop`]); none of them cleared every line.
+    /// - It counted two runs of the History page's text beneath the dialog as lines of the
+    ///   body at every stop, where their clips lay inside the body; it reads the dialog's text
+    ///   above its backdrop alone now ([`backdrop`]).
+    #[gpui::test]
+    #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
+    async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
+        let walks = REVEAL_SIZES.map(|size| (size, &SURFACES[..]));
+        assert_swept(sweep_reveals(cx, &walks).await);
     }
 
     /// A text of the panel works its lines out once for each change of what they follow from
