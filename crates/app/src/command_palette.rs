@@ -795,7 +795,129 @@ thread_local! {
 /// in 2 of 3 runs (QA-97). On macOS nothing
 /// shows VoiceOver speaking a rename of a row that focus is not on, so there
 /// the status announces the rested reading (not yet checked natively).
+///
+/// A change of selection, by a key, a click or the query, is heard once.
+/// On Linux the list's change of selection speaks the row it selects, the
+/// command and any reason it waits ([`shortcuts::LIST_SPEAKS_SELECTION`]),
+/// so a move announces nothing of the status's own, and the status's
+/// announcement at the rest of a query that changed the selection says only
+/// what the row does not, the command's place ("1 of 1", "2 of 3"), never
+/// the command or the reason again, unless it is not sure Orca spoke that
+/// change ([`Listed::spoken`]), where it says the whole reading. Announcing the
+/// whole reading there, it had Orca 51.1 speak "Go to History" and then
+/// "Go to History · 1 of 1" (QA-105). A reading that no change of selection
+/// led to stays whole: "No matching commands", a query that leaves the
+/// command selected at another place, and a rest of the context. On macOS
+/// the status announces the whole reading of every change, a move's at once
+/// (not yet checked natively).
 const ROW_CARRIES_CONTEXT: bool = shortcuts::LIST_SPEAKS_SELECTION;
+
+/// How long after the list's change of selection before it the palette
+/// takes the next as spoken. Orca 51.1's spam filter drops an event of a
+/// type the application sent less than 100 ms before, and times each one it
+/// sees, dropped or not ("Ignoring object:selection-changed due to multiple
+/// instances in short time", QA-97), so of keys typed 60 ms apart that each
+/// select another command it speaks the first key's and none after it
+/// (`atspi_state_tests::Bus::heard_by_orca` models that window). The AT-SPI
+/// adapter reports a change as the frame that draws it is drawn, so the
+/// palette measures from the latest the change before can have been
+/// reported, the first frame after the one that drew it, to the earliest
+/// this one can, the render that draws it ([`Listed::stamp`]): a lower
+/// bound on the time between the two, and this leaves 50 ms beyond Orca's
+/// window.
+const LIST_SPEAKS_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The list's last change of its selected command, by a key, a click or the
+/// query, which on Linux the AT-SPI adapter reports as the frame that draws
+/// it is drawn, and Orca speaks ([`shortcuts::LIST_SPEAKS_SELECTION`]).
+/// The status leaves the command out of its reading only where it is sure
+/// Orca spoke the row: in doubt it says the command again, which is heard
+/// twice at worst, where the place alone could leave it unnamed or name the
+/// row Orca spoke before.
+struct Listed {
+    /// How many changes there have been, the palette's opening, as its
+    /// first row entered the window's tree selected, the first: a frame
+    /// times only the last.
+    changes: u64,
+    /// The change a frame is due to time ([`Palette::render`]).
+    asked: Option<u64>,
+    /// When the first render that drew the last change ran: the adapter
+    /// cannot have reported it earlier.
+    rendered: Option<std::time::Instant>,
+    /// When the first frame came after the one that drew the last change:
+    /// the adapter cannot have reported it later. None while it waits.
+    drawn: Option<std::time::Instant>,
+    /// The same for the change before it.
+    before: Option<std::time::Instant>,
+    /// Whether a change came while the one before it waited for its frame,
+    /// so that Orca may have spoken either.
+    doubt: bool,
+    /// Whether Orca spoke the row the last change selected: its render ran
+    /// [`LIST_SPEAKS_AFTER`] or more after the frame that timed the change
+    /// before it, and no change came between it and its frame. Where Orca
+    /// dropped it, the
+    /// status's next announcement keeps the command's label: of keys typed
+    /// 60 ms apart, Orca 51.1 drops each change of selection after the first
+    /// as one of a burst (QA-97), and a frame drawn late, as on a loaded
+    /// host, can send two changes handled far apart within its window, so a
+    /// reading of the place alone would leave the command the query rests
+    /// on unheard, or say its place after the row Orca spoke before.
+    spoken: bool,
+    /// Whether the status has taken no reading since: the rest that comes
+    /// next ([`Palette::settle`]) follows it.
+    unread: bool,
+}
+impl Listed {
+    /// The palette opened: its first frame times that change.
+    fn opened() -> Self {
+        Self {
+            changes: 0,
+            asked: None,
+            rendered: None,
+            drawn: None,
+            before: None,
+            doubt: false,
+            spoken: false,
+            unread: false,
+        }
+    }
+    /// The selected command changed.
+    fn changed(&mut self) {
+        self.changes += 1;
+        match self.drawn.take() {
+            Some(drawn) => self.before = Some(drawn),
+            None => self.doubt = true,
+        }
+        self.rendered = None;
+        self.spoken = false;
+        self.unread = true;
+    }
+    /// A render that draws the last change ran `now`, the first frame after
+    /// it to time it as drawn ([`Self::stamp`]).
+    fn render(&mut self, now: std::time::Instant) {
+        self.asked = Some(self.changes);
+        self.rendered.get_or_insert(now);
+    }
+    /// A frame came `now` after the one that drew `change`. Whether Orca
+    /// spoke it is judged from when its render ran, the earliest the adapter
+    /// can have reported it, since this frame can come late, as behind a
+    /// long task: timed by it, a change reported 60 ms after the one before
+    /// and timed 152 ms after it was taken as spoken.
+    fn stamp(&mut self, change: u64, now: std::time::Instant) {
+        if change != self.changes || self.drawn.is_some() {
+            return;
+        }
+        self.spoken = !self.doubt
+            && self
+                .before
+                .zip(self.rendered)
+                .is_some_and(|(before, rendered)| {
+                    rendered.saturating_duration_since(before) >= LIST_SPEAKS_AFTER
+                });
+        self.drawn = Some(now);
+        self.doubt = false;
+    }
+}
 
 /// A row's accessible name: its command and, where the context cannot run
 /// it, why ("Browse stashes…. Unavailable: Wait for the file list to
@@ -820,11 +942,22 @@ struct Palette {
     query: Entity<InputState>,
     results: Vec<usize>,
     selection: Selection,
-    /// The status's reading, its accessible name: what it last announced,
-    /// or took quietly. A move sets it at once; a change of the query, or
-    /// of the context that changes the selected command's reading, sets it
-    /// once they have rested ([`Self::settle`]).
+    /// The status's whole reading ([`Self::reading`]): what it last
+    /// announced, or took quietly. A move sets it at once; a change of the
+    /// query, or of the context that changes the selected command's
+    /// reading, sets it once they have rested ([`Self::settle`]).
     status: SharedString,
+    /// What the status's node says of that reading, its accessible name and
+    /// value: the whole reading, or, on Linux at the rest after a change of
+    /// selection that Orca spoke ([`Listed::spoken`]), the command's place
+    /// alone ([`Self::place`]), which the row Orca spoke, naming the command
+    /// and any reason it waits, does not say. Where that equals what the
+    /// node said before, as
+    /// "1 of 1" after another query's "1 of 1", the node says nothing new
+    /// and the row alone is heard.
+    status_name: SharedString,
+    /// The list's last change of its selected command.
+    listed: Listed,
     /// Whether the status last changed quietly, for a move the list speaks
     /// itself ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), or for a change
     /// of context the selected row's name carries ([`ROW_CARRIES_CONTEXT`]):
@@ -932,6 +1065,8 @@ impl Palette {
             results: matches(""),
             selection: Selection::default(),
             status: SharedString::default(),
+            status_name: SharedString::default(),
+            listed: Listed::opened(),
             quiet: false,
             held: None,
             queried: false,
@@ -942,6 +1077,7 @@ impl Palette {
         };
         palette.highlight_first_available();
         palette.status = palette.reading();
+        palette.status_name = palette.status.clone();
         palette
     }
     /// Highlights the first result the current context can run, or the first
@@ -961,22 +1097,28 @@ impl Palette {
     /// place among the results and, where the context cannot run it, why
     /// ("Go to History · 2 of 3"), or that nothing matches.
     fn reading(&self) -> SharedString {
-        self.results
-            .get(self.selection.index)
-            .map(|&index| {
-                let reason = COMMANDS[index].id.reason(&self.context.availability);
+        self.selected_command()
+            .zip(self.place())
+            .map(|(index, place)| {
                 format!(
-                    "{} · {} of {}{}",
+                    "{} · {place}{}",
                     COMMANDS[index].label,
-                    self.selection.index + 1,
-                    self.results.len(),
-                    reason
+                    COMMANDS[index]
+                        .id
+                        .reason(&self.context.availability)
                         .map(|reason| format!(" · Unavailable: {reason}"))
                         .unwrap_or_default()
                 )
                 .into()
             })
             .unwrap_or_else(|| "No matching commands".into())
+    }
+    /// The selected result's place among the results ("2 of 3"): all its
+    /// reading says that the selected row's name does not, which names the
+    /// command and why the context cannot run it.
+    fn place(&self) -> Option<String> {
+        self.selected_command()
+            .map(|_| format!("{} of {}", self.selection.index + 1, self.results.len()))
     }
     /// The selected result's command, by its place in the registry.
     fn selected_command(&self) -> Option<usize> {
@@ -990,8 +1132,10 @@ impl Palette {
     /// selection after them, so a row renamed in the move's frame was still
     /// the item Orca presents as its rename arrived, and would be spoken
     /// before the row reached. Renamed at the rest, it is no longer
-    /// selected, and Orca does not speak it.
+    /// selected, and Orca does not speak it. The change is the list's
+    /// ([`Self::listed`]), timed by a frame after the one that draws it.
     fn selection_moved(&mut self) {
+        self.listed.changed();
         if self
             .held
             .as_ref()
@@ -1029,6 +1173,13 @@ impl Palette {
     /// focus, so taken quietly, a query typed as a Fetch ended was heard as
     /// nothing in 2 of 3 runs (QA-97). Where Orca did take the row the query
     /// selected as its locus, it speaks the rename and the status both.
+    ///
+    /// Where the list speaks a change of its selection itself
+    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux) and Orca spoke the one
+    /// this rest follows ([`Listed::spoken`]), the status says only the
+    /// command's place ([`Self::status_name`]): the row Orca spoke says the
+    /// command and any reason it waits, and the whole reading said them again
+    /// (QA-105).
     fn settle(&mut self, cx: &mut Context<Self>) {
         let rest = cx.background_executor().timer(shortcuts::COUNT_REST);
         self.settling = Some(cx.spawn(async move |this, cx| {
@@ -1043,7 +1194,16 @@ impl Palette {
                         && id.reason(held) != id.reason(&this.context.availability)
                 });
                 let reading = this.reading();
+                let listed = std::mem::replace(&mut this.listed.unread, false);
                 if reading != this.status {
+                    this.status_name = match this.place() {
+                        Some(place)
+                            if shortcuts::LIST_SPEAKS_SELECTION && listed && this.listed.spoken =>
+                        {
+                            place.into()
+                        }
+                        _ => reading.clone(),
+                    };
                     this.status = reading;
                     this.quiet = renames_row && !queried;
                     cx.notify();
@@ -1110,6 +1270,24 @@ impl Palette {
 }
 impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // This frame draws the list's last change of selection, which the
+        // AT-SPI adapter reports once it is drawn: no earlier than now, and
+        // no later than the frame after it, which times the change
+        // (`Listed::stamp`). Where the list does not speak its selection
+        // (macOS), nothing reads the times.
+        if shortcuts::LIST_SPEAKS_SELECTION
+            && self.listed.drawn.is_none()
+            && self.listed.asked != Some(self.listed.changes)
+        {
+            let change = self.listed.changes;
+            self.listed.render(cx.background_executor().now());
+            let view = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.listed.stamp(change, cx.background_executor().now());
+                });
+            });
+        }
         let p = palette(cx);
         let count = self.results.len();
         let desired_height = appearance::ui_size(if count == 0 {
@@ -1321,9 +1499,13 @@ impl Render for Palette {
                 let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
                 if this.selection.index != was {
-                    this.status = this.reading();
-                    this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
                     this.selection_moved();
+                    // The status takes the move's whole reading at once,
+                    // quietly where the list speaks the move.
+                    this.status = this.reading();
+                    this.status_name = this.status.clone();
+                    this.listed.unread = false;
+                    this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
                 }
                 this.scroll
                     .scroll_to_item(this.selection.index, ScrollStrategy::Center);
@@ -1341,12 +1523,14 @@ impl Render for Palette {
             // of the context alone that renames the selected row, whose name
             // carries a change of context (`ROW_CARRIES_CONTEXT`), changes it
             // quietly too, while a rest the query's change joined announces
-            // (`queried`, QA-97). AT-SPI announces a live node's name and
+            // (`queried`, QA-97), and a rest after a change of selection
+            // Orca spoke says only the place (`status_name`, QA-105).
+            // AT-SPI announces a live node's name and
             // macOS's adapter its value alone, so both carry the reading, as
             // Keyboard Shortcuts' status's do: named alone, it was announced
             // on Linux only.
             .child({
-                let reading = self.status.clone();
+                let reading = self.status_name.clone();
                 native_accessibility::static_text(
                     div()
                         .id("command-palette-current-result")
@@ -3296,17 +3480,24 @@ mod render_tests {
         }
     }
 
-    /// The status's reading and the row's name for place `at` among
+    /// The place of `query`'s result `at` among its results ("2 of 3"): all
+    /// the status says of a change of selection the list spoke
+    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux), whose row names the
+    /// command and any reason it waits.
+    fn place_of(query: &str, at: usize) -> String {
+        format!("{} of {}", at + 1, matches(query).len())
+    }
+
+    /// The status's whole reading and the row's name for place `at` among
     /// `query`'s results in `availability`.
     fn reading_and_row(query: &str, at: usize, availability: &Availability) -> (String, String) {
         let results = matches(query);
         let spec = COMMANDS[results[at]];
         let reason = spec.id.reason(availability);
         let status = format!(
-            "{} · {} of {}{}",
+            "{} · {}{}",
             spec.label,
-            at + 1,
-            results.len(),
+            place_of(query, at),
             reason
                 .map(|reason| format!(" · Unavailable: {reason}"))
                 .unwrap_or_default()
@@ -3414,6 +3605,310 @@ mod render_tests {
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }
 
+    /// QA-105: a change of selection is heard once, made by Down or by a
+    /// query typed 150 ms a key. The selected row's accessible name is its
+    /// command and any reason it waits, which the list speaks where it
+    /// speaks a change of its selection itself
+    /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux): there a move announces
+    /// nothing of the status's own, and the rest of a query whose change of
+    /// selection Orca spoke announces only what the row does not say, the
+    /// command's place ("1 of 4"), never the command or the reason again,
+    /// here "Open a repository first". Elsewhere (macOS) the status
+    /// announces the whole reading each time. A reading no change of
+    /// selection led to stays
+    /// whole on both: a query that leaves the selected command at another
+    /// place, and "No matching commands". The status announced "Go to
+    /// History · 1 of 1" after Orca 51.1 had spoken the row's "Go to
+    /// History" (QA-105). A query whose last change of selection Orca
+    /// dropped keeps the command in the status's reading
+    /// ([`a_burst_of_keys_announces_once_the_command_it_rests_on`]).
+    #[gpui::test]
+    fn a_change_of_selection_is_heard_once(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        // Past the list's change of selection as the palette opened.
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+
+        // Down twice, a second apart.
+        for at in [1, 2] {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            let (status, row) = reading_and_row("", at, &availability);
+            assert_eq!(
+                heard.row_name(),
+                Some(row.as_str()),
+                "Down selects row {at}, named by its command"
+            );
+            let own = if shortcuts::LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![status]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down to row {at}: the status announces the command only where the list does not \
+                 speak it"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_orca(),
+                [row],
+                "Orca speaks the row Down reaches, once"
+            );
+            heard.wait(cx, 1000);
+            assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        }
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+
+        // Keys typed 150 ms apart, each a frame of its own, and then the
+        // query's rest.
+        let typed = |cx: &mut VisualTestContext, heard: &mut Heard, keys: &str| {
+            for key in keys.split_inclusive(|_| true) {
+                cx.simulate_input(key);
+                heard.frame(cx);
+                heard.wait(cx, 150);
+            }
+            heard.wait(cx, 2000);
+        };
+        // What the rest of `query` is heard as: where its keys `changed` the
+        // selection and the list speaks that (Linux), the row it selects and
+        // then the status's place; otherwise the status's whole reading.
+        let rests = |heard: &mut Heard, query: &str, changed: bool| {
+            let at = first_available(&matches(query), &availability);
+            let (whole, row) = reading_and_row(query, at, &availability);
+            assert_eq!(
+                heard.row_name(),
+                Some(row.as_str()),
+                "{query:?} selects its command's row"
+            );
+            let said = if changed && shortcuts::LIST_SPEAKS_SELECTION {
+                place_of(query, at)
+            } else {
+                whole
+            };
+            assert_eq!(
+                heard.take(),
+                std::slice::from_ref(&said),
+                "{query:?}'s rest announces {said:?}, once"
+            );
+            assert_eq!(heard.named.as_ref(), Some(&said), "and the status reads it");
+            #[cfg(target_os = "linux")]
+            {
+                let listed = heard.take_listed();
+                let orca = heard.take_orca();
+                if changed {
+                    assert_eq!(
+                        listed.last(),
+                        Some(&row),
+                        "{query:?}: the list reports its change of selection to {row:?}"
+                    );
+                    assert!(
+                        orca.ends_with(&[row, said]),
+                        "{query:?}: Orca speaks the row and then its place, the command once: \
+                         {orca:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        listed,
+                        Vec::<String>::new(),
+                        "{query:?}: the list reports no change of selection"
+                    );
+                    assert_eq!(orca, [said], "{query:?}: Orca speaks the whole reading");
+                }
+            }
+        };
+        let selected = |query: &str| {
+            let results = matches(query);
+            results[first_available(&results, &availability)]
+        };
+
+        // A query that selects Go to History.
+        typed(cx, &mut heard, "hist");
+        assert_eq!(
+            COMMANDS[selected("hist")].id,
+            CommandId::History,
+            "\"hist\" selects Go to History"
+        );
+        rests(&mut heard, "hist", true);
+        // One that leaves it selected, the one command it matches.
+        typed(cx, &mut heard, " go");
+        assert_eq!(
+            matches("hist go"),
+            [selected("hist")],
+            "\"hist go\" matches it alone"
+        );
+        rests(&mut heard, "hist go", false);
+        // One that matches none.
+        typed(cx, &mut heard, "x");
+        assert!(
+            matches("hist gox").is_empty(),
+            "\"hist gox\" matches nothing"
+        );
+        assert_eq!(
+            heard.take(),
+            ["No matching commands"],
+            "a query that matches nothing is announced whole"
+        );
+        assert_eq!(heard.named.as_deref(), Some("No matching commands"));
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            assert_eq!(
+                heard.take_orca(),
+                ["No matching commands"],
+                "and Orca speaks it"
+            );
+        }
+        // Backspace brings back the one command, a change of selection.
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        rests(&mut heard, "hist go", true);
+    }
+
+    /// A change of selection whose frame is drawn late, as on a loaded host,
+    /// keeps the command in the status's reading. "i" selects Pin or unpin
+    /// this repository and its frame is drawn 140 ms after it is handled;
+    /// "t", handled 156 ms after "i", selects Go to History in a frame drawn
+    /// at once, so the AT-SPI adapter reports the two changes 16 ms apart
+    /// and Orca 51.1 drops the second. The rest announces Go to History's
+    /// whole reading, the last thing Orca says, and Orca never names it
+    /// otherwise. Timed as their keys were handled, the second change was
+    /// taken as spoken and the status said "1 of 4" alone, Go to History's
+    /// place after the row Orca spoke for "i".
+    #[gpui::test]
+    fn a_late_frame_keeps_the_command_in_the_reading(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        cx.simulate_input("h");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        // "i", whose frame is drawn 140 ms after it is handled.
+        cx.simulate_input("i");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(140));
+        heard.frame(cx);
+        let first = |query: &str| first_available(&matches(query), &availability);
+        let (_, pin) = reading_and_row("hi", first("hi"), &availability);
+        assert_eq!(
+            heard.row_name(),
+            Some(pin.as_str()),
+            "\"hi\" selects {pin:?}"
+        );
+        // "s" and "t" 16 ms after that frame, drawn at once.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.simulate_input("st");
+        heard.frame(cx);
+        let (whole, row) = reading_and_row("hist", first("hist"), &availability);
+        assert_eq!(
+            heard.row_name(),
+            Some(row.as_str()),
+            "\"hist\" selects {row:?}"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the command with its place"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca,
+                [pin, whole],
+                "Orca speaks the row \"i\" selected, drops the change \"t\" made 16 ms after it, \
+                 and speaks the status's reading"
+            );
+        }
+    }
+
+    /// A change of selection reported soon after the one before it keeps the
+    /// command in the status's reading even where the frame after the one
+    /// that drew it comes late, as behind a long task. "i" selects Pin or
+    /// unpin this repository, drawn and timed at once; "t", 60 ms later,
+    /// selects Go to History in a frame drawn at once, so the AT-SPI adapter
+    /// reports it 60 ms after "i"'s change and Orca 51.1 drops it, and the
+    /// frame after that one comes 110 ms later. The rest announces Go to
+    /// History's whole reading. Timed by that late frame, 170 ms after
+    /// "i"'s, the change was taken as spoken and the status said "1 of 4"
+    /// alone after Orca had said Pin's name. The test's AT-SPI model sees
+    /// the window's tree only with frames that also run the next frame's
+    /// callbacks, so it hears "t"'s change at 170 ms and cannot show Orca
+    /// dropping it; the status is what this checks.
+    #[gpui::test]
+    fn a_late_frame_after_a_change_keeps_the_command_in_the_reading(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        cx.simulate_input("h");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        // "i", drawn and timed at once.
+        cx.simulate_input("i");
+        heard.frame(cx);
+        // "s" and "t" 60 ms later, drawn at once, and the frame after that
+        // one 110 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(60));
+        cx.simulate_input("st");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(110));
+        heard.frame(cx);
+        let results = matches("hist");
+        let (whole, row) = reading_and_row(
+            "hist",
+            first_available(&results, &availability),
+            &availability,
+        );
+        assert_eq!(
+            heard.row_name(),
+            Some(row.as_str()),
+            "\"hist\" selects {row:?}"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the command with its place"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&whole),
+                "Orca speaks the status's reading last: {orca:?}"
+            );
+        }
+    }
+
     /// A search that takes away the command Orca last spoke leaves Orca
     /// nothing to say but the command each move reaches: the row it left
     /// stays in libatspi's cache and answers the list as its parent (the
@@ -3473,7 +3968,11 @@ mod render_tests {
     /// does, makes one announcement, 500 ms after the last key
     /// ([`shortcuts::COUNT_REST`]) and not at 499 ms, of the reading the
     /// query rests on, its first available command with its place, and
-    /// nothing after it; on Linux Orca speaks that reading last. Each key's
+    /// nothing after it; on Linux Orca speaks that reading last, the command
+    /// included though the list speaks its selection there: Orca drops the
+    /// list's change of selection that "o" makes 60 ms after the one before
+    /// it ([`Listed::spoken`]), so a reading of the place alone would leave
+    /// the command unheard. Each key's
     /// reading was announced at once, and Orca 51.1, whose spam filter drops
     /// an event of a type the application sent less than 100 ms before,
     /// spoke the reading for "g" and dropped the one for "go", sent 51 ms
@@ -4040,6 +4539,23 @@ mod render_tests {
     /// name takes the command available as the Fetch ends.
     #[gpui::test]
     fn a_query_resting_with_a_writes_end_on_its_command_is_announced(cx: &mut TestAppContext) {
+        query_resting_with_a_writes_end(cx, 60);
+    }
+
+    /// As QA-97's, with "bro" typed 150 ms a key: where the list speaks its
+    /// selection (Linux), Orca speaks the list's change of selection to
+    /// Browse and manage tags…, waiting, as "r" makes it, and at the rest
+    /// the row's rename says it is available and the status's announcement
+    /// says only its place ("1 of 4"), what neither the row nor its rename
+    /// says. Elsewhere (macOS) the status announces the whole reading.
+    #[gpui::test]
+    fn a_query_typed_slowly_resting_with_a_writes_end_announces_its_place(cx: &mut TestAppContext) {
+        query_resting_with_a_writes_end(cx, 150);
+    }
+
+    /// "bro" typed `key` ms a key while a Fetch runs, the Fetch ending 60 ms
+    /// after the last key and its reload 40 ms after that.
+    fn query_resting_with_a_writes_end(cx: &mut TestAppContext, key: u64) {
         use crate::tags::tests::{tagged_repository, window};
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
@@ -4067,16 +4583,28 @@ mod render_tests {
             waiting.ends_with(crate::workspace::BUSY_REASON),
             "which waits for the Fetch: {waiting:?}"
         );
-        for key in ["b", "r", "o"] {
-            cx.simulate_input(key);
+        for (typed, input) in ["b", "r", "o"].into_iter().enumerate() {
+            if typed > 0 {
+                heard.wait(cx, key);
+            }
+            cx.simulate_input(input);
             heard.frame(cx);
-            heard.wait(cx, 60);
         }
+        heard.wait(cx, 60);
         assert_eq!(
             heard.row_name(),
             Some(waiting_row.as_str()),
             "the query selects the command waiting"
         );
+        // Typed slowly, the query's last change of selection is spoken where
+        // the list speaks it, and the status says only the place.
+        let said = |available: &str| {
+            if key >= 150 && shortcuts::LIST_SPEAKS_SELECTION {
+                place_of(query, at)
+            } else {
+                available.to_owned()
+            }
+        };
         assert_eq!(
             heard.take(),
             Vec::<String>::new(),
@@ -4139,9 +4667,10 @@ mod render_tests {
             );
         }
         heard.wait(cx, 1);
+        let said = said(&available);
         assert_eq!(
             heard.take(),
-            std::slice::from_ref(&available),
+            std::slice::from_ref(&said),
             "one announcement: the reading the query and the context end on"
         );
         if ROW_CARRIES_CONTEXT {
@@ -4159,11 +4688,19 @@ mod render_tests {
                 "which the AT-SPI adapter reports once"
             );
             let orca = heard.take_orca();
-            assert_eq!(
-                orca.last(),
-                Some(&available),
-                "Orca speaks the status's reading last: {orca:?}"
-            );
+            if said == available {
+                assert_eq!(
+                    orca.last(),
+                    Some(&available),
+                    "Orca speaks the status's reading last: {orca:?}"
+                );
+            } else {
+                assert!(
+                    orca.ends_with(&[waiting_row.clone(), said.clone()]),
+                    "Orca speaks the row the query selected, waiting, and after the row's rename \
+                     the status's place: {orca:?}"
+                );
+            }
         }
         heard.wait(cx, 2000);
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
