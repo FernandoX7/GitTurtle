@@ -59,6 +59,15 @@
 //! its bounds made scrolled it in. The outer container's own scroll moves
 //! the inner one whole and reveals nothing in it: the inner container stays
 //! where the person left it.
+//!
+//! The focus handles the reveal hands out for its controls' ids
+//! ([`FocusReveal::focus`]) live as long as their controls are drawn: once a
+//! frame's controls are known, it keeps those the frame drew, the one
+//! holding focus and any something else still holds, so a control scrolled
+//! out of a list that draws only what it shows keeps focus, and the reveal
+//! finds it again once it is drawn.
+//! Kept for every id ever handed out, a long session's walks through long
+//! lists grew them by each row.
 
 use gpui_kit::*;
 use std::{
@@ -101,6 +110,17 @@ struct Frame {
     /// handles in order and their margin. The scroll handle keeps where each
     /// lies with the container at offset zero.
     items: Option<(Rc<[FocusHandle]>, Pixels)>,
+}
+
+/// The focus handle [`FocusReveal::focus`] hands out for one control id,
+/// and whether it has been handed out since the last frame's controls were
+/// known.
+struct Kept {
+    /// Held by the reveal between frames; let go of only for a moment as a
+    /// frame ends, to learn whether anything else holds it
+    /// ([`FocusReveal::release_undrawn`]).
+    focus: Option<FocusHandle>,
+    handed: bool,
 }
 
 /// Which focus changes reveal a control.
@@ -167,7 +187,13 @@ pub(crate) struct FocusReveal {
     /// resize revealed nothing and the control stayed cut for the rest of
     /// the drag.
     pending: Rc<Cell<Option<Pixels>>>,
-    controls: Rc<RefCell<HashMap<ElementId, FocusHandle>>>,
+    /// The focus handles [`Self::focus`] has handed out, by control id:
+    /// those of the controls the last frame drew, of the one holding focus
+    /// wherever it is, as one a person has scrolled out of a list that
+    /// draws only what it shows, so it keeps focus and a reveal finds it
+    /// again once it is drawn, and of any something else still holds
+    /// ([`Self::release_undrawn`]).
+    controls: Rc<RefCell<HashMap<ElementId, Kept>>>,
     /// The controls reported so far in the frame being prepainted.
     drawing: Rc<RefCell<Vec<Drawn>>>,
     /// The controls the last prepainted frame drew.
@@ -199,15 +225,64 @@ impl FocusReveal {
         &self.scroll
     }
 
-    /// The focus handle the control `id` tracks, the same one in every frame,
-    /// so the container can tell which of its controls holds focus. A Button
-    /// takes it through `track_focus`.
+    /// The focus handle the control `id` tracks, the same one in every frame
+    /// that draws it, so the container can tell which of its controls holds
+    /// focus. A Button takes it through `track_focus`. A control no frame
+    /// draws gives its handle up once that frame's controls are known,
+    /// unless it holds focus or something else still holds the handle
+    /// ([`Self::release_undrawn`]).
     pub(crate) fn focus(&self, id: impl Into<ElementId>, cx: &App) -> FocusHandle {
-        self.controls
-            .borrow_mut()
-            .entry(id.into())
-            .or_insert_with(|| cx.focus_handle())
-            .clone()
+        let mut controls = self.controls.borrow_mut();
+        let kept = controls.entry(id.into()).or_insert_with(|| Kept {
+            focus: None,
+            handed: false,
+        });
+        kept.handed = true;
+        kept.focus.get_or_insert_with(|| cx.focus_handle()).clone()
+    }
+
+    /// Once a frame's controls are known: keeps the handles handed out for
+    /// it ([`Self::focus`]), the one holding focus or containing it, and any
+    /// that something else still holds, and gives up the rest. Each
+    /// control's handle is the same in every frame that draws it, and focus
+    /// scrolled out with its control stays on it, while a list walked from
+    /// end to end keeps no handle for a row it no longer draws.
+    ///
+    /// The handle holding focus is kept whether or not anything else holds
+    /// it: the focus the container last drew with (`observed`) is not it
+    /// where focus moved while the container drew no frame, as when a
+    /// handle held for a row focused it and was let go while the page was
+    /// covered, and given up there, it was the row's last handle and the
+    /// window lost focus. One something else holds is kept as long as it
+    /// is held there, as by a dialog that returns focus to its row once it
+    /// closes: the dialog may focus the row and let its handle go in one
+    /// step, before any frame ends, so held only weakly by the reveal, that
+    /// was the row's last handle and the window lost focus.
+    fn release_undrawn(&self, window: &Window, cx: &App) {
+        self.controls.borrow_mut().retain(|_, kept| {
+            let Some(focus) = kept.focus.take() else {
+                return false;
+            };
+            if std::mem::take(&mut kept.handed)
+                || focus.is_focused(window)
+                || focus.contains_focused(window, cx)
+            {
+                kept.focus = Some(focus);
+                return true;
+            }
+            // Let the reveal's own handle go: where nothing else holds it,
+            // it is gone, and otherwise the reveal holds it again.
+            let released = focus.downgrade();
+            drop(focus);
+            kept.focus = released.upgrade();
+            kept.focus.is_some()
+        });
+    }
+
+    /// How many control ids the reveal holds a handle for.
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> usize {
+        self.controls.borrow().len()
     }
 
     /// Has the next frame the container draws reveal the control focus has
@@ -245,7 +320,11 @@ impl FocusReveal {
         self.controls
             .borrow()
             .iter()
-            .find(|(_, handle)| handle.is_focused(window))
+            .find(|(_, kept)| {
+                kept.focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.is_focused(window))
+            })
             .map(|(id, _)| id.clone())
     }
 
@@ -467,7 +546,8 @@ impl FocusReveal {
 
     /// Ends the frame being prepainted: keeps the controls it drew, its own
     /// first children's handles when they are the controls, and the focus it
-    /// drew with.
+    /// drew with, and gives up the handles of controls it did not draw
+    /// ([`Self::release_undrawn`]).
     fn finish(
         &self,
         items: Option<(Rc<[FocusHandle]>, Pixels)>,
@@ -481,6 +561,9 @@ impl FocusReveal {
             drawing.clear();
             drawn.items = items;
         }
+        // After the last frame's items have given way to this frame's, so
+        // they hold no handle this frame did not hand out.
+        self.release_undrawn(window, cx);
         let observed = self.observation(window, cx);
         if self.next_focus.get() {
             self.placed.set(true);
@@ -1329,5 +1412,255 @@ pub(crate) mod tests {
             "the resize leaves the control {control:?}, which would fit, cut in {view:?}"
         );
         assert_eq!(page.scroll().offset(), away, "the resize scrolls nothing");
+    }
+
+    /// How many rows [`Long`]'s list has, and how tall each is.
+    const ROWS: usize = 500;
+    const ROW: f32 = 20.;
+    /// The rows [`Long`] draws past each end of its view.
+    const OVERSCAN: usize = 2;
+    /// The most rows [`Long`] draws in a frame.
+    const LONG_DRAWN: usize = (VIEW / ROW) as usize + 1 + 2 * OVERSCAN;
+
+    /// A revealing list of [`ROWS`] rows, [`VIEW`] tall, that draws only
+    /// the rows in its view and [`OVERSCAN`] past each end, as a list that
+    /// draws only what it shows does, each row tracking the handle its
+    /// reveal hands out for it. While `hidden`, it draws nothing, as a page
+    /// another page covers.
+    struct Long {
+        page: FocusReveal,
+        hidden: Rc<Cell<bool>>,
+    }
+
+    impl Render for Long {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            if self.hidden.get() {
+                return div().into_any_element();
+            }
+            self.page.reveal(window, cx);
+            let room = ring_room_of(cx);
+            let top = (-f32::from(self.page.scroll().offset().y) / ROW) as usize;
+            let first = top.saturating_sub(OVERSCAN);
+            let end = (top + LONG_DRAWN - OVERSCAN).min(ROWS);
+            let rows = (first..end).map(|index| {
+                let focus = self.page.focus(("long-row", index), cx);
+                div()
+                    .flex_shrink_0()
+                    .on_children_prepainted(self.page.control(focus.clone(), room))
+                    .child(
+                        div()
+                            .id(("long-row", index))
+                            .debug_selector(move || format!("long-row-{index}"))
+                            .track_focus(&focus.tab_stop(true))
+                            .h(px(ROW)),
+                    )
+            });
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .on_children_prepainted(self.page.observe())
+                        .id("long-page")
+                        .debug_selector(|| "long-page".into())
+                        .h(px(VIEW))
+                        .overflow_y_scroll()
+                        .track_scroll(self.page.scroll())
+                        .flex()
+                        .flex_col()
+                        .child(div().flex_shrink_0().h(px(first as f32 * ROW)))
+                        .children(rows)
+                        .child(div().flex_shrink_0().h(px((ROWS - end) as f32 * ROW))),
+                )
+                .into_any_element()
+        }
+    }
+
+    /// A window drawing [`Long`] with `page`, and its switch that hides the
+    /// list.
+    fn long<'a>(
+        cx: &'a mut TestAppContext,
+        page: &FocusReveal,
+    ) -> (&'a mut VisualTestContext, Rc<Cell<bool>>) {
+        cx.update(gpui_kit::init);
+        let hidden: Rc<Cell<bool>> = Rc::default();
+        let (page, switch) = (page.clone(), hidden.clone());
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|_| Long {
+                page,
+                hidden: switch,
+            });
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        draw(cx);
+        (cx, hidden)
+    }
+
+    /// Scrolls [`Long`]'s list so row `top` lies at the top of its view, and
+    /// draws.
+    fn scroll_long_to(cx: &mut VisualTestContext, page: &FocusReveal, top: usize) {
+        cx.update(|window, _| {
+            page.scroll()
+                .set_offset(point(px(0.), -px(top as f32 * ROW)));
+            window.refresh();
+        });
+        draw(cx);
+    }
+
+    /// Whether the window has focus, and the row of `page` that holds it.
+    fn long_focus(cx: &mut VisualTestContext, page: &FocusReveal) -> (bool, Option<ElementId>) {
+        let window = cx.update(|window, cx| window.focused(cx).is_some());
+        (window, focused(cx, page))
+    }
+
+    /// A list walked from end to end keeps a handle only for the rows a
+    /// frame draws and the one holding focus, which keeps its focus
+    /// scrolled out: in a list of 500 rows, 200 px tall, that draws only
+    /// what it shows and two rows past each end, row 3 is focused, and the
+    /// list is scrolled seven rows at a time to its end and back to where
+    /// row 3 is drawn above the view. After every step the reveal holds
+    /// handles for at most the 15 rows a frame draws, those of the frame
+    /// before, whose tab stops GPUI holds until the next frame, row 3,
+    /// which holds focus throughout, and row 8, whose handle the test holds
+    /// throughout, as a dialog that returns focus to it would; back where
+    /// it is drawn, Tab moves on to row 4 and Shift+Tab back to row 3, each
+    /// revealed with its ring, and row 8 is handed the same handle again.
+    /// Kept for every row ever handed out, the walk left 500 handles.
+    #[gpui::test]
+    fn a_walked_list_keeps_handles_for_the_drawn_rows_and_the_focused_one(cx: &mut TestAppContext) {
+        let page = FocusReveal::new(Trigger::Keyboard);
+        let (cx, _) = long(cx, &page);
+        let row = |index: usize| control("long-row", index);
+        cx.update(|window, cx| page.focus(row(3).0, cx).focus(window, cx));
+        draw(cx);
+        assert_eq!(focused(cx, &page), Some(row(3).0), "row 3 holds focus");
+        let elsewhere = cx.update(|_, cx| page.focus(row(8).0, cx));
+        let last = ROWS - (VIEW / ROW) as usize;
+        // Down to the end and back up to row 5, where row 3 is drawn above
+        // the view.
+        let walk = (0..last + 1)
+            .step_by(7)
+            .chain((5..last + 1).step_by(7).rev());
+        for top in walk {
+            scroll_long_to(cx, &page, top);
+            let kept = page.kept();
+            assert!(
+                kept <= 2 * LONG_DRAWN + 2,
+                "scrolled to row {top}, the reveal holds {kept} handles"
+            );
+            assert_eq!(
+                focused(cx, &page),
+                Some(row(3).0),
+                "scrolled to row {top}, row 3 keeps focus"
+            );
+        }
+        assert!(
+            cx.debug_bounds("long-row-3").is_some(),
+            "back at row 5, row 3 is drawn"
+        );
+        assert!(
+            cx.update(|window, cx| page.holds_focus(window, cx)),
+            "back at row 5, the list holds focus on row 3"
+        );
+        assert!(
+            cx.update(|_, cx| page.focus(row(8).0, cx)) == elsewhere,
+            "back at row 5, row 8 is handed the handle held throughout"
+        );
+        // A key no binding takes, so the window has switched to keyboard
+        // input before the keys that move focus.
+        cx.simulate_keystrokes("f13");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_revealed(cx, &page, "long-page", &row(4), "tab from row 3");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert_revealed(cx, &page, "long-page", &row(3), "shift-tab from row 4");
+    }
+
+    /// Focus moved onto a row while its list draws nothing stays on it
+    /// when the list draws again without the row: row 3 is drawn, the list
+    /// is hidden for a frame, as a page another page covers, and a handle
+    /// held for row 3 focuses it and is let go; the list then draws
+    /// scrolled to row 100. Row 3 keeps focus, held by the reveal alone.
+    /// Given up because the frame does not draw it, the row's last handle
+    /// went and the window had no focus.
+    #[gpui::test]
+    fn focus_moved_onto_a_row_while_its_list_is_hidden_stays_there(cx: &mut TestAppContext) {
+        let page = FocusReveal::new(Trigger::Keyboard);
+        let (cx, hidden) = long(cx, &page);
+        let row = |index: usize| control("long-row", index);
+        let held = cx.update(|_, cx| page.focus(row(3).0, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("long-row-3").is_some(), "row 3 is drawn");
+        hidden.set(true);
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        cx.update(|window, cx| held.focus(window, cx));
+        drop(held);
+        draw(cx);
+        assert_eq!(
+            long_focus(cx, &page),
+            (true, Some(row(3).0)),
+            "hidden, the list's row 3 holds focus"
+        );
+        hidden.set(false);
+        scroll_long_to(cx, &page, 100);
+        assert!(
+            cx.debug_bounds("long-row-3").is_none(),
+            "row 3 is not drawn"
+        );
+        assert_eq!(
+            long_focus(cx, &page),
+            (true, Some(row(3).0)),
+            "drawn without it, row 3 keeps focus"
+        );
+    }
+
+    /// A row a dialog returns focus to keeps it after the row has scrolled
+    /// out of its list while the dialog was open: row 3 holds focus, a
+    /// dialog takes focus and holds row 3's handle to return it to, and the
+    /// list scrolls to row 100 under it; the dialog closes, focusing row 3
+    /// and letting its handle go at once. Row 3 holds focus, and once the
+    /// list scrolls back it is drawn holding it. Held by the reveal only
+    /// weakly while the dialog held it, its last handle went as the dialog
+    /// closed and the window had no focus.
+    #[gpui::test]
+    fn a_row_a_dialog_returns_focus_to_keeps_it_after_scrolling_out(cx: &mut TestAppContext) {
+        let page = FocusReveal::new(Trigger::Keyboard);
+        let (cx, _) = long(cx, &page);
+        let row = |index: usize| control("long-row", index);
+        cx.update(|window, cx| page.focus(row(3).0, cx).focus(window, cx));
+        draw(cx);
+        let dialog = cx.update(|_, cx| cx.focus_handle());
+        let returned = cx.update(|window, cx| {
+            let returned = window.focused(cx).expect("row 3 holds focus");
+            dialog.focus(window, cx);
+            returned
+        });
+        draw(cx);
+        scroll_long_to(cx, &page, 100);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("long-row-3").is_none(),
+            "row 3 is not drawn"
+        );
+        // The test's record of painted frames holds the focus of each; let
+        // it go, so the dialog alone holds row 3's handle, as in the app.
+        page.take_painted();
+        cx.update(|window, cx| {
+            returned.focus(window, cx);
+            drop(returned);
+        });
+        draw(cx);
+        assert_eq!(
+            long_focus(cx, &page),
+            (true, Some(row(3).0)),
+            "the dialog closed, row 3 holds focus"
+        );
+        scroll_long_to(cx, &page, 0);
+        assert!(
+            cx.update(|window, cx| page.holds_focus(window, cx)),
+            "scrolled back, the list draws row 3 holding focus"
+        );
     }
 }
