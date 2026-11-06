@@ -1899,7 +1899,7 @@ mod render_tests {
                     let view = cx
                         .debug_bounds("keyboard-shortcuts-view")
                         .unwrap_or_else(|| panic!("{at}: the view"));
-                    let (predicted, line, fits) = cx.update(|window, _| {
+                    let (predicted, line, fits) = cx.update(|window, cx| {
                         let mut style = window.text_style();
                         style.font_size = appearance::ui_text(12.).into();
                         let laid_out = |text: &str| {
@@ -1914,7 +1914,7 @@ mod render_tests {
                             )
                         };
                         (
-                            crate::shortcuts::help_width(window),
+                            crate::shortcuts::help_width(window, cx),
                             style.line_height_in_pixels(window.rem_size()),
                             laid_out(&counted) + laid_out(&legend) <= view.size.width,
                         )

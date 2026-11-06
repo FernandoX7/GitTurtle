@@ -12,6 +12,8 @@ mod commit_message;
 mod conflicts;
 mod copy_feedback;
 mod desktop_text;
+#[cfg(test)]
+mod dialog_sides;
 mod diff_view;
 mod discard;
 mod editor_find;
@@ -2451,6 +2453,43 @@ fn button(
 /// with the Button's label.
 const LABEL_INSET: f32 = 10.;
 
+/// How far a ghost Button, a labelled control of the [`button`] helper,
+/// transparent at rest, standing at a dialog's or a Settings card's text edge
+/// stands its frame before that edge: its label inset, on the device pixel
+/// layout places that padding on, so its content, its leading icon, else its
+/// label, lands on the edge, its hover fill and focus ring spreading into the
+/// padding before it (DESIGN.md, "One left edge").
+pub(crate) fn ghost_pull(window: &Window) -> Pixels {
+    window.pixel_snap(appearance::ui_size(LABEL_INSET))
+}
+
+/// The kit's own padding at a dialog's sides, which [`dialog_ghost_room`]
+/// keeps where a ghost Button takes less.
+const DIALOG_SIDE_PADDING: Pixels = px(16.);
+
+/// The room a dialog's sides keep for such a Button: its pull and the room
+/// its focus ring takes outside its frame, at least the kit's own 16 px,
+/// rounded up to the device pixel. The kit pads a dialog's sides by the
+/// larger of this and its 16 px (`set_dialog_side_room`), which is this
+/// unchanged, so the ring stays whole inside the dialog: 16 px at 13 pt,
+/// where the two take 13, and 17 px at 18 pt, where they take 14 and 3. On
+/// the device pixel, layout draws the padding at exactly this width, so what
+/// reads it back through the kit's `dialog_side_padding`, the GitHub panel's
+/// Files fit and Keyboard Shortcuts' `help_width`, measures what is drawn;
+/// rounded up, the sides keep at least that room where it falls between two
+/// device pixels: 26 of them, 17.33 px, at scale 1.5 and 18 pt, where the
+/// sum, 25.5, lay between the two layout can draw, and 20, 16.67 px, at 1.2
+/// and 13 pt, where the kit's 16 px is 19.2. With only the pull and ring
+/// rounded, the kit's 16 px, larger at 13 pt, lay between two device pixels
+/// at scales 1.2, 4/3, 1.6, 5/3 and 1.8.
+pub(crate) fn dialog_ghost_room(window: &Window, cx: &App) -> Pixels {
+    let scale = window.scale_factor();
+    let room = (ghost_pull(window) + appearance::button_ring_room(cx)).max(DIALOG_SIDE_PADDING);
+    // Less a rounding error's worth, so a room already on a device pixel stays
+    // on it.
+    px((f32::from(room) * scale - 0.01).ceil() / scale)
+}
+
 /// A compact Button's label size at the default interface size, which
 /// [`button_frame`] sets.
 const LABEL_TEXT: f32 = 12.;
@@ -2830,7 +2869,7 @@ fn main() {
             cx,
         );
         native_accessibility::bind_keys(cx);
-        native_accessibility::keep_popups_above_the_status_bar(cx);
+        native_accessibility::set_overlay_room(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
         theme_editor::init(cx);

@@ -1809,9 +1809,6 @@ impl Dialog {
 /// The Git error [`Dialog::ErrorDetails`] shows, as a failed fetch reports it.
 const WALK_ERROR: &str = "fatal: unable to access 'https://example.invalid/walk.git/': Could not resolve host: example.invalid";
 
-/// The kit's dialog padding, inside which a dialog's text lies.
-const DIALOG_PADDING: Pixels = px(16.);
-
 /// What the last frame drew wrong in the open dialog of a `width`-wide
 /// window: the dialog closer to a side than `margin`, its foot closer to
 /// the status bar's top edge than `margin` (`appearance::dialog_max_height`),
@@ -1822,11 +1819,15 @@ fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Ve
         gpui_kit::Background::from(text_mark()),
         gpui_kit::Background::from(control_mark()),
     );
-    let (scale, viewport, status_bar, mut quads) = cx.update(|window, _| {
+    // The kit's dialog padding at either side, inside which a dialog's text
+    // lies: 16 px, or the room a ghost Button's pull and ring take where that
+    // is larger (`crate::dialog_ghost_room`).
+    let (scale, viewport, status_bar, padding, mut quads) = cx.update(|window, cx| {
         (
             window.scale_factor(),
             window.viewport_size(),
             theme_editor::status_bar_top(window),
+            gpui_kit::component::dialog::dialog_side_padding(window, cx),
             window.painted_quads(),
         )
     });
@@ -1884,7 +1885,7 @@ fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Ve
         .find(|quad| quad.background != text && quad.background != control)
         .map(|quad| quad.bounds)
     {
-        let inset = ScaledPixels(f32::from(DIALOG_PADDING) * scale);
+        let inset = ScaledPixels(f32::from(padding) * scale);
         let slack = ScaledPixels(scale);
         for quad in quads.iter().filter(|quad| quad.background == text) {
             if quad.bounds.left() < dialog.left() + inset - slack

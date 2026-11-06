@@ -1091,6 +1091,9 @@ pub(crate) fn menu_foot(window: &Window) -> Pixels {
         - gpui_kit::component::POPOVER_EDGE_WIDTH
 }
 
+/// The room the kit's overlays keep in every window: its menus above the
+/// status bar, and its dialogs' sides for a ghost Button's ring.
+///
 /// Keeps the menus the kit places in the app above [`menu_foot`], so none of
 /// them covers the status bar or comes nearer it than its margin: its
 /// dropdowns ([`AppDropdown`], on the kit's dropdown menu and popover),
@@ -1107,10 +1110,15 @@ pub(crate) fn menu_foot(window: &Window) -> Pixels {
 /// right-click's ([`PointerMenu`]) and a keyboard's ([`KeyboardMenu`]),
 /// place themselves beside their row inside [`menu_bounds`] and do not use
 /// the kit's context menu, the other popup this inset reaches.
-pub(crate) fn keep_popups_above_the_status_bar(cx: &mut App) {
+///
+/// Pads a dialog's sides by the room a ghost Button standing at its text
+/// edge takes before it, its pull and its ring, where that is more than the
+/// kit's 16 px (`crate::dialog_ghost_room`).
+pub(crate) fn set_overlay_room(cx: &mut App) {
     gpui_kit::base::set_popup_bottom_inset(cx, |window| {
         window.viewport_size().height - menu_foot(window)
     });
+    gpui_kit::component::dialog::set_dialog_side_room(cx, crate::dialog_ghost_room);
 }
 
 /// `menu` as every menu in the app opens. Opened from the keyboard (the

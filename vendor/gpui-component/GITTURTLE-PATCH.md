@@ -637,6 +637,56 @@ Remove this part of the patch when upstream lets an application
 bound a dialog's default width and keeps a nested dialog's foot under its
 cap, and those tests pass without it.
 
+The dialog-sides patch (2026-11-05) modifies `src/dialog/dialog.rs` alone.
+Upstream pads every side of a dialog's panel 16 px. GitTurtle's ghost
+Buttons, transparent at rest, stand their content on a dialog's text edge and
+their frames their label inset before it, with their 3 px focus ring outside
+that (`DESIGN.md`, "One left edge"): 13 px at 13 pt, which 16 px holds, but
+14 px and 3 at 18 pt, which it does not. `set_dialog_side_room`, a public
+function beside the dialog, installs a callback asked as each dialog is drawn
+for that window's room; a dialog whose caller sets no side padding of its own
+pads its left and right sides by the larger of that room and 16 px
+(`dialog_side_padding`), so the ring is drawn whole inside the panel, and
+keeps 16 px at its top and foot. A caller's own padding is its own, and
+unset, every side keeps upstream's 16 px. Keys, focus, Enter and the close
+Button's placement relative to the right padding are unchanged. The app
+installs `dialog_ghost_room` (`crates/app/src/main.rs`: the compact Button's
+scaled label inset on the device pixel plus `appearance::button_ring_room`,
+at least 16 px, rounded up to the device pixel, so the larger of it and
+16 px is that room unchanged and lies on the device pixel at every scale)
+from `native_accessibility::set_overlay_room`, which the app and its test
+windows call, so every app dialog takes 16 px at 13 pt and 17 px at 18 pt,
+each rounded up to the device pixel. The app's readers of
+`dialog_side_padding` are
+Keyboard Shortcuts' `shortcuts::help_width`, which lays out its count line in
+the dialog's content width; Files in the GitHub panel
+(`github_view/review.rs`), whose columns' measured chrome leaves the padding
+out and whose `Panel::files_fit` adds it back for the columns' width, so a
+text size change settles in one frame; the theme editor
+(`theme_editor.rs`), which sizes its dialog as its scaled content and the
+padding on either side; and, in tests, the width walk's dialog padding check
+and `dialog_sides::the_ghost_room_lies_on_the_device_pixel`. The app's other
+caller of `set_dialog_side_room` is the ring-room sweep
+(`focus_ring::sweep`), which holds the sides at the installed room. The
+consumers are the dialogs with a ghost Button at their text edge (Git
+profiles and the profile form, Activity, Compare local revisions' choices,
+the rewritten-series review, Download an LFS preview, Worktree created,
+About's Copy bug diagnostics and Add remote's Fetch rules…), those readers,
+and every other dialog, which keeps its text at the same edge. The kit test
+`dialog::dialog::tests::the_sides_keep_the_room_an_application_sets`
+(`scripts/vendor-crate-test.sh vendor/gpui-component dialog::dialog::tests`)
+covers unset, larger, smaller and a caller's own padding on both sides; the
+app test `dialog_sides::dialogs_pad_their_sides_for_a_ghost_buttons_ring`
+opens ten of the app's dialogs (each consumer named above except Download
+an LFS preview and Worktree created, which its fixture cannot reach, plus
+the command palette, the GitHub panel and the theme editor) at 13 and 18 pt
+in a 461 × 490 and a 1,480 × 800 window and finds their text, or for the
+GitHub panel its footer's close Button, 16 px and 17 px inside the panel's
+edge, and every ring Tab draws in those with a ghost Button at their text
+edge, and in the palette, inside it. Remove this part of the patch when
+upstream lets an application set a dialog's default side padding, and
+those tests pass without it.
+
 The dialog-enter patch modifies `src/root.rs`, with the base patch's held
 Enter guard (base `GITTURTLE-PATCH.md`, "dialog-button"). `Root::open_dialog`
 calls `gpui_base::dialog_opened`, so a dialog an Enter press opened waits for
@@ -953,7 +1003,7 @@ what it protects.
 The consumers are every app dropdown (`AppMenu`, built as `AppDropdown` on
 the kit's dropdown menu and popover, which the base popup host places) in
 `crates/app/src/native_accessibility.rs`, whose
-`keep_popups_above_the_status_bar` sets the inset to the status bar, the 8 px
+`set_overlay_room` sets the inset to the status bar, the 8 px
 above it and the edge band, and `menu_foot` there, which takes the edge band
 from `POPOVER_EDGE_WIDTH` as it caps the app's menus. No app menu opens
 through the kit's context menu: the app's right-click menus

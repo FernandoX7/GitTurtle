@@ -991,23 +991,21 @@ fn help_dialog_width(window: &Window) -> Pixels {
     appearance::dialog_width(appearance::ui_size(650.), window)
 }
 
-/// The kit dialog's 16 px padding on either side of what it holds, inside
-/// its 1 px border, neither growing with the text.
-const HELP_DIALOG_PADDING: Pixels = px(16.);
-
 /// The width Keyboard Shortcuts lays its view out in, the dialog's width
-/// ([`help_dialog_width`]) inside the kit's padding and border, each as
-/// layout draws it on this display's device pixels: the width and the
-/// padding on whole device pixels, halves toward zero
-/// (`Window::pixel_snap`), and the border at least one, as GPUI rounds a
-/// stroke. Summed unrounded, it measured the view 318 px wide at scale 1.5
-/// in a 400 px window, where the border is one device pixel, 0.67 px, and
-/// the view 318.67 px.
-pub(crate) fn help_width(window: &Window) -> Pixels {
+/// ([`help_dialog_width`]) inside the kit dialog's side padding (16 px, or
+/// the room a ghost Button's pull and ring take where that is larger:
+/// `crate::dialog_ghost_room`, 17 px at 18 pt) and its 1 px border, each as
+/// layout draws it on this display's device pixels: the width on whole
+/// device pixels, halves toward zero (`Window::pixel_snap`), the padding
+/// already on them (`crate::dialog_ghost_room` rounds it up to one), and the
+/// border at least one, as GPUI rounds a stroke. Summed unrounded, it
+/// measured the view 318 px wide at scale 1.5 in a 400 px window, where the
+/// border is one device pixel, 0.67 px, and the view 318.67 px.
+pub(crate) fn help_width(window: &Window, cx: &App) -> Pixels {
     let scale = window.scale_factor();
     let border = px(((scale - 0.5).ceil()).max(1.) / scale);
-    window.pixel_snap(help_dialog_width(window))
-        - (window.pixel_snap(HELP_DIALOG_PADDING) + border) * 2.
+    let padding = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+    window.pixel_snap(help_dialog_width(window)) - (padding + border) * 2.
 }
 
 /// The platform's modifier keys, which the line above the shortcut list
@@ -1771,7 +1769,7 @@ impl Render for ShortcutHelpView {
                 let counted = crate::counted(count, "shortcut", "shortcuts");
                 #[cfg(test)]
                 DRAWN_COUNT.with_borrow_mut(|drawn| drawn.clone_from(&counted));
-                let legend = legend_fits(count, help_width(window), window).then(|| {
+                let legend = legend_fits(count, help_width(window, cx), window).then(|| {
                     native_accessibility::static_text(div().id("shortcut-help-legend"), modifier_legend())
                         .child(format!("{LEGEND_SEPARATOR}{}", modifier_legend()))
                 });

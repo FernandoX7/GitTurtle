@@ -2405,7 +2405,12 @@ impl Panel {
                         ) else {
                             return;
                         };
-                        let chrome = super::panel_width(window) - (right - left);
+                        // Less the dialog's side padding, which follows the text size
+                        // (`crate::dialog_ghost_room`), so the chrome measured at one size
+                        // holds at the next.
+                        let chrome = super::panel_width(window)
+                            - (right - left)
+                            - gpui_kit::component::dialog::dialog_side_padding(window, cx) * 2.;
                         FilesFit::update(
                             &measured,
                             |fit| fit.chrome = Some(chrome),
@@ -2701,7 +2706,11 @@ impl Panel {
         };
         let body = window.pixel_snap(super::body_max_height(window) - top_line);
         let width = match measured.chrome {
-            Some(chrome) => super::panel_width(window) - chrome,
+            Some(chrome) => {
+                super::panel_width(window)
+                    - gpui_kit::component::dialog::dialog_side_padding(window, cx) * 2.
+                    - chrome
+            }
             None => {
                 self.review.body_scroll.bounds().size.width
                     - room * 2.

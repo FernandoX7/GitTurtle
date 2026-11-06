@@ -2,9 +2,9 @@ use std::{rc::Rc, sync::LazyLock, time::Duration};
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, DefiniteLength, Edges,
-    FocusHandle, Hsla, InteractiveElement, IntoElement, Length, ParentElement, Pixels, RenderOnce,
-    SharedString, StyleRefinement, Styled, Window, WindowControlArea, anchored, div, hsla, point,
-    prelude::FluentBuilder, px,
+    FocusHandle, Global, Hsla, InteractiveElement, IntoElement, Length, ParentElement, Pixels,
+    RenderOnce, SharedString, StyleRefinement, Styled, Window, WindowControlArea, anchored, div,
+    hsla, point, prelude::FluentBuilder, px,
 };
 use gpui_base::{ElementExt as _, TextSelectionScopeId};
 use rust_i18n::t;
@@ -141,6 +141,34 @@ const DEFAULT_WIDTH: Pixels = px(448.);
 
 /// How much lower each dialog opens than the one beneath it.
 const LAYER_OFFSET: Pixels = px(16.);
+
+/// Upstream's padding on every side of a dialog's panel.
+const PADDING: Pixels = px(16.);
+
+/// GitTurtle patch: the room [`set_dialog_side_room`] keeps beside a dialog's
+/// text, or none where no application set it.
+struct DialogSideRoom(Rc<dyn Fn(&Window, &App) -> Pixels>);
+
+impl Global for DialogSideRoom {}
+
+/// GitTurtle patch: pads a dialog's sides, where its caller sets no padding of
+/// its own, by the larger of upstream's 16 px and the room `room` gives for
+/// that window: what an application's Button standing at the dialog's text
+/// edge, its frame before that edge, takes before it, so its focus ring is
+/// drawn whole inside the dialog. It is asked as each dialog is drawn, so it
+/// follows the window's scale and the application's text size. Unset, a
+/// dialog keeps upstream's 16 px.
+pub fn set_dialog_side_room(cx: &mut App, room: impl Fn(&Window, &App) -> Pixels + 'static) {
+    cx.set_global(DialogSideRoom(Rc::new(room)));
+}
+
+/// GitTurtle patch: the padding a dialog with none of its own takes at either
+/// side in `window`: upstream's 16 px, or the room [`set_dialog_side_room`]
+/// gives where that is larger.
+pub fn dialog_side_padding(window: &Window, cx: &App) -> Pixels {
+    cx.try_global::<DialogSideRoom>()
+        .map_or(PADDING, |room| PADDING.max((room.0)(window, cx)))
+}
 
 #[derive(Clone)]
 pub(crate) struct DialogProps {
@@ -537,7 +565,15 @@ impl RenderOnce for Dialog {
             _ => None,
         };
 
-        let mut paddings = Edges::all(px(16.));
+        // GitTurtle patch: the sides take the room an application keeps
+        // there for a Button's ring (`set_dialog_side_room`).
+        let side = dialog_side_padding(window, cx);
+        let mut paddings = Edges {
+            top: PADDING,
+            right: side,
+            bottom: PADDING,
+            left: side,
+        };
         if let Some(pl) = self.style.padding.left {
             paddings.left = pl.to_pixels(base_size, rem_size);
         }
@@ -803,6 +839,48 @@ mod tests {
         cx.update(|_, cx| crate::Theme::global_mut(cx).dialog_margin = Some(px(24.)));
         assert_eq!(open(cx, None), px(24.), "set, the margin");
         assert_eq!(open(cx, Some(px(440.))), px(10.5), "a caller's width is its own");
+    }
+
+    /// GitTurtle patch: a dialog's sides take the room an application sets
+    /// for them where it is larger than upstream's 16 px, and 16 px where it
+    /// is smaller or unset, on the left and the right alike; a padding the
+    /// dialog's caller sets is its own.
+    #[gpui::test]
+    fn the_sides_keep_the_room_an_application_sets(cx: &mut gpui::TestAppContext) {
+        let cx = half_tile(cx);
+        let open = |cx: &mut VisualTestContext, padding: Option<Pixels>| {
+            cx.update(|window, cx| {
+                window.open_dialog(cx, move |dialog, _, _| {
+                    let dialog = match padding {
+                        Some(padding) => dialog.px(padding),
+                        None => dialog,
+                    };
+                    dialog.width(px(400.)).child(
+                        div()
+                            .w_full()
+                            .h(px(10.))
+                            .debug_selector(|| "content".into()),
+                    )
+                })
+            });
+            draw(cx);
+            let content = bounds(cx, "content");
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            draw(cx);
+            // Inside the 400 px panel, centred in the window, and its 1 px
+            // edge: the left side's padding, and the right side's.
+            let panel = px(461.) / 2. - px(200.);
+            (
+                content.left() - panel - px(1.),
+                panel + px(399.) - content.right(),
+            )
+        };
+        assert_eq!(open(cx, None), (px(16.), px(16.)), "unset, upstream's 16 px");
+        cx.update(|_, cx| set_dialog_side_room(cx, |_, _| px(17.)));
+        assert_eq!(open(cx, None), (px(17.), px(17.)), "a larger room");
+        assert_eq!(open(cx, Some(px(12.))), (px(12.), px(12.)), "a caller's own");
+        cx.update(|_, cx| set_dialog_side_room(cx, |_, _| px(13.)));
+        assert_eq!(open(cx, None), (px(16.), px(16.)), "a smaller room");
     }
 
     /// GitTurtle patch: a dialog opened over another opens 16 px lower, and

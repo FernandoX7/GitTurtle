@@ -710,13 +710,17 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let viewport = window.viewport_size();
             let wide = viewport.width >= appearance::ui_size(1060.);
-            // The rows scale with the interface text size and the panel's
-            // padding and the token column's track do not, so the content
-            // width scales and the chrome stays: the longest description then
-            // keeps its clearance from the warning slot at every size, like
-            // the scaled breakpoint above (1,000 and 648 px at 13 pt).
+            // The rows scale with the interface text size, so the content
+            // width scales, and the chrome is what the panel draws around
+            // it: its side padding, which the kit sizes for a ghost Button's
+            // pull and ring (16 px at 13 pt, 17 px at 18 pt:
+            // `crate::dialog_ghost_room`), and the token column's track,
+            // which stays. The longest description then keeps its clearance
+            // from the warning slot at every size, like the scaled breakpoint
+            // above (1,000 and 648 px at 13 pt).
             let content = appearance::ui_size(if wide { 952. } else { 600. });
-            let width = (px(2. * 16.) + Scrollbar::width() + content)
+            let padding = gpui_kit::component::dialog::dialog_side_padding(window, cx);
+            let width = (padding * 2. + Scrollbar::width() + content)
                 .min(viewport.width - px(32.))
                 .max(px(320.));
             let submit = form.clone();

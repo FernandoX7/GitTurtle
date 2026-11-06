@@ -2693,7 +2693,11 @@ impl GitTurtle {
             );
             let manage_profiles = self.page_focus("settings-manage-profiles", cx);
             // How far Reset edits and Manage named profiles…, ghost Buttons,
-            // stand their frames before the card's text edge.
+            // stand their frames before the card's text edge
+            // (`crate::ghost_pull`). With their 3 px ring it takes 13 px of the
+            // section cards' 1.25 rem padding at 13 pt and 17 of 22.5 at 18 pt;
+            // standing its frame on the edge, a wrapped Reset edits started its
+            // icon 10 px past the field labels at 13 pt and 14 px at 18 pt.
             let pull = ghost_pull(window);
             div()
                 // The repository card, Name, Email, the signing line, the
@@ -4992,20 +4996,6 @@ impl WrappingRow {
         self.lead = inset;
         self
     }
-}
-
-/// How far a ghost Button standing at a Settings card's text edge, a
-/// labelled control of the `button` helper, transparent at rest, stands its
-/// frame before that edge: its label inset, on the device pixel layout places
-/// that padding on, so its content, its leading icon, else its label, lands
-/// on the edge, its hover fill and focus ring spreading into the card's
-/// padding (DESIGN.md, "One left edge"). The ring takes this and its own 3 px
-/// before the edge, which the section cards' 1.25 rem padding holds at every
-/// size: 13 px of 16.25 at 13 pt, 17 of 22.5 at 18 pt. Standing its frame on
-/// the edge, a wrapped Reset edits started its icon 10 px past the field
-/// labels at 13 pt and 14 px at 18 pt.
-fn ghost_pull(window: &Window) -> Pixels {
-    window.pixel_snap(appearance::ui_size(crate::LABEL_INSET))
 }
 
 impl RenderOnce for WrappingRow {

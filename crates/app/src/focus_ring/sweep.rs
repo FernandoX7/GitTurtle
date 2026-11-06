@@ -627,6 +627,12 @@ async fn the_ring_room_at_list_and_dialog_edges_moves_nothing(cx: &mut TestAppCo
     prepare(&app, cx);
     for interface in SIZES {
         interface_size(cx, interface);
+        // A dialog's sides take a ghost Button's ring room by design
+        // (`dialog_ghost_room`: 17 px at 18 pt, 16 px there without the
+        // ring), so the dialogs below hold them at what the installed ring
+        // gives: the walk measures the room their clips keep.
+        let side = cx.update(|window, cx| crate::dialog_ghost_room(window, cx));
+        cx.update(|_, cx| gpui_kit::component::dialog::set_dialog_side_room(cx, move |_, _| side));
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
         views::tests::settle(&app, cx).await;
         // Projects opens with its selected action tab focused, and a ring of

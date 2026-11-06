@@ -930,7 +930,7 @@ impl Render for AppDropdownProbe {
 fn a_dropdown_kept_above_the_status_bar_never_covers_its_button(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     // In a 461 × 490 window, a button whose foot lies 43 px above the
     // menu's foot, and in a 461 × 230 window one with 57 px above it and
@@ -1003,7 +1003,7 @@ fn a_resized_window_closes_a_button_s_menu_rather_than_turn_it_over_the_button(
 ) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let probe = cx.new(|_| AppDropdownProbe {
@@ -1145,7 +1145,7 @@ fn assert_one_gap(gap: Pixels, at: &str) {
 fn menus_keep_one_gap_from_their_button_or_row(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
     for text in [13, 18] {
@@ -1248,7 +1248,7 @@ fn open_menu_mask(cx: &mut VisualTestContext) -> Bounds<Pixels> {
 fn menus_draw_nothing_over_their_button_or_row(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
     for (lead, above) in [(40., false), (380., true)] {
@@ -1404,7 +1404,7 @@ fn assert_side_margin(drawn: Bounds<Pixels>, left: bool, width: Pixels, at: &str
 fn menus_keep_their_drawn_edge_8_px_from_the_window_sides(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
     let width = px(461.);
@@ -1491,7 +1491,7 @@ fn a_rows_menu_keeps_its_drawn_edge_8_px_from_the_sides_at_fractional_scales(
 ) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let edge = f32::from(gpui_kit::component::POPOVER_EDGE_WIDTH);
     // A whole number of device pixels at each scale.
@@ -1587,7 +1587,7 @@ fn open_menu_fill_in_device_pixels(cx: &mut VisualTestContext) -> Bounds<gpui_ki
 fn a_rows_menu_below_the_pointer_draws_its_edge_below_the_pointers_row(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     let edge = f32::from(gpui_kit::component::POPOVER_EDGE_WIDTH);
     let mut failures = Vec::new();
@@ -1719,7 +1719,7 @@ fn clamped_fill(start: bool, extent: Pixels, scale: f32) -> f32 {
 fn a_rows_menu_off_the_pixel_grid_keeps_its_edge_8_px_from_the_sides(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     // A whole number of device pixels at each scale.
     let (width, height) = (px(460.), px(480.));
@@ -1806,7 +1806,7 @@ fn menu_fill_at_item(
 fn a_rows_menu_clamped_to_the_top_keeps_its_edge_8_px_from_it(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        super::keep_popups_above_the_status_bar(cx);
+        super::set_overlay_room(cx);
     });
     // A whole number of device pixels at each scale.
     let (width, height) = (px(460.), px(80.));

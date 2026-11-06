@@ -18761,7 +18761,7 @@ pub(crate) mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
-            native_accessibility::keep_popups_above_the_status_bar(cx);
+            native_accessibility::set_overlay_room(cx);
         });
     }
 
@@ -27022,7 +27022,7 @@ pub(crate) mod tests {
         let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+            crate::native_accessibility::set_overlay_room(cx);
         });
         let editor = std::rc::Rc::new(RefCell::new(None));
         let (_, cx) = cx.add_window_view({
@@ -27179,7 +27179,7 @@ pub(crate) mod tests {
         let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+            crate::native_accessibility::set_overlay_room(cx);
         });
         let editor = std::rc::Rc::new(RefCell::new(None));
         let (_, cx) = cx.add_window_view({
@@ -27290,7 +27290,7 @@ pub(crate) mod tests {
         let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+            crate::native_accessibility::set_overlay_room(cx);
         });
         let editor = std::rc::Rc::new(RefCell::new(None));
         let (_, cx) = cx.add_window_view({
