@@ -751,12 +751,17 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
-     - **Held Enter through the command palette (QA-105, 2026-11-05 night; first):** holding Enter
-       on "Browse reflog and recover a commit…" in the palette opens the Reflog (~160 ms), a repeated
-       Enter closes it (~393 ms; likely its `on_ok`, `reflog.rs:357`) and the repeats open Compare on
-       a file (~632 ms); pre-existing (the pre-FU18 build does the same). FU18-C's held-Enter rule
-       (holding Enter on a control that opens a dialog never confirms it) must cover a dialog the
-       palette opens and every dialog's own Enter handler; reproduce natively first, then a test.
+     - **Held Enter residuals (FU21-E landed 2026-11-06: a held Enter that opened a dialog reaches
+       nothing in or behind it until its key-up, input-method repeats included; native QA-106 pending):**
+       (macOS, verify) a Command pressed mid-hold clears the press's start, so if Cocoa keeps repeating
+       Enter across the change the first plain repeat after Command's release reaches a field's or
+       list's binding (never a confirmation; FU21-E review N3, security S8); (nit) the patch note's
+       "read in the loop's next iteration" is "current or next iteration" (`dispatcher.rs:246-262`).
+     - **Test infrastructure (2026-11-06):** (verify) `564d0be6` credits macOS font metrics, but
+       `#[gpui::test]` layout uses the fixed-advance `NoopTextSystem` on every platform: find the
+       race it hid, as FU20-M did for `more_contrast_moves_nothing_on_any_page`; the protected
+       `gitturtle-gpui-testing` skill should say `width_walk::open` lands the walk's identity and
+       holds quiet reads.
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
        - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
          focus returned once, never over a later click; a dialog opened as another closes keeps
