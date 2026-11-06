@@ -761,13 +761,13 @@ cover current upstream x86-64 Omarchy.
          restore drops it (decided); Back's control inside a first dialog as a return target;
          restores stuck by `history_paging.rs`'s early returns. Still to verify: a live
          preparation dimming Projects while its shortcut cancels it (PG5, `main.rs`).
-       - (C2, in flight from `0824b23e` as FU19-C3/C4: item 1 done, its review fixups and the hover tokens in C4) Editor highlights' palette rules (decided 2026-11-05
-         afternoon): under More contrast the word tint beyond its line from the canvas, Find's other
-         matches in their own fitted colour, the selection and current match apart, each with a
-         lightness gap, Off byte-identical; in every mode a hovered row never heavier than the
-         selected one (tuned tokens: One Light, Kanagawa Wave, Kanagawa Lotus); FU19-C's two comment
-         nits. (FU19-C's Diff patch text, fallback fit and Find's fallback rules landed.)
-       - (later, after FU18-C) Kit controls and More contrast, S-M (vendor, security re-review): Porcelain's
+       - (C2) Editor highlights' palette rules: FU19-C2 to C5 landed 2026-11-05 night (More
+         contrast word tints beyond their lines, Find's other matches fitted by the text rule, the
+         current match's off distance, fallbacks keeping Off colours; the hover/selected order in
+         every built-in and Omarchy palette, with One Light, Kanagawa Wave and Kanagawa Lotus
+         tuned and Lotus's body text a narrow exception). Left: a crossed word with no readable
+         step may fall back nearer its moved line (no palette reaches it; low).
+       - (Kit controls and More contrast, S-M, vendor, security re-review; FU20-K in flight from `a5bc4fd0`): Porcelain's
          text-field and checkbox focus rings at 2.27:1, under the 3:1 non-text rule (verify);
          the kit's Select, Combobox, OtpInput, DatePicker and ColorPicker draw `input` when
          disabled, and an unused `Colorize` import (`vendor/gpui-component/src/input/input.rs:14`);
@@ -787,7 +787,7 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
-       - (GitHub Files: FU20-GH landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return; rows over-reported above an editor's box fixed); left: FU20-GH4 (briefed, hard): `top_line` recorded only while a file is selected, stacked Changes' range hint below the body's foot, the first frame when Files is the first section, the `mode_row_width` cache's tests; FU20-GH5 (briefed): one run a text with an `#[ignore]` release bench (`text_lines` `review.rs:442` runs for every text each frame, `Collecting::spans` allocates), the sweep once and always-on when green; also soft-wrapped rows above an editor's top row uncounted (low) and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
+       - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 in flight: one run a text with an `#[ignore]` release bench (`text_lines` `review.rs:442`, `Collecting::spans` allocates), the sweep once and always-on when green; also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
@@ -830,7 +830,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** `workspace.rs`'s `render_git_actions` and `branch_actions.rs` format their strings each frame (FU20-P's finding; same rule as FU20-P); FU20-P (the chrome's text and the scope toolbar's count, in review: release measurement pending); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
+     - **Performance, S-M:** `workspace.rs`'s `render_git_actions` and `branch_actions.rs` format their strings each frame (FU20-P's finding; same rule as FU20-P); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
        release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
