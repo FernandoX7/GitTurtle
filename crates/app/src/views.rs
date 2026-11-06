@@ -15532,6 +15532,123 @@ pub(crate) mod tests {
         std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
 
+    /// The UI thread's frame at rest, for a release build: the repository
+    /// page of [`working_window`] (its branch, three working files and forty
+    /// commits) in History, whose scope toolbar lays out its count, and in
+    /// Changes, each in a 1,480 × 800 window and a 461 × 490 half tile at
+    /// 13 pt, with quiet reads held so nothing it shows changes. Each frame
+    /// times one `app.update` that notifies the app, as a hover or a caret's
+    /// blink does, from before the call to its return: the effects it
+    /// flushes draw the window it dirtied, once (the test app's
+    /// `flush_effects`), with the root render, the chrome's header and
+    /// action bar with the widths they lay out, the page, layout, prepaint
+    /// and paint, on the test platform, with no GPU, compositor or display
+    /// link. `cpu_ms` is the UI thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`)
+    /// and `wall_ms` the elapsed time, each for 300 frames after 30 untimed,
+    /// with each series' median, p95 and p99 (nearest rank); `frames`
+    /// counts the repository columns each timed update's draw laid out,
+    /// which the benchmark asserts is one.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_CHROME_REST_BENCH_OUTPUT and run with --release --ignored"]
+    async fn chrome_at_rest_release_benchmark(cx: &mut TestAppContext) {
+        const FRAMES: usize = 300;
+        const WARMUP: usize = 30;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_CHROME_REST_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+        let thread_cpu_ms = || {
+            let mut time = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: writes into a local.
+            assert_eq!(
+                unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
+                0
+            );
+            time.tv_sec as f64 * 1000. + time.tv_nsec as f64 / 1_000_000.
+        };
+        let summary = |samples: &[f64]| {
+            let mut sorted = samples.to_vec();
+            sorted.sort_by(f64::total_cmp);
+            let rank = |quantile: f64| {
+                let rank = (quantile * sorted.len() as f64).ceil() as usize;
+                sorted[rank.clamp(1, sorted.len()) - 1]
+            };
+            serde_json::json!({ "median": rank(0.5), "p95": rank(0.95), "p99": rank(0.99) })
+        };
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        crate::in_frame::probe::watch();
+        let mut series = Vec::new();
+        for surface in ["history", "changes"] {
+            for window_size in [size(px(1480.), px(800.)), size(px(461.), px(490.))] {
+                cx.update(|window, cx| {
+                    appearance::apply_text_sizes(13, 12, window, cx);
+                    app.update(cx, |app, cx| match surface {
+                        "history" => app.show_history(window, cx),
+                        _ => app.show_working(window, cx),
+                    });
+                });
+                cx.simulate_resize(window_size);
+                settle(&app, cx).await;
+                let shown = match surface {
+                    "history" => WorkspaceMode::History,
+                    _ => WorkspaceMode::Working,
+                };
+                assert!(
+                    app.read_with(cx, |app, _| app.mode == shown),
+                    "{surface}: the page shown"
+                );
+                let mut cpu_ms = Vec::new();
+                let mut wall_ms = Vec::new();
+                let mut frames = Vec::new();
+                for frame in 0..WARMUP + FRAMES {
+                    cx.update(|window, cx| window.simulate_next_frame(cx));
+                    cx.run_until_parked();
+                    repository_frames();
+                    // The update's effects draw the window it dirtied, once,
+                    // before it returns (the test app's `flush_effects`).
+                    let (cpu, wall) = (thread_cpu_ms(), std::time::Instant::now());
+                    app.update(cx, |_, cx| cx.notify());
+                    let (cpu, wall) = (thread_cpu_ms() - cpu, wall.elapsed().as_secs_f64() * 1000.);
+                    cx.run_until_parked();
+                    if frame >= WARMUP {
+                        cpu_ms.push(cpu);
+                        wall_ms.push(wall);
+                        frames.push(repository_frames());
+                    }
+                }
+                assert!(
+                    frames.iter().all(|&drawn| drawn == 1),
+                    "{surface}: every timed update draws the page once: {frames:?}"
+                );
+                series.push(serde_json::json!({
+                    "surface": surface,
+                    "text_pt": 13,
+                    "window": [f32::from(window_size.width), f32::from(window_size.height)],
+                    "cpu_ms_summary": summary(&cpu_ms),
+                    "wall_ms_summary": summary(&wall_ms),
+                    "cpu_ms": cpu_ms,
+                    "wall_ms": wall_ms,
+                    "frames": frames,
+                }));
+            }
+        }
+        crate::in_frame::probe::stop();
+        let result = serde_json::json!({
+            "schema": 1,
+            "frames": FRAMES,
+            "warmup_frames": WARMUP,
+            "boundary": "One `app.update` on the UI thread that notifies the app with nothing it shows changed, from before the call to its return: the notification and the effects it flushes, which draw the window it dirtied once (the root render, the repository chrome and page, layout, prepaint and paint on the test platform; no GPU, compositor or display link), quiet reads held. `cpu_ms` is the UI thread's CPU time across the call, `wall_ms` its elapsed time; `frames` counts the repository columns that draw laid out. The frame callbacks before it and any work it leaves queued are delivered untimed.",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    }
+
     /// Every choice the repository page's width makes reads one width: the
     /// window's less the project pane as its group draws it. The page drew
     /// its rail from its width in the frame, while Toggle Sidebar, the
