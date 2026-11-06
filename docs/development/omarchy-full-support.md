@@ -780,8 +780,8 @@ cover current upstream x86-64 Omarchy.
          every built-in and Omarchy palette, with One Light, Kanagawa Wave and Kanagawa Lotus
          tuned and Lotus's body text a narrow exception). Left: a crossed word with no readable
          step may fall back nearer its moved line (no palette reaches it; low).
-       - (F) Ghost Buttons in dialogs, M (decided 2026-11-05; after FU18-C, whose kit dialog file
-         holds the padding): dialogs' side padding max(16 px, label inset + ring room), 17 px at
+       - (F) Ghost Buttons in dialogs, M (decided 2026-11-05; FU19-F1 landed 2026-11-06: dialogs' side
+         padding max(16 px, the ghost pull + ring room) rounded up to the device pixel, the ten-dialog test; FU19-F2 next): dialogs' side padding max(16 px, label inset + ring room), 17 px at
          18 pt, and the ghost-Button rule applied at FU18-B's dialog sites (profiles, signing,
          Fetch rules…, Worktree created, Activity, LFS source, rewrite review, revision
          choices, About's Copy bug diagnostics); the 0.75 rem bars keep their frames (the ring
@@ -790,7 +790,7 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
-       - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 landed 2026-11-06 (a text's lines worked out once per change, allocation hygiene: no CPU change in release; the opt-in rest bench; the sweep at `REVEAL_SIZES`); FU20-GH6 in flight (the sweep's 19 findings, then always-on when green); also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
+       - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 landed 2026-11-06 (a text's lines worked out once per change, allocation hygiene: no CPU change in release; the opt-in rest bench; the sweep at `REVEAL_SIZES`); FU20-GH6 landed 2026-11-06 (the PR list's first row and Changes' patch rings whole at 18 pt, a row a list cuts counted where the list shows it, the sweep reading lines as drawn, its found walks always-on; native check in QA-106); also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
