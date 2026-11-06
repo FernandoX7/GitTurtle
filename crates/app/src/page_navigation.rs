@@ -661,15 +661,35 @@ impl GitTurtle {
         self.focus_ring.mark(window);
         let path = self.path.clone();
         let owner = cx.entity().downgrade();
+        // A modal already open as the window comes back owns the control
+        // Back saved, which can sit inside it, as one left open under
+        // Settings does: focus goes back to it as before. One opened since,
+        // or a second over it that took focus, keeps focus instead.
+        let modal_at_back = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+        let focused_at_back = window.focused(cx).map(|focused| focused.downgrade());
         // Focus goes back as the next frame starts, before it draws the page;
         // whether that frame draws the control is known only as it ends
-        // (`give_page_focus_back`).
+        // (`give_page_focus_back`). A dialog or sheet opened before that
+        // frame, as the command palette by its shortcut, keeps focus, and its
+        // close lands there (`return_modal_to`): given at once, focus rested
+        // on the page behind the dialog, where the next key went.
         window.on_next_frame(move |window, cx| {
             let _ = owner.update(cx, |this, cx| {
-                if this.page == AppPage::Repository && this.path == path {
-                    this.give_page_focus_back(focus, window, cx);
-                    window.refresh();
+                if this.page != AppPage::Repository || this.path != path {
+                    return;
                 }
+                // Only a live focus elsewhere moved: a control Back left
+                // focused can drop before this frame, which leaves nothing.
+                let moved = window
+                    .focused(cx)
+                    .is_some_and(|now| Some(now.downgrade()) != focused_at_back);
+                let modal_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+                if modal_open && (!modal_at_back || moved) {
+                    this.return_modal_to(Some(focus));
+                    return;
+                }
+                this.give_page_focus_back(focus, window, cx);
+                window.refresh();
             });
         });
         self.try_automatic_refresh(window, cx);
@@ -4527,6 +4547,77 @@ mod tests {
         draw(cx);
         assert!(dialog_open(cx), "the dialog still shows");
         assert_eq!(recorded_return(&app, cx), Some(files), "held");
+    }
+
+    /// Back from Settings gives focus back as the next frame starts; a
+    /// dialog opened before that frame keeps focus, and its close by Escape
+    /// lands where Back returns, History's changed files
+    /// (`return_modal_to`). So does a second dialog that took focus over
+    /// one already open as the window came back, which itself owns Back's
+    /// control and leaves focus going back to it. Back once focused that
+    /// list behind the dialog, where the next key reached the page, not the
+    /// dialog.
+    #[gpui::test]
+    async fn a_dialog_opened_before_backs_frame_keeps_focus(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        cx.simulate_keystrokes(&primary(","));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings shows");
+            assert_eq!(app.page_return_focus, Some(files.clone()), "Back's return");
+        });
+        cx.dispatch_action(crate::BackHistory);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        assert!(dialog_open(cx), "the dialog opens before Back's frame");
+        let in_dialog = focused(cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        assert_eq!(focused(cx), in_dialog, "the dialog keeps focus");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!dialog_open(cx), "Escape closes the dialog");
+        assert_eq!(focused(cx), Some(files.clone()), "the changed-file list");
+
+        // A dialog already open as the window comes back owns Back's control
+        // (`ignore::tests::preview_rule_works_again_once_settings_cancels_it`);
+        // a second opened over it before Back's frame took focus, so it
+        // keeps focus, and the last close lands where Back returns.
+        cx.simulate_keystrokes(&primary(","));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings shows again");
+            assert_eq!(app.page_return_focus, Some(files.clone()), "Back's return");
+        });
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("First")));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Second")));
+        let in_second = focused(cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        assert_eq!(focused(cx), in_second, "the second dialog keeps focus");
+        assert_eq!(
+            recorded_return(&app, cx),
+            Some(files.clone()),
+            "the modals return to Back's control"
+        );
+        for _ in 0..2 {
+            cx.update(|window, cx| window.close_dialog(cx));
+            draw(cx);
+        }
+        assert!(!dialog_open(cx), "both dialogs closed");
+        assert_eq!(focused(cx), Some(files), "the changed-file list again");
     }
 
     /// Opens Settings with nothing focused and the window naming `pane`,
