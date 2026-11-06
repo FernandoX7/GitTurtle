@@ -765,7 +765,10 @@ cover current upstream x86-64 Omarchy.
        burst that ends on the reading it started from stays silent even where Orca last spoke another
        row; a click on an unavailable row leaves the status's reading stale (only the error alert is
        heard); held Down repeats under 100 ms apart leave the row they end on unheard (QA-94's quiet
-       moves).
+       moves). Keyboard Shortcuts and the palette (FU24-C, 2026-11-06): a wheel scroll that brings the
+       selected row back into view is told to the screen reader as a selection change but not stamped,
+       so a key within 100 ms after it may be judged spoken (low); the Linux window controls' rings
+       against each other at 11 pt, scales 1.25 and 2 (verify; their 0.25 rem gaps were left).
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
@@ -799,6 +802,9 @@ cover current upstream x86-64 Omarchy.
          form, Activity, the LFS form, the comparison form; verify); Reset column layout and
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
+         Left after FU19-F2 (queued 2026-11-06): the ghost-Button rule at the dialogs F2 did not
+         cover (the Reflog's Review recovery branch…, `reflog.rs:1175`, stretched in a column;
+         interactive rebase's Load commits, verify).
      - **FU20 (proposed):**
        - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 landed 2026-11-06 (a text's lines worked out once per change, allocation hygiene: no CPU change in release; the opt-in rest bench; the sweep at `REVEAL_SIZES`); FU20-GH6 landed 2026-11-06 (the PR list's first row and Changes' patch rings whole at 18 pt, a row a list cuts counted where the list shows it, the sweep reading lines as drawn, its found walks always-on; native check in QA-106); also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
