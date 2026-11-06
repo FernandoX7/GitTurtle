@@ -1327,12 +1327,14 @@ struct ShortcutHelpView {
     /// The dialog's one status, its accessible name: what it last
     /// announced. Once the search has rested ([`COUNT_REST`]) it reads the
     /// count and the selected entry together, "16 shortcuts · Open
-    /// Repository Tab: Ctrl+T", in one announcement ([`resting_reading`]).
-    /// An assistive technology announces a live node as its name changes:
-    /// a name that followed each key press was announced on each one, the
-    /// echo of the next key cutting it off, and as two statuses, the count's
-    /// and the entry's, changed in one frame, Orca spoke the count and
-    /// dropped the entry announced a millisecond after it (QA-90). The line
+    /// Repository Tab: Ctrl+T", in one announcement ([`resting_reading`]),
+    /// or the count alone where Orca spoke the change of selection the rest
+    /// follows ([`Self::settle_count`]). An assistive technology announces a
+    /// live node as its name changes: a name that followed each key press
+    /// was announced on each one, the echo of the next key cutting it off,
+    /// and as two statuses, the count's and the entry's, changed in one
+    /// frame, Orca spoke the count and dropped the entry announced a
+    /// millisecond after it (QA-90). The line
     /// above the list draws each key's count at once. A move the list speaks
     /// itself sets it to that entry quietly ([`Self::quiet`]), so it always
     /// reads what was last spoken.
@@ -1354,6 +1356,12 @@ struct ShortcutHelpView {
     /// again: kept at the rest's entry on Linux, where the list spoke the
     /// move, a rest after Down, a key and Backspace said nothing.
     announced_entry: SharedString,
+    /// The list's last change of its selected entry, which on Linux tells a
+    /// rest whether Orca spoke the entry it would read ([`Listed::spoken`]).
+    listed: Listed,
+    /// The selected entry as the last frame laid the list out, and whether
+    /// it drew that entry's row ([`Self::note_selected_row`]).
+    row_shown: Option<(Option<usize>, bool)>,
     /// The rest the search's next count waits for ([`Self::settle_count`]):
     /// replaced by each change to the search, so only the last one runs,
     /// and dropped as the dialog closes.
@@ -1397,6 +1405,114 @@ pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_mil
 /// too, and Orca 51.1 spoke the move twice, 41 ms apart, the status's "Go to
 /// History · 2 of 3" and the list's "Go to History" (QA-94, 2026-11-04).
 pub(crate) const LIST_SPEAKS_SELECTION: bool = cfg!(target_os = "linux");
+
+/// How long after the list's previous change of selection a change must
+/// come for Keyboard Shortcuts to take it as spoken. Orca 51.1's spam filter
+/// drops an
+/// event of a type the application sent less than 100 ms before, and times
+/// each one it sees, dropped or not ("Ignoring object:selection-changed due
+/// to multiple instances in short time", QA-97), so of keys typed 60 ms
+/// apart that each select another entry it speaks the first key's and none
+/// after it (`atspi_state_tests::Bus::heard_by_orca` models that window).
+/// The AT-SPI adapter reports a change as the frame that draws it is drawn,
+/// so the dialog measures from the latest the change before can have been
+/// reported, the first frame after the one that drew it, to the earliest
+/// this one can, the render that draws it ([`Listed::stamp`]): a lower bound
+/// on the time between the two, and this leaves 50 ms beyond Orca's window.
+/// The command palette times its list by the same rule.
+const LIST_SPEAKS_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The list's last change of its selected entry, by a key, a click or the
+/// search, which on Linux the AT-SPI adapter reports as the frame that draws
+/// it is drawn, and Orca speaks ([`LIST_SPEAKS_SELECTION`]). The status
+/// leaves the entry out of a rest's reading only where it is sure Orca spoke
+/// that change: in doubt it says the entry again, which is heard twice at
+/// worst, where the count alone could leave it unheard or follow the entry
+/// Orca spoke before.
+struct Listed {
+    /// How many changes there have been, the dialog's opening, as its first
+    /// entry entered the window's tree selected, the first: a frame times
+    /// only the last.
+    changes: u64,
+    /// The change a frame is due to time ([`ShortcutHelpView::render`]).
+    asked: Option<u64>,
+    /// When the first render that drew the last change ran: the adapter
+    /// cannot have reported it earlier.
+    rendered: Option<std::time::Instant>,
+    /// When the first frame came after the one that drew the last change:
+    /// the adapter cannot have reported it later. None while it waits.
+    drawn: Option<std::time::Instant>,
+    /// The same for the change before it.
+    before: Option<std::time::Instant>,
+    /// Whether a change came while the one before it waited for its frame,
+    /// so that Orca may have spoken either.
+    doubt: bool,
+    /// Whether Orca spoke the entry the last change selected: its render ran
+    /// [`LIST_SPEAKS_AFTER`] or more after the frame that timed the change
+    /// before it, and no change came between it and its frame. Of keys typed
+    /// 60 ms apart Orca 51.1 drops each change of selection after the first
+    /// as one of a burst (QA-97), and a frame drawn late, as on a loaded
+    /// host, can send two changes handled far apart within its window.
+    spoken: bool,
+    /// Whether the status has announced no reading since: the rest that
+    /// comes next ([`ShortcutHelpView::settle_count`]) follows it. A move the
+    /// list speaks leaves it set, since the status takes that entry quietly.
+    unread: bool,
+}
+
+impl Listed {
+    /// The dialog opened: its first frame times that change.
+    fn opened() -> Self {
+        Self {
+            changes: 0,
+            asked: None,
+            rendered: None,
+            drawn: None,
+            before: None,
+            doubt: false,
+            spoken: false,
+            unread: false,
+        }
+    }
+
+    /// The selected entry changed.
+    fn changed(&mut self) {
+        self.changes += 1;
+        match self.drawn.take() {
+            Some(drawn) => self.before = Some(drawn),
+            None => self.doubt = true,
+        }
+        self.rendered = None;
+        self.spoken = false;
+        self.unread = true;
+    }
+
+    /// A render that draws the last change ran `now`, the first frame after
+    /// it to time it as drawn ([`Self::stamp`]).
+    fn render(&mut self, now: std::time::Instant) {
+        self.asked = Some(self.changes);
+        self.rendered.get_or_insert(now);
+    }
+
+    /// A frame came `now` after the one that drew `change`. Whether Orca
+    /// spoke it is judged from when its render ran, the earliest the adapter
+    /// can have reported it, since this frame can come late, as behind a
+    /// long task.
+    fn stamp(&mut self, change: u64, now: std::time::Instant) {
+        if change != self.changes || self.drawn.is_some() {
+            return;
+        }
+        self.spoken = !self.doubt
+            && self
+                .before
+                .zip(self.rendered)
+                .is_some_and(|(before, rendered)| {
+                    rendered.saturating_duration_since(before) >= LIST_SPEAKS_AFTER
+                });
+        self.drawn = Some(now);
+        self.doubt = false;
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -1447,8 +1563,12 @@ impl ShortcutHelpView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts or groups…"));
         let subscription = cx.subscribe(&query, |this, _, event, cx| {
             if matches!(event, InputEvent::Change) {
+                let was = this.selected_entry();
                 this.set_rows(help_matches(&this.query.read(cx).value()));
                 this.selected = 1.min(this.rows.len().saturating_sub(1));
+                if this.selected_entry() != was {
+                    this.listed.changed();
+                }
                 // The list starts at its top, unless the selected entry
                 // would not then lie whole in it: it ends at the list's foot
                 // instead, with as much of its group's heading as fits above
@@ -1473,6 +1593,8 @@ impl ShortcutHelpView {
             quiet: false,
             announced_count: count,
             announced_entry: entry,
+            listed: Listed::opened(),
+            row_shown: None,
             settling: None,
             rows,
             selected: 1,
@@ -1490,6 +1612,14 @@ impl ShortcutHelpView {
     /// change drops the rest the one before it began, so a burst of keys
     /// announces only the count and entry it ends on, once, and what the
     /// search comes back to is not announced again.
+    ///
+    /// Where the list speaks a change of its selection itself
+    /// ([`LIST_SPEAKS_SELECTION`], Linux) and Orca spoke the one this rest
+    /// follows ([`Listed::spoken`]), by the search or a move inside the rest,
+    /// the status says only the count: the row Orca spoke names the entry,
+    /// and the whole reading said it again, as the command palette's status
+    /// said its command again (QA-105). A rest no change of selection led to
+    /// reads whole.
     fn settle_count(&mut self, cx: &mut Context<Self>) {
         let rest = cx.background_executor().timer(COUNT_REST);
         self.settling = Some(cx.spawn(async move |this, cx| {
@@ -1498,8 +1628,13 @@ impl ShortcutHelpView {
                 this.settling = None;
                 let count = counted_entries(&this.rows);
                 let entry = entry_reading(&this.rows, this.selected);
+                let listed = std::mem::replace(&mut this.listed.unread, false);
                 if count != this.announced_count || entry != this.announced_entry {
-                    this.status = resting_reading(&count, &entry);
+                    this.status = if LIST_SPEAKS_SELECTION && listed && this.listed.spoken {
+                        count.clone()
+                    } else {
+                        resting_reading(&count, &entry)
+                    };
                     this.quiet = false;
                     this.announced_count = count;
                     this.announced_entry = entry;
@@ -1517,6 +1652,85 @@ impl ShortcutHelpView {
         self.announced_entry = entry_reading(&self.rows, self.selected);
         self.status = self.announced_entry.clone();
         self.quiet = LIST_SPEAKS_SELECTION;
+    }
+
+    /// Selects `rows`' row `row` for a key or a click, a change of the list's
+    /// selection where it selects another entry ([`Self::listed`]), and
+    /// keeps its entry as the one last spoken ([`Self::announce_entry`]).
+    fn select(&mut self, row: usize) {
+        if row != self.selected {
+            self.list_changed();
+        }
+        self.selected = row;
+        self.announce_entry();
+    }
+
+    /// The list's selection changed other than by the search
+    /// ([`Listed::changed`]): the rest pending then follows it, where one is
+    /// ([`Self::settle_count`]), and a later rest does not. A search starts
+    /// the only rests, so a move with none pending is heard from the list
+    /// alone, its entry taken quietly, and a search that keeps that entry
+    /// selected long after is a reading no change of selection led to, read
+    /// whole: counted toward that later rest, Down and, 5 s on, "y", which
+    /// keeps Open Repository first, rested on "38 shortcuts" alone.
+    fn list_changed(&mut self) {
+        self.listed.changed();
+        self.listed.unread = self.settling.is_some();
+    }
+
+    /// Times the list's last change of selection, where the list speaks it
+    /// ([`LIST_SPEAKS_SELECTION`]) and no frame has yet: the AT-SPI adapter
+    /// reports a change once the frame that draws it is drawn, no earlier
+    /// than now, and no later than the frame after it, which times it
+    /// ([`Listed::stamp`]). Where the list does not speak its selection
+    /// (macOS), nothing reads the times.
+    fn time_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !LIST_SPEAKS_SELECTION
+            || self.listed.drawn.is_some()
+            || self.listed.asked == Some(self.listed.changes)
+        {
+            return;
+        }
+        let change = self.listed.changes;
+        self.listed.render(cx.background_executor().now());
+        let view = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = view.update(cx, |this, cx| {
+                this.listed.stamp(change, cx.background_executor().now());
+            });
+        });
+    }
+
+    /// Notes whether this frame draws the selected entry's row, `drawn`, as
+    /// the list lays out its rows. A selected row coming back into the list,
+    /// as the wheel, a resize, a text size, or Home, End or a page key on the
+    /// entry already selected can bring it, enters the window's tree already
+    /// selected, which the AT-SPI adapter reports as a change of the list's
+    /// selection ([`LIST_SPEAKS_SELECTION`]), so it is one
+    /// ([`Self::list_changed`]), timed by this frame and the next. Untimed, a
+    /// key that selected another entry 50 ms after the wheel brought the row
+    /// back was taken as spoken, though Orca dropped it as one of a burst,
+    /// and the rest said the count alone.
+    fn note_selected_row(&mut self, drawn: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !LIST_SPEAKS_SELECTION {
+            return;
+        }
+        let entry = self.selected_entry();
+        let back = drawn && self.row_shown == Some((entry, false));
+        self.row_shown = Some((entry, drawn));
+        if back {
+            self.list_changed();
+            self.time_change(window, cx);
+        }
+    }
+
+    /// The selected entry, by its place in the whole reference, the identity
+    /// its row's node has ([`HelpRow::id`]); none where no entry is selected.
+    fn selected_entry(&self) -> Option<usize> {
+        match self.rows.get(self.selected) {
+            Some(HelpRow::Entry(entry)) => Some(entry.place),
+            _ => None,
+        }
     }
 
     /// Lists `rows`, with their heights at the interface size.
@@ -1602,8 +1816,7 @@ impl ShortcutHelpView {
         if to == at && matches!(step, Step::Previous | Step::Next) {
             return;
         }
-        self.selected = entries[to];
-        self.announce_entry();
+        self.select(entries[to]);
         self.reveal_selected(Reveal::Centre);
         cx.notify();
     }
@@ -1627,6 +1840,8 @@ impl ShortcutHelpView {
 impl Render for ShortcutHelpView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder;
+        // This frame draws the list's last change of selection.
+        self.time_change(window, cx);
         let p = palette(cx);
         let count = self
             .rows
@@ -1643,7 +1858,15 @@ impl Render for ShortcutHelpView {
             cx.entity(),
             "shortcut-help-list",
             self.layout.sizes.clone(),
-            |this, range: std::ops::Range<usize>, _, cx| {
+            |this, range: std::ops::Range<usize>, window, cx| {
+                // Each frame the list first lays out its first row alone to
+                // measure it (`VirtualList::measure_item`), a group's heading,
+                // which says nothing of the rows it draws, and then the rows
+                // it draws. Read from both, the selected row read as leaving
+                // and coming back on every frame.
+                if range != (0..1) {
+                    this.note_selected_row(range.contains(&this.selected), window, cx);
+                }
                 let p = palette(cx);
                 // Fitted once for the rows drawn, not for each row.
                 let (edge, selected_edge) = (p.raised_edge(), p.selected_edge());
@@ -1723,8 +1946,7 @@ impl Render for ShortcutHelpView {
                                 // whole; it once scrolled nothing, leaving
                                 // the heading cut.
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected = index;
-                                    this.announce_entry();
+                                    this.select(index);
                                     this.reveal_selected(Reveal::Nearest);
                                     cx.notify();
                                 })),
@@ -1850,7 +2072,8 @@ impl Render for ShortcutHelpView {
             // wherever the dialog cut its foot, and the AT-SPI adapter
             // reported it not showing. It is named by what it last announced
             // (`status`): the count and the selected entry once the search
-            // rests, and a moved selection's entry at once where the list
+            // rests, or the count alone after a change of selection Orca
+            // spoke (`settle_count`), and a moved selection's entry at once where the list
             // does not speak it (`LIST_SPEAKS_SELECTION`), or quietly, as no
             // live region, where it does (`quiet`). AT-SPI announces its
             // name and macOS's adapter its value, so both carry it, as the
@@ -3587,16 +3810,26 @@ mod list_tests {
     /// on Linux every announcement the window's AT-SPI adapter itself made,
     /// fed each frame's tree, so a second live node announcing beside the
     /// status is heard too, and the item a list holds selected each time it
-    /// reported a change of its selection, which Orca speaks.
+    /// reported a change of its selection, which Orca speaks; and of both,
+    /// what Orca 51.1's spam filter lets it speak
+    /// (`atspi_state_tests::Bus::heard_by_orca`).
     struct Heard {
         named: Option<String>,
         heard: Vec<String>,
+        /// The list's selected row's name as the window's tree last held it.
+        row: Option<String>,
         #[cfg(target_os = "linux")]
         bus: crate::native_accessibility::atspi_state_tests::Bus,
         #[cfg(target_os = "linux")]
         adapter: Vec<String>,
         #[cfg(target_os = "linux")]
         listed: Vec<String>,
+        #[cfg(target_os = "linux")]
+        orca: Vec<String>,
+        /// Orca's locus of focus, where a test follows it
+        /// (`atspi_state_tests::Bus::heard_by_orca_from`).
+        #[cfg(target_os = "linux")]
+        locus: Option<Option<accesskit_atspi_common::NodeId>>,
     }
 
     impl Heard {
@@ -3612,12 +3845,17 @@ mod list_tests {
             let mut heard = Self {
                 named: None,
                 heard: Vec::new(),
+                row: None,
                 #[cfg(target_os = "linux")]
                 bus,
                 #[cfg(target_os = "linux")]
                 adapter: Vec::new(),
                 #[cfg(target_os = "linux")]
                 listed: Vec::new(),
+                #[cfg(target_os = "linux")]
+                orca: Vec::new(),
+                #[cfg(target_os = "linux")]
+                locus: None,
             };
             heard.frame(cx);
             heard.heard.clear();
@@ -3625,6 +3863,7 @@ mod list_tests {
             {
                 heard.adapter.clear();
                 heard.listed.clear();
+                heard.orca.clear();
             }
             heard
         }
@@ -3658,12 +3897,37 @@ mod list_tests {
                 }
                 self.named = name;
             }
+            self.row = written::inside("shortcut-help-results")
+                .into_iter()
+                .find_map(|id| {
+                    let row = written::get(&id)?;
+                    (row.node.role() == Role::ListBoxOption && row.node.is_selected() == Some(true))
+                        .then(|| row.node.label().map(str::to_owned))
+                })
+                .flatten();
             #[cfg(target_os = "linux")]
             {
                 self.bus.update(tree);
                 self.adapter.extend(self.bus.announced());
                 self.listed.extend(self.bus.selection_changed());
+                let now = cx.executor().now();
+                let orca = match &mut self.locus {
+                    Some(locus) => self.bus.heard_by_orca_from(now, locus),
+                    None => self.bus.heard_by_orca(now),
+                };
+                self.orca.extend(orca);
             }
+        }
+
+        /// The list's selected row's name as the window's tree holds it.
+        fn row_name(&self) -> Option<&str> {
+            self.row.as_deref()
+        }
+
+        /// What Orca spoke since the last call, in order.
+        #[cfg(target_os = "linux")]
+        fn take_orca(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.orca)
         }
 
         /// Lets the test clock run `millis` and draws, recording what the
@@ -3984,6 +4248,515 @@ mod list_tests {
         close(cx);
     }
 
+    /// The rows of `rows` that are entries, not group headings.
+    fn entry_rows(rows: &[HelpRow]) -> Vec<usize> {
+        (0..rows.len())
+            .filter(|&row| matches!(rows[row], HelpRow::Entry(_)))
+            .collect()
+    }
+
+    /// The entry a search for `query` selects, its first.
+    fn first_entry(query: &str) -> String {
+        entry_reading(&help_matches(query), 1).to_string()
+    }
+
+    /// A change of selection is heard once, made by Down or by a search
+    /// typed 150 ms a key. The selected row's accessible name is its entry,
+    /// "Command Palette: Ctrl+Shift+P", which the list speaks where it
+    /// speaks a change of its selection itself ([`LIST_SPEAKS_SELECTION`],
+    /// Linux): there a move announces nothing of the status's own, and the
+    /// rest of a search whose change of selection Orca spoke announces only
+    /// what the row does not say, the count ("3 shortcuts"), never the entry
+    /// again. Elsewhere (macOS) the status announces the whole reading each
+    /// time. A reading no change of selection led to stays whole on both: a
+    /// search that keeps the selected entry and changes the count, and "0
+    /// shortcuts". The status announced the count with the entry after Orca
+    /// 51.1 had spoken the entry from the list, as the command palette's
+    /// status did (QA-105).
+    #[gpui::test]
+    async fn a_change_of_selection_is_heard_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        // Past the list's change of selection as the dialog opened.
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let whole = help_matches("");
+        let found = entry_rows(&whole);
+
+        // Down twice, a second apart.
+        for to in [found[1], found[2]] {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            let entry = entry_reading(&whole, to).to_string();
+            assert_eq!(
+                heard.row_name(),
+                Some(entry.as_str()),
+                "Down selects {entry:?}"
+            );
+            let own = if LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![entry.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down to {entry:?}: the status announces it only where the list does not speak it"
+            );
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_orca(),
+                [entry],
+                "Orca speaks the entry Down reaches, once"
+            );
+            heard.wait(cx, 1000);
+            assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        }
+        #[cfg(target_os = "linux")]
+        heard.take_listed();
+
+        // Keys typed 150 ms apart, each drawn at once, and then the rest.
+        let typed = |cx: &mut VisualTestContext, heard: &mut Heard, keys: &str| {
+            for key in keys.split_inclusive(|_| true) {
+                cx.simulate_input(key);
+                heard.frame(cx);
+                heard.wait(cx, 150);
+            }
+            heard.wait(cx, 2000);
+        };
+        // What the rest of `query` is heard as: where its keys `changed` the
+        // selection and the list speaks that (Linux), the entry and then the
+        // status's count; otherwise the status's whole reading.
+        let rests = |heard: &mut Heard, query: &str, changed: bool| {
+            let entry = first_entry(query);
+            let count = count_for(query);
+            assert_eq!(
+                heard.row_name(),
+                Some(entry.as_str()),
+                "{query:?} selects its first entry"
+            );
+            let said = if changed && LIST_SPEAKS_SELECTION {
+                count
+            } else {
+                resting_reading(&count, &entry).to_string()
+            };
+            assert_eq!(
+                heard.take(),
+                std::slice::from_ref(&said),
+                "{query:?}'s rest announces {said:?}, once"
+            );
+            assert_eq!(heard.named.as_ref(), Some(&said), "and the status reads it");
+            #[cfg(target_os = "linux")]
+            {
+                let listed = heard.take_listed();
+                let orca = heard.take_orca();
+                if changed {
+                    assert_eq!(
+                        listed.last(),
+                        Some(&entry),
+                        "{query:?}: the list reports its change of selection to {entry:?}"
+                    );
+                    assert!(
+                        orca.ends_with(&[entry, said]),
+                        "{query:?}: Orca speaks the entry and then the count, the entry once: \
+                         {orca:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        listed,
+                        Vec::<String>::new(),
+                        "{query:?}: the list reports no change of selection"
+                    );
+                    assert_eq!(orca, [said], "{query:?}: Orca speaks the whole reading");
+                }
+            }
+        };
+
+        // A search of two keys that selects another entry than Down's.
+        let selected = entry_reading(&whole, found[2]).to_string();
+        let query = ["ta", "hi", "br", "co", "st", "re", "pa"]
+            .into_iter()
+            .find(|query| {
+                entry_rows(&help_matches(query)).len() > 1 && first_entry(query) != selected
+            })
+            .expect("a two-key search selects another entry");
+        typed(cx, &mut heard, query);
+        rests(&mut heard, query, true);
+        // One more key that keeps its entry selected and narrows the count.
+        let kept = ('a'..='z')
+            .flat_map(|key| [format!("{query}{key}"), format!("{query} {key}")])
+            .find(|longer| {
+                !entry_rows(&help_matches(longer)).is_empty()
+                    && first_entry(longer) == first_entry(query)
+                    && count_for(longer) != count_for(query)
+            })
+            .expect("a longer search keeps the entry and narrows the count");
+        typed(cx, &mut heard, &kept[query.len()..]);
+        rests(&mut heard, &kept, false);
+        // One that matches none.
+        let none = ["#", "9", "q", "z", "x"]
+            .into_iter()
+            .find(|key| entry_rows(&help_matches(&format!("{kept}{key}"))).is_empty())
+            .expect("a key that matches nothing");
+        typed(cx, &mut heard, none);
+        let zero = count_for(&format!("{kept}{none}"));
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&zero),
+            "a search that matches nothing is announced whole"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            assert_eq!(heard.take_orca(), [zero], "and Orca speaks it");
+        }
+        // Backspace brings back the entry, a change of selection.
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        rests(&mut heard, &kept, true);
+        close(cx);
+    }
+
+    /// A move inside a search's rest is the change of selection the rest
+    /// follows. A key that selects another entry, then Down 200 ms later,
+    /// each drawn at once: Orca speaks both entries, and the rest says the
+    /// count alone where the list speaks its selection (Linux), never
+    /// Down's entry again; elsewhere Down announces its entry and the rest
+    /// the count with it. Down 60 ms after the key, a change Orca 51.1 drops
+    /// as one of a burst, leaves the rest the whole reading, Down's entry
+    /// included, which Orca has not spoken.
+    #[gpui::test]
+    async fn a_move_inside_the_rest_is_heard_once(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let key = ["t", "h", "b", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| {
+                entry_rows(&help_matches(key)).len() > 1 && first_entry(key) != first_entry("")
+            })
+            .expect("a key that selects another entry, of two or more");
+        let rows = help_matches(key);
+        let down = entry_reading(&rows, entry_rows(&rows)[1]).to_string();
+        let count = count_for(key);
+        for (after, spoken) in [(200, true), (60, false)] {
+            open(&app, cx, 13, (1480., 973.));
+            let mut heard = Heard::new(cx);
+            heard.wait(cx, 1000);
+            heard.take();
+            #[cfg(target_os = "linux")]
+            {
+                heard.take_listed();
+                heard.take_orca();
+            }
+            cx.simulate_input(key);
+            heard.frame(cx);
+            heard.wait(cx, after);
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            assert_eq!(
+                heard.row_name(),
+                Some(down.as_str()),
+                "Down selects {down:?}"
+            );
+            heard.wait(cx, 2000);
+            let said = if spoken && LIST_SPEAKS_SELECTION {
+                count.clone()
+            } else {
+                resting_reading(&count, &down).to_string()
+            };
+            let own = if LIST_SPEAKS_SELECTION {
+                vec![said.clone()]
+            } else {
+                vec![down.clone(), said.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down {after} ms after {key:?}: the rest says {said:?}"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let orca = heard.take_orca();
+                let expected = if spoken {
+                    vec![first_entry(key), down.clone(), said]
+                } else {
+                    vec![first_entry(key), said]
+                };
+                assert_eq!(
+                    orca, expected,
+                    "Down {after} ms after {key:?}: Orca speaks each entry it hears once"
+                );
+            }
+            close(cx);
+        }
+    }
+
+    /// A selected row the wheel brings back into the list is a change of
+    /// selection: it enters the window's tree already selected, which the
+    /// AT-SPI adapter reports as a change of the list's selection, and Orca
+    /// speaks it. A key that selects another entry 50 ms after it makes a
+    /// change Orca 51.1 drops as one of a burst, so the rest announces the
+    /// count with the entry the search rests on. Untimed, the row's return
+    /// left that key's change timed against the dialog's opening, and the
+    /// rest said the count alone, the entry unheard.
+    #[gpui::test]
+    async fn a_selected_row_brought_back_into_the_list_is_a_change(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        let first = first_entry("");
+        let key = ["b", "t", "h", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| first_entry(key) != first)
+            .expect("a key that selects another entry");
+        let centre = cx
+            .debug_bounds("shortcut-help-results")
+            .expect("the list")
+            .center();
+        let row = "shortcut-help-row-1";
+        assert!(cx.debug_bounds(row).is_some(), "the selected row is drawn");
+        scroll_down(cx, centre, ScrollDelta::Pixels(point(px(0.), px(-600.))));
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_none(),
+            "the wheel takes the selected row out of the list"
+        );
+        heard.wait(cx, 1000);
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        scroll_down(cx, centre, ScrollDelta::Pixels(point(px(0.), px(600.))));
+        heard.frame(cx);
+        assert!(cx.debug_bounds(row).is_some(), "and brings it back");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_listed(),
+            std::slice::from_ref(&first),
+            "the adapter reports the row's return as a change of the list's selection"
+        );
+        // A key that selects another entry 50 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        cx.simulate_input(key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(key), &first_entry(key)).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [first, whole],
+            "Orca speaks the returned row, drops the key's change 50 ms after it, and speaks \
+             the status's reading"
+        );
+        close(cx);
+    }
+
+    /// A search that keeps the selected entry reads whole, even where a move
+    /// outside any rest selected that entry: Down to the second entry, then,
+    /// 5 s later, a key that keeps it first and narrows the count. The rest
+    /// announces the count with the entry, on every platform; Down, heard
+    /// from the list and taken quietly on Linux, led to no rest. Counted
+    /// toward the search's rest, Down had the status say the count alone,
+    /// "38 shortcuts", though no change of selection led to it.
+    #[gpui::test]
+    async fn a_search_that_keeps_a_moved_entry_reads_whole(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        let whole = help_matches("");
+        let found = entry_rows(&whole);
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        heard.wait(cx, 5000);
+        heard.take();
+        let down = entry_reading(&whole, found[1]).to_string();
+        let label = match &whole[found[1]] {
+            HelpRow::Entry(entry) => entry.label.to_lowercase(),
+            HelpRow::Group(..) => unreachable!("an entry row"),
+        };
+        // The shortest part of Down's label that keeps it first.
+        let query = (1..=label.len())
+            .flat_map(|len| (0..=label.len() - len).map(move |at| (at, len)))
+            .filter_map(|(at, len)| label.get(at..at + len).map(str::to_owned))
+            .find(|query| first_entry(query) == down && count_for(query) != count_for(""))
+            .expect("a search whose first entry is Down's");
+        cx.simulate_input(&query);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            [resting_reading(&count_for(&query), &down).to_string()],
+            "{query:?}, which keeps {down:?} selected, reads whole"
+        );
+        close(cx);
+    }
+
+    /// Three keys after a rest, the second and third each selecting another
+    /// entry: `(prefix, second, third)`.
+    fn three_changes() -> (String, String, String) {
+        let letters = || ('a'..='z').map(String::from);
+        letters()
+            .flat_map(|prefix| letters().map(move |second| (prefix.clone(), second)))
+            .flat_map(|(prefix, second)| {
+                letters().map(move |third| (prefix.clone(), second.clone(), third))
+            })
+            .find(|(prefix, second, third)| {
+                let (two, three) = (
+                    format!("{prefix}{second}"),
+                    format!("{prefix}{second}{third}"),
+                );
+                !entry_rows(&help_matches(&three)).is_empty()
+                    && first_entry(prefix) != first_entry(&two)
+                    && first_entry(&two) != first_entry(&three)
+            })
+            .expect("three keys whose last two each select another entry")
+    }
+
+    /// A change of selection whose frame is drawn late, as on a loaded host,
+    /// keeps the entry in the status's reading. The second key selects
+    /// another entry and its frame is drawn 140 ms after it is handled; the
+    /// third, handled 156 ms after the second, selects another in a frame
+    /// drawn at once, so the AT-SPI adapter reports the two changes 16 ms
+    /// apart and Orca 51.1 drops the second. The rest announces the count
+    /// with the entry the search rests on, the last thing Orca says, and
+    /// Orca never names that entry otherwise. Timed as their keys were
+    /// handled, the third key's change would be taken as spoken, and the
+    /// status would say the count alone after the entry Orca spoke for the
+    /// second key, as the command palette's did before its frames timed it.
+    #[gpui::test]
+    async fn a_late_frame_keeps_the_entry_in_the_reading(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        let (prefix, second, third) = three_changes();
+        heard.wait(cx, 1000);
+        cx.simulate_input(&prefix);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        // The second key, whose frame is drawn 140 ms after it is handled.
+        cx.simulate_input(&second);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(140));
+        heard.frame(cx);
+        let two = format!("{prefix}{second}");
+        assert_eq!(heard.row_name(), Some(first_entry(&two).as_str()));
+        // The third 16 ms after that frame, drawn at once.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.simulate_input(&third);
+        heard.frame(cx);
+        let three = format!("{two}{third}");
+        let entry = first_entry(&three);
+        assert_eq!(heard.row_name(), Some(entry.as_str()));
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(&three), &entry).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [first_entry(&two), whole],
+            "Orca speaks the second key's entry, drops the change the third made 16 ms after it, \
+             and speaks the status's reading"
+        );
+        close(cx);
+    }
+
+    /// A change of selection reported soon after the one before it keeps the
+    /// entry in the status's reading even where the frame after the one that
+    /// drew it comes late, as behind a long task. The second key selects
+    /// another entry, drawn and timed at once; the third, 60 ms later,
+    /// selects another in a frame drawn at once, so the AT-SPI adapter
+    /// reports it 60 ms after the second's and Orca 51.1 drops it, and the
+    /// frame after that one comes 110 ms later. The rest announces the count
+    /// with the entry. Timed by that late frame, 170 ms after the second
+    /// key's, the change would be taken as spoken. The test's AT-SPI model
+    /// sees the window's tree only with frames that also run the next
+    /// frame's callbacks, so it hears the third key's change at 170 ms and
+    /// cannot show Orca dropping it; the status is what this checks.
+    #[gpui::test]
+    async fn a_late_frame_after_a_change_keeps_the_entry_in_the_reading(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1480., 973.));
+        let mut heard = Heard::new(cx);
+        let (prefix, second, third) = three_changes();
+        heard.wait(cx, 1000);
+        cx.simulate_input(&prefix);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.take();
+        // The second key, drawn and timed at once.
+        cx.simulate_input(&second);
+        heard.frame(cx);
+        // The third 60 ms later, drawn at once, and the frame after that one
+        // 110 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(60));
+        cx.simulate_input(&third);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(110));
+        heard.frame(cx);
+        let three = format!("{prefix}{second}{third}");
+        let entry = first_entry(&three);
+        assert_eq!(heard.row_name(), Some(entry.as_str()));
+        heard.wait(cx, 2000);
+        let whole = resting_reading(&count_for(&three), &entry).to_string();
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the count with the entry"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let orca = heard.take_orca();
+            assert_eq!(
+                orca.last(),
+                Some(&whole),
+                "Orca speaks the status's reading last: {orca:?}"
+            );
+        }
+        close(cx);
+    }
+
     /// The entry last spoken follows the selection on every platform: after
     /// a search for "p" rests, Down, then "a" and Backspace inside the next
     /// rest bring the search back to "p" and its first entry, which the rest
@@ -4157,11 +4930,8 @@ mod list_tests {
         let (app, cx) = window(cx, &repo);
         open(&app, cx, 13, (1200., 800.));
         let mut heard = Heard::new(cx);
-        let mut locus = None;
-        let mut orca = |cx: &mut VisualTestContext, heard: &mut Heard| {
-            let now = cx.executor().now();
-            heard.bus.heard_by_orca_from(now, &mut locus)
-        };
+        heard.locus = Some(None);
+        let orca = |_: &mut VisualTestContext, heard: &mut Heard| heard.take_orca();
         cx.simulate_keystrokes("down");
         heard.frame(cx);
         let rows = help_matches("");
