@@ -639,7 +639,11 @@ impl GitTurtle {
                                     // on the icon's corner; the toggle's name
                                     // already says it.
                                     .when(count > 0, |toggle| {
-                                        toggle.child(changes_badge(count, !history, p))
+                                        toggle.child(changes_badge(
+                                            labels.changes_badge.clone(),
+                                            !history,
+                                            p,
+                                        ))
                                     }),
                             ),
                     )
@@ -660,9 +664,11 @@ impl GitTurtle {
                                 busy,
                             )
                         })
-                        .tooltip(
+                        // Fixed, and longer than a shared string holds inline: a
+                        // static one, so a frame copies none of it.
+                        .tooltip(SharedString::new_static(
                             "Pull requests · Discover pull requests and review captured changes",
-                        )
+                        ))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_github_from_header(window, cx)
                         })),
@@ -881,7 +887,9 @@ impl GitTurtle {
                                     busy,
                                 )
                             })
-                            .tooltip("Discover pull requests and review captured changes")
+                            .tooltip(SharedString::new_static(
+                                "Discover pull requests and review captured changes",
+                            ))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_github_from_header(window, cx)
                             })),
@@ -4477,6 +4485,10 @@ struct ChromeLabels {
     changes: SharedString,
     /// The compact Changes toggle's tooltip: that name, then its shortcut.
     changes_tooltip: SharedString,
+    /// The count on the compact Changes toggle's badge
+    /// ([`changes_badge_text`]), empty with no working file, where no badge
+    /// is drawn.
+    changes_badge: SharedString,
     /// The repository heading's accessible name and its tooltip
     /// (`GitTurtle::repository_heading`).
     heading: SharedString,
@@ -5755,6 +5767,7 @@ impl GitTurtle {
             labels: ChromeLabels {
                 changes_tooltip: format!("{changes} · {}2", primary_label()).into(),
                 changes: changes.into(),
+                changes_badge: changes_badge_text(status.map_or(0, |status| status.entries.len())),
                 heading: heading.into(),
                 heading_tooltip: heading_tooltip.into(),
             },
@@ -7446,6 +7459,14 @@ thread_local! {
     static SIDEBAR_WIDTHS: RefCell<Option<(LineKey, SidebarWidths)>> = const { RefCell::new(None) };
 }
 
+/// Empties [`CHROME_WIDTHS`], the chrome's kept widths and labels, for a test
+/// that counts what the chrome builds: a GPUI test's seeds share the thread
+/// and its cache, so from the second seed on a text the first built is kept.
+#[cfg(test)]
+pub(crate) fn forget_chrome_text() {
+    CHROME_WIDTHS.with_borrow_mut(|cache| *cache = Measured::new());
+}
+
 /// Empties [`STATUS_TEXT`], for a test that counts what it measures: a GPUI
 /// test's seeds share the thread and its cache, so from the second seed on
 /// every line it draws was kept by the first.
@@ -7681,8 +7702,9 @@ const CHANGES_TOGGLE: &str = "compact-changes-toggle";
 /// let the pill's antialiased edge show past it as a half-pixel fringe of
 /// the accent (1.23:1 in Braden, 1.43:1 in Midnight); here the outer edge
 /// blends the fill beneath with itself, and the pill's own edge lies inside
-/// the cut-out. Above 99 it reads "99+".
-fn changes_badge(count: usize, selected: bool, p: appearance::Palette) -> impl IntoElement {
+/// the cut-out. Above 99 it reads "99+" ([`changes_badge_text`], which the
+/// chrome keeps).
+fn changes_badge(count: SharedString, selected: bool, p: appearance::Palette) -> impl IntoElement {
     let ring = appearance::ui_size(CHANGES_BADGE_RING);
     let [rest, hovered, pressed] = p.control_fills(selected, p.subtle);
     div()
@@ -7699,6 +7721,10 @@ fn changes_badge(count: usize, selected: bool, p: appearance::Palette) -> impl I
         .group_active(CHANGES_TOGGLE, move |style| style.bg(rgb(pressed)))
         .child(
             div()
+                .debug_selector({
+                    let count = count.clone();
+                    move || format!("changes-count: {count}")
+                })
                 .min_w(appearance::ui_size(14.))
                 .h(appearance::ui_size(14.))
                 .px(appearance::ui_size(3.))
@@ -7710,12 +7736,22 @@ fn changes_badge(count: usize, selected: bool, p: appearance::Palette) -> impl I
                 .text_color(rgb(p.accent_foreground))
                 .text_size(appearance::ui_text(10.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(if count > 99 {
-                    "99+".to_owned()
-                } else {
-                    count.to_string()
-                }),
+                .child(count),
         )
+}
+
+/// The compact Changes toggle's badge text for `count` working files: the
+/// count, or "99+" past 99, and nothing with none. Built with the chrome's
+/// text ([`ChromeLabels`]), so a frame at rest draws the kept copy rather
+/// than formatting the count again.
+fn changes_badge_text(count: usize) -> SharedString {
+    #[cfg(test)]
+    CHROME_LABELS_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+    match count {
+        0 => SharedString::default(),
+        100.. => SharedString::new_static("99+"),
+        count => count.to_string().into(),
+    }
 }
 
 /// [`compact_control_name`] for a `name` that changes with what the control
@@ -22757,6 +22793,166 @@ pub(crate) mod tests {
         );
         let (drawn, expected) = heading(cx);
         assert_eq!(drawn, expected, "the compact header's heading");
+    }
+
+    /// The header's other text that follows from the window's state is
+    /// formatted only when it shows or changes: Back's and Projects'
+    /// tooltips only as they show (`GitTurtle::refusing_with_reason`), the
+    /// profile picker's accessible name and tooltip kept for what they read
+    /// (`GitTurtle::shown_profile_title`, `GitTurtle::shown_profile_tooltip`)
+    /// and the compact Changes toggle's badge with the chrome's text
+    /// ([`ChromeLabels`]), each of which every frame formatted again,
+    /// however steady. At 13 pt in History's root and in Changes at
+    /// 1,480 × 800 and in a 700 × 330 window, whose compact header draws the
+    /// badge, frames at rest format none of them. The first frame of Changes
+    /// reads Back's and Projects' own tooltips; another identity formats the
+    /// picker's name and tooltip once each; one fewer working file builds
+    /// the badge's count once; and each is drawn as it now reads.
+    #[gpui::test]
+    async fn the_header_formats_its_tooltips_names_and_badge_only_when_they_change(
+        cx: &mut TestAppContext,
+    ) {
+        // Empty, as a GPUI test's seeds share the thread and its caches.
+        crate::profiles::forget_picker_text();
+        forget_chrome_text();
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(&app, cx).await;
+        let counts = || {
+            (
+                crate::workspace::WAITING_TEXTS_FORMATTED.get(),
+                crate::profiles::PROFILE_PICKER_TEXT_FORMATTED.get(),
+                CHROME_LABELS_FORMATTED.get(),
+            )
+        };
+        let since = |before: (usize, usize, usize)| {
+            let after = counts();
+            (after.0 - before.0, after.1 - before.1, after.2 - before.2)
+        };
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            let before = counts();
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            assert_eq!(
+                since(before),
+                (0, 0, 0),
+                "{at}: frames at rest format no tooltip, name or badge"
+            );
+        };
+        // What a control's tooltip reads as the frame built it (the test's
+        // record of `refusing_with_reason`), which its hover shows.
+        let waiting = |key: &str| crate::workspace::refusals::tooltip(key).map(|t| t.to_string());
+        let back = |label: &str| format!("{label} · {}[", primary_label());
+
+        at_rest("History at 1480 × 800", cx);
+        assert_eq!(
+            waiting("page-back"),
+            Some(back("Back to Projects")),
+            "History's root: Back's tooltip"
+        );
+
+        // The first frame of Changes reads its own Back, never History's.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        draw(cx);
+        assert_eq!(
+            waiting("page-back"),
+            Some(back("Back to History")),
+            "Changes: Back's tooltip"
+        );
+        assert_eq!(
+            waiting("projects"),
+            Some(format!(
+                "Open Projects · {}",
+                shortcuts::label(shortcuts::ShortcutId::Projects)
+            )),
+            "Changes: Projects' tooltip"
+        );
+        at_rest("Changes at 1480 × 800", cx);
+
+        let before = counts();
+        app.update(cx, |app, cx| {
+            app.profile = Some(gitturtle_core::GitProfile {
+                name: "Ada Lovelace".into(),
+                email: "ada@example.invalid".into(),
+                private_worktree: true,
+                ..app.profile.clone().unwrap_or_default()
+            });
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            since(before).1,
+            2,
+            "another identity formats the picker's name and tooltip once each"
+        );
+        assert_eq!(
+            crate::profiles::PROFILE_PICKER_DRAWN.with(|drawn| drawn.borrow().clone()),
+            Some((
+                "Git profile: Ada Lovelace. Choose or manage profiles".into(),
+                "Ada Lovelace <ada@example.invalid> · Private worktree configuration".into()
+            )),
+            "the picker's name and tooltip read the new identity"
+        );
+        at_rest("another identity", cx);
+
+        // Only where the identity's configuration lives changes: the label,
+        // and so the name, stay, and the tooltip reads the shared one.
+        let before = counts();
+        app.update(cx, |app, cx| {
+            app.profile.as_mut().expect("a profile").private_worktree = false;
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            since(before).1,
+            1,
+            "a shared configuration formats the picker's tooltip once"
+        );
+        assert_eq!(
+            crate::profiles::PROFILE_PICKER_DRAWN.with(|drawn| drawn.borrow().clone()),
+            Some((
+                "Git profile: Ada Lovelace. Choose or manage profiles".into(),
+                "Ada Lovelace <ada@example.invalid> · Repository configuration shared by linked worktrees"
+                    .into()
+            )),
+            "the picker's tooltip reads the shared configuration"
+        );
+        at_rest("a shared configuration", cx);
+
+        cx.simulate_resize(size(px(700.), px(330.)));
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| app.read(cx).chrome(window, cx).is_compact()),
+            "the short window draws the compact chrome"
+        );
+        assert!(
+            cx.debug_bounds("changes-count: 3").is_some(),
+            "the badge reads the three working files"
+        );
+        at_rest("Changes at 700 × 330", cx);
+        let built = CHROME_TEXT_BUILT.get();
+        app.update(cx, |app, cx| {
+            Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+                .entries
+                .pop();
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            CHROME_TEXT_BUILT.get() - built,
+            1,
+            "one fewer working file builds the chrome's text, the badge's count with it, once"
+        );
+        assert!(
+            cx.debug_bounds("changes-count: 2").is_some()
+                && cx.debug_bounds("changes-count: 3").is_none(),
+            "the badge reads the new count"
+        );
+        at_rest("one fewer working file", cx);
     }
 
     /// The status bar's room for Cancel, and so the idle bar's hints, follow

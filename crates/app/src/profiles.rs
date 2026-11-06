@@ -96,9 +96,14 @@ impl ProfileLabel<'_> {
 /// Whether an assigned profile matches the effective identity, by both.
 type ProfileMatches =
     std::cell::RefCell<crate::views::Measured<(Definition, gitturtle_core::GitProfile), bool>>;
-/// The picker's label as drawn, by what it is made of.
+/// The picker's label as drawn, with its accessible name, by what it is
+/// made of.
 type ProfileTitles =
-    std::cell::RefCell<crate::views::Measured<ProfileLabel<'static>, SharedString>>;
+    std::cell::RefCell<crate::views::Measured<ProfileLabel<'static>, (SharedString, SharedString)>>;
+/// The picker's tooltip as drawn, by the effective identity's name, email
+/// and whether its configuration is the worktree's own, if any.
+type ProfileTooltips =
+    std::cell::RefCell<crate::views::Measured<Option<(String, String, bool)>, SharedString>>;
 
 thread_local! {
     /// Whether each assigned profile drawn lately matches the effective
@@ -109,6 +114,21 @@ thread_local! {
     /// ([`GitTurtle::shown_profile_title`]).
     static PROFILE_TITLES: ProfileTitles =
         const { std::cell::RefCell::new(crate::views::Measured::new()) };
+    /// The picker's tooltip as drawn lately, by what it is made of
+    /// ([`GitTurtle::shown_profile_tooltip`]).
+    static PROFILE_TOOLTIPS: ProfileTooltips =
+        const { std::cell::RefCell::new(crate::views::Measured::new()) };
+}
+
+/// Empties [`PROFILE_MATCHES`], [`PROFILE_TITLES`] and [`PROFILE_TOOLTIPS`],
+/// for a test that counts what the picker formats: a GPUI test's seeds
+/// share the thread and its caches, so from the second seed on an identity
+/// the first drew is kept.
+#[cfg(test)]
+pub(crate) fn forget_picker_text() {
+    PROFILE_MATCHES.with_borrow_mut(|kept| *kept = crate::views::Measured::new());
+    PROFILE_TITLES.with_borrow_mut(|kept| *kept = crate::views::Measured::new());
+    PROFILE_TOOLTIPS.with_borrow_mut(|kept| *kept = crate::views::Measured::new());
 }
 
 #[cfg(test)]
@@ -117,6 +137,14 @@ thread_local! {
     /// ([`ProfileLabel::text`]), for a test.
     pub(crate) static PROFILE_LABELS_BUILT: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    /// How many times the picker's accessible name or its tooltip was
+    /// formatted, for a test.
+    pub(crate) static PROFILE_PICKER_TEXT_FORMATTED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// The picker's accessible name and tooltip as last drawn, for a test:
+    /// a Button writes no accessibility node a test can read.
+    pub(crate) static PROFILE_PICKER_DRAWN: std::cell::RefCell<Option<(SharedString, SharedString)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The profile menu's first line: the identity Git authors with now, after
@@ -198,16 +226,76 @@ impl GitTurtle {
         }
     }
 
-    /// [`Self::profile_title`] as the picker draws it, formatted again only
-    /// when what it is made of changes ([`PROFILE_TITLES`]).
-    fn shown_profile_title(&self) -> SharedString {
+    /// [`Self::profile_title`] as the picker draws it, and the picker's
+    /// accessible name, which reads it, formatted again only when what it is
+    /// made of changes ([`PROFILE_TITLES`]).
+    fn shown_profile_title(&self) -> (SharedString, SharedString) {
         let label = self.profile_label();
         PROFILE_TITLES.with_borrow_mut(|titles| {
             titles
                 .get_where(
                     |kept| *kept == label,
                     || label.owned(),
-                    |label| label.clone().text().into(),
+                    |label| {
+                        let title: SharedString = label.clone().text().into();
+                        #[cfg(test)]
+                        PROFILE_PICKER_TEXT_FORMATTED.with(|formatted| {
+                            formatted.set(formatted.get() + 1);
+                        });
+                        let name = format!("Git profile: {title}. Choose or manage profiles");
+                        (title, name.into())
+                    },
+                )
+                .clone()
+        })
+    }
+
+    /// The picker's tooltip: the effective identity with where its
+    /// configuration lives, or what the picker offers without one, formatted
+    /// again only when that identity changes ([`PROFILE_TOOLTIPS`]); the
+    /// picker formatted it on every frame.
+    fn shown_profile_tooltip(&self) -> SharedString {
+        let identity = self
+            .profile
+            .as_ref()
+            .map(|p| (p.name.as_str(), p.email.as_str(), p.private_worktree));
+        PROFILE_TOOLTIPS.with_borrow_mut(|tooltips| {
+            tooltips
+                .get_where(
+                    |kept| {
+                        kept.as_ref()
+                            .map(|(name, email, private)| (name.as_str(), email.as_str(), *private))
+                            == identity
+                    },
+                    || {
+                        identity.map(|(name, email, private)| {
+                            (name.to_owned(), email.to_owned(), private)
+                        })
+                    },
+                    |identity| {
+                        #[cfg(test)]
+                        PROFILE_PICKER_TEXT_FORMATTED.with(|formatted| {
+                            formatted.set(formatted.get() + 1);
+                        });
+                        identity.as_ref().map_or_else(
+                            || {
+                                SharedString::new_static(
+                                    "Choose or manage named Git author profiles",
+                                )
+                            },
+                            |(name, email, private)| {
+                                format!(
+                                    "{name} <{email}> · {}",
+                                    if *private {
+                                        "Private worktree configuration"
+                                    } else {
+                                        "Repository configuration shared by linked worktrees"
+                                    }
+                                )
+                                .into()
+                            },
+                        )
+                    },
                 )
                 .clone()
         })
@@ -224,7 +312,12 @@ impl GitTurtle {
         row: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let title = self.shown_profile_title();
+        let (title, name) = self.shown_profile_title();
+        let tooltip = self.shown_profile_tooltip();
+        #[cfg(test)]
+        PROFILE_PICKER_DRAWN.with(|drawn| {
+            *drawn.borrow_mut() = Some((name.clone(), tooltip.clone()));
+        });
         let owner = cx.entity().downgrade();
         let size = ROW_CONTROL;
         crate::views::note_control_icon(&"profile".into(), PROFILE_ICON);
@@ -269,24 +362,8 @@ impl GitTurtle {
                     self.operation_shown().is_some() || self.profiles.saving,
                 )
             })
-            .accessibility_label(format!("Git profile: {title}. Choose or manage profiles"))
-            .tooltip(
-                self.profile
-                    .as_ref()
-                    .map(|p| {
-                        format!(
-                            "{} <{}> · {}",
-                            p.name,
-                            p.email,
-                            if p.private_worktree {
-                                "Private worktree configuration"
-                            } else {
-                                "Repository configuration shared by linked worktrees"
-                            }
-                        )
-                    })
-                    .unwrap_or_else(|| "Choose or manage named Git author profiles".into()),
-            )
+            .accessibility_label(name)
+            .tooltip(tooltip)
             .app_menu_within(px(440.), move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;

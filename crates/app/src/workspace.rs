@@ -695,8 +695,18 @@ impl WaitingTooltip {
     /// every tooltip that names a shortcut ends with it ("History ·
     /// Primary+1") and a refusing one gives its reason after its name
     /// ("Open Projects · Wait for …"). Back to Projects once read
-    /// "Back to Projects · Primary+[ · Wait for …".
+    /// "Back to Projects · Primary+[ · Wait for …". Formatted only as the
+    /// tooltip shows ([`GitTurtle::refusing_with_reason`]): built with the
+    /// control, it made a few allocations on every frame, however steady.
     fn text(&self, reason: &str) -> SharedString {
+        #[cfg(test)]
+        WAITING_TEXTS_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+        self.compose(reason)
+    }
+
+    /// [`Self::text`]'s formatting, uncounted, as a test reads what a
+    /// control was built with (`refusals::tooltip`).
+    fn compose(&self, reason: &str) -> SharedString {
         let mut text = self.name.to_string();
         if self.dimmed {
             text.push_str(" · ");
@@ -708,6 +718,14 @@ impl WaitingTooltip {
         }
         text.into()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times a [`WaitingTooltip`]'s text was formatted for its
+    /// tooltip ([`WaitingTooltip::text`]), for a test.
+    pub(crate) static WAITING_TEXTS_FORMATTED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 impl GitTurtle {
@@ -749,14 +767,20 @@ impl GitTurtle {
         tooltip: fn(&GitTurtle) -> WaitingTooltip,
         cx: &Context<Self>,
     ) -> Button {
+        // Its parts as the control is built, held inline or shared: the text
+        // is formatted only as the tooltip shows, from the window's state
+        // then, or from these where the window is gone, so a frame formats
+        // none of it (a test records the parts, and formats them as it reads
+        // them).
         let built = tooltip(self);
-        let text = built.text(self.busy_reason());
+        let reason = self.busy_reason();
         #[cfg(test)]
-        refusals::record_tooltip(key.into(), text.clone());
+        refusals::record_tooltip(key.into(), tooltip(self), reason);
         let owner = cx.entity().downgrade();
-        refusing(control, || key.into(), refused, built.dimmed).tooltip_view(move |window, cx| {
+        let dimmed = built.dimmed;
+        refusing(control, || key.into(), refused, dimmed).tooltip_view(move |window, cx| {
             let text = owner.upgrade().map_or_else(
-                || text.clone(),
+                || built.text(reason),
                 |app| {
                     let app = app.read(cx);
                     tooltip(app).text(app.busy_reason())
@@ -810,7 +834,8 @@ pub(crate) mod refusals {
 
     thread_local! {
         static LAST: RefCell<HashMap<String, Refusal>> = Default::default();
-        static TOOLTIPS: RefCell<HashMap<String, gpui_kit::SharedString>> = Default::default();
+        static TOOLTIPS: RefCell<HashMap<String, (super::WaitingTooltip, &'static str)>> =
+            Default::default();
         static WAITING: RefCell<HashMap<&'static str, Waiting>> = Default::default();
     }
 
@@ -831,8 +856,16 @@ pub(crate) mod refusals {
         LAST.with(|last| last.borrow_mut().insert(key, Refusal { announced, dimmed }));
     }
 
-    pub(crate) fn record_tooltip(key: String, tooltip: gpui_kit::SharedString) {
-        TOOLTIPS.with(|last| last.borrow_mut().insert(key, tooltip));
+    /// Records the parts the control `key` was built with, its tooltip and
+    /// the reason it gives, which [`tooltip`] formats as a test reads it:
+    /// formatted as the control is built, the record made the frames a
+    /// release benchmark times format it again on every frame.
+    pub(crate) fn record_tooltip(
+        key: String,
+        tooltip: super::WaitingTooltip,
+        reason: &'static str,
+    ) {
+        TOOLTIPS.with(|last| last.borrow_mut().insert(key, (tooltip, reason)));
     }
 
     /// What the control `key` was last built with.
@@ -843,7 +876,8 @@ pub(crate) mod refusals {
     /// The tooltip the control `key` was last built with
     /// (`GitTurtle::refusing_with_reason`).
     pub(crate) fn tooltip(key: &str) -> Option<gpui_kit::SharedString> {
-        TOOLTIPS.with(|last| last.borrow().get(key).cloned())
+        TOOLTIPS
+            .with(|last| (last.borrow().get(key)).map(|(tooltip, reason)| tooltip.compose(reason)))
     }
 
     /// Forgets every control, so only those built after it are found.
