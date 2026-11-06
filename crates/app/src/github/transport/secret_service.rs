@@ -1396,8 +1396,13 @@ mod tests {
         // The constructor consults the guard (it never touches a bus); `connect` is left
         // untested, since a test calling it could reach a real bus without its guard.
         assert_eq!(DesktopKeyring::new().is_ok(), on_private_test_bus());
-        let temp = std::env::temp_dir();
-        let private = tempfile::tempdir().unwrap();
+        // The socket's directory is made in /tmp, whose path is short on every host, and /tmp
+        // stands for the temporary directory the guard measures the socket against: a socket's
+        // path holds at most 107 bytes (`sun_path`), and under a 109-character TMPDIR, as a
+        // private one under a worktree's `.local/` can be, `bind` refused `<TMPDIR>/.tmp…/bus`,
+        // 124 bytes.
+        let temp = std::path::Path::new("/tmp");
+        let private = tempfile::tempdir_in(temp).unwrap();
         let socket = private.path().join("bus");
         let _listener = UnixListener::bind(&socket).unwrap();
         let file = private.path().join("file");
@@ -1409,11 +1414,11 @@ mod tests {
         let accepts = |fixture: Option<&str>, session: Option<&str>, temp: &std::path::Path| {
             private_test_bus(fixture.map(OsStr::new), session.map(OsStr::new), temp).is_some()
         };
-        assert!(accepts(Some(&bus), Some(&bus), &temp));
+        assert!(accepts(Some(&bus), Some(&bus), temp));
         let with_guid = format!("{bus},guid=0123456789abcdef0123456789abcdef");
-        assert!(accepts(Some(&with_guid), Some(&with_guid), &temp));
+        assert!(accepts(Some(&with_guid), Some(&with_guid), temp));
 
-        let elsewhere = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir_in(temp).unwrap();
         let escaped = format!(
             "unix:path={}/../{}/bus",
             private.path().display(),
@@ -1438,7 +1443,7 @@ mod tests {
             ),
         ];
         for (fixture, session) in refused {
-            assert!(!accepts(fixture.as_deref(), session.as_deref(), &temp));
+            assert!(!accepts(fixture.as_deref(), session.as_deref(), temp));
         }
         assert!(!accepts(Some(&bus), Some(&bus), elsewhere.path()));
     }
