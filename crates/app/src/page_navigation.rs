@@ -667,6 +667,18 @@ impl GitTurtle {
         // or a second over it that took focus, keeps focus instead.
         let modal_at_back = window.has_active_dialog(cx) || window.has_active_sheet(cx);
         let focused_at_back = window.focused(cx).map(|focused| focused.downgrade());
+        // A modal open at Back that returns to a control the page Back
+        // leaves does not draw, as a form opened on the repository page
+        // before Settings returns to that page's control, was open as Back's
+        // control was saved: that control is its own, and so is its return,
+        // which a second modal over it keeps. Made the return, the control
+        // went with its modal and moved the last close's focus off the
+        // control the modal had opened from.
+        let modal_owns_return = modal_at_back
+            && self
+                .modal_return_focus
+                .as_ref()
+                .is_some_and(|opener| !self.app_focus.contains(opener, window));
         // Focus goes back as the next frame starts, before it draws the page;
         // whether that frame draws the control is known only as it ends
         // (`give_page_focus_back`). A dialog or sheet opened before that
@@ -685,7 +697,9 @@ impl GitTurtle {
                     .is_some_and(|now| Some(now.downgrade()) != focused_at_back);
                 let modal_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
                 if modal_open && (!modal_at_back || moved) {
-                    this.return_modal_to(Some(focus));
+                    if !modal_owns_return {
+                        this.return_modal_to(Some(focus));
+                    }
                     return;
                 }
                 this.give_page_focus_back(focus, window, cx);
@@ -4618,6 +4632,61 @@ mod tests {
         }
         assert!(!dialog_open(cx), "both dialogs closed");
         assert_eq!(focused(cx), Some(files), "the changed-file list again");
+    }
+
+    /// A dialog open on the repository page as Settings opens over it, as
+    /// its shortcut opens Settings from inside the dialog, holds the control
+    /// Back saved and returns to the page control it opened from
+    /// (`ignore::tests::preview_rule_works_again_once_settings_cancels_it`).
+    /// A second dialog opened over it before Back's frame keeps focus, and
+    /// Back's control, the first dialog's own, becomes no return: closing
+    /// both lands where the first dialog opened, History's changed files.
+    /// Made the return, that control, gone with its dialog, sent the last
+    /// close to History's commit list instead.
+    #[gpui::test]
+    async fn a_dialog_holding_backs_control_keeps_its_own_return_under_a_second(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+        let files = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, _| app.pane = Pane::Files);
+            window.focus(&files, cx);
+        });
+        draw(cx);
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("First")));
+        draw(cx);
+        let in_first = focused(cx).expect("the first dialog holds focus");
+        assert!(in_first != files, "the first dialog holds focus");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.page == AppPage::Settings, "Settings shows");
+            assert_eq!(
+                app.page_return_focus,
+                Some(in_first.clone()),
+                "Back's control"
+            );
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Second")));
+        let in_second = focused(cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        assert_eq!(focused(cx), in_second, "the second dialog keeps focus");
+        assert_eq!(
+            recorded_return(&app, cx),
+            Some(files.clone()),
+            "the first dialog's own return"
+        );
+        for _ in 0..2 {
+            cx.update(|window, cx| window.close_dialog(cx));
+            draw(cx);
+        }
+        assert!(!dialog_open(cx), "both dialogs closed");
+        assert_eq!(focused(cx), Some(files), "the changed-file list");
     }
 
     /// Opens Settings with nothing focused and the window naming `pane`,
