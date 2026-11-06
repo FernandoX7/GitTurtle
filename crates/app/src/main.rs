@@ -5,6 +5,8 @@ mod automatic_refresh;
 mod blame;
 mod branch_actions;
 mod build_info;
+#[cfg(test)]
+mod caret_focus_tests;
 mod columns;
 mod command_palette;
 mod commit_drafts;

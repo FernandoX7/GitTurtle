@@ -5440,4 +5440,44 @@ mod render_tests {
             }
         }
     }
+
+    /// The command palette's query, a dialog's field, draws its caret in
+    /// the frame that opens the palette on it, the one frame the opening
+    /// draws, and in the first frame after Tab, a click or code focuses it
+    /// (`caret_focus_tests::draws_its_caret_as_it_takes_focus`). The opening
+    /// frame is the one drawn as the update that opens the palette ends:
+    /// GPUI reports focus to the new query only once that update's effects
+    /// have run, so a frame drawn inside the update reports none, and the
+    /// caret it draws never starts blinking.
+    #[gpui::test]
+    async fn the_palette_s_query_draws_its_caret_as_it_takes_focus(cx: &mut TestAppContext) {
+        use crate::caret_focus_tests::{draws_its_caret_as_it_takes_focus, painted_carets};
+        use crate::views::tests::{draw, history_window};
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| {
+            // A dialog otherwise slides in on a wall-clock animation.
+            cx.set_reduce_motion(true);
+            window.activate_window();
+        });
+        cx.run_until_parked();
+        let frames = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.draws.len());
+        let before = frames(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+        assert_eq!(frames(cx) - before, 1, "the opening draws one frame");
+        assert_eq!(
+            cx.update(|window, cx| painted_carets(window, cx)),
+            1,
+            "the frame that opens the palette draws its caret"
+        );
+        draw(cx);
+        let query = cx.update(|_, cx| {
+            OPENED_PALETTE
+                .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+                .expect("the open palette")
+                .read(cx)
+                .query
+                .clone()
+        });
+        draws_its_caret_as_it_takes_focus(cx, "the command palette's query", &query);
+    }
 }

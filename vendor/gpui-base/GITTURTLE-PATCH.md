@@ -777,6 +777,17 @@ no frame for five seconds (10 notifications with upstream's `focus`), and
 History's search field holding focus with its caret hidden in its blink,
 emptied with `clean` and focused from code, drawing its caret in the next
 frame (no caret without the pause in `focus`) and blinking again after.
+`caret_focus_tests::history_s_search_field_draws_its_caret_as_it_takes_focus`,
+`_the_commit_message_` and `_compare_s_editor_`, and
+`command_palette::render_tests::the_palette_s_query_draws_its_caret_as_it_takes_focus`,
+hold the caret to the first frame for each kind of field: History's search
+field (single-line), the composer's commit message (multi-line), Compare's
+editor (the code editor) and the command palette's query (a dialog's
+field), each left with its caret hidden in its blink and focused again by
+Tab, by a click and from code (`InputState::focus`), draw it in the frame
+drawn in the update that focuses the field, before GPUI reports the focus,
+and the palette's query in the one frame its opening draws (FU23-B,
+2026-11-06: no kind drew it late).
 Remove the patch when upstream shows the caret as a focus starts it,
 pauses no cursor it has not started, starts none before the focus is
 reported, shows a focused field's caret as it is focused again, and those
