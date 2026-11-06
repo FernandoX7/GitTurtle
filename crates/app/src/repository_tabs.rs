@@ -3380,6 +3380,19 @@ mod tests {
         panic!("the quiet read never landed");
     }
 
+    /// Ends Git's search for a repository at `fixture`, the temporary
+    /// directory that holds the History window's repository, so that the
+    /// repository with its `.git` moved away is no repository, wherever the
+    /// temporary directory lies. Git looks for `.git` in each folder above
+    /// one that has none, and a folder inside a work tree opens that work
+    /// tree (`RepositorySession::open`): under a temporary directory inside a
+    /// checkout, as one under its `.local/` is, Refresh with the `.git` away
+    /// opened the checkout, 500 commits with no mark. Git refuses an invalid
+    /// `.git` file rather than look further up.
+    fn stop_discovery_at(fixture: &tempfile::TempDir) {
+        std::fs::write(fixture.path().join(".git"), "no repository here\n").unwrap();
+    }
+
     /// A tab's mark states its repository's current state: Refresh that
     /// cannot open the repository, its `.git` moved away, marks the tab; a
     /// quiet read the watcher asks for while it is still away keeps the
@@ -3391,7 +3404,8 @@ mod tests {
     /// error. Only Refresh cleared it.
     #[gpui::test]
     async fn a_quiet_read_that_finds_the_repository_clears_its_tab_mark(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        stop_discovery_at(&fixture);
         let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         let (git, away) = (root.join(".git"), root.join(".git-away"));
         let shown = |cx: &mut VisualTestContext| {
@@ -3456,7 +3470,8 @@ mod tests {
     /// All history then.
     #[gpui::test]
     async fn a_quiet_read_whose_scope_vanished_keeps_the_tab_mark(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        stop_discovery_at(&fixture);
         let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         crate::views::tests::fixture_git(&root, &["branch", "topic"]);
         let topic = worker::Scope::Branch {
