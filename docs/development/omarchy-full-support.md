@@ -766,6 +766,11 @@ cover current upstream x86-64 Omarchy.
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
        The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
        untested (low).
+     - **Tests that fail under a long `TMPDIR` (found by FU25-C, 2026-11-06; possible macOS reds, as FU24-B's):**
+       `a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus`, `the_connection_walk_shows_every_help_line_whole`
+       and the two `a_quiet_read_*` tab-mark tests failed under FU25-C's private long `TMPDIR` on its base (as
+       `dialogs_pad_their_sides_for_a_ghost_buttons_ring` did before FU24-B); reproduce each with a 74-character
+       `TMPDIR` (macOS's length) and fix the route or the layout as FU24-B did.
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
@@ -819,7 +824,7 @@ cover current upstream x86-64 Omarchy.
          disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 landed (the conflict review scrolling in a short
          window, decided; a focus the app moves for the person reveals its target)): the profiles menu's disabled items without a
          reason (verify, with FU19-F's `profiles.rs`);
-       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left (FU22-D landed 2026-11-06: `FocusReveal` keeps handles only for drawn, focused or elsewhere-held controls): a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
+       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left (FU22-D landed 2026-11-06: `FocusReveal` keeps handles only for drawn, focused or elsewhere-held controls); FU25-B landed 2026-11-06: a cleared stash inspection hands its focus to the stash list) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
        - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
           (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
           cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
@@ -852,7 +857,7 @@ cover current upstream x86-64 Omarchy.
        release lands in another window (one ignored Enter; clear it on deactivation); a
        single-line field's own Enter binding still runs on held repeats (no repository write
        submits that way).
-     - **Test infrastructure and nits:** the GitHub Files title-and-mode-row height reused from another text size for one frame (FU20-GH4); Kanagawa Lotus's secondary text reads above body text under More contrast on the hovered selected row (4.894 vs 4.871, since before FU19-C5; untested); `SerialExecutor::hold`'s blocking `send` on a full
+     - **Test infrastructure and nits:** the GitHub Files title-and-mode-row height reused from another text size for one frame (FU20-GH4); `SerialExecutor::hold`'s blocking `send` on a full
        8-slot queue (`operations.rs:233`) and the hold delaying quiet jobs queued during the
        click (FU17-E); `github_view.rs`'s remaining test premises after FU18-D; tests calling
        `hold_quiet_reads(true)` directly and the other quiet-read wait helpers checked against
