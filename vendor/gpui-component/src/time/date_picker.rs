@@ -15,7 +15,7 @@ use crate::{
     actions::{Cancel, Confirm},
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Delete, clear_button, input_style},
+    input::{Delete, clear_button, input_outline, input_style},
     v_flex,
 };
 
@@ -435,9 +435,8 @@ impl RenderOnce for DatePicker {
                     .when(self.appearance, |this| {
                         this.bg(bg)
                             .text_color(fg)
-                            .when(self.disabled, |this| this.opacity(0.5))
                             .border_1()
-                            .border_color(cx.theme().input)
+                            .border_color(input_outline(self.disabled, cx))
                             .rounded(cx.theme().radius)
                             .when(is_focused, |this| {
                                 this.border_1().border_color(cx.theme().ring)

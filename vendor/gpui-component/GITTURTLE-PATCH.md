@@ -783,16 +783,60 @@ Input's enabled fill (`input::input_style`), a disabled default Button's fill
 (`button/button.rs`), an unchecked Checkbox's and Radio's fill, and the editor
 background where the highlight theme sets none (`Theme::editor_background`).
 `input_style`, with both fills, also styles the OTP input, Select, Combobox,
-DatePicker and NumberInput. Unchanged, reading `input` itself: every other outline
-(the enabled Input's, Checkbox's, Radio's and default Button's borders, the
-half-strength borders of a disabled default Button, Radio and NumberInput,
-and the OTP input's, Select's, Combobox's, DatePicker's, NumberInput's and
-ColorPicker's), and the fills derived from `input` at other strengths, none of
-which the app draws: an outline default Button's hover and pressed fills (50%
-and 70%), NumberInput's step buttons hovered and pressed (`input` at 40% and
-60%) and the theme-file fallbacks for `button`, `button_hover` and
-`button_active` (`theme/schema.rs`), which apply only to colours a theme file
-leaves unset.
+DatePicker and NumberInput, and the first four take `input_outline` too (the
+disabled-field patch below). Unchanged, reading `input` itself: every other
+outline (the enabled Input's, Checkbox's, Radio's and default Button's borders,
+the half-strength borders of a disabled default Button, Radio and NumberInput,
+and NumberInput's and ColorPicker's), and the fills derived from `input` at
+other strengths, none of which the app draws: an outline default Button's
+hover and pressed fills (50% and 70%), NumberInput's step buttons hovered and
+pressed (`input` at 40% and 60%) and the theme-file fallbacks for `button`,
+`button_hover` and `button_active` (`theme/schema.rs`), which apply only to
+colours a theme file leaves unset. A Radio paints no fill from `input`: the
+`input` at half it computes for an unchecked one is never drawn, since an
+unchecked Radio fills with `input_background` (above), enabled or disabled,
+and a checked one with `primary`, at half when disabled.
+Under GitTurtle's More contrast those fills derive from the 3:1 outline, not
+the field-fill base, and the warning, success and info Buttons rest, hover and
+press on translucent tints of their status colours (10%, 20% and 40%,
+`button/button.rs`) that stand barely off the surface; no app view draws an outline, warning, success or info Button, a NumberInput or a
+Radio (`rg` over `crates/app/src`, 2026-11-05: only
+`native_accessibility::control_tests` builds a bare base Radio, for its
+accessibility node), so they are recorded here as unused and unchanged rather
+than patched; fitting them is more than a line or two each and needs a
+consumer to verify against.
+
+The disabled-field patch modifies `src/select.rs`, `src/combobox.rs`,
+`src/input/otp_input.rs` and `src/time/date_picker.rs`. Upstream draws each
+of them disabled with the field's disabled tokens (`input_style`: the
+`disabled_input_background` fill and `muted_foreground` text) but the enabled
+outline, `input`, and fades the box it edges, with its text, to half. That
+fade matches a disabled Input's own fill and text, which the styled Input
+halves too, but not its outline: beside a field-fill base and the disabled
+edge a disabled Select, Combobox, OTP digit or DatePicker drew the stronger
+enabled outline at half strength, where a disabled Input draws the disabled
+edge at full strength. Each now edges that box with `input_outline` and
+leaves it unfaded, so disabled it draws the disabled field tokens at full
+strength: the `disabled_input_background` fill, `muted_foreground` text and
+`input_outline`'s disabled outline. That is not a disabled Input's look,
+which halves its fill and its text (its value in the inherited text colour,
+its placeholder in `muted_foreground`); only the outline is the same. With
+either theme setting unset the outline is `input`, as upstream, without the
+fade. No app view draws these four today (the vendor guide's note on the
+three dropdowns), so the patch takes the Input's outline and drops the fade,
+a line or two in each, rather than also halving their fill and text to the
+Input's. ColorPicker has no disabled state, so it draws no disabled look to
+change.
+The kit's own `disabled_field_controls_draw_the_disabled_field_tokens_unfaded`
+renders each disabled, with the field-fill base and the disabled edge unset
+and set, and reads every box it edges from the scene: the disabled fill and
+`input_outline`'s disabled outline, unfaded
+(`scripts/vendor-crate-test.sh vendor/gpui-component disabled_field`). Remove
+this part of the patch with the field-fill patch, whose `input_outline` it
+reads, or when upstream edges these controls' disabled boxes in the outline
+a disabled Input draws, unfaded, and that check passes without it. The input
+patch's `src/input/input.rs` no longer imports `Colorize`, which it does not
+use, so the kit builds without an unused-import warning.
 
 The consuming path is the app's More contrast appearance: its `configure`
 (`crates/app/src/appearance.rs`) sets the base to its palette's `border` as

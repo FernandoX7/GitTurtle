@@ -12,7 +12,7 @@ use crate::{
     StyleSized, StyledExt,
     actions::Cancel,
     h_flex,
-    input::{clear_button, input_style},
+    input::{clear_button, input_outline, input_style},
     list::List,
     searchable_list::{
         SearchableListChange, SearchableListDelegate, SearchableListItem, SearchableListState,
@@ -481,8 +481,7 @@ where
                         .when(self.state.appearance, |this| {
                             this.bg(bg)
                                 .text_color(fg)
-                                .when(self.state.disabled, |this| this.opacity(0.5))
-                                .border_color(cx.theme().input)
+                                .border_color(input_outline(self.state.disabled, cx))
                                 .rounded(cx.theme().radius)
                         })
                         .input_size(self.state.size)

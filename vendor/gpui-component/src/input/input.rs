@@ -11,7 +11,7 @@ use crate::button::{Button, ButtonRounded, ButtonVariants as _};
 use crate::input::clear_button;
 use crate::native_menu::NativeMenu;
 use crate::spinner::Spinner;
-use crate::{ActiveTheme, Colorize, v_flex};
+use crate::{ActiveTheme, v_flex};
 use crate::{IconName, Size};
 use crate::{RoleOverride, Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
@@ -1017,6 +1017,130 @@ mod tests {
             assert_eq!(outlines(cx, "disabled"), vec![disabled], "{case}: disabled");
             assert_eq!(cx.debug_bounds("disabled"), place, "{case}: moves nothing");
         }
+    }
+
+    /// GitTurtle patch: a disabled Select, Combobox, OtpInput and DatePicker
+    /// draw the disabled field tokens at full strength: each box they edge,
+    /// the Select's, Combobox's and DatePicker's frame and each OTP digit,
+    /// fills with `disabled_input_background` and draws `input_outline`'s
+    /// disabled outline, the outline a disabled Input draws, unfaded, where a
+    /// disabled Input halves its fill. Upstream drew them in `input`, the
+    /// enabled outline, and faded each box to half, so beside a field-fill
+    /// base and a disabled edge they drew the stronger enabled outline at half
+    /// strength where a disabled Input draws the disabled edge; with neither
+    /// set the outline is `input`, as upstream, still unfaded.
+    #[gpui::test]
+    fn disabled_field_controls_draw_the_disabled_field_tokens_unfaded(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::combobox::{Combobox, ComboboxState};
+        use crate::date_picker::{DatePicker, DatePickerState};
+        use crate::input::{OtpInput, OtpState};
+        use crate::select::{SearchableVec, Select, SelectState};
+        use crate::{Disableable as _, Theme};
+        use gpui::{
+            AppContext as _, Background, Context, InteractiveElement as _, ParentElement as _,
+            Pixels, Render, VisualTestContext,
+        };
+
+        struct Harness {
+            select: Entity<SelectState<SearchableVec<&'static str>>>,
+            combobox: Entity<ComboboxState<SearchableVec<&'static str>>>,
+            otp: Entity<OtpState>,
+            date: Entity<DatePickerState>,
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let place = |id: &'static str| div().w(px(160.)).debug_selector(move || id.into());
+                v_flex()
+                    .gap_4()
+                    .p_4()
+                    .child(place("select").child(Select::new(&self.select).disabled(true)))
+                    .child(place("combobox").child(Combobox::new(&self.combobox).disabled(true)))
+                    .child(place("otp").child(OtpInput::new(&self.otp).disabled(true)))
+                    .child(place("date").child(DatePicker::new(&self.date).disabled(true)))
+            }
+        }
+
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|window, cx| Harness {
+            select: cx
+                .new(|cx| SelectState::new(SearchableVec::new(vec!["Rust"]), None, window, cx)),
+            combobox: cx
+                .new(|cx| ComboboxState::new(SearchableVec::new(vec!["Rust"]), vec![], window, cx)),
+            otp: cx.new(|cx| OtpState::new(2, window, cx)),
+            date: cx.new(|cx| DatePickerState::new(window, cx)),
+        });
+        // The fills and the outline colours painted inside `selector`'s
+        // bounds, to the device pixel, each once: GPUI paints an edged box as
+        // its fill and, apart, its border on every side.
+        let boxes = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let device = |logical: Pixels| logical.as_f32() * scale;
+                let (mut fills, mut outlines): (Vec<Background>, Vec<Hsla>) =
+                    (Vec::new(), Vec::new());
+                for quad in window.painted_quads() {
+                    let widths = quad.border_widths;
+                    if !(quad.bounds.left().as_f32() > device(bounds.left()) - 0.5
+                        && quad.bounds.top().as_f32() > device(bounds.top()) - 0.5
+                        && quad.bounds.right().as_f32() < device(bounds.right()) + 0.5
+                        && quad.bounds.bottom().as_f32() < device(bounds.bottom()) + 0.5)
+                    {
+                        continue;
+                    }
+                    if !quad.background.is_transparent() && !fills.contains(&quad.background) {
+                        fills.push(quad.background);
+                    }
+                    if [widths.top, widths.right, widths.bottom, widths.left]
+                        .into_iter()
+                        .all(|width| width.as_f32() > 0.)
+                        && !outlines.contains(&quad.border_color)
+                    {
+                        outlines.push(quad.border_color);
+                    }
+                }
+                (fills, outlines)
+            })
+        };
+        let (base, edge) = (
+            gpui::hsla(0.6, 0.3, 0.2, 1.),
+            gpui::hsla(0.75, 0.4, 0.4, 1.),
+        );
+        let mut failures = Vec::new();
+        for (case, fill_base, disabled_edge) in
+            [("unset", None, None), ("both set", Some(base), Some(edge))]
+        {
+            let (fill, outline) = cx.update(|_, cx| {
+                let theme = Theme::global_mut(cx);
+                theme.input_fill_base = fill_base;
+                theme.disabled_edge = disabled_edge;
+                (
+                    Background::from(cx.theme().disabled_input_background()),
+                    input_outline(true, cx),
+                )
+            });
+            let expected = if fill_base.is_some() {
+                edge
+            } else {
+                cx.update(|_, cx| cx.theme().input)
+            };
+            assert_eq!(outline, expected, "{case}: the disabled Input's outline");
+            for control in ["select", "combobox", "otp", "date"] {
+                let drawn = boxes(cx, control);
+                if drawn != (vec![fill], vec![outline]) {
+                    failures.push(format!(
+                        "{case}: a disabled {control} fills {:?} and edges {:?}, not {fill:?} \
+                         and {outline:?}",
+                        drawn.0, drawn.1
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]

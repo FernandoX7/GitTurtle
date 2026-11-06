@@ -3,7 +3,7 @@ use gpui::{
     ParentElement as _, RenderOnce, Styled as _, Window, div, prelude::FluentBuilder, px,
 };
 
-use super::input::input_style;
+use super::input::{input_outline, input_style};
 use super::state::sync_focused_input_registry;
 use crate::ThemeStyled as _;
 use crate::{ActiveTheme, Disableable, Icon, IconName, Sizable, Size, h_flex, v_flex};
@@ -114,10 +114,9 @@ impl RenderOnce for OtpInput {
                 h_flex()
                     .id(ix)
                     .border_1()
-                    .border_color(cx.theme().input)
+                    .border_color(input_outline(self.disabled, cx))
                     .bg(bg)
                     .text_color(fg)
-                    .when(self.disabled, |this| this.opacity(0.5))
                     .when(focus_visible, |this| this.border_color(cx.theme().ring))
                     .items_center()
                     .justify_center()
