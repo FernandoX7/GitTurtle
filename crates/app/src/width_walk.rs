@@ -1054,10 +1054,58 @@ pub(crate) fn unwatch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     );
 }
 
+/// Lands the identity [`open`] writes, "Walk Fixture" where the window read
+/// the fixture's "Fixture", then holds quiet reads for the rest of the
+/// test ([`crate::views::tests::hold_quiet_reads_for_test`]), so the window
+/// changes only as its test changes it. Left to the first quiet read to
+/// land after the write, such as the rescan the watcher's setup asks for
+/// once the operation thread answers it, the new name reached the header's
+/// profile picker at whatever park came next. On hosted macOS run
+/// 42161568150 it landed between More contrast off and on in History at
+/// 1,480 × 973 and 18 pt: the picker grew from 155 to 209 px, the heading,
+/// which shares the row's room with the spacer, gave up 19 px, and
+/// Changes moved from 597 to 578 px
+/// (`appearance::tests::more_contrast_moves_nothing_on_any_page`). The
+/// rescan starts only on a repository page, so `open` lands it in History
+/// before it shows any other.
+fn identity_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    // The watcher's setup is made on the operation thread, and asks for its
+    // rescan as its reply lands.
+    app.read_with(cx, |app, _| app.operations.drain());
+    cx.executor().run_until_parked();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.queue_automatic_refresh(
+                local_refresh::LocalChange {
+                    rescan: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    for _ in 0..8 {
+        if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+            break;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+        cx.executor().run_until_parked();
+    }
+    assert_eq!(
+        app.read_with(cx, |app, _| app.profile_title()),
+        "Walk Fixture",
+        "the walk's identity lands before its page shows"
+    );
+    crate::views::tests::hold_quiet_reads_for_test(app, cx);
+}
+
 /// A window on the fixture in Midnight, its every text run and shared
 /// control marked, showing `page` once its reads settle, and the path
-/// Compare shows there. The layout grid (`layout_grid`) lays its pages out
-/// from here too. Keep the returned directory until the test ends.
+/// Compare shows there. The window shows the walk's own Git identity,
+/// "Walk Fixture", and holds quiet reads from then on ([`identity_lands`]).
+/// The layout grid (`layout_grid`) lays its pages out from here too. Keep
+/// the returned directory until the test ends.
 pub(crate) async fn open(
     page: Page,
     cx: &mut TestAppContext,
@@ -1078,6 +1126,7 @@ pub(crate) async fn open(
     });
     fixture_git(&root, &["config", "user.name", "Walk Fixture"]);
     fixture_git(&root, &["config", "user.email", "walk@example.invalid"]);
+    identity_lands(&app, cx);
     let open = |cx: &mut VisualTestContext, path: &str| {
         let index = app.read_with(cx, |app, _| {
             app.files

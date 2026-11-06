@@ -10607,55 +10607,12 @@ mod tests {
 
     /// The window's minimum width (`main`'s `window_min_size`), where the
     /// full header's repository heading takes less than its most and more
-    /// than its least at 13 and 18 pt with the width walk's identity
-    /// ([`walk_identity_lands`]), so it gives up or takes whatever any
-    /// control in its row gains or loses and the controls after it move, on
-    /// every platform. In 1,480 px it takes its most at 13 pt, the spacer
+    /// than its least at 13 and 18 pt with the width walk's identity, which
+    /// [`crate::width_walk::open`] lands, so it gives up or takes whatever
+    /// any control in its row gains or loses and the controls after it move,
+    /// on every platform. In 1,480 px it takes its most at 13 pt, the spacer
     /// taking up a control that grows there.
     const SQUEEZED_HEADER_WIDTH: f32 = 1000.;
-
-    /// Lands the Git identity [`crate::width_walk::open`] gives its fixture,
-    /// then holds quiet reads for the rest of the test, so the window
-    /// changes only as the test changes it. `open` writes "Walk Fixture"
-    /// after the window read the fixture's "Fixture", and the first quiet
-    /// read to land after that write, such as the rescan the watcher's setup
-    /// asks for once the operation thread answers it, installed it in the
-    /// header's profile picker at whatever park came next. On hosted macOS
-    /// run 42161568150 it landed between More contrast off and on in
-    /// History at 1,480 × 973 and 18 pt: the picker grew from 155 to 209 px,
-    /// the heading, which shares the row's room with the spacer, gave up
-    /// 19 px, and Changes moved from 597 to 578 px, More contrast blamed.
-    fn walk_identity_lands(app: &gpui::Entity<crate::GitTurtle>, cx: &mut gpui::VisualTestContext) {
-        // The watcher's setup is made on the operation thread, and asks for
-        // its rescan as its reply lands.
-        app.read_with(cx, |app, _| app.operations.drain());
-        cx.executor().run_until_parked();
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.queue_automatic_refresh(
-                    crate::local_refresh::LocalChange {
-                        rescan: true,
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                )
-            })
-        });
-        for _ in 0..8 {
-            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
-                break;
-            }
-            app.read_with(cx, |app, _| app.worker.wait_idle());
-            cx.executor().run_until_parked();
-        }
-        assert_eq!(
-            app.read_with(cx, |app, _| app.profile_title()),
-            "Walk Fixture",
-            "the walk's identity lands before anything is measured"
-        );
-        crate::views::tests::hold_quiet_reads_for_test(app, cx);
-    }
 
     /// More contrast recolors and moves nothing. On the fixture in History,
     /// then Compare, then Settings, in a 1,480 × 973 window, a 1,000 × 973
@@ -10663,12 +10620,18 @@ mod tests {
     /// 18 pt, every selector of [`LAID_OUT`] and [`HEADER_ROW`] keeps its
     /// bounds with More contrast on and off, the window drawn whole
     /// (Settings is a cached view) with motion reduced and the repository's
-    /// state landed and held ([`walk_identity_lands`]).
+    /// identity landed and quiet reads held ([`crate::width_walk::open`]):
+    /// left to land later, the identity once grew the profile picker
+    /// between the two passes on a macOS host, More contrast blamed.
     #[gpui::test]
     async fn more_contrast_moves_nothing_on_any_page(cx: &mut gpui::TestAppContext) {
         use crate::width_walk;
         let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
-        walk_identity_lands(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.profile_title()),
+            "Walk Fixture",
+            "the walk's identity has landed before anything is measured"
+        );
         cx.update(|_, cx| cx.set_reduce_motion(true));
         let mut moved = Vec::new();
         for page in ["History", "Compare", "Settings"] {
