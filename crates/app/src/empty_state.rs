@@ -43,6 +43,36 @@ pub(crate) fn shown(id: &str) -> Option<SharedString> {
     SHOWN.with(|shown| shown.borrow().get(id).cloned())
 }
 
+/// The text a state's line is drawn with that is built from its parts,
+/// kept for the state's id ([`EmptyState::built`]): the line's element id,
+/// `{id}-line`, and the tooltip and glyph asset path it drew last, each
+/// with what it was built from. A state is built again in every frame that
+/// draws it, by a host that holds only its parts, so the state keeps what
+/// it built here and builds again only what a change of part makes stale:
+/// formatted in each frame, the id, the tooltip and the glyph path were up
+/// to three strings built a frame for a line that had not changed. One entry
+/// for each state id, which are static, so what is kept is bounded by the
+/// states the app has.
+struct Built {
+    line: SharedString,
+    /// The whole line and the explanation the tooltip joins, and the join.
+    tooltip: Option<(SharedString, SharedString, SharedString)>,
+    /// The glyph and its asset's path.
+    glyph: Option<(&'static str, SharedString)>,
+}
+
+thread_local! {
+    static BUILT: std::cell::RefCell<HashMap<&'static str, Built>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the lines [`EmptyState::built`] has built text for, and
+    /// the allocations it made doing so.
+    static BUILT_TEXT: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 /// One empty or edge state: its line and, where there is one, its action.
 pub(crate) struct EmptyState {
     id: &'static str,
@@ -125,19 +155,10 @@ impl EmptyState {
                 .map_or_else(|| line.clone(), |glyph| format!("glyph:{glyph}").into());
             shown.borrow_mut().insert(id, drawn)
         });
-        let name = self.name();
-        // A glyph says nothing itself, so its tooltip always leads with the
-        // whole line.
-        let tooltip = self.tooltip.clone().map(|explanation| -> SharedString {
-            if name == line && self.glyph.is_none() {
-                explanation
-            } else {
-                format!("{name} · {explanation}").into()
-            }
-        });
+        let (line_id, tooltip, glyph_path) = self.built();
         let muted = palette(cx).muted;
         div()
-            .id(SharedString::from(format!("{id}-line")))
+            .id(line_id)
             .debug_selector(move || format!("{id}-line"))
             .when_some(self.tooltip.clone(), |line, explanation| {
                 line.aria_description(explanation)
@@ -150,10 +171,10 @@ impl EmptyState {
             .when_some(tooltip, |line, tooltip| {
                 line.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             })
-            .map(|drawn| match self.glyph {
-                Some(glyph) => drawn.flex_shrink_0().child(
+            .map(|drawn| match glyph_path {
+                Some(path) => drawn.flex_shrink_0().child(
                     svg()
-                        .path(format!("icons/{glyph}.svg"))
+                        .path(path)
                         .size(appearance::ui_size(GLYPH))
                         .text_color(rgb(muted)),
                 ),
@@ -161,6 +182,59 @@ impl EmptyState {
                     .when(self.truncate, |line| line.min_w_0().truncate())
                     .child(line),
             })
+    }
+
+    /// The line's element id, its tooltip, if it has one, and the path of
+    /// the glyph drawn in its place, if one is: kept for the state's id
+    /// ([`Built`]) and built only where a part they are made of has changed
+    /// since the state was last drawn. A glyph says nothing itself, so its
+    /// tooltip always leads with the whole line, as one does where the
+    /// drawn line says less.
+    fn built(&self) -> (SharedString, Option<SharedString>, Option<SharedString>) {
+        #[cfg(test)]
+        let before = crate::test_support::allocations();
+        let id = self.id;
+        let built = BUILT.with_borrow_mut(|built| {
+            let kept = built.entry(id).or_insert_with(|| Built {
+                line: format!("{id}-line").into(),
+                tooltip: None,
+                glyph: None,
+            });
+            let name = self.name.as_ref().unwrap_or(&self.line);
+            let tooltip = self.tooltip.as_ref().map(|explanation| {
+                if *name == self.line && self.glyph.is_none() {
+                    return explanation.clone();
+                }
+                match &kept.tooltip {
+                    Some((whole, said, joined)) if whole == name && said == explanation => {
+                        joined.clone()
+                    }
+                    _ => {
+                        let joined = SharedString::from(format!("{name} · {explanation}"));
+                        kept.tooltip = Some((name.clone(), explanation.clone(), joined.clone()));
+                        joined
+                    }
+                }
+            });
+            let glyph = self.glyph.map(|glyph| match &kept.glyph {
+                Some((drawn, path)) if *drawn == glyph => path.clone(),
+                _ => {
+                    let path = SharedString::from(format!("icons/{glyph}.svg"));
+                    kept.glyph = Some((glyph, path.clone()));
+                    path
+                }
+            });
+            (kept.line.clone(), tooltip, glyph)
+        });
+        #[cfg(test)]
+        BUILT_TEXT.with(|counted| {
+            let (lines, allocations) = counted.get();
+            counted.set((
+                lines + 1,
+                allocations + crate::test_support::allocations() - before,
+            ));
+        });
+        built
     }
 
     /// `line`, placed, as the static text an assistive technology reads by
@@ -943,6 +1017,52 @@ pub(crate) mod tests {
             shown("branch-edge").as_deref(),
             Some("No upstream · Push sets one"),
             "the whole line where the bar has room"
+        );
+    }
+
+    /// A state drawn again with nothing changed builds none of its line's
+    /// text: with no upstream, the Git action bar's line at 13 pt in a
+    /// 1280 × 800 window, whole with its caption, and at 18 pt in a 461 ×
+    /// 490 half tile, a glyph whose tooltip joins the whole line and its
+    /// explanation, is built in a frame drawn again with nothing changed
+    /// without an allocation. Formatted in every frame, its element id was
+    /// two allocations a frame for the whole line, and with its joined
+    /// tooltip and its glyph's path seven for the glyph.
+    #[gpui::test]
+    async fn a_steady_frame_builds_none_of_a_lines_text(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
+        fixture_git(&root, &["remote", "add", "origin", "../origin.git"]);
+        refresh(&app, cx).await;
+        let mut steady = Vec::new();
+        for (interface, (width, height), drawn) in [
+            (13, (1280., 800.), "No upstream · Push sets one"),
+            (18, (461., 490.), "glyph:remote"),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert_eq!(
+                shown("branch-edge").as_deref(),
+                Some(drawn),
+                "at {interface} pt in {width} × {height}"
+            );
+            BUILT_TEXT.set((0, 0));
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let (lines, allocations) = BUILT_TEXT.get();
+            assert!(
+                lines > 0,
+                "at {interface} pt in {width} × {height} a frame draws the line"
+            );
+            steady.push((drawn, lines, allocations));
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(
+            steady.iter().all(|&(_, _, allocations)| allocations == 0),
+            "a steady frame builds each line's text without allocating: \
+             (line, lines built, allocations) {steady:?}"
         );
     }
 
