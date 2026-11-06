@@ -3528,6 +3528,8 @@ mod list_tests {
         let (app, cx) = window(cx, &repo);
         open(&app, cx, 13, (1480., 980.));
         let keys = DialogKeys::Shortcuts.key_hints();
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        crate::views::forget_status_text();
         let before = STATUS_TEXT_MEASURED.with(std::cell::Cell::get);
         for _ in 0..3 {
             for line in [

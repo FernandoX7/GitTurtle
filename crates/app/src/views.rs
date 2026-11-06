@@ -7355,6 +7355,14 @@ thread_local! {
     static SIDEBAR_WIDTHS: RefCell<Option<(LineKey, SidebarWidths)>> = const { RefCell::new(None) };
 }
 
+/// Empties [`STATUS_TEXT`], for a test that counts what it measures: a GPUI
+/// test's seeds share the thread and its cache, so from the second seed on
+/// every line it draws was kept by the first.
+#[cfg(test)]
+pub(crate) fn forget_status_text() {
+    STATUS_TEXT.with_borrow_mut(|cache| *cache = Measured::new());
+}
+
 /// What the status bar's room for Cancel is kept by
 /// (`GitTurtle::full_bar_room`): the font and sizes, the window's scale
 /// factor, the header's width, whether it is narrow, and the widest
