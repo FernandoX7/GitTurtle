@@ -1442,6 +1442,38 @@ impl GitTurtle {
         }
     }
 
+    /// What History's scope toolbar counts, as it draws it: the commits a
+    /// search found, or the first and last rows of the page shown, formatted
+    /// only when they change ([`SCOPE_COUNT_TEXT`]), so a steady render
+    /// formats nothing. Every frame formatted it.
+    fn history_scope_count(&self) -> SharedString {
+        let count = if self.history_search_active() {
+            ScopeCount::Found(self.visible.len())
+        } else {
+            ScopeCount::Rows(
+                self.history_paging.offset + usize::from(!self.visible.is_empty()),
+                self.history_paging.offset + self.visible.len(),
+            )
+        };
+        SCOPE_COUNT_TEXT.with_borrow_mut(|texts| texts.get(count, |&count| count.text()).clone())
+    }
+
+    /// The name of the scope History shows, as its toolbar draws it, made
+    /// again only when the scope changes ([`SCOPE_NAME_TEXT`]). Every frame
+    /// copied it twice.
+    fn history_scope_name(&self) -> SharedString {
+        let name = self.scope.as_ref().map(|(name, _)| name.as_str());
+        SCOPE_NAME_TEXT.with_borrow_mut(|texts| {
+            texts
+                .get_where(
+                    |kept| kept.as_deref() == name,
+                    || name.map(str::to_owned),
+                    |name| scope_name_text(name.as_deref()),
+                )
+                .clone()
+        })
+    }
+
     /// History's scope toolbar. Where the column is narrower than the
     /// labelled row needs, Columns and the paging buttons keep only their
     /// icons, tooltips and accessible names, and the scope name and count
@@ -1453,16 +1485,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        let count: SharedString = if self.history_search_active() {
-            crate::counted(self.visible.len(), "commit", "commits")
-        } else {
-            format!(
-                "{}–{}",
-                self.history_paging.offset + usize::from(!self.visible.is_empty()),
-                self.history_paging.offset + self.visible.len()
-            )
-        }
-        .into();
+        let count = self.history_scope_count();
         // The width `history_width` last recorded, exactly.
         let column = px(self.history_width);
         // New history a quiet read observed: its words where they fit, and
@@ -1842,11 +1865,7 @@ impl GitTurtle {
     /// History as [`Self::render_history`] builds it, for the width it took.
     fn render_history_at(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
-        let scope = self
-            .scope
-            .as_ref()
-            .map(|s| s.0.clone())
-            .unwrap_or("All history".into());
+        let scope = self.history_scope_name();
         let metrics = self.history_metrics.get();
         let columns = self.history_column_layout();
         #[cfg(test)]
@@ -2046,7 +2065,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .bg(rgb(colors.canvas))
-            .child(self.render_history_scope_toolbar(scope.into(), window, cx))
+            .child(self.render_history_scope_toolbar(scope, window, cx))
             .child(
                 div()
                     .relative()
@@ -6720,6 +6739,35 @@ fn modes_share_the_path_row(
     path + rem * 0.375 + modes <= column - rem * 1.5
 }
 
+/// What History's scope toolbar counts (`GitTurtle::history_scope_count`).
+#[derive(Clone, Copy, PartialEq)]
+enum ScopeCount {
+    /// The commits a search found.
+    Found(usize),
+    /// The first and last rows of the page shown, from one.
+    Rows(usize, usize),
+}
+
+impl ScopeCount {
+    /// The count as the toolbar draws it: "12 commits", "1–500".
+    fn text(self) -> SharedString {
+        #[cfg(test)]
+        SCOPE_TEXT_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+        match self {
+            Self::Found(found) => crate::counted(found, "commit", "commits"),
+            Self::Rows(first, last) => format!("{first}–{last}"),
+        }
+        .into()
+    }
+}
+
+/// The scope toolbar's name for the scope `name`, or All history's.
+fn scope_name_text(name: Option<&str>) -> SharedString {
+    #[cfg(test)]
+    SCOPE_TEXT_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+    name.map_or("All history".into(), |name| name.to_owned().into())
+}
+
 /// The width History's scope toolbar needs to keep its labels: `px_3` on
 /// either side, seven `gap_2` gaps, the fixed-size branch icon, the count, the
 /// scope name at the narrowest it is drawn in, and the Columns, Latest,
@@ -7233,6 +7281,12 @@ pub(crate) type TextWidth = RefCell<Option<(LineKey, String, Pixels)>>;
 
 thread_local! {
     static SCOPE_LABELS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    /// History's scope toolbar count and scope name as drawn lately, by what
+    /// they show (`GitTurtle::history_scope_count`, `history_scope_name`).
+    static SCOPE_COUNT_TEXT: RefCell<Measured<ScopeCount, SharedString>> =
+        const { RefCell::new(Measured::new()) };
+    static SCOPE_NAME_TEXT: RefCell<Measured<Option<String>, SharedString>> =
+        const { RefCell::new(Measured::new()) };
     static SCOPE_COUNT: TextWidth = const { RefCell::new(None) };
     static SCOPE_NOTICE: TextWidth = const { RefCell::new(None) };
     static SCOPE_NAME: TextWidth = const { RefCell::new(None) };
@@ -7752,6 +7806,9 @@ thread_local! {
     /// How many times [`ChromeWidths`] and [`StatusWidths`] were measured,
     /// for a test.
     static CHROME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times History's scope toolbar count or name was formatted
+    /// (`ScopeCount::text`, `scope_name_text`), for a test.
+    static SCOPE_TEXT_FORMATTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many times the chrome's text was built (`GitTurtle::chrome_text`),
     /// for a test.
     static CHROME_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -20097,6 +20154,92 @@ pub(crate) mod tests {
             before + 2,
             "text laid out again by a steady render"
         );
+    }
+
+    /// History's scope toolbar formats its count and its scope's name only
+    /// when they change: frames at rest format neither, where every frame
+    /// formatted the count and copied the name twice. A page further down
+    /// and another scope each format their text once, in the frame that
+    /// draws it, which the toolbar lays out and draws; a scope shown lately,
+    /// All history again, finds its name kept.
+    #[gpui::test]
+    async fn the_scope_toolbar_formats_its_count_and_name_only_when_they_change(
+        cx: &mut TestAppContext,
+    ) {
+        // From the empty caches a process starts with: a test's seeds run on
+        // one thread, which keeps the texts an earlier seed formatted.
+        SCOPE_COUNT_TEXT.set(Measured::new());
+        SCOPE_NAME_TEXT.set(Measured::new());
+        let (_fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(&app, cx).await;
+        let formatted = || SCOPE_TEXT_FORMATTED.with(std::cell::Cell::get);
+        let at_rest = |cx: &mut VisualTestContext| {
+            let before = formatted();
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            formatted() - before
+        };
+        let change = |what: &str, cx: &mut VisualTestContext, update: &dyn Fn(&mut GitTurtle)| {
+            let before = formatted();
+            app.update(cx, |app, cx| {
+                update(app);
+                cx.notify()
+            });
+            draw(cx);
+            assert_eq!(formatted() - before, 1, "{what}: formatted once");
+            assert_eq!(at_rest(cx), 0, "{what}: and not again at rest");
+        };
+        let width = |cx: &mut VisualTestContext, part: &'static str| {
+            cx.debug_bounds(part)
+                .unwrap_or_else(|| panic!("{part} is drawn"))
+                .size
+                .width
+        };
+        assert_eq!(at_rest(cx), 0, "frames at rest format neither");
+
+        let (count, name) = (
+            width(cx, "history-scope-count"),
+            width(cx, "history-scope-name"),
+        );
+        change("a page further down", cx, &|app| {
+            app.history_paging.offset = 1_000;
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_scope_count()),
+            SharedString::from("1001–1040"),
+            "the count is the new page's"
+        );
+        assert!(
+            width(cx, "history-scope-count") > count,
+            "the toolbar draws the new count"
+        );
+
+        let scope = "feature/a-scope-wider-than-all-history";
+        change("another scope", cx, &|app| {
+            app.scope = Some((
+                scope.into(),
+                crate::worker::Scope::Branch {
+                    name: scope.into(),
+                    remote: false,
+                },
+            ));
+        });
+        assert!(
+            width(cx, "history-scope-name") > name,
+            "the toolbar draws the new name"
+        );
+        let before = formatted();
+        app.update(cx, |app, cx| {
+            app.scope = None;
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(formatted(), before, "All history again finds its name kept");
+        assert_eq!(width(cx, "history-scope-name"), name, "and draws it");
     }
 
     /// The narrowest the scope name is drawn in keeps a character before its
