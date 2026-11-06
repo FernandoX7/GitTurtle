@@ -1599,6 +1599,7 @@ impl Render for BranchForm {
             .when(matches!(&self.mode, BranchFormMode::Track(_)), |element| {
                 element.child(
                     Checkbox::new("checkout-new-tracking-branch")
+                        .debug_selector(|| "checkout-new-tracking-branch".into())
                         .label("Switch to the new branch")
                         .checked(self.checkout)
                         .on_click(cx.listener(|this, checked, _, cx| {

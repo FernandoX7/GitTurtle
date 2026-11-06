@@ -872,3 +872,116 @@ async fn every_action_a_branch_dialog_refuses_says_why(cx: &mut TestAppContext) 
     );
     close_dialog(cx);
 }
+
+/// A tracking branch created through its form with Switch to the new branch
+/// cleared confirms in place (DESIGN.md's Git feedback in place): no control
+/// reads a word, as the picker still names the branch it named, so the
+/// outcome, "Created kept · tracks origin/kept", is announced once and
+/// recorded in the status line while the window-wide notice stays down. The
+/// form's choice reaches the review, which says the current branch stays
+/// selected and offers Create branch, and Git creates the branch without
+/// switching to it.
+#[gpui::test]
+async fn a_tracking_branch_created_without_the_switch_confirms_in_place(cx: &mut TestAppContext) {
+    use crate::copy_feedback::tests::announced;
+    use crate::views::tests::{fixture_git, history_script, settle};
+    let (fixture, app, cx) =
+        crate::views::tests::history_window_from(cx, history_script(3, 1)).await;
+    // The form's dialog slides in on the real clock: at rest from its first
+    // frame, its checkbox lies where the click lands.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+    let remote = fixture.path().join("remote.git");
+    fixture_git(
+        fixture.path(),
+        &[
+            "init",
+            "--bare",
+            "--quiet",
+            "--initial-branch=main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    fixture_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    // Pushing to the named remote also stores its remote-tracking ref.
+    fixture_git(
+        &repository,
+        &["push", "--quiet", "origin", "main:refs/heads/kept"],
+    );
+    reopen(&app, cx, &repository).await;
+    let confirm = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "a dialog is open");
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        })
+    };
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            let reference = "refs/remotes/origin/kept".to_owned();
+            app.open_branch_form(BranchFormMode::Track(reference), window, cx)
+        })
+    });
+    draw(cx);
+    let switch = rendered(cx, "checkout-new-tracking-branch");
+    cx.simulate_click(switch.center(), gpui::Modifiers::default());
+    draw(cx);
+    confirm(cx);
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the review is prepared").await;
+    draw(cx);
+    let consequences = native_accessibility::written::get("operation-consequences")
+        .and_then(|written| written.node.value().map(str::to_owned))
+        .unwrap_or_default();
+    assert!(
+        consequences.starts_with("Create local branch kept at ")
+            && consequences.contains("The current branch stays selected."),
+        "the review keeps the form's choice: {consequences:?}"
+    );
+    // Every announcement and alert takes the next generation, which names
+    // its node (`copy_feedback::announcement`): from one said just before
+    // the review is confirmed, the outcome's node is the next one only if
+    // nothing else, the outcome again included, was said in between.
+    let latest = |cx: &mut VisualTestContext| match announced(cx) {
+        Some((ElementId::NamedInteger(_, generation), text)) => (generation, text),
+        other => panic!("an announcement is drawn: {other:?}"),
+    };
+    cx.update(|window, cx| crate::copy_feedback::announce(window, cx, "Before the review"));
+    draw(cx);
+    let (before, _) = latest(cx);
+    confirm(cx);
+    draw(cx);
+    let write = app
+        .update(cx, |app, _| app.operation_task.take())
+        .expect("the write");
+    write.await;
+    settle(&app, cx).await;
+
+    let outcome = "Created kept · tracks origin/kept";
+    let (after, said) = latest(cx);
+    assert_eq!(
+        (after - before, said.as_str()),
+        (1, outcome),
+        "the outcome is announced once, and nothing else is"
+    );
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.operation_error, None);
+        assert_eq!(
+            app.operation_notice, None,
+            "the window-wide notice stays down"
+        );
+        assert_eq!(app.status_line(), outcome, "the status line records it");
+        let branch = app.work_status.as_ref().and_then(|s| s.branch.as_deref());
+        assert_eq!(branch, Some("main"), "Git switched nothing");
+    });
+    assert!(cx.debug_bounds("operation-notice-summary").is_none());
+    let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+    let kept = repo.branch_plan("kept").expect("the branch was created");
+    assert_eq!(kept.upstream.as_deref(), Some("refs/remotes/origin/kept"));
+}
