@@ -757,18 +757,15 @@ cover current upstream x86-64 Omarchy.
        Enter across the change the first plain repeat after Command's release reaches a field's or
        list's binding (never a confirmation; FU21-E review N3, security S8); (nit) the patch note's
        "read in the loop's next iteration" is "current or next iteration" (`dispatcher.rs:246-262`).
-     - **Accessibility and polish found 2026-11-06 (FU22):** Keyboard Shortcuts' status repeats a
-       row the list may have just spoken at a search's rest (as the palette did); the palette's first
-       row may be heard twice on open (QA-106 listens); the Linux Main Menu's 0.25 rem gap beside a
-       selected first tab at 11 pt may let its ring reach into the tab (verify, `views.rs`
-       `tab_list_room`, as FU22-C fixed between tabs). Palette, pre-existing (FU22-B review): a key
+     - **Accessibility and polish found 2026-11-06 (FU22; FU24-C landed 2026-11-06: Keyboard Shortcuts' status
+       says a spoken entry once, the tab strip and window controls keep a ring's room apart):** the palette's
+       first row may be heard twice on open (QA-106 listens). Palette, pre-existing (FU22-B review): a key
        burst that ends on the reading it started from stays silent even where Orca last spoke another
        row; a click on an unavailable row leaves the status's reading stale (only the error alert is
        heard); held Down repeats under 100 ms apart leave the row they end on unheard (QA-94's quiet
-       moves). Keyboard Shortcuts and the palette (FU24-C, 2026-11-06): a wheel scroll that brings the
-       selected row back into view is told to the screen reader as a selection change but not stamped,
-       so a key within 100 ms after it may be judged spoken (low); the Linux window controls' rings
-       against each other at 11 pt, scales 1.25 and 2 (verify; their 0.25 rem gaps were left).
+       moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
+       The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
+       untested (low).
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
