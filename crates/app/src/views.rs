@@ -145,6 +145,9 @@ impl GitTurtle {
     /// pressed fill and focus ring span the whole slot rather than leave
     /// empty room before the turtle.
     fn render_back_button(&self, labelled: bool, cx: &mut Context<Self>) -> Button {
+        /// Back's shortcut as its tooltip ends with it, formatted once.
+        static SHORTCUT: std::sync::LazyLock<SharedString> =
+            std::sync::LazyLock::new(|| format!("{}[", primary_label()).into());
         let back_label = self.back_label();
         let back_to_projects = back_label == "Back to Projects";
         button(
@@ -172,7 +175,7 @@ impl GitTurtle {
                 self.projects_refusal().0 && self.mode == WorkspaceMode::History,
                 |app| crate::workspace::WaitingTooltip {
                     name: app.back_label().into(),
-                    shortcut: Some(format!("{}[", primary_label()).into()),
+                    shortcut: Some(SHORTCUT.clone()),
                     dimmed: app.projects_refusal().1 && app.mode == WorkspaceMode::History,
                 },
                 cx,
@@ -289,37 +292,54 @@ impl GitTurtle {
     }
 
     /// The header's repository identity, named with its path for assistive
-    /// technology and in its tooltip.
-    fn repository_heading(&self) -> native_accessibility::StaticText<Stateful<Div>> {
+    /// technology and in its tooltip, as the chrome's kept `labels` have
+    /// them ([`Self::heading_text`]).
+    fn repository_heading(
+        &self,
+        labels: &ChromeLabels,
+    ) -> native_accessibility::StaticText<Stateful<Div>> {
+        let identity = labels.heading_tooltip.clone();
+        note_control_tooltip(&"repository-heading".into(), &identity);
         native_accessibility::static_text(
             div()
                 .id("repository-heading")
                 .debug_selector(|| "repository-heading".into()),
-            format!(
-                "Repository {}. {}",
-                self.repository
-                    .as_ref()
-                    .map(|repo| self.project_name(repo.path()))
-                    .unwrap_or_default(),
-                self.path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default(),
-            ),
+            labels.heading.clone(),
         )
-        .tooltip({
-            let identity = self
-                .path
+        .tooltip(move |window, cx| Tooltip::new(identity.clone()).build(window, cx))
+    }
+
+    /// The repository heading's accessible name, the repository's name with
+    /// the window's path, and its tooltip, those two on their own lines, or
+    /// the app's name before a repository opens.
+    fn heading_text(&self) -> (String, String) {
+        #[cfg(test)]
+        CHROME_LABELS_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+        let heading = format!(
+            "Repository {}. {}",
+            self.repository
                 .as_ref()
-                .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
-                .unwrap_or_else(|| "GitTurtle".into());
-            move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
-        })
+                .map(|repo| self.project_name(repo.path()))
+                .unwrap_or_default(),
+            self.path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+        );
+        let tooltip = self
+            .path
+            .as_ref()
+            .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
+            .unwrap_or_else(|| "GitTurtle".into());
+        (heading, tooltip)
     }
 
     /// The Changes mode's name with its working-file count, as its tab and
-    /// its compact toggle's accessible name read it.
+    /// its compact toggle's accessible name read it; the header draws the
+    /// copy the chrome keeps ([`ChromeLabels`]).
     pub(super) fn changes_label(&self) -> String {
+        #[cfg(test)]
+        CHROME_LABELS_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
         self.work_status
             .as_ref()
             .map(|status| {
@@ -460,10 +480,13 @@ impl GitTurtle {
     }
 
     fn render_settings_button(&self, cx: &mut Context<Self>) -> Button {
+        /// Settings' tooltip, with its shortcut, formatted once.
+        static TOOLTIP: std::sync::LazyLock<SharedString> =
+            std::sync::LazyLock::new(|| format!("Settings · {},", primary_label()).into());
         button("settings", "", "settings", false)
             .debug_selector(|| "settings".into())
             .accessibility_label("Settings")
-            .tooltip(format!("Settings · {},", primary_label()))
+            .tooltip(TOOLTIP.clone())
             .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx)))
     }
 
@@ -492,9 +515,12 @@ impl GitTurtle {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        /// History's tooltip, with its shortcut, formatted once.
+        static HISTORY_TOOLTIP: std::sync::LazyLock<SharedString> =
+            std::sync::LazyLock::new(|| format!("History · {}1", primary_label()).into());
         let p = palette(cx);
         let busy = self.operation_shown().is_some();
-        let widths = self.chrome_widths(window);
+        let (widths, labels) = self.kept_chrome(window, |widths, labels| (*widths, labels.clone()));
         let place = plan.operation;
         let before = self
             .operation_shown()
@@ -516,7 +542,6 @@ impl GitTurtle {
         HEADER_SHOWN
             .with(|kept| *kept.borrow_mut() = Some((shown.clone(), SharedString::default())));
         let history = self.mode != WorkspaceMode::Working;
-        let changes = self.changes_label();
         let count = self
             .work_status
             .as_ref()
@@ -537,7 +562,7 @@ impl GitTurtle {
                 header.child(app_icon(f32::from(appearance::ui_size(28.))))
             })
             .child(
-                self.repository_heading()
+                self.repository_heading(&labels)
                     .min_w_0()
                     .max_w(name)
                     .when(elided, |heading| heading.w(name))
@@ -572,7 +597,7 @@ impl GitTurtle {
                                 )
                                 .debug_selector(|| "history-tab".into())
                                 .toggled(history)
-                                .tooltip(format!("History · {}1", primary_label()))
+                                .tooltip(HISTORY_TOOLTIP.clone())
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.show_history(window, cx)
@@ -588,7 +613,7 @@ impl GitTurtle {
                                             compact_control_label(
                                                 button("changes-tab", "", "changes", !history),
                                                 "changes-tab",
-                                                changes.clone(),
+                                                labels.changes.clone(),
                                             ),
                                             !history,
                                             crate::ICON_INSET,
@@ -597,7 +622,13 @@ impl GitTurtle {
                                         )
                                         .debug_selector(|| "changes-tab".into())
                                         .toggled(!history)
-                                        .tooltip(format!("{changes} · {}2", primary_label()))
+                                        .tooltip({
+                                            note_control_tooltip(
+                                                &"changes-tab".into(),
+                                                &labels.changes_tooltip,
+                                            );
+                                            labels.changes_tooltip.clone()
+                                        })
                                         .on_click(
                                             cx.listener(|this, _, window, cx| {
                                                 this.show_working(window, cx)
@@ -716,7 +747,7 @@ impl GitTurtle {
                 .into_any_element();
         }
         // The return slot is the labelled Projects' width outside `compact`.
-        let widths = self.chrome_widths(window);
+        let (widths, labels) = self.kept_chrome(window, |widths, labels| (*widths, labels.clone()));
         let plan = plan.unwrap_or_else(|| self.header_plan(chrome, window));
         // Each line inside the identity, short of the pixel its own middle
         // elision keeps as a guard ([`ellipsis_middle`]).
@@ -762,7 +793,7 @@ impl GitTurtle {
             )
             .child(app_icon(f32::from(appearance::ui_size(28.))))
             .child(
-                self.repository_heading()
+                self.repository_heading(&labels)
                     .flex_1()
                     .max_w(appearance::ui_size(200.))
                     .min_w(appearance::ui_size(100.))
@@ -818,7 +849,7 @@ impl GitTurtle {
                                 mark_selected_mode(
                                     button(
                                         "changes-tab",
-                                        self.changes_label(),
+                                        labels.changes.clone(),
                                         "",
                                         self.mode == WorkspaceMode::Working,
                                     ),
@@ -4401,9 +4432,10 @@ pub(crate) enum SyncForm {
 }
 
 /// The text the full chrome lays out, other than its fixed labels, built
-/// only to be measured, when what it is made of changes ([`ChromeInputs`]).
+/// only when what it is made of changes ([`ChromeInputs`]): measured then,
+/// and the part the header draws kept with its widths ([`ChromeLabels`]).
 struct ChromeText {
-    changes: String,
+    labels: ChromeLabels,
     profile: String,
     branch: String,
     ahead: String,
@@ -4430,6 +4462,27 @@ struct ChromeText {
     busy_named: String,
 }
 
+/// The part of [`ChromeText`] the header draws, kept with the chrome's
+/// widths for what it was made of (`GitTurtle::kept_chrome`), so a frame at
+/// rest draws them as they were built, each cloned without allocating (a
+/// short one held inline, a longer one shared), and formats none of them:
+/// the header formatted the Changes label, the compact toggle's tooltip
+/// and the repository heading's accessible name and tooltip again on every
+/// frame, beside the copy the chrome measured.
+#[derive(Clone)]
+struct ChromeLabels {
+    /// The Changes mode's name with its working-file count
+    /// (`GitTurtle::changes_label`): the full tab's label and the compact
+    /// toggle's accessible name.
+    changes: SharedString,
+    /// The compact Changes toggle's tooltip: that name, then its shortcut.
+    changes_tooltip: SharedString,
+    /// The repository heading's accessible name and its tooltip
+    /// (`GitTurtle::repository_heading`).
+    heading: SharedString,
+    heading_tooltip: SharedString,
+}
+
 /// What [`ChromeText`] is made of, borrowed from the window's state, so a
 /// render compares it with what each kept [`ChromeWidths`] was measured
 /// from without building the text: the chrome built its fifteen strings at
@@ -4454,6 +4507,10 @@ struct ChromeInputs<'a> {
     /// name it was given, if any (`GitTurtle::project_name`).
     repository: Option<NamedPath<'a>>,
     operation_repository: Option<NamedPath<'a>>,
+    /// The window's path, with the name it was given, if any, which the
+    /// repository heading's accessible name and tooltip read
+    /// ([`ChromeLabels`]).
+    path: Option<NamedPath<'a>>,
     /// The running write's own label.
     busy: Option<&'static str>,
 }
@@ -4511,6 +4568,7 @@ impl ChromeInputs<'_> {
             profile: self.profile.owned(),
             repository: self.repository.as_ref().map(named),
             operation_repository: self.operation_repository.as_ref().map(named),
+            path: self.path.as_ref().map(named),
             busy: self.busy,
         }
     }
@@ -4571,7 +4629,7 @@ impl ChromeWidths {
         Self {
             projects: regular("Projects", label),
             history: regular("History", label),
-            changes: regular(&text.changes, label),
+            changes: regular(&text.labels.changes, label),
             pull_requests: regular("Pull requests", label),
             compact_pull_requests: regular(COMPACT_PULL_REQUESTS, label),
             // A medium kit Button's label is the rem size.
@@ -4605,15 +4663,16 @@ impl ChromeWidths {
     }
 }
 
-/// [`ChromeWidths`] by font, sizes, scale factor and what the text is made
-/// of ([`ChromeInputs`]).
-type ChromeWidthsCache = RefCell<Measured<(LineKey, u32, ChromeInputs<'static>), ChromeWidths>>;
+/// [`ChromeWidths`] and the [`ChromeLabels`] the header draws, by font,
+/// sizes, scale factor and what the text is made of ([`ChromeInputs`]).
+type ChromeWidthsCache =
+    RefCell<Measured<(LineKey, u32, ChromeInputs<'static>), (ChromeWidths, ChromeLabels)>>;
 
 thread_local! {
-    /// [`ChromeWidths`] for what each chrome text was made of, and each
-    /// font, sizes and scale factor, drawn lately, so the windows and text
-    /// sizes drawn in turn keep their own; its widths snap to the window's
-    /// device pixels.
+    /// [`ChromeWidths`] and [`ChromeLabels`] for what each chrome text was
+    /// made of, and each font, sizes and scale factor, drawn lately, so the
+    /// windows and text sizes drawn in turn keep their own; its widths snap
+    /// to the window's device pixels.
     static CHROME_WIDTHS: ChromeWidthsCache = const { RefCell::new(Measured::new()) };
     /// The header's repository name and path as they show in their room
     /// (`GitTurtle::shown_identity`), for each text, room, font, size and
@@ -5614,25 +5673,48 @@ impl GitTurtle {
         compare_toolbar_height(column, columns.content - rail, window)
     }
 
-    /// `ChromeWidths` for the chrome's current text, built and measured
-    /// again only when what it is made of ([`ChromeInputs`]), the font, the
-    /// sizes or the scale change, so a steady render builds none of its
-    /// strings and asks the text system nothing. Each window's text, and
-    /// each text size, keeps its own ([`Measured`]): kept in one slot, two
-    /// windows' repositories measured again on each other's frames.
+    /// `ChromeWidths` for the chrome's current text ([`Self::kept_chrome`]).
     fn chrome_widths(&self, window: &Window) -> ChromeWidths {
+        self.kept_chrome(window, |widths, _| *widths)
+    }
+
+    /// What `read` makes of the chrome's current widths and labels, built
+    /// and measured again only when what the text is made of
+    /// ([`ChromeInputs`]), the font, the sizes or the scale change, so a
+    /// steady render builds none of its strings, asks the text system
+    /// nothing and allocates nothing. Each window's text, and each text
+    /// size, keeps its own ([`Measured`]): kept in one slot, two windows'
+    /// repositories measured again on each other's frames.
+    fn kept_chrome<R>(
+        &self,
+        window: &Window,
+        read: impl FnOnce(&ChromeWidths, &ChromeLabels) -> R,
+    ) -> R {
+        #[cfg(test)]
+        let before = crate::test_support::allocations();
         let line = LineKey::current(window);
         let scale = window.scale_factor().to_bits();
         let inputs = self.chrome_inputs();
-        CHROME_WIDTHS.with_borrow_mut(|cache| {
-            *cache.get_where(
+        let value = CHROME_WIDTHS.with_borrow_mut(|cache| {
+            let (widths, labels) = cache.get_where(
                 |(kept_line, kept_scale, kept)| {
                     *kept_scale == scale && *kept_line == line && *kept == inputs
                 },
                 || (line.clone(), scale, inputs.owned()),
-                |_| ChromeWidths::measure(&self.chrome_text(), window),
-            )
-        })
+                |_| {
+                    let text = self.chrome_text();
+                    (ChromeWidths::measure(&text, window), text.labels)
+                },
+            );
+            read(widths, labels)
+        });
+        #[cfg(test)]
+        CHROME_LOOKUPS.with(|counted| {
+            let (lookups, allocations) = counted.get();
+            let made = crate::test_support::allocations() - before;
+            counted.set((lookups + 1, allocations + made));
+        });
+        value
     }
 
     /// What the chrome's text is made of now, borrowed.
@@ -5653,6 +5735,7 @@ impl GitTurtle {
             repository: (self.repository.as_ref()).map(|repo| NamedPath::of(repo.path(), names)),
             operation_repository: (self.operation_repository.as_deref())
                 .map(|path| NamedPath::of(path, names)),
+            path: (self.path.as_deref()).map(|path| NamedPath::of(path, names)),
             busy: self.operation_busy,
         }
     }
@@ -5666,8 +5749,15 @@ impl GitTurtle {
         let branch = status
             .and_then(|status| status.branch.clone())
             .unwrap_or("Detached HEAD".into());
+        let changes = self.changes_label();
+        let (heading, heading_tooltip) = self.heading_text();
         ChromeText {
-            changes: self.changes_label(),
+            labels: ChromeLabels {
+                changes_tooltip: format!("{changes} · {}2", primary_label()).into(),
+                changes: changes.into(),
+                heading: heading.into(),
+                heading_tooltip: heading_tooltip.into(),
+            },
             profile: self.profile_title(),
             // The label beside which the line is measured
             // (`compact_edge_fits`).
@@ -7818,6 +7908,12 @@ thread_local! {
     /// How many times History's scope toolbar count or name was formatted
     /// (`ScopeCount::text`, `scope_name_text`), for a test.
     static SCOPE_TEXT_FORMATTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The chrome's lookups (`GitTurtle::kept_chrome`), and the allocations
+    /// they made, those that built its text among them, for a test.
+    static CHROME_LOOKUPS: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+    /// How many times the labels the header draws were formatted
+    /// (`GitTurtle::changes_label`, `GitTurtle::heading_text`), for a test.
+    static CHROME_LABELS_FORMATTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many times the chrome's text was built (`GitTurtle::chrome_text`),
     /// for a test.
     static CHROME_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -22485,6 +22581,182 @@ pub(crate) mod tests {
         assert_eq!(built(), before, "13 pt again finds its text kept");
         let (laid, drawn) = width(cx, |w| w.branch, branch, 12., Some(FontWeight::MEDIUM));
         assert_eq!(laid, drawn, "13 pt: the branch's width");
+    }
+
+    /// The header draws the labels the chrome keeps with its widths
+    /// ([`ChromeLabels`]) and formats none of them at rest: at 13 pt, in a
+    /// 1,480 × 800 window and a 700 × 330 one, too short for the full
+    /// chrome, whose compact header draws the Changes toggle's own name and
+    /// tooltip, frames at rest find the chrome without allocating, build
+    /// none of its text and format neither the Changes label nor the
+    /// repository heading's name and tooltip, where every frame formatted
+    /// the Changes label, the compact toggle's tooltip and the heading's
+    /// accessible name and tooltip again beside the text the chrome kept.
+    /// A renamed project, another window
+    /// path and one fewer working file each build the text once, in the
+    /// frame that draws them, and the heading's accessible name and tooltip
+    /// and the compact Changes toggle's name and tooltip drawn then are the
+    /// new ones.
+    #[gpui::test]
+    async fn the_header_draws_the_chrome_s_kept_labels_and_formats_none_at_rest(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(&app, cx).await;
+        let counts = || {
+            (
+                CHROME_TEXT_BUILT.get(),
+                CHROME_LABELS_FORMATTED.get(),
+                CHROME_LOOKUPS.get(),
+            )
+        };
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            let (built, formatted, (lookups, allocations)) = counts();
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            let (built_after, formatted_after, (lookups_after, allocations_after)) = counts();
+            assert!(
+                lookups_after > lookups,
+                "{at}: frames at rest find the chrome"
+            );
+            assert_eq!(
+                (
+                    built_after - built,
+                    formatted_after - formatted,
+                    allocations_after - allocations
+                ),
+                (0, 0, 0),
+                "{at}: frames at rest build no text, format no label and allocate nothing to find them"
+            );
+        };
+        // Each change builds the text once, in the frame that draws it, and
+        // frames at rest after it build none.
+        let change = |what: &str, cx: &mut VisualTestContext, update: &dyn Fn(&mut GitTurtle)| {
+            let before = CHROME_TEXT_BUILT.get();
+            app.update(cx, |app, cx| {
+                update(app);
+                cx.notify()
+            });
+            draw(cx);
+            assert_eq!(
+                CHROME_TEXT_BUILT.get() - before,
+                1,
+                "{what}: the text is built once"
+            );
+            at_rest(what, cx);
+        };
+        // The heading's accessible text (a label's value) and tooltip as the
+        // header drew them last, and what they read for the window's state
+        // now.
+        let heading = |cx: &mut VisualTestContext| {
+            let drawn = (
+                crate::native_accessibility::written::get("repository-heading")
+                    .and_then(|written| written.node.value().map(str::to_owned)),
+                CONTROL_TOOLTIPS
+                    .with(|tooltips| tooltips.borrow().get("repository-heading").cloned()),
+            );
+            let expected = app.read_with(cx, |app, _| {
+                let repository = app.repository.as_ref().expect("a repository").path();
+                let path = app.path.as_ref().expect("a window path");
+                (
+                    Some(format!(
+                        "Repository {}. {}",
+                        app.project_name(repository),
+                        path.display()
+                    )),
+                    Some(format!("{}\n{}", app.project_name(path), path.display())),
+                )
+            });
+            (drawn, expected)
+        };
+        // The compact Changes toggle's name and tooltip as last drawn.
+        let compact_changes = || {
+            (
+                COMPACT_LABELS.with(|names| {
+                    names
+                        .borrow()
+                        .get("changes-tab")
+                        .map(|name| name.to_string())
+                }),
+                CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get("changes-tab").cloned()),
+            )
+        };
+        fn status(app: &mut GitTurtle) -> &mut gitturtle_core::RepositoryStatus {
+            Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+        }
+
+        at_rest("1480 × 800", cx);
+        let (drawn, expected) = heading(cx);
+        assert_eq!(drawn, expected, "the heading's name and tooltip");
+
+        let name = "A renamed project";
+        change("a renamed project", cx, &|app| {
+            let path = app.repository.as_ref().expect("a repository").path();
+            app.project_names.insert(path.to_owned(), name.into());
+        });
+        let (drawn, expected) = heading(cx);
+        assert!(
+            drawn.0.as_deref().is_some_and(|label| label.contains(name)),
+            "the heading's name reads the new name: {drawn:?}"
+        );
+        assert_eq!(drawn, expected, "the renamed project's heading");
+
+        let elsewhere = fixture.path().join("elsewhere");
+        let shown = app.read_with(cx, |app, _| app.path.clone());
+        change("another window path", cx, &|app| {
+            app.path = Some(elsewhere.clone());
+        });
+        let (drawn, expected) = heading(cx);
+        assert!(
+            drawn
+                .1
+                .as_deref()
+                .is_some_and(|tooltip| tooltip.ends_with("elsewhere")),
+            "the heading's tooltip reads the new path: {drawn:?}"
+        );
+        assert_eq!(drawn, expected, "the other path's heading");
+        let before = CHROME_TEXT_BUILT.get();
+        app.update(cx, |app, cx| {
+            app.path = shown;
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            CHROME_TEXT_BUILT.get(),
+            before,
+            "the window's own path again finds the text it had before"
+        );
+        let (drawn, expected) = heading(cx);
+        assert_eq!(drawn, expected, "the window's own path's heading");
+
+        cx.simulate_resize(size(px(700.), px(330.)));
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| app.read(cx).chrome(window, cx).is_compact()),
+            "the short window draws the compact chrome"
+        );
+        at_rest("700 × 330", cx);
+        let tooltip = |label: &str| format!("{label} · {}2", primary_label());
+        assert_eq!(
+            compact_changes(),
+            (Some("Changes · 3".to_owned()), Some(tooltip("Changes · 3"))),
+            "the compact Changes toggle's name and tooltip"
+        );
+        change("one fewer working file", cx, &|app| {
+            status(app).entries.pop();
+        });
+        assert_eq!(
+            compact_changes(),
+            (Some("Changes · 2".to_owned()), Some(tooltip("Changes · 2"))),
+            "the toggle's name and tooltip read the new count"
+        );
+        let (drawn, expected) = heading(cx);
+        assert_eq!(drawn, expected, "the compact header's heading");
     }
 
     /// The status bar's room for Cancel, and so the idle bar's hints, follow
