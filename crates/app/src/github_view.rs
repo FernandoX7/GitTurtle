@@ -9471,7 +9471,15 @@ mod tests {
     /// 461 × 490 window: with a reply open, which the section change keeps, and a notice on
     /// the top line, which then stands above the body and takes its height, the stacked list
     /// takes at most half the body drawn and the file's box ends at its foot, less the ring's
-    /// room, unless five lines need more.
+    /// room, unless five lines need more. So it does with no file selected, as Files first
+    /// appears after a file page lands, the list taking half the body in the frames the change
+    /// draws, and a click on a file leaves the list as tall as it was; as the notice clears with
+    /// no file selected, the line gone, the list takes half the whole body in the frames that
+    /// change draws, where only Files' check of the height the line drew redraws it; and with
+    /// no file selected as the conversation closes, the list takes half the whole body again,
+    /// up to its 324 px. Files measured the line only while a file was selected: with none, at
+    /// 13 pt its list took 146.5 px of a 266.5 px body, a click on a file moved the list's foot
+    /// by half the line, and a closed conversation's line kept the list 33 px short.
     #[gpui::test]
     async fn files_fits_the_body_a_pinned_top_line_leaves(cx: &mut TestAppContext) {
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -9484,6 +9492,37 @@ mod tests {
         let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let slack = px(0.5);
+        // The list's top at the body's top, inside the ring's room.
+        let list_at_top = |cx: &mut VisualTestContext| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let list = cx.debug_bounds("github-file-focus").expect("the file list");
+            let offset = (scroll.offset().y - (list.top() - body.top() - room))
+                .clamp(-scroll.max_offset().y, px(0.));
+            scroll.set_offset(point(px(0.), offset));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        // The stacked list takes half the body drawn, up to its 324 px.
+        let half = |cx: &mut VisualTestContext, at: &str| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let list = cx.debug_bounds("github-file-focus").expect("the file list");
+            assert!(
+                (list.size.height - px(324.).min(body.size.height / 2.)).abs() <= slack,
+                "{at}: the list {list:?} takes half the body {body:?}"
+            );
+            list
+        };
+        let pinned = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let panel = panel.read(cx);
+                (
+                    panel.conversations.active.is_some(),
+                    panel.review.top_line_pinned.get(),
+                    panel.review.top_line.get(),
+                )
+            })
+        };
         for interface in [13, 18] {
             let at = format!("{interface} pt in 461 × 490");
             show_overview(&panel, &pull, (interface, 461., 490.), cx);
@@ -9494,36 +9533,43 @@ mod tests {
                     panel.begin_reply(target, window, cx);
                     // After the reply opens, which clears a stale notice.
                     panel.notice = Some("Fixture PRs refreshed.".into());
+                    // As a file page lands, no file selected.
                     panel.review.files = files;
                     panel.review.selected_file = None;
                     panel.change_section(Section::Files, window, cx);
-                    panel.select_review_file(0, window, cx);
                 })
             });
             settle_panel(&app, cx).await;
+            // The frames the change drew, before any the test draws.
+            let unselected = format!("{at}, no file selected");
+            half(cx, &unselected);
             for _ in 0..4 {
                 crate::width_walk::frame(cx);
             }
-            let pinned = cx.read(|cx| {
-                let panel = panel.read(cx);
-                (
-                    panel.conversations.active.is_some(),
-                    panel.review.top_line.get(),
-                )
-            });
+            let state = pinned(cx);
             assert!(
-                pinned.0 && pinned.1 > px(0.),
-                "{at}: the reply stays open in Files, its top line above the body: {pinned:?}"
+                state.0 && state.1 && state.2 > px(0.),
+                "{at}: the reply stays open in Files, its top line above the body: {state:?}"
             );
-            // The list's top at the body's top, inside the ring's room.
-            let body = cx.debug_bounds("github-panel").expect("the body");
-            let list = cx.debug_bounds("github-file-focus").expect("the file list");
-            let offset = (scroll.offset().y - (list.top() - body.top() - room))
-                .clamp(-scroll.max_offset().y, px(0.));
-            scroll.set_offset(point(px(0.), offset));
-            for _ in 0..3 {
+            list_at_top(cx);
+            let before = half(cx, &unselected);
+            let row = cx.debug_bounds("github-file-row-0").expect("a file row");
+            cx.simulate_click(row.center(), Modifiers::default());
+            settle_panel(&app, cx).await;
+            let clicked = cx.debug_bounds("github-file-focus").expect("the file list");
+            assert!(
+                (clicked.size.height - before.size.height).abs() <= slack,
+                "{at}: a click on a file leaves the list {before:?} as tall: {clicked:?}"
+            );
+            for _ in 0..4 {
                 crate::width_walk::frame(cx);
             }
+            assert_eq!(
+                cx.read(|cx| panel.read(cx).review.selected_file),
+                Some(0),
+                "{at}: the click selects the file"
+            );
+            list_at_top(cx);
             let body = cx.debug_bounds("github-panel").expect("the body");
             let list = cx.debug_bounds("github-file-focus").expect("the file list");
             let content = cx.debug_bounds("github-patch").expect("the file's box");
@@ -9540,6 +9586,58 @@ mod tests {
                 "{at}: the file's box {content:?} ends at the body's foot {body:?}, less the \
                  ring's room, or shows its five lines past it"
             );
+            half(cx, &format!("{at}, a file selected"));
+            // A longer notice, the line taller: the list follows in the frames it draws.
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = Some(
+                        "Fixture PRs refreshed. GitHub.com is supported; Git authentication and \
+                         Push keep their existing behavior."
+                            .into(),
+                    );
+                    cx.notify();
+                })
+            });
+            settle_panel(&app, cx).await;
+            half(cx, &format!("{at}, a longer notice"));
+            // The notice clears with no file selected and the conversation still open: the line
+            // takes no height, and only Files' check of the height the line drew redraws the
+            // list, so the frames the change draws settle it, before any the test draws.
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.review.selected_file = None;
+                    cx.notify();
+                })
+            });
+            settle_panel(&app, cx).await;
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = None;
+                    cx.notify();
+                })
+            });
+            settle_panel(&app, cx).await;
+            half(cx, &format!("{at}, the notice cleared"));
+            // The conversation closes with no file selected, the line among the content.
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.review.selected_file = None;
+                    panel.conversations.active = None;
+                    cx.notify();
+                })
+            });
+            settle_panel(&app, cx).await;
+            let closed = format!("{at}, the conversation closed");
+            half(cx, &closed);
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let state = pinned(cx);
+            assert!(
+                !state.1,
+                "{closed}: the top line among the content: {state:?}"
+            );
+            half(cx, &closed);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

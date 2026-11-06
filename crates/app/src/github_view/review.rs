@@ -2102,10 +2102,6 @@ impl Panel {
             // buttons at its edge start their labels, as the panel's does; the boxes keep the
             // column's edge.
             let measured = self.review.files_fit.clone();
-            let (top_line, pinned) = (
-                self.review.top_line.clone(),
-                self.review.top_line_pinned.get(),
-            );
             // The part holds the file's title, mode row and box and Changes' range hint, as tall
             // as they are, inside the column, which tests find by a selector of its own, so the
             // part keeps the one it names itself by ([`revealing`]): the reveal sweep reads it
@@ -2124,18 +2120,14 @@ impl Panel {
                         .gap_2()
                         .when(self.review.mode < 2, |content| content.h(fit.content))
                         // The title and the mode row above the box, which the box's height
-                        // leaves its five lines below, and the top line standing above the
-                        // body, prepainted before it, which takes the body's height.
+                        // leaves its five lines below.
                         .on_children_prepainted(move |children, window, cx| {
                             if let [title, _, content] = children[..] {
                                 let above = content.top() - title.top();
-                                let top_line = if pinned { top_line.get() } else { px(0.) };
                                 FilesFit::update(
                                     &measured,
-                                    |fit| {
-                                        fit.above = above;
-                                        fit.top_line = top_line;
-                                    },
+                                    |fit| fit.above = above,
+                                    false,
                                     window,
                                     cx,
                                 );
@@ -2231,6 +2223,11 @@ impl Panel {
             div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().p_5().pl(super::text_inset()).flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").debug_selector(||"github-choose-file".into()).font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
         };
         let measured = self.review.files_fit.clone();
+        let (top_line, pinned, laid) = (
+            self.review.top_line.clone(),
+            self.review.top_line_pinned.get(),
+            fit.top_line,
+        );
         div()
             .flex()
             .flex_col()
@@ -2243,8 +2240,13 @@ impl Panel {
                     .when(!fit.stacked, |columns| columns.gap_3())
                     .min_w_0()
                     // How much narrower than the dialog the columns are, from which each frame
-                    // takes their width as it starts ([`Panel::files_fit`]).
+                    // takes their width as it starts, and the top line standing above the body,
+                    // prepainted before it: drawn taller or shorter than the height this layout
+                    // took from the body, the next frame lays Files out from it
+                    // ([`Panel::files_fit`]). This runs with a file selected or not, so neither
+                    // state lays Files out from a line the other measured.
                     .on_children_prepainted(move |children, window, cx| {
+                        let drawn = if pinned { top_line.get() } else { Pixels::ZERO };
                         let (Some(left), Some(right)) = (
                             children
                                 .iter()
@@ -2258,7 +2260,13 @@ impl Panel {
                             return;
                         };
                         let chrome = super::panel_width(window) - (right - left);
-                        FilesFit::update(&measured, |fit| fit.chrome = Some(chrome), window, cx);
+                        FilesFit::update(
+                            &measured,
+                            |fit| fit.chrome = Some(chrome),
+                            drawn != laid,
+                            window,
+                            cx,
+                        );
                     })
                     .child(file_list)
                     .child(content),
@@ -2461,15 +2469,19 @@ impl Panel {
 }
 /// What Files measured in the last layout to fit the panel's body ([`Panel::files_fit`]): how
 /// much narrower than the dialog the width its columns share is, the dialog's sides, the body's
-/// ring room and its scroll cue's gutter, which no window or text size changes, the height of
-/// the file's title and mode row above the file's box, and the height of the top line while it
-/// stands above the body, as it does while a conversation is open, which the body gives up.
+/// ring room and its scroll cue's gutter, which no window or text size changes, and the height
+/// of the file's title and mode row above the file's box. The top line standing above the body
+/// is no measure of Files': the line measures itself in every frame it stands there, whatever
+/// the section and whether a file is selected ([`ReviewState::top_line`]). Recorded here only
+/// while a file was selected, Files with none laid itself out from a line an earlier selection
+/// measured, or from none: at 13 pt in a 461 × 490 window with a reply open and a notice above
+/// the body, its list took more than half the body, and a click on a file moved the list's
+/// foot half the line a frame later.
 #[derive(Clone, Copy, Default, PartialEq)]
 pub(super) struct FilesFit {
     /// `None` until Files has been laid out.
     chrome: Option<Pixels>,
     above: Pixels,
-    top_line: Pixels,
 }
 #[cfg(test)]
 thread_local! {
@@ -2479,7 +2491,8 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 impl FilesFit {
-    /// Applies `change` to the measures in `fit`, drawing the window again where they change, so
+    /// Applies `change` to the measures in `fit`, drawing the window again where they change, or
+    /// where the top line drew another height than the layout took from the body (`moved`), so
     /// the next frame lays Files out from them. They settle in that frame: the dialog's width
     /// and the body's height come from the window as each frame starts, the chrome beside the
     /// columns never changes once measured, and the height above the box follows from the
@@ -2487,12 +2500,13 @@ impl FilesFit {
     fn update(
         fit: &std::rc::Rc<std::cell::Cell<FilesFit>>,
         change: impl FnOnce(&mut FilesFit),
+        moved: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
         let mut next = fit.get();
         change(&mut next);
-        if next != fit.get() {
+        if next != fit.get() || moved {
             fit.set(next);
             #[cfg(test)]
             FILES_FIT_REDRAWS.with(|redraws| redraws.set(redraws.get() + 1));
@@ -2502,11 +2516,12 @@ impl FilesFit {
 }
 /// How Files lays its columns out in the body ([`Panel::files_fit`]): stacked or side by side,
 /// the changed-file list's height and the height of the file's box, its title, mode row and
-/// patch or Source.
+/// patch or Source, and the height the top line standing above the body took from it.
 pub(super) struct FilesLayout {
     stacked: bool,
     list: Pixels,
     content: Pixels,
+    top_line: Pixels,
 }
 impl Panel {
     /// How Files lays its columns out in the body, from the window and what the last frame
@@ -2531,8 +2546,14 @@ impl Panel {
         // The body takes the room the dialog leaves it, less the top line standing above it while
         // a conversation is open, which Files fills, on whole pixels. Sized from the dialog's
         // room alone, at 13 pt in a 461 × 490 window with a reply open and a notice above the
-        // body, the stacked list took 146.5 px of a 266.5 px body.
-        let body = window.pixel_snap(super::body_max_height(window) - measured.top_line);
+        // body, the stacked list took 146.5 px of a 266.5 px body. The line's height is the one
+        // the last frame drew, which Files checks against this frame's as it prepaints.
+        let top_line = if self.review.top_line_pinned.get() {
+            self.review.top_line.get()
+        } else {
+            Pixels::ZERO
+        };
+        let body = window.pixel_snap(super::body_max_height(window) - top_line);
         let width = match measured.chrome {
             Some(chrome) => super::panel_width(window) - chrome,
             None => {
@@ -2558,6 +2579,7 @@ impl Panel {
                 stacked,
                 list,
                 content: rest.max(least),
+                top_line,
             }
         } else {
             let list = FILE_LIST_HEIGHT.min(inner - pager - rem * 0.5);
@@ -2565,6 +2587,7 @@ impl Panel {
                 stacked,
                 list,
                 content: list.max(least),
+                top_line,
             }
         }
     }
