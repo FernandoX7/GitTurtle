@@ -118,7 +118,7 @@ lists the pairs that needed the change:
 | One Dark | muted | `#ADB2BB` → `#B0B5BC` | muted on hovered selected row 4.62→4.77 |
 | One Dark | removed | `#E5858D` → `#E98991` | removed on removed tile 4.58→4.80 |
 | One Dark | line number | `#979DA8` → `#9AA0AB` | line number on panel 4.65→4.82 |
-| One Light | muted | `#62656F` → `#5C5F69` | muted on hovered selected row 4.55→4.98; muted on removed tile 4.86→5.32 |
+| One Light | muted | `#62656F` → `#5A5D67` | muted on hovered selected row 4.55→4.76; muted on removed tile 4.86→5.49 (`#5C5F69` read 4.98 there until the hover rule darkened the selected row to `#E0E4F6` on 2026-11-05, where it read 4.62) |
 | One Light | accent | `#2F6CF1` → `#2D6AEF` | accent foreground on accent 4.63→4.75 |
 | One Light | added | `#3B763A` → `#377236` | added on added tile 4.65→4.93 |
 | One Light | modified and warning | `#986801` → `#8E5E00` | canvas label on warning 4.66→5.36; warning on subtle 4.27→4.92 |
@@ -138,11 +138,14 @@ lists the pairs that needed the change:
 | Kanagawa Wave | added | `#85A07A` → `#89A47E` | added on added tile 4.55→4.78 |
 | Kanagawa Wave | line number | `#9090A9` → `#9494AD` | line number on panel 4.54→4.78 |
 | Kanagawa Lotus | added | `#4E6643` → `#49613E` | added on added tile 4.51→4.87 |
-| Kanagawa Lotus | modified | `#996900` → `#936300` | modified on hover 3.24→3.52; modified on hovered selected row 3.00→3.26; modified on removed tile 3.02→3.55 |
+| Kanagawa Lotus | modified | `#996900` → `#916100` | modified on hover 3.24→3.62; modified on hovered selected row 3.00→3.26; modified on removed tile 3.02→3.65 (`#936300` until the hover rule darkened the selected row on 2026-11-05, where it read 3.17) |
 | Kanagawa Lotus | warning | `#9A5B00` → `#8B4C00` | canvas label on warning 4.52→5.59; warning on subtle 3.95→4.89 |
 | Kanagawa Lotus | removed background | `#E6C8A8` → `#EED0B0` | text on removed tile 4.66→5.05; muted on removed tile 4.54→4.92; removed on removed tile 4.51→4.88; modified on removed tile 3.02→3.55 |
 | Kanagawa Lotus | hunk | `#476190` → `#425C8B` | hunk on subtle 4.53→4.88 |
 | Kanagawa Lotus | line number | `#6D6A5E` → `#676458` | line number on canvas 4.52→4.94; line number on panel 4.83→5.28 |
+| Kanagawa Lotus | selected (2026-11-05, the hover rule) | `#C7D7E0` → `#C4D4DD` | hover 0.008 lighter than the selected row in OKLab on canvas, panel and subtle, where it stood 0.0015 further; selected on panel 1.31→1.35 |
+| Kanagawa Lotus | muted (2026-11-05) | `#5A574D` → `#545147` | muted on the darker hovered selected row 4.52→4.82; muted on removed tile 4.92→5.40 |
+| Kanagawa Lotus | text (2026-11-05) | `#545464` → `#4F4F5F` | text on the darker hovered selected row 4.64→4.87, kept above muted |
 | Braden (Daylight) | line number | `#61728A` → `#5B6C84` | line number on canvas 4.53→4.95; line number on panel 4.90→5.35 |
 | Nord | hover | `#3B4252` → `#3E4555` | hover on panel 1.10→1.15 |
 
@@ -158,8 +161,6 @@ thinner declared margin as a decision, not an oversight:
 | Pair | Declared | Why it stays |
 | --- | --- | --- |
 | Rosé Pine hover on panel | 1.087 | both upstream (`overlay` on `surface`) |
-| Kanagawa Lotus text on the hovered selected row | 4.64 | text, selected row and accent are all upstream |
-| Kanagawa Lotus secondary text on the hovered selected row | 4.52 | darkening `muted` one step further puts it above its upstream text |
 | Kanagawa Lotus primary-button label | 4.59 | both upstream (`lotusWhite3` on `lotusBlue4`) |
 | Kanagawa Wave removed lines in their tile | 4.58 | both upstream (`peachRed` on `winterRed`) |
 | Kanagawa Wave renamed icons on the hovered selected row | 3.15 | upstream icon and accent; the tuned selected row is held by its panel rule |
@@ -173,9 +174,15 @@ now sit at parity: muted `#B0B5BC` is 0.07% darker in luminance than text
 `#AEB5C2` and differs from it only in hue and chroma (ΔE00 2.7), so One Dark's
 secondary text is not subordinate by lightness. It was brighter than text
 before; "not above" is what the rule requires, and the table records the parity
-as a decision. Clearing
-the rows above would mean tuning more upstream text or accent colors, which the
+as a decision. Kanagawa Lotus's text (lotusInk1) moved for the same reason on
+2026-11-05, when the hover rule darkened its selected row and its secondary text
+took the margin there (rows above), which cleared its two rows from this table;
+its muted `#545147` is 0.0014 higher in relative luminance than text `#4F4F5F`.
+Clearing the remaining rows above would mean tuning more upstream text or accent colors, which the
 coordinator decided against on 2026-09-23: they are not named pairs.
+Kanagawa Lotus's text is a narrow exception to that decision, accepted by the
+coordinator on 2026-11-05: the hover rule keeps secondary text's margin on the
+darker selected row, which only a darker text, still above it, allows.
 
 Among the original ten, Braden's `line_number` and Nord's `hover` were nudged as
 named.

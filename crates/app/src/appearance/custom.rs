@@ -1676,12 +1676,26 @@ mod tests {
             "Selected against Hover differs by 3 of 255 in one channel, needs 6"
         );
         // Kanagawa Wave's `selected` (upstream waveBlue1, lightened only to the panel rule)
-        // lifts less from its panel than `hover` does, so its pressed button steps by hue, at
-        // least 17 in one channel on every surface, rather than by a further lift. This rule
-        // counts that step, so Wave keeps its values.
+        // lifts only a little further from its panel than `hover`, darkened so a hovered row
+        // never reads heavier than the selected one, so its pressed button steps mostly by hue
+        // rather than by a further lift. This rule counts that step, so Wave keeps its values.
         let wave = ThemeChoice::KanagawaWave.palette();
-        assert!(contrast(wave.selected, wave.panel) < contrast(wave.hover, wave.panel));
+        assert!(contrast(wave.hover, wave.panel) < contrast(wave.selected, wave.panel));
         assert!(wave.readability_issues().is_empty());
+        // A custom palette whose pressed state steps by hue alone, lifting no further from the
+        // panel than its hover: Kanagawa Wave as it shipped before the hover rule, hover
+        // sumiInk5 `#363646`, which lifts further than the selected row `#24364e`. The rule
+        // counts the hue step, at least 17 in one channel on every surface, so it raises no
+        // pressed-step issue.
+        let hue_only = Palette {
+            hover: 0x363646,
+            ..wave
+        };
+        assert!(
+            contrast(hue_only.selected, hue_only.panel) < contrast(hue_only.hover, hue_only.panel)
+        );
+        assert!(hue_only.pressed_step() >= 17);
+        assert!(hue_only.readability_issues().is_empty());
     }
 
     #[test]

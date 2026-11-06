@@ -2305,11 +2305,13 @@ impl ThemeChoice {
                     subtle: 0xf0f0f1,
                     // Tuned: 1.08:1 off subtle, as the Omarchy fitter holds hover.
                     hover: 0xe7e7e9,
-                    selected: 0xe9edff,
+                    // Tuned: stepped darker from #e9edff until hover reads 0.005 lighter in OKLab,
+                    // so a hovered row never reads heavier than the selected one.
+                    selected: 0xe0e4f6,
                     border: 0xd3d3d6,
                     text: o::MONO_1,
                     // Tuned: mono-2 darkened for 4.5:1 on selected rows.
-                    muted: 0x5c5f69,
+                    muted: 0x5a5d67,
                     // Tuned: blue darkened for a 4.5:1 white label.
                     accent: 0x2d6aef,
                     accent_foreground: 0xffffff,
@@ -2455,7 +2457,9 @@ impl ThemeChoice {
                     canvas: k::SUMI_INK_3,
                     panel: k::SUMI_INK_4,
                     subtle: k::SUMI_INK_2,
-                    hover: k::SUMI_INK_5,
+                    // Tuned: sumiInk5 darkened below the selected row's lightness, so a hovered
+                    // row never reads heavier than the selected one.
+                    hover: 0x323242,
                     // Tuned: waveBlue1 lightened to stay 1.15:1 apart from the panel.
                     selected: 0x24364e,
                     border: k::SUMI_INK_6,
@@ -2485,11 +2489,17 @@ impl ThemeChoice {
                     panel: 0xf7f3d1,
                     subtle: k::LOTUS_WHITE_2,
                     hover: k::LOTUS_WHITE_1,
-                    selected: k::LOTUS_BLUE_1,
+                    // Tuned: lotusBlue1 stepped darker until hover reads 0.005 lighter in OKLab
+                    // on the canvas, panel and subtle, so a hovered row never reads heavier than
+                    // the selected one.
+                    selected: 0xc4d4dd,
                     border: k::LOTUS_WHITE_0,
-                    text: k::LOTUS_INK_1,
-                    // Tuned: lotusGray2 darkened for 4.5:1 on every row surface and diff tile.
-                    muted: 0x5a574d,
+                    // Tuned: lotusInk1 darkened to stay above secondary text, which keeps its
+                    // margin on the darker hovered selected row.
+                    text: 0x4f4f5f,
+                    // Tuned: lotusGray2 darkened for 4.5:1 on every row surface and diff tile,
+                    // with the margin on the hovered selected row.
+                    muted: 0x545147,
                     accent: k::LOTUS_BLUE_4,
                     accent_foreground: k::LOTUS_WHITE_3,
                     accent_hover: 0x435c89,
@@ -2499,7 +2509,7 @@ impl ThemeChoice {
                     // warning text on subtle surfaces.
                     added: 0x49613e,
                     removed: 0xa72428,
-                    modified: 0x936300,
+                    modified: 0x916100,
                     renamed: k::LOTUS_VIOLET_4,
                     warning: 0x8b4c00,
                     // Tuned: lotusGreen3 blended halfway to the canvas and lotusRed4 a little
@@ -3752,7 +3762,8 @@ impl EditorHighlights {
     /// the last step on which every color does that stands [`HIGHLIGHT_DISTANCE`] from `line`,
     /// beyond it but short of the lightness gap, since the text rule is the floor every color
     /// keeps (One Dark's added word, stepped 0.02 beyond its line, drew the raised keyword
-    /// `#e090f7` at 4.39:1, and Kanagawa Lotus's removed word drew its strings at 4.49:1). With
+    /// `#e090f7` at 4.39:1, and Kanagawa Lotus's removed word, before its text darkened on
+    /// 2026-11-05, drew its strings at 4.49:1). With
     /// no step beyond `line` that both reads the text rule and stands [`HIGHLIGHT_DISTANCE`] from
     /// it, `off`, the word's tint drawn with More contrast off, which reads: the nearest step
     /// that stood apart, or the line's own colour, broke the text floor or drew the word as its
@@ -5878,6 +5889,9 @@ mod tests {
         }
     }
 
+    /// Kanagawa Lotus joined on 2026-11-05: its `selected` stepped darker for
+    /// the hover rule, and its secondary text with it, from 4.52:1 to 4.82:1
+    /// on the hovered selected row, its text darkened to stay above it.
     #[test]
     fn tuned_secondary_text_keeps_its_margin_on_hovered_selected_rows() {
         for choice in [
@@ -5888,6 +5902,7 @@ mod tests {
             ThemeChoice::RosePine,
             ThemeChoice::RosePineDawn,
             ThemeChoice::Dracula,
+            ThemeChoice::KanagawaLotus,
         ] {
             let palette = choice.palette();
             let ratio = contrast(palette.muted, palette.row_hover(true));
@@ -6819,7 +6834,7 @@ mod tests {
     /// The Unstaged badge (`modified` on `subtle`) and the Staged and "N
     /// staged" badges (`added` on its diff tile) are 10 px labels whose tokens
     /// keep only the text rule, and `modified` not even that: 4.1:1 in Omarchy
-    /// Rose Pine and 3.8:1 in Kanagawa Lotus. Every palette's badge labels
+    /// Rose Pine and 3.9:1 in Kanagawa Lotus. Every palette's badge labels
     /// clear the rule with the margin, and a token that already does is kept.
     #[test]
     fn every_palette_fits_staged_and_unstaged_badge_labels() {
@@ -8984,14 +8999,15 @@ mod tests {
     /// built-in palettes. It stands beyond the line from the canvas, at least
     /// [`HIGHLIGHT_DISTANCE`] from it and [`HIGHLIGHT_LIGHTNESS_GAP`] beyond
     /// it in lightness, and every color drawn on it as text reads the text
-    /// rule; One Dark's added word and Kanagawa Lotus's removed word stop
-    /// short of the gap, beyond their lines, since at the gap One Dark's
-    /// raised keyword would read 4.39:1 and Lotus's strings 4.49:1, under the
-    /// text rule. It is the furthest such step in its row of steps
-    /// ([`beyond_line`]): the next step in the row reads some color below
-    /// the rule the word keeps, or the row ends there (Solarized Dark's added
-    /// `#214514`, One Dark's added `#2f491d`, Kanagawa Lotus's removed
-    /// `#ffbdb4`). One Dark's added word, drawn off darker than its line, once
+    /// rule; One Dark's added word stops short of the gap, beyond its line,
+    /// since at the gap its raised keyword would read 4.39:1, under the text
+    /// rule (Kanagawa Lotus's removed word stopped short too, its strings
+    /// 4.49:1 at the gap, until its text darkened on 2026-11-05). It is the
+    /// furthest such step in its row of steps ([`beyond_line`]): the next
+    /// step in the row reads some color below the rule the word keeps, or
+    /// the row ends there (Solarized Dark's added `#214514`, One Dark's added
+    /// `#2f491d`, Kanagawa Lotus's removed `#f7bea6`, where it drew `#ffbdb4`
+    /// 0.018 beyond its line). One Dark's added word, drawn off darker than its line, once
     /// lifted toward the canvas and stopped at half its line's gap from it
     /// (#253b23), still on the canvas side; Rosé Pine Dawn's removed word,
     /// drawn off 0.001 from its canvas, kept the tint drawn off; Braden's
@@ -9029,8 +9045,8 @@ mod tests {
                 "Kanagawa Lotus removed",
                 ThemeChoice::KanagawaLotus,
                 1,
-                false,
-                Some(0xffbdb4),
+                true,
+                Some(0xf7bea6),
             ),
         ] {
             let chosen = theme.palette();
@@ -10190,8 +10206,12 @@ mod tests {
 
     /// What the off path drew before More contrast existed (51a32680), in two
     /// palettes whose syntax the fitting moves, a dark and a light one: the
-    /// fitted syntax colors by field and the disabled label's strength.
-    const OFF_PATH_FINGERPRINT: [Fingerprint; 2] = [
+    /// fitted syntax colors by field and the disabled label's strength. The
+    /// hover rule of 2026-11-05 darkened Kanagawa Lotus's text and secondary
+    /// text, so the light guard is Lotus's tokens before then
+    /// ([`lotus_before_the_hover_rule`]), which still draw what 51a32680
+    /// drew, and the shipped Lotus is pinned as it draws since.
+    const OFF_PATH_FINGERPRINT: [Fingerprint; 3] = [
         (
             "Solarized Dark",
             &[
@@ -10206,6 +10226,17 @@ mod tests {
         (
             "Kanagawa Lotus",
             &[
+                ("string", 0x4a5f41),
+                ("constant", 0x834c0c),
+                ("type", 0x6a5638),
+                ("function", 0x455982),
+                ("tag", 0x4e5875),
+            ],
+            0.703125,
+        ),
+        (
+            LOTUS_BEFORE_THE_HOVER_RULE,
+            &[
                 ("string", 0x4b5e45),
                 ("constant", 0x7f4e15),
                 ("type", 0x63574d),
@@ -10216,6 +10247,20 @@ mod tests {
         ),
     ];
 
+    const LOTUS_BEFORE_THE_HOVER_RULE: &str = "Kanagawa Lotus before the hover rule";
+
+    /// Kanagawa Lotus's tokens before the hover rule of 2026-11-05 stepped its
+    /// `selected` darker and, with it, its text, secondary text and modified.
+    fn lotus_before_the_hover_rule() -> Palette {
+        Palette {
+            selected: sources::kanagawa::lotus::LOTUS_BLUE_1,
+            text: sources::kanagawa::lotus::LOTUS_INK_1,
+            muted: 0x5a574d,
+            modified: 0x936300,
+            ..ThemeChoice::KanagawaLotus.palette()
+        }
+    }
+
     /// With More contrast off, `Palette::apply` installs the palette as it
     /// is, in every palette: the palette, the editor highlights and small
     /// labels fitted from it, and the kit fields `configure` sets from it;
@@ -10225,7 +10270,8 @@ mod tests {
     /// so they check that the off path is the palette's own path, not that
     /// it draws what it drew before More contrast existed; for that,
     /// [`OFF_PATH_FINGERPRINT`] pins two palettes' fitted syntax and
-    /// disabled label as the off path drew them then.
+    /// disabled label as the off path drew them then, one of them through
+    /// [`lotus_before_the_hover_rule`].
     #[gpui::test]
     fn without_more_contrast_every_palette_applies_as_it_is(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_kit::init);
@@ -10234,7 +10280,11 @@ mod tests {
             "off by default"
         );
         let mut pinned = 0;
-        for (name, chosen) in more_contrast_palettes() {
+        let palettes = more_contrast_palettes().into_iter().chain([(
+            LOTUS_BEFORE_THE_HOVER_RULE.to_owned(),
+            lotus_before_the_hover_rule(),
+        )]);
+        for (name, chosen) in palettes {
             let (before, drawn, dim) = cx.update(|cx| {
                 chosen.apply(chosen.is_light(), None, cx);
                 assert_eq!(chosen.as_applied(cx), chosen, "{name} as applied");
@@ -10917,8 +10967,7 @@ mod tests {
     /// left nearer it than [`HIGHLIGHT_DISTANCE`] by its line's move), stands
     /// [`HIGHLIGHT_LIGHTNESS_GAP`] beyond its line in lightness, or short of it only where no step that
     /// far reads the text rule ([`the_gap_cannot_read`]: One Dark's added
-    /// word, whose raised keyword would read 4.39:1, and Kanagawa Lotus's
-    /// removed word, its strings 4.49:1).
+    /// word, whose raised keyword would read 4.39:1).
     /// Find's other matches stand [`HIGHLIGHT_DISTANCE`] and
     /// [`HIGHLIGHT_LIGHTNESS_GAP`] in lightness from the selection, the
     /// current match and both word tints, [`HIGHLIGHT_DISTANCE`] from every
@@ -11103,5 +11152,84 @@ mod tests {
                 "{choice:?}: no changed-word rule"
             );
         }
+    }
+
+    /// A hovered row never reads heavier than the selected row, in every
+    /// built-in and Omarchy palette and in [`faint_custom_palette`], with
+    /// More contrast off and on: on the canvas, the panel and `subtle`,
+    /// `hover` stands nearer than `selected` in OKLab lightness, in ΔEOK and
+    /// in WCAG luminance contrast, and both move from each surface the same
+    /// way, away from the canvas (darker in a light palette, lighter in a
+    /// dark one), in OKLab lightness and in luminance, so hover over
+    /// `subtle` never turns toward the canvas. One Light's hover stood 0.020
+    /// further from its canvas in lightness than its selected row, Kanagawa
+    /// Wave's 0.011 and Kanagawa Lotus's 0.0015, until One Light's
+    /// `selected` (`#e9edff` to `#e0e4f6`), Kanagawa Wave's `hover`
+    /// (`#363646` to `#323242`) and Kanagawa Lotus's `selected` (`#c7d7e0` to
+    /// `#c4d4dd`) were tuned; Lotus's hover lightened to `#ede6bc` instead
+    /// stood lighter than its `subtle` (`#e5ddb0`), so a hovered row on it
+    /// turned toward the canvas, 1.051:1 from the canvas where the selected
+    /// row stands 1.230:1.
+    #[gpui::test]
+    fn a_hovered_row_never_reads_heavier_than_the_selected_row(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, chosen) in more_contrast_palettes() {
+            for more in [false, true] {
+                let applied = cx.update(|cx| {
+                    set_more_contrast(more, cx);
+                    chosen.apply(chosen.is_light(), None, cx);
+                    palette(cx)
+                });
+                let (hover, selected) = (applied.hover, applied.selected);
+                for (surface, background) in [
+                    ("canvas", applied.canvas),
+                    ("panel", applied.panel),
+                    ("subtle", applied.subtle),
+                ] {
+                    let lightness = |color: u32| (oklab(color)[0] - oklab(background)[0]).abs();
+                    let apart = |color: u32| oklab_distance(oklab(color), oklab(background));
+                    let ratio = |color: u32| contrast(color, background);
+                    if lightness(hover) >= lightness(selected)
+                        || apart(hover) >= apart(selected)
+                        || ratio(hover) >= ratio(selected)
+                    {
+                        failures.push(format!(
+                            "{name}, More contrast {more}: hover #{hover:06x} {:.4} from the \
+                             {surface} #{background:06x} in lightness, {:.4} in ΔEOK and \
+                             {:.4}:1, the selected row #{selected:06x} {:.4}, {:.4} and {:.4}:1",
+                            lightness(hover),
+                            apart(hover),
+                            ratio(hover),
+                            lightness(selected),
+                            apart(selected),
+                            ratio(selected)
+                        ));
+                    }
+                    // Away from the canvas: darker in a light palette, lighter in a dark one.
+                    let side = if applied.is_light() {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                    let away = |color: u32| {
+                        oklab(color)[0].total_cmp(&oklab(background)[0]) == side
+                            && luminance(color).total_cmp(&luminance(background)) == side
+                    };
+                    for (state, color) in [("hover", hover), ("selected row", selected)] {
+                        if !away(color) {
+                            failures.push(format!(
+                                "{name}, More contrast {more}: the {state} #{color:06x} moves \
+                                 from the {surface} #{background:06x} toward the canvas \
+                                 #{:06x}",
+                                applied.canvas
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        cx.update(|cx| set_more_contrast(false, cx));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
