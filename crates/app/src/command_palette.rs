@@ -4731,4 +4731,176 @@ mod render_tests {
             );
         }
     }
+
+    /// How a held key's repeats reach the window after its first press.
+    #[derive(Clone, Copy, Debug)]
+    enum Repeats {
+        /// Marked held, as macOS and Wayland send them.
+        Held,
+        /// Fresh presses with no release between, as X11 sends them.
+        Fresh,
+        /// A release and a press together, as an input method on Wayland
+        /// (fcitx5 on Omarchy) sends each repeat while a text field is
+        /// focused.
+        InputMethod,
+    }
+
+    fn enter_down(cx: &mut VisualTestContext, is_held: bool) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        });
+    }
+
+    fn enter_up(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent {
+                    keystroke: gpui_kit::Keystroke::parse("enter").unwrap(),
+                }),
+                cx,
+            );
+        });
+    }
+
+    /// Three repeats of a held Return, as `repeats` arrive, each followed
+    /// by the frames drawn before the next.
+    fn repeat_enter(cx: &mut VisualTestContext, repeats: Repeats) {
+        for _ in 0..3 {
+            match repeats {
+                Repeats::Held => enter_down(cx, true),
+                Repeats::Fresh => enter_down(cx, false),
+                Repeats::InputMethod => {
+                    enter_up(cx);
+                    enter_down(cx, false);
+                }
+            }
+            crate::views::tests::draw(cx);
+        }
+    }
+
+    /// Return held on a palette command that opens a dialog opens it once,
+    /// and nothing takes the held key's repeats until it comes up: the
+    /// dialog stays open with focus where it put it, nothing inside it acts
+    /// and nothing behind it opens, however the platform sends the repeats.
+    /// Then a fresh Return acts in the dialog as usual. In History, with
+    /// focus on a commit's changed files, held on "Browse reflog and recover
+    /// a commit…" under fcitx5, the first repeat closed the Reflog and the
+    /// next opened Compare on the selected file (QA-105): the input method
+    /// sends each repeat as a release and a press, and the release ended the
+    /// press the Reflog waited out. Held on "Quick Open File…", any repeat
+    /// reached Quick Open's query, which opened the highlighted file.
+    #[gpui::test]
+    async fn a_held_return_on_a_palette_command_opens_its_dialog_once(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from};
+        use gpui_kit::component::WindowExt as _;
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        // Checked out, so Quick Open lists the worktree's tracked file and
+        // the Reflog holds HEAD's entry.
+        fixture_git(
+            &fixture.path().join("narrow"),
+            &["reset", "--hard", "--quiet"],
+        );
+        cx.update(|_, cx| {
+            // A dialog otherwise slides in on a wall-clock animation.
+            cx.set_reduce_motion(true);
+            crate::shortcuts::bind_keys(cx);
+        });
+        let files = app.read_with(cx, |app, _| {
+            assert!(!app.files.is_empty(), "the selected commit's changed files");
+            app.file_focus.clone()
+        });
+        let compare = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare)
+        };
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, cx| window.focused(cx));
+
+        for repeats in [Repeats::Held, Repeats::Fresh, Repeats::InputMethod] {
+            for (query, command, title) in [
+                ("reflog", CommandId::Reflog, "reflog-title"),
+                ("Quick Open", CommandId::QuickOpen, "quick-open-title"),
+            ] {
+                let at = format!("{query:?}, repeats {repeats:?}");
+                cx.update(|window, cx| window.focus(&files, cx));
+                draw(cx);
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.open_command_palette(window, cx))
+                });
+                draw(cx);
+                cx.simulate_input(query);
+                draw(cx);
+                assert_eq!(
+                    matches(query).first().map(|&index| COMMANDS[index].id),
+                    Some(command),
+                    "{at}: the highlighted command"
+                );
+
+                enter_down(cx, false);
+                draw(cx);
+                assert!(
+                    cx.debug_bounds(title).is_some(),
+                    "{at}: the press opens the dialog"
+                );
+                assert!(
+                    cx.debug_bounds("palette-command-0").is_none(),
+                    "{at}: the palette closed"
+                );
+                if command == CommandId::QuickOpen {
+                    // Its paths land before the key repeats, as on a
+                    // platform's repeat delay.
+                    crate::revision_inspection::settle_quick_open(cx).await;
+                    draw(cx);
+                }
+                let opened = focused(cx);
+                assert!(
+                    opened.is_some() && opened != Some(files.clone()),
+                    "{at}: the dialog took focus"
+                );
+
+                repeat_enter(cx, repeats);
+                assert!(
+                    cx.debug_bounds(title).is_some(),
+                    "{at}: the dialog stays open through the repeats"
+                );
+                assert_eq!(
+                    focused(cx),
+                    opened,
+                    "{at}: focus stays where the dialog put it"
+                );
+                assert!(!compare(&app, cx), "{at}: nothing behind the dialog opens");
+
+                enter_up(cx);
+                draw(cx);
+                assert!(
+                    cx.debug_bounds(title).is_some(),
+                    "{at}: the key-up leaves it open"
+                );
+                enter_down(cx, false);
+                draw(cx);
+                assert!(
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: a fresh Return acts in the dialog, which closes"
+                );
+                enter_up(cx);
+                draw(cx);
+                if command == CommandId::QuickOpen {
+                    assert!(compare(&app, cx), "{at}: Quick Open opened its file");
+                    // Back returns to History's selected commit.
+                    cx.simulate_keystrokes("escape");
+                    draw(cx);
+                }
+                // The Reflog's Done took the Return, so History shows on.
+                assert!(
+                    app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+                    "{at}: History shows"
+                );
+            }
+        }
+    }
 }

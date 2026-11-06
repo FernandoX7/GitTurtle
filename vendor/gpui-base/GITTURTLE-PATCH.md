@@ -1029,6 +1029,63 @@ and `_in_its_dialogs_place`,
 and `appearance::tests::a_dialog_opened_with_no_enter_down_confirms_on_the_first_press`,
 which also holds Space on a body Button.
 
+The same patch keeps every repeat of an Enter that opened a dialog from
+anything in its window until that Enter comes up (decided by the
+coordinator, 2026-11-06: an Enter that opens a dialog from anywhere never
+acts inside that dialog or behind it until its key-up; after the key-up
+Enter works as usual). Two paths escaped the wait above. A binding runs
+before any key listener, so while the dialog's wait held off its own
+confirmation and its Buttons, a field's or a list's own Enter binding inside
+it took every repeat: held on the command palette's "Quick Open File…", the
+repeats reached Quick Open's query, which opened the highlighted file. And
+on Wayland an input method sends each repeat of a key held in a text field
+as a release and a press together (fcitx5 on Omarchy;
+`docs/development/2026-11-03-wayland-text-input-focus.md`), so the release
+ended the press: held on "Browse reflog and recover a commit…", where the
+palette's query and the Reflog's filter are both text fields, the first
+repeat confirmed the Reflog and the next reached History's changed files
+behind it, which opened Compare (QA-105). The keystroke interceptor now
+stops, before any binding, every repeat of a press a dialog waits out, in
+the dialog, behind it once it has gone and anywhere else in its window: an
+Enter going down again with no Enter key-up or other key since, as a held
+key repeats on every platform, or right after an Enter key-up that came with
+it. An Enter key-up no longer ends a recorded press at once (`note_key_up`):
+the press ends once the application next runs a task (`end_released`),
+unless an Enter goes down first, and a dialog opened in between waits too
+(`dialog_opened`). That task runs in the event loop's next idle pass, not
+within the batch of input events the key-up came in: on Linux the spawn
+wakes the main-thread channel, a ping source read in the loop's next
+iteration, whose runnable runs as an idle callback at the end of that
+iteration (`vendor/gpui-pre-linux/src/linux/dispatcher.rs`,
+`wayland/client.rs`). A person who releases Enter and presses it again
+within that window, as within one slow frame, loses that press, as a press
+whose key-up never arrives does (below), which fails safe. The pairing
+assumes the compositor delivers an input method's release and press
+together, as every one of the 426 fcitx5 pairs recorded in QA-90's and
+QA-91's Wayland logs arrived, 3 to 54 µs apart with no other event between
+(FU21-E's security review). Such a stale press that a dialog
+waited out also takes the next Return in the window, until that Return comes
+up or another key goes down. A key the interceptor stops still reaches the
+first key listener on the focused path, as GPUI hands it one: the component
+`Root`'s key-up listener, which takes no key-down, or in a window without it
+a dialog host's, which takes no Enter while the dialog waits. On macOS a
+Command-Enter still records nothing and is never stopped; every other
+modified Enter is stopped as a plain one is. A residual there, unverified
+without a Mac: a Command pressed during the hold is another key to the
+interceptor and ends the press's record of where it began, so the first
+plain repeat after Command comes up is not taken for a repeat and reaches a
+field's or a list's own Enter binding, though never the dialog's
+confirmation or a Button, since macOS marks repeats held; whether Enter
+goes on repeating across the Command at all is unverified. Under X11 the unpaired release
+at a poll batch's end (below) still ends the press, since the repeat's
+press arrives in the next batch. The kit tests are
+`dialog::tests::a_dialog_waits_out_an_input_method_s_repeats` and
+`dialog::tests::a_held_enter_reaches_nothing_in_or_behind_the_dialog_it_opened`,
+and the application's is
+`command_palette::render_tests::a_held_return_on_a_palette_command_opens_its_dialog_once`,
+which holds Return on the Reflog's and Quick Open's commands with repeats
+marked held, as X11 sends them and as an input method sends them.
+
 The same patch keeps a held Enter on the control its press began on
 (decided by the coordinator, owner-delegated, 2026-11-05: a held Enter that
 moves focus acts once, and a Button never acts on an Enter whose press

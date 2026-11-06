@@ -640,11 +640,14 @@ cap, and those tests pass without it.
 The dialog-enter patch modifies `src/root.rs`, with the base patch's held
 Enter guard (base `GITTURTLE-PATCH.md`, "dialog-button"). `Root::open_dialog`
 calls `gpui_base::dialog_opened`, so a dialog an Enter press opened waits for
-that press to come up before it takes Enter, and the root's element passes
-every key-up in the window to `gpui_base::note_key_up`, so an Enter that
-comes up with no dialog open ends the press too, and a dialog opened later
-by a click takes its first Enter. Nothing else changes. Remove it with the
-base patch's guard.
+that press to come up before it takes Enter, and nothing in the window takes
+that press's repeats meanwhile, and the root's element passes every key-up
+in the window to `gpui_base::note_key_up`, so an Enter that comes up with no
+dialog open ends the press too, and a dialog opened later by a click takes
+its first Enter. That key-up listener is the first key listener on every
+focused path, which GPUI hands a key-down the base interceptor stopped; it
+takes no key-down. Nothing else changes. Remove it with the base patch's
+guard.
 
 The dialog-focus patch modifies `src/dialog/dialog.rs` and `src/root.rs`.
 Upstream closes a dialog its Confirm closes (Enter, or the OK Button, which
