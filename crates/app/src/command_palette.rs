@@ -1035,6 +1035,17 @@ impl Palette {
         self.listed.moved(self.settling.is_some());
         self.reached();
     }
+    /// A key or a click moved the selection ([`Self::list_moved`]): the
+    /// status takes the move's whole reading at once, quietly where the list
+    /// speaks the move ([`shortcuts::LIST_SPEAKS_SELECTION`]). A click on a
+    /// command the context cannot run, which leaves the palette open on it
+    /// with why, once left the status on the reading before.
+    fn take_move(&mut self) {
+        self.list_moved();
+        self.status = self.reading();
+        self.status_name = self.status.clone();
+        self.quiet = shortcuts::LIST_SPEAKS_SELECTION;
+    }
     /// The selection reached a command, the list's change ([`Self::listed`]),
     /// timed by a frame after the one that draws it. The row it reaches
     /// reads its live reading at once, a row holding its name
@@ -1358,7 +1369,7 @@ impl Render for Palette {
                                 let moved = this.selection.index != index;
                                 this.selection.index = index;
                                 if moved {
-                                    this.list_moved();
+                                    this.take_move();
                                 }
                                 this.activate(window, cx);
                             }));
@@ -1427,12 +1438,7 @@ impl Render for Palette {
                 let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
                 if this.selection.index != was {
-                    this.list_moved();
-                    // The status takes the move's whole reading at once,
-                    // quietly where the list speaks the move.
-                    this.status = this.reading();
-                    this.status_name = this.status.clone();
-                    this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
+                    this.take_move();
                 }
                 this.scroll
                     .scroll_to_item(this.selection.index, ScrollStrategy::Center);
@@ -3925,6 +3931,86 @@ mod render_tests {
             [whole],
             "Orca speaks the whole reading, the list's selection unchanged"
         );
+    }
+
+    /// A click on a command the context cannot run, which leaves the palette
+    /// open on it and shows why, is a change of selection as a key's is: the
+    /// status takes the command's whole reading at once, announcing it where
+    /// the list does not speak its selection (macOS) and taking it quietly
+    /// where it does (Linux), where Orca speaks the row, which names the
+    /// command and why it cannot run. The click left the status on the
+    /// reading before.
+    #[gpui::test]
+    fn a_click_on_a_command_that_cannot_run_reads_it(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        // A key whose list draws, past its first rows, a command the context
+        // cannot run.
+        let (key, at) = ('a'..='z')
+            .map(String::from)
+            .find_map(|key| {
+                let results = matches(&key);
+                let first = first_available(&results, &availability);
+                (1..results.len().min(6))
+                    .find(|&at| {
+                        at != first && COMMANDS[results[at]].id.reason(&availability).is_some()
+                    })
+                    .map(|at| (key, at))
+            })
+            .expect("a key that lists a command the context cannot run");
+        cx.simulate_input(&key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let row = cx
+            .debug_bounds(format!("palette-command-{at}").leak())
+            .expect("the list draws the command's row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        heard.frame(cx);
+        let (whole, named) = reading_and_row(&key, at, &availability);
+        assert_eq!(
+            heard.row_name(),
+            Some(named.as_str()),
+            "the click selects the command"
+        );
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "and leaves the palette open"
+        );
+        assert!(
+            cx.debug_bounds("command-palette-error").is_some(),
+            "showing why the command cannot run"
+        );
+        assert_eq!(
+            heard.named.as_deref(),
+            Some(whole.as_str()),
+            "the status reads the command clicked"
+        );
+        let own = if shortcuts::LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            vec![whole]
+        };
+        assert_eq!(
+            heard.take(),
+            own,
+            "the click is the list's where it speaks it, and the status's elsewhere"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [named],
+            "Orca speaks the row clicked, once"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }
 
     /// A move inside the query's rest is the change of selection that rest
