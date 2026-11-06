@@ -420,24 +420,18 @@ async fn changes_after_a_branch_preparation_ends_drops_no_plan(cx: &mut TestAppC
     );
 }
 
-/// The branch picker's menu keeps a branch another worktree has checked
-/// out in the keys' order, as every row that says why it is unavailable
-/// (`native_accessibility::detailed_item`): drawn as the branch's name with
-/// "Another worktree" beside it in secondary text and named "review,
-/// another worktree", Down from Find or create a branch… rests the cursor
-/// on it, drawn there; Enter there switches nothing and leaves the menu open
-/// with the cursor on it; the next Down moves on to Current branch
-/// settings…, and Up comes back. Decided by the coordinator, by the rule to
-/// say why something is unavailable: drawn as "review · another worktree",
-/// one disabled label, it was passed over, Down going from Find or create a
-/// branch… straight to Current branch settings…, so a screen reader never
-/// reached why the branch could not be switched to.
-#[gpui::test]
-async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mut TestAppContext) {
-    use crate::views::tests::{fixture_git, fixture_git_output, history_script};
-    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
-    const HELD: &str = "menu-item: review, another worktree · MenuItemCheckBox False disabled";
-    const SETTINGS: &str = "menu-item: Current branch settings… · MenuItem";
+/// History of three commits on `main` with the menu keys bound, a branch
+/// `review` checked out in a linked worktree, read again as Refresh reads
+/// it so the app knows that worktree, and the repository's path.
+async fn with_held_branch(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    std::path::PathBuf,
+) {
+    use crate::views::tests::{fixture_git, history_script};
     let (fixture, app, cx) =
         crate::views::tests::history_window_from(cx, history_script(3, 1)).await;
     cx.update(|_, cx| {
@@ -451,11 +445,38 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
         &repository,
         &["worktree", "add", "-q", linked.to_str().unwrap(), "review"],
     );
-    // Read again as History's Refresh does, the new worktree included.
-    cx.update(|window, cx| {
-        app.update(cx, |app, cx| app.open(repository.clone(), None, window, cx))
-    });
-    crate::views::tests::settle(&app, cx).await;
+    reopen(&app, cx, &repository).await;
+    (fixture, app, cx, repository)
+}
+
+/// Reads `repository` again as History's Refresh does.
+async fn reopen(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, repository: &std::path::Path) {
+    let repository = repository.to_owned();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open(repository, None, window, cx)));
+    crate::views::tests::settle(app, cx).await;
+}
+
+/// The branch picker's menu keeps a branch another worktree has checked
+/// out in the keys' order, as every row that says why it is unavailable
+/// (`native_accessibility::detailed_item`): drawn as the branch's name with
+/// "Another worktree" beside it in secondary text and named "review,
+/// another worktree" and the way to it, Down from Find or create a branch…
+/// rests the cursor on the current branch, which says so, and the next Down
+/// on it, drawn there; Enter there switches nothing and leaves the menu
+/// open with the cursor on it; the next Down moves on to Current branch
+/// settings…, and Up comes back. Decided by the coordinator, by the rule to
+/// say why something is unavailable: drawn as "review · another worktree",
+/// one disabled label, it was passed over, Down going from Find or create a
+/// branch… straight to Current branch settings…, so a screen reader never
+/// reached why the branch could not be switched to.
+#[gpui::test]
+async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mut TestAppContext) {
+    use crate::views::tests::fixture_git_output;
+    const FIND: &str = "menu-item: Find or create a branch… · MenuItem";
+    const CURRENT: &str = "menu-item: main, current branch · MenuItemCheckBox True disabled";
+    const HELD: &str = "menu-item: review, another worktree. Open that worktree from Worktrees… · MenuItemCheckBox False disabled";
+    const SETTINGS: &str = "menu-item: Current branch settings… · MenuItem";
+    let (_fixture, app, cx, repository) = with_held_branch(cx).await;
     let head = || {
         let output = fixture_git_output(&repository, &["rev-parse", "--abbrev-ref", "HEAD"]);
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
@@ -478,7 +499,7 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
         let fill = cx.update(|_, cx| {
             gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
         });
-        [FIND, HELD, SETTINGS]
+        [FIND, CURRENT, HELD, SETTINGS]
             .into_iter()
             .filter(|item| {
                 let bounds = cx
@@ -490,7 +511,7 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
     };
     assert_eq!(cursor(cx), Vec::<&str>::new(), "a click opens no cursor");
 
-    for (key, on) in [("down", FIND), ("down", HELD)] {
+    for (key, on) in [("down", FIND), ("down", CURRENT), ("down", HELD)] {
         cx.simulate_keystrokes(key);
         draw(cx);
         assert_eq!(cursor(cx), [on], "after {key}");
@@ -505,7 +526,12 @@ async fn the_branch_pickers_keys_rest_on_a_branch_another_worktree_holds(cx: &mu
     assert_eq!(head(), "main", "Enter switches nothing");
     assert_eq!(cursor(cx), [HELD], "the menu stays open on the branch");
 
-    for (key, on) in [("down", SETTINGS), ("up", HELD), ("up", FIND)] {
+    for (key, on) in [
+        ("down", SETTINGS),
+        ("up", HELD),
+        ("up", CURRENT),
+        ("up", FIND),
+    ] {
         cx.simulate_keystrokes(key);
         draw(cx);
         assert_eq!(cursor(cx), [on], "after {key}");
@@ -566,4 +592,283 @@ async fn a_half_tile_reveals_every_branch_chooser_row(cx: &mut TestAppContext) {
         draw(cx);
     }
     set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+}
+
+/// Every item the branch picker's menu refuses says why, by the rule that
+/// a nearby disabled reason is heard as well as seen: each is drawn with its
+/// reason beside its command, named by both, and the menu keys rest on it
+/// (`PopupMenuItem::reason_stated`). At rest that is the current branch,
+/// "main, current branch", and a branch another worktree has checked out,
+/// "review, another worktree" and the way to it; while a write runs, also
+/// every item the write refuses, named by the write. The current branch was
+/// ticked and refused with nothing to say why, so the keys passed over it
+/// and a screen reader never heard which branch was current.
+#[gpui::test]
+async fn every_item_the_branch_picker_refuses_says_why(cx: &mut TestAppContext) {
+    const CURRENT: &str = "main, current branch";
+    const HELD: &str = "review, another worktree. Open that worktree from Worktrees…";
+    let (_fixture, app, cx, _repository) = with_held_branch(cx).await;
+    let open = |cx: &mut VisualTestContext| {
+        PICKER_ITEMS.with(|items| items.borrow_mut().clear());
+        let picker = rendered(cx, "current-branch");
+        cx.simulate_click(picker.center(), gpui::Modifiers::default());
+        draw(cx);
+    };
+    // Each refused item's accessible name, once it is drawn under it and
+    // says more than its command.
+    let refused = |cx: &mut VisualTestContext| -> Vec<String> {
+        let items = PICKER_ITEMS.with(|items| items.borrow().clone());
+        assert!(!items.is_empty(), "the menu is built");
+        items
+            .into_iter()
+            .filter(|item| item.disabled)
+            .map(|item| {
+                let name = item.name.clone().unwrap_or_else(|| item.label.clone());
+                assert!(
+                    item.reason_stated && name.starts_with(&format!("{}, ", item.label)),
+                    "{item:?} says why it is refused"
+                );
+                let (role, ticked) = match item.checked {
+                    Some(true) => ("MenuItemCheckBox", " True"),
+                    Some(false) => ("MenuItemCheckBox", " False"),
+                    None => ("MenuItem", ""),
+                };
+                let drawn = format!("menu-item: {name} · {role}{ticked} disabled");
+                assert!(cx.debug_bounds(drawn.clone().leak()).is_some(), "{drawn}");
+                name
+            })
+            .collect()
+    };
+
+    open(cx);
+    assert_eq!(refused(cx), [CURRENT, HELD]);
+    let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+    let reason = format!(
+        "menu-detail: Current branch · {:?}",
+        gpui::Rgba::from(muted)
+    );
+    assert!(
+        cx.debug_bounds(reason.leak()).is_some(),
+        "the current branch's reason is drawn beside it in secondary text"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Fetching remote…");
+        cx.notify();
+    });
+    draw(cx);
+    open(cx);
+    let during = refused(cx);
+    let waiting = during
+        .iter()
+        .filter(|name| name.ends_with(", available when fetching remote finishes"))
+        .count();
+    assert!(
+        during.contains(&CURRENT.to_owned()) && during.contains(&HELD.to_owned()) && waiting > 1,
+        "the branches keep their own reasons, and the write's are named: {during:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    app.update(cx, |app, _| app.operation_busy = None);
+    draw(cx);
+}
+
+/// The actions a branch's or a remote branch's dialog can draw.
+const DIALOG_ACTIONS: [&str; 9] = [
+    "rename-branch",
+    "choose-upstream",
+    "remove-upstream",
+    "delete-branch",
+    "merge-selected-branch",
+    "rebase-selected-branch",
+    "track-remote-branch",
+    "merge-remote-branch",
+    "rebase-remote-branch",
+];
+
+/// Closes the dialog open, if any, and forgets what it drew.
+fn close_dialog(cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.close_dialog(cx));
+    draw(cx);
+    native_accessibility::written::forget();
+}
+
+/// Opens local branch `name`'s dialog, as the branch picker and the chooser
+/// do, in place of the one open.
+async fn open_branch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, name: &str) {
+    close_dialog(cx);
+    let name = name.to_owned();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_contextual_branch(name, false, window, cx)
+        })
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the branch is read").await;
+}
+
+/// Whether the pointer resting on action `id` shows the tooltip `text`, as
+/// the window draws it under the pointer; the pointer then leaves the window
+/// until the tooltip has gone.
+fn hover_shows(cx: &mut VisualTestContext, id: &'static str, text: &str) -> bool {
+    const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+    let action = rendered(cx, id);
+    cx.simulate_mouse_move(action.center(), None, gpui::Modifiers::default());
+    cx.executor().advance_clock(SHOW_DELAY);
+    draw(cx);
+    let shown = cx
+        .debug_bounds(format!("{id}/tooltip/{text}").leak())
+        .is_some();
+    cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, gpui::Modifiers::default());
+    cx.executor().advance_clock(SHOW_DELAY);
+    draw(cx);
+    shown
+}
+
+/// Each action the open dialog draws refused, with why, once the tooltip a
+/// pointer resting on it shows says the same as its description; an action
+/// it offers says neither.
+fn refused_actions(cx: &mut VisualTestContext) -> Vec<(&'static str, String)> {
+    use crate::tags::tests::hovered_tooltips;
+    draw(cx);
+    let drawn: Vec<_> = DIALOG_ACTIONS
+        .into_iter()
+        .filter_map(|id| Some((id, native_accessibility::written::get(id)?.node)))
+        .collect();
+    assert!(!drawn.is_empty(), "the dialog draws its actions");
+    drawn
+        .into_iter()
+        .filter_map(|(id, node)| {
+            let description = node.description().map(str::to_owned);
+            if !node.is_disabled() {
+                assert_eq!(description, None, "{id} is offered");
+                assert_eq!(hovered_tooltips(cx, id), 0, "{id} is offered");
+                return None;
+            }
+            let why = description.unwrap_or_else(|| panic!("{id} describes why"));
+            assert!(hover_shows(cx, id, &why), "{id}: its tooltip says {why:?}");
+            Some((id, why))
+        })
+        .collect()
+}
+
+/// Every action a branch's or a remote branch's dialog refuses says why,
+/// and the way to it, in its tooltip and its accessible description, which
+/// are the same words, as New theme… does at its bound; an action it offers
+/// gives none. A branch another worktree has checked out is renamed and
+/// tracked from there, its upstream, once it has one, removed from there,
+/// and deleted once that worktree has switched away; a branch with no
+/// upstream, held elsewhere or the current one, has none to remove; a
+/// branch with a commit the current branch lacks keeps that work; a remote
+/// branch merges or rebases only onto a branch. Those actions were dimmed
+/// with nothing to say why, and the dialog's note named only the deletion's
+/// reason.
+#[gpui::test]
+async fn every_action_a_branch_dialog_refuses_says_why(cx: &mut TestAppContext) {
+    use crate::views::tests::{fixture_git, fixture_git_output};
+    let (_fixture, app, cx, repository) = with_held_branch(cx).await;
+    // The dialogs slide in on the real clock: at rest from their first
+    // frame, each action lies where the pointer rests on it.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    // `ahead` holds a commit `main` lacks.
+    let commit = fixture_git_output(
+        &repository,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit-tree",
+            "main^{tree}",
+            "-p",
+            "main",
+            "-m",
+            "ahead",
+        ],
+    );
+    let ahead = String::from_utf8_lossy(&commit.stdout).trim().to_owned();
+    fixture_git(&repository, &["branch", "ahead", &ahead]);
+    reopen(&app, cx, &repository).await;
+    let repo = app.read_with(cx, |app, _| app.repository.clone().expect("a repository"));
+    let checked_out = |name: &str| {
+        let plan = repo.branch_plan(name).unwrap();
+        format!(
+            "Checked out in {}. Switch that worktree to another branch before deleting.",
+            path_list(&plan.checked_out_in)
+        )
+    };
+    let remote = |cx: &mut VisualTestContext| {
+        close_dialog(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let reference = "refs/remotes/origin/feature".to_owned();
+                app.show_remote_branch(reference, ahead.clone(), window, cx)
+            })
+        });
+    };
+
+    let unset = "No upstream is set. Change upstream… sets one.".to_owned();
+    let elsewhere = "Checked out in another worktree.";
+    let held = |cleared: String| {
+        [
+            (
+                "rename-branch",
+                format!("{elsewhere} Rename it from that worktree."),
+            ),
+            (
+                "choose-upstream",
+                format!("{elsewhere} Change its upstream from that worktree."),
+            ),
+            ("remove-upstream", cleared),
+            ("delete-branch", checked_out("review")),
+        ]
+    };
+    open_branch(&app, cx, "review").await;
+    assert_eq!(refused_actions(cx), held(unset.clone()));
+    fixture_git(&repository, &["branch", "--set-upstream-to=main", "review"]);
+    open_branch(&app, cx, "review").await;
+    assert_eq!(
+        refused_actions(cx),
+        held(format!(
+            "{elsewhere} Remove its upstream from that worktree."
+        ))
+    );
+
+    open_branch(&app, cx, "main").await;
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("remove-upstream", unset.clone()),
+            ("delete-branch", checked_out("main")),
+        ]
+    );
+
+    open_branch(&app, cx, "ahead").await;
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("remove-upstream", unset),
+            (
+                "delete-branch",
+                "1 commit is outside main. Merge or preserve that work before deleting this branch."
+                    .to_owned()
+            ),
+        ]
+    );
+
+    remote(cx);
+    assert_eq!(refused_actions(cx), Vec::<(&str, String)>::new());
+    fixture_git(&repository, &["checkout", "--quiet", "--detach"]);
+    reopen(&app, cx, &repository).await;
+    remote(cx);
+    let detached = "HEAD is detached. Switch to a branch first.".to_owned();
+    assert_eq!(
+        refused_actions(cx),
+        [
+            ("merge-remote-branch", detached.clone()),
+            ("rebase-remote-branch", detached),
+        ]
+    );
+    close_dialog(cx);
 }

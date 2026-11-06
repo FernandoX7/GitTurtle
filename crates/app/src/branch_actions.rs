@@ -19,6 +19,26 @@ thread_local! {
     /// The label the branch picker last drew, for a test to read back.
     pub(crate) static PICKER_LABEL: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+    /// Each item the branch picker's menu was last built with, in order
+    /// ([`picker_item`]), for a test to walk every item it refuses.
+    pub(crate) static PICKER_ITEMS: std::cell::RefCell<Vec<PickerItem>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What a test reads of an item of the branch picker's menu
+/// ([`PICKER_ITEMS`]).
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct PickerItem {
+    /// The command it draws.
+    pub(crate) label: String,
+    /// The name assistive technology reads, where it says more.
+    pub(crate) name: Option<String>,
+    pub(crate) disabled: bool,
+    /// Whether it states why it is refused, so the menu keys rest on it.
+    pub(crate) reason_stated: bool,
+    /// Whether it is a check item, and ticked.
+    pub(crate) checked: Option<bool>,
 }
 
 #[derive(Default)]
@@ -282,26 +302,25 @@ impl GitTurtle {
                     .scrollable(true);
                 let find_owner = owner.clone();
                 let find_path = path.clone();
-                menu = menu
-                    .item(
-                        native_accessibility::waiting_item("Find or create a branch…", false, wait)
-                            .on_click(move |_, window, cx| {
-                                let _ = find_owner.update(cx, |this, cx| {
-                                    if this.path == find_path
-                                        && this.page == AppPage::Repository
-                                        && this.operation_busy.is_none()
-                                    {
-                                        this.git_actions_open = true;
-                                        this.branch_name
-                                            .read(cx)
-                                            .focus_handle(cx)
-                                            .focus(window, cx);
-                                        cx.notify();
-                                    }
-                                });
-                            }),
-                    )
-                    .separator();
+                #[cfg(test)]
+                PICKER_ITEMS.with(|items| items.borrow_mut().clear());
+                menu = picker_item(
+                    menu,
+                    native_accessibility::waiting_item("Find or create a branch…", false, wait)
+                        .on_click(move |_, window, cx| {
+                            let _ = find_owner.update(cx, |this, cx| {
+                                if this.path == find_path
+                                    && this.page == AppPage::Repository
+                                    && this.operation_busy.is_none()
+                                {
+                                    this.git_actions_open = true;
+                                    this.branch_name.read(cx).focus_handle(cx).focus(window, cx);
+                                    cx.notify();
+                                }
+                            });
+                        }),
+                )
+                .separator();
                 let candidates: Vec<_> = this
                     .branches
                     .iter()
@@ -312,11 +331,18 @@ impl GitTurtle {
                     })
                     .take(CHOICE_LIMIT + 1)
                     .collect();
+                // The current branch is ticked and cannot be switched to,
+                // being the state already, and says so beside its name,
+                // "Current branch", heard as "main, current branch", so the
+                // menu keys rest on it (`native_accessibility::detailed_item`).
+                // Ticked and refused with nothing to say why, it was passed
+                // over, and a screen reader never heard which branch was
+                // current.
                 if let Some(current) = current {
-                    menu = menu.item(
-                        PopupMenuItem::new(current.to_owned())
-                            .checked(true)
-                            .disabled(true),
+                    menu = picker_item(
+                        menu,
+                        native_accessibility::detailed_item(current.to_owned(), "Current branch")
+                            .checked(true),
                     );
                 }
                 for branch in candidates.iter().take(CHOICE_LIMIT) {
@@ -334,29 +360,38 @@ impl GitTurtle {
                     // (`native_accessibility::detailed_item`). Drawn as
                     // "<name> · another worktree", one disabled label, it
                     // was passed over, and a screen reader never reached it.
+                    // Its name adds the way to that branch: the worktree
+                    // that has it, which Worktrees… opens.
                     let item = if occupied {
                         native_accessibility::detailed_item(name.clone(), "Another worktree")
+                            .accessibility_label(format!(
+                                "{name}, another worktree. {OCCUPIED_REMEDY}"
+                            ))
                     } else {
                         native_accessibility::waiting_item(name.clone(), false, wait)
                     };
                     // Choices beside the ticked current branch, announced as
                     // unticked check items.
-                    menu = menu.item(item.checked(false).on_click(move |_, window, cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            if this.path == path && this.page == AppPage::Repository {
-                                let origin = workspace::confirmations::picker(&this.path, &name);
-                                this.write_from(
-                                    WriteCommand::Checkout {
-                                        branch: name.clone(),
-                                    },
-                                    "Switching branch…",
-                                    Some(origin.into()),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        });
-                    }));
+                    menu = picker_item(
+                        menu,
+                        item.checked(false).on_click(move |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                if this.path == path && this.page == AppPage::Repository {
+                                    let origin =
+                                        workspace::confirmations::picker(&this.path, &name);
+                                    this.write_from(
+                                        WriteCommand::Checkout {
+                                            branch: name.clone(),
+                                        },
+                                        "Switching branch…",
+                                        Some(origin.into()),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        }),
+                    );
                 }
                 if candidates.len() > CHOICE_LIMIT {
                     menu = menu.label("Showing 40 branches · Find to narrow the list");
@@ -768,6 +803,38 @@ impl GitTurtle {
             .checked_out_in
             .iter()
             .any(|tree| Some(tree.as_path()) != own_path);
+        // Why each action that changes the branch is unavailable, and the
+        // way to it: a branch another worktree has checked out is renamed
+        // and tracked from there.
+        let elsewhere = |change: &str| {
+            other_worktree.then(|| format!("{ELSEWHERE} {change} from that worktree."))
+        };
+        let rename_refused = elsewhere("Rename it");
+        let upstream_refused = elsewhere("Change its upstream");
+        // With none set there is nothing to remove from any worktree.
+        let clear_refused = plan
+            .upstream
+            .is_none()
+            .then(|| "No upstream is set. Change upstream… sets one.".to_owned())
+            .or_else(|| elsewhere("Remove its upstream"));
+        let delete_refused = if !plan.checked_out_in.is_empty() {
+            Some(format!(
+                "Checked out in {}. Switch that worktree to another branch before deleting.",
+                path_list(&plan.checked_out_in)
+            ))
+        } else if let Some(count) = plan.unmerged_commits.filter(|count| *count > 0) {
+            Some(format!(
+                "{} outside {}. Merge or preserve that work before deleting this branch.",
+                crate::counted(count, "commit is", "commits are"),
+                plan.merge_target
+                    .as_ref()
+                    .map_or("HEAD", |target| short_reference(&target.name))
+            ))
+        } else if can_delete {
+            None
+        } else {
+            Some("No retained target is available to verify safe deletion. Create or select a branch that contains these commits first.".to_owned())
+        };
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx);
             let rename = Arc::clone(&plan);
@@ -776,19 +843,17 @@ impl GitTurtle {
             let delete = Arc::clone(&plan);
             let source = format!("refs/heads/{}", plan.name);
             let mut actions = div().flex().flex_wrap().gap_2()
-                .child(dialog_action("rename-branch", "Rename…", &owner, &path, other_worktree, move |this, window, cx| this.open_branch_form(BranchFormMode::Rename(Arc::clone(&rename)), window, cx)))
-                .child(dialog_action("choose-upstream", "Change upstream…", &owner, &path, other_worktree, move |this, window, cx| this.choose_branch(ChoicePurpose::Upstream(Arc::clone(&upstream)), window, cx)))
-                .child(dialog_action("remove-upstream", "Remove upstream…", &owner, &path, other_worktree || plan.upstream.is_none(), move |this, window, cx| this.prepare_upstream(Arc::clone(&clear_upstream), None, window, cx)))
-                .child(dialog_action("delete-branch", "Delete branch…", &owner, &path, !can_delete, move |this, window, cx| this.prepare_branch_delete(Arc::clone(&delete), window, cx)));
+                .child(dialog_action("rename-branch", "Rename…", &owner, &path, rename_refused.clone(), move |this, window, cx| this.open_branch_form(BranchFormMode::Rename(Arc::clone(&rename)), window, cx)))
+                .child(dialog_action("choose-upstream", "Change upstream…", &owner, &path, upstream_refused.clone(), move |this, window, cx| this.choose_branch(ChoicePurpose::Upstream(Arc::clone(&upstream)), window, cx)))
+                .child(dialog_action("remove-upstream", "Remove upstream…", &owner, &path, clear_refused.clone(), move |this, window, cx| this.prepare_upstream(Arc::clone(&clear_upstream), None, window, cx)))
+                .child(dialog_action("delete-branch", "Delete branch…", &owner, &path, delete_refused.clone(), move |this, window, cx| this.prepare_branch_delete(Arc::clone(&delete), window, cx)));
             if !current && plan.current_branch.is_some() {
                 let merge_source = source.clone();
-                actions = actions.child(dialog_action("merge-selected-branch", "Merge into current…", &owner, &path, false, move |this, window, cx| this.prepare_integration(merge_source.clone(), false, window, cx)))
-                    .child(dialog_action("rebase-selected-branch", "Rebase current onto this…", &owner, &path, false, move |this, window, cx| this.prepare_integration(source.clone(), true, window, cx)));
+                actions = actions.child(dialog_action("merge-selected-branch", "Merge into current…", &owner, &path, None, move |this, window, cx| this.prepare_integration(merge_source.clone(), false, window, cx)))
+                    .child(dialog_action("rebase-selected-branch", "Rebase current onto this…", &owner, &path, None, move |this, window, cx| this.prepare_integration(source.clone(), true, window, cx)));
             }
-            let deletion_note = if !plan.checked_out_in.is_empty() {
-                format!("Checked out in {}. Switch that worktree to another branch before deleting.{}", path_list(&plan.checked_out_in), if other_worktree { " Rename and upstream changes belong in that worktree." } else { "" })
-            } else if let Some(count) = plan.unmerged_commits.filter(|count| *count > 0) {
-                format!("{} outside {}. Merge or preserve that work before deleting this branch.", crate::counted(count, "commit is", "commits are"), plan.merge_target.as_ref().map_or("HEAD", |target| short_reference(&target.name)))
+            let deletion_note = if let Some(reason) = &delete_refused {
+                format!("{reason}{}", if other_worktree { " Rename and upstream changes belong in that worktree." } else { "" })
             } else if let Some(target) = &plan.merge_target { format!("All commits are retained by {}.", short_reference(&target.name)) } else { "No retained target is available to verify safe deletion. Create or select a branch that contains these commits first.".into() };
             let metadata = format!("{}{} · {}", if current { "Current branch · " } else { "" }, short_oid(&plan.oid), plan.upstream.as_deref().map_or("No upstream".into(), |upstream| format!("Tracks {}", short_reference(upstream))));
             let content = div().flex().flex_col().gap_3()
@@ -809,10 +874,14 @@ impl GitTurtle {
     ) {
         let owner = cx.entity().downgrade();
         let path = self.path.clone();
-        let current = self
+        // Merging or rebasing needs a branch to change: detached, each says
+        // so and how to get one.
+        let detached = self
             .work_status
             .as_ref()
-            .and_then(|status| status.branch.clone());
+            .and_then(|status| status.branch.as_ref())
+            .is_none()
+            .then(|| DETACHED.to_owned());
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx);
             let tracking_ref = reference.clone();
@@ -827,7 +896,7 @@ impl GitTurtle {
                     "Create local tracking branch…",
                     &owner,
                     &path,
-                    false,
+                    None,
                     move |this, window, cx| {
                         this.open_branch_form(
                             BranchFormMode::Track(tracking_ref.clone()),
@@ -841,7 +910,7 @@ impl GitTurtle {
                     "Merge into current…",
                     &owner,
                     &path,
-                    current.is_none(),
+                    detached.clone(),
                     move |this, window, cx| {
                         this.prepare_integration(merge_ref.clone(), false, window, cx)
                     },
@@ -851,7 +920,7 @@ impl GitTurtle {
                     "Rebase current onto this…",
                     &owner,
                     &path,
-                    current.is_none(),
+                    detached.clone(),
                     move |this, window, cx| {
                         this.prepare_integration(rebase_ref.clone(), true, window, cx)
                     },
@@ -993,7 +1062,8 @@ fn add_menu_action(
     let owner = owner.clone();
     let path = path.clone();
     let wait = wait.filter(|_| !matches!(action, MenuAction::Activity));
-    menu = menu.item(
+    menu = picker_item(
+        menu,
         native_accessibility::waiting_item(label, false, wait).on_click(move |_, window, cx| {
             let _ = owner.update(cx, |this, cx| {
                 if this.path == path && this.page == AppPage::Repository {
@@ -1005,19 +1075,100 @@ fn add_menu_action(
     menu
 }
 
+/// Why a branch dialog's action that changes the branch is unavailable for
+/// a branch another worktree has checked out, before the way to it.
+const ELSEWHERE: &str = "Checked out in another worktree.";
+
+/// Why a remote branch's Merge into current… and Rebase current onto this…
+/// are unavailable while HEAD is detached, and the way to them.
+const DETACHED: &str = "HEAD is detached. Switch to a branch first.";
+
+/// What a branch another worktree has checked out names as the way to it
+/// in the branch picker's menu, after its reason: a branch is checked out
+/// in one worktree at a time.
+const OCCUPIED_REMEDY: &str = "Open that worktree from Worktrees…";
+
+/// Adds `item` to the branch picker's `menu`, noting in a test build what
+/// it says and whether it is refused with a reason ([`PICKER_ITEMS`]).
+fn picker_item(menu: PopupMenu, item: PopupMenuItem) -> PopupMenu {
+    #[cfg(test)]
+    {
+        let noted = match &item {
+            PopupMenuItem::Item {
+                label,
+                disabled,
+                checked,
+                checkable,
+                accessibility_label,
+                reason_stated,
+                ..
+            } => Some((
+                label.to_string(),
+                accessibility_label,
+                *disabled,
+                *reason_stated,
+                checkable.then_some(*checked),
+            )),
+            PopupMenuItem::ElementItem {
+                name,
+                disabled,
+                checked,
+                checkable,
+                accessibility_label,
+                reason_stated,
+                ..
+            } => Some((
+                name.as_ref().map(ToString::to_string).unwrap_or_default(),
+                accessibility_label,
+                *disabled,
+                *reason_stated,
+                checkable.then_some(*checked),
+            )),
+            _ => None,
+        };
+        if let Some((label, name, disabled, reason_stated, checked)) = noted {
+            let name = name.as_ref().map(ToString::to_string);
+            PICKER_ITEMS.with(|items| {
+                items.borrow_mut().push(PickerItem {
+                    label,
+                    name,
+                    disabled,
+                    reason_stated,
+                    checked,
+                })
+            });
+        }
+    }
+    menu.item(item)
+}
+
+/// A branch dialog's action `label`, unavailable while `refused` holds why,
+/// which it then says, with the way to make it available where there is
+/// one, in its tooltip and its accessible description, as New theme… does
+/// at its bound: "Checked out in another worktree. Rename it from that
+/// worktree." Refused with nothing to say why, Rename… and Delete branch…
+/// once dimmed beside a note that named only the deletion's reason. The
+/// tooltip is the kit's text tooltip, drawn as `‹id›/tooltip/‹reason›` so a
+/// test reads the one shown under the pointer (`workspace::waiting_tooltip`).
 fn dialog_action(
     id: &'static str,
     label: &'static str,
     owner: &WeakEntity<GitTurtle>,
     path: &Option<PathBuf>,
-    disabled: bool,
+    refused: Option<String>,
     action: impl Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
-) -> Button {
+) -> impl IntoElement {
+    use native_accessibility::DrawnButton as _;
     let owner = owner.clone();
     let path = path.clone();
     button(id, label, "", false)
+        .debug_selector(move || id.into())
         .secondary()
-        .disabled(disabled)
+        .disabled(refused.is_some())
+        .when_some(refused, |action, reason| {
+            let action = Described(action).aria_description(reason.clone()).0;
+            workspace::waiting_tooltip(action, id, reason)
+        })
         .on_click(move |_, window, cx| {
             let _ = owner.update(cx, |this, cx| {
                 if this.path == path
@@ -1029,7 +1180,21 @@ fn dialog_action(
                 }
             });
         })
+        .node_recorded()
 }
+
+/// A kit Button lent GPUI's stateful element methods for its accessible
+/// description, which the kit's Button does not offer: its interactivity is
+/// its base Button's, whose node GPUI writes with the description.
+struct Described(Button);
+
+impl InteractiveElement for Described {
+    fn interactivity(&mut self) -> &mut gpui::Interactivity {
+        self.0.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for Described {}
 
 fn short_reference(reference: &str) -> &str {
     reference
@@ -1515,7 +1680,7 @@ impl Render for RemoteManager {
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))
-                .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, false, |this, window, cx| this.open_remote_form(None, window, cx))))
+                .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, None, |this, window, cx| this.open_remote_form(None, window, cx))))
             .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Configure local destinations. Network activity starts only when you explicitly fetch, pull, or push."))
             .child(cue.list(div().on_children_prepainted(cue.observe(self.list.observe())).id("remote-manager-list").debug_selector(|| "remote-manager-list".into()).max_h(px(360.)).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_2()
                 .children(matches.iter().take(CHOICE_LIMIT).map(|(index, choice)| {
