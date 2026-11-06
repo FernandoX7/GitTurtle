@@ -985,3 +985,137 @@ async fn a_tracking_branch_created_without_the_switch_confirms_in_place(cx: &mut
     let kept = repo.branch_plan("kept").expect("the branch was created");
     assert_eq!(kept.upstream.as_deref(), Some("refs/remotes/origin/kept"));
 }
+
+/// The branch picker's label, accessible name and tooltip are built only
+/// when what they follow from changes ([`PickerInputs`]): the branch, HEAD's
+/// commit where none is checked out, and a switch's confirmation. Each frame
+/// cloned the branch's name and formatted its label, name and tooltip,
+/// however steady. Frames at rest build none of it; another branch and a
+/// detached HEAD build it once each; and the compact bar's forms are kept
+/// with the full bar's, so the compact row at 18 pt in 700 × 490, whose
+/// picker names the commit, and in 461 × 490, where it says "Detached" in
+/// the line's place and carries the line's advice, build none of it. Each
+/// is drawn as it now reads.
+#[gpui::test]
+async fn the_branch_picker_builds_its_text_only_when_what_it_shows_changes(
+    cx: &mut TestAppContext,
+) {
+    use crate::views::tests::{history_window, hold_quiet_reads_for_test};
+    const SWITCH: &str = "Switch branch and repository actions";
+    // The thread's kept text from an earlier run, as another seed's, would
+    // hold this run's branch and commit already.
+    PICKER_TEXTS.with_borrow_mut(|texts| *texts = crate::views::Measured::new());
+    let (_fixture, app, cx) = history_window(cx).await;
+    hold_quiet_reads_for_test(&app, cx);
+    cx.simulate_resize(size(px(1480.), px(800.)));
+    draw(cx);
+    let built = || PICKER_TEXTS_BUILT.get();
+    let at_rest = |at: &str, cx: &mut VisualTestContext| {
+        let before = built();
+        for _ in 0..3 {
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+        }
+        assert_eq!(built() - before, 0, "{at}: frames at rest build none of it");
+    };
+    // What the picker draws, its label and tooltip, and the accessible name
+    // its node is written with, the same in every form.
+    let drawn = |cx: &mut VisualTestContext| {
+        let label = PICKER_LABEL.with(|label| label.borrow().clone());
+        let tooltip = crate::views::CONTROL_TOOLTIPS
+            .with(|tooltips| tooltips.borrow().get("current-branch").cloned());
+        let picker = app.clone();
+        let node = crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let button = picker.update(cx, |app, cx| app.branch_picker(false, false, None, cx));
+            let element =
+                gpui::RenderOnce::render(button.base(window, cx), window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the picker's role"));
+            element.write_a11y_info(&mut node);
+            node
+        });
+        (label, tooltip, node.label().map(str::to_owned))
+    };
+    fn status(app: &mut GitTurtle) -> &mut gitturtle_core::RepositoryStatus {
+        Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+    }
+    let size_to = |cx: &mut VisualTestContext, text: u8, width: f32, height: f32| {
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+    };
+
+    at_rest("History at 1480 × 800", cx);
+    let before = built();
+    app.update(cx, |app, cx| {
+        status(app).branch = Some("topic".into());
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(built() - before, 1, "another branch builds it once");
+    assert_eq!(
+        drawn(cx),
+        (
+            Some("topic".into()),
+            Some(format!("topic · {SWITCH}")),
+            Some("Current branch: topic. Switch or manage branches".into()),
+        ),
+        "the picker reads the new branch"
+    );
+    at_rest("another branch", cx);
+
+    let head = app.read_with(cx, |app, _| {
+        (app.work_status.as_ref())
+            .and_then(|status| status.head.clone())
+            .expect("HEAD has a commit")
+    });
+    let short = &head[..7];
+    let named = format!("Current branch: Detached HEAD at {short}. Switch or manage branches");
+    let before = built();
+    app.update(cx, |app, cx| {
+        status(app).branch = None;
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(built() - before, 1, "a detached HEAD builds it once");
+    assert_eq!(
+        drawn(cx),
+        (
+            Some("Detached HEAD".into()),
+            Some(format!("Detached HEAD at {short} · {SWITCH}")),
+            Some(named.clone()),
+        ),
+        "the full bar's picker names the commit in its tooltip and name"
+    );
+    at_rest("a detached HEAD", cx);
+
+    let before = built();
+    size_to(cx, 18, 700., 490.);
+    let compact = drawn(cx);
+    size_to(cx, 18, 461., 490.);
+    let narrow = drawn(cx);
+    assert_eq!(built() - before, 0, "the compact forms build none of it");
+    assert_eq!(
+        compact,
+        (
+            Some(short.to_owned()),
+            Some(format!("Detached HEAD at {short} · {SWITCH}")),
+            Some(named.clone()),
+        ),
+        "the compact row's picker is labelled by the commit"
+    );
+    assert_eq!(
+        narrow,
+        (
+            Some(crate::empty_state::DETACHED.to_owned()),
+            Some(format!(
+                "Detached HEAD at {short} · Create a branch here to keep new commits on it · {SWITCH}"
+            )),
+            Some(named),
+        ),
+        "where the line leaves, the picker says its word and carries its advice"
+    );
+    at_rest("the compact row in 461 × 490", cx);
+    size_to(cx, 13, 1480., 800.);
+}

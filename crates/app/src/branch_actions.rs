@@ -41,6 +41,135 @@ pub(crate) struct PickerItem {
     pub(crate) checked: Option<bool>,
 }
 
+/// What the branch picker's text ([`PickerText`]) is made of, borrowed from
+/// the window's state, so a frame compares it with what each kept text was
+/// built from without building anything: the picker cloned the branch's
+/// name and formatted its label, accessible name and tooltip in every
+/// frame, only to draw the same text. The text is built again only when one
+/// of these changes ([`GitTurtle::branch_picker`]); it holds every form the
+/// bars draw ([`PickerForm`]), so a resize, a text size or the compact bar
+/// builds nothing. These are everything [`PickerText::build`] reads: a
+/// detached HEAD's commit decides the picker's edge, as
+/// `RepositoryEdge::of` finds a detached HEAD exactly where no branch is
+/// checked out and HEAD has a commit, and no other edge changes its text.
+#[derive(PartialEq)]
+struct PickerInputs<'a> {
+    /// The branch checked out, if any.
+    branch: Option<Cow<'a, str>>,
+    /// HEAD's commit where no branch is checked out.
+    detached: Option<Cow<'a, str>>,
+    /// The word a switch chosen from the menu, or a tracking branch created
+    /// from it, confirms with while it confirms
+    /// ([`GitTurtle::picker_confirmation`]).
+    done: Option<&'static str>,
+}
+
+impl PickerInputs<'_> {
+    /// These inputs as a key a cache keeps, owning what they borrowed.
+    fn owned(&self) -> PickerInputs<'static> {
+        let text = |text: &Cow<str>| Cow::Owned(String::from(&**text));
+        PickerInputs {
+            branch: self.branch.as_ref().map(text),
+            detached: self.detached.as_ref().map(text),
+            done: self.done,
+        }
+    }
+}
+
+/// The forms the bars draw the branch picker in, by the index of its label
+/// in [`PickerText::labels`].
+#[derive(Clone, Copy)]
+enum PickerForm {
+    /// The full action bar.
+    Full,
+    /// The compact bar's row.
+    Compact,
+    /// The compact bar's row where its repository edge has no room for its
+    /// line (`empty_state::EdgeForm::glyph`).
+    Narrow,
+}
+
+/// The branch picker's text, as [`PickerInputs`] make it, each string
+/// shared, so a frame hands it to the picker without copying it.
+struct PickerText {
+    /// The label in each [`PickerForm`].
+    labels: [SharedString; 3],
+    /// The accessible name, the same in every form.
+    name: SharedString,
+    /// The tooltip, and in the [`PickerForm::Narrow`] form, where a detached
+    /// HEAD's line leaves for the picker, which carries the line's advice
+    /// after its name.
+    tooltip: SharedString,
+    narrow_tooltip: SharedString,
+}
+
+impl PickerText {
+    /// The picker's text for `inputs` in every form, built only when they
+    /// change ([`PICKER_TEXTS`]).
+    fn build(inputs: &PickerInputs) -> Self {
+        #[cfg(test)]
+        PICKER_TEXTS_BUILT.with(|built| built.set(built.get() + 1));
+        let branch: SharedString =
+            String::from(inputs.branch.as_deref().unwrap_or("Detached HEAD")).into();
+        // Detached, HEAD is a commit, and the picker says which, as
+        // "Detached HEAD at" its short ID. In the compact bar, whose line
+        // then says only "Detached", its label is that ID, whole where
+        // "Detached HEAD" would be cut, and where even that line has no
+        // room the picker says "Detached" in its place: one commit glyph and
+        // the word (`empty_state::RepositoryEdge::compact_branch`).
+        let edge =
+            (inputs.detached.as_deref()).map(|oid| crate::empty_state::RepositoryEdge::Detached {
+                oid: oid.to_owned(),
+            });
+        let named: SharedString = match inputs.detached.as_deref() {
+            Some(oid) => format!("Detached HEAD at {}", short_oid(oid)).into(),
+            None => branch.clone(),
+        };
+        let label = |narrow| {
+            (edge.as_ref())
+                .and_then(|edge| edge.compact_branch(narrow))
+                .map_or_else(|| branch.clone(), SharedString::from)
+        };
+        // Where the line leaves for the picker, which says its word, the
+        // picker's tooltip carries the line's advice after its name.
+        let advice = (edge.as_ref())
+            .filter(|edge| edge.glyph().is_none())
+            .map(|edge| edge.advice());
+        let tooltip = |advice: Option<&str>| -> SharedString {
+            match (inputs.done, advice) {
+                (Some(done), _) => format!("{done} · {branch}"),
+                (None, Some(advice)) => {
+                    format!("{named} · {advice} · Switch branch and repository actions")
+                }
+                (None, None) => format!("{named} · Switch branch and repository actions"),
+            }
+            .into()
+        };
+        Self {
+            labels: [branch.clone(), label(false), label(true)],
+            name: format!("Current branch: {named}. Switch or manage branches").into(),
+            tooltip: tooltip(None),
+            narrow_tooltip: tooltip(advice),
+        }
+    }
+}
+
+/// The branch picker's text as drawn lately, by what it is made of.
+type PickerTexts = std::cell::RefCell<crate::views::Measured<PickerInputs<'static>, PickerText>>;
+
+thread_local! {
+    /// The branch picker's text as drawn lately, by what it is made of
+    /// ([`GitTurtle::branch_picker`]).
+    static PICKER_TEXTS: PickerTexts = const { std::cell::RefCell::new(crate::views::Measured::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times the branch picker's text was built
+    /// ([`PickerText::build`]), for a test.
+    pub(crate) static PICKER_TEXTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Default)]
 pub(super) struct State {
     generation: u64,
@@ -167,71 +296,49 @@ impl GitTurtle {
         most: Option<Pixels>,
         cx: &mut Context<Self>,
     ) -> Button {
-        let branch = self
-            .work_status
-            .as_ref()
-            .and_then(|status| status.branch.clone())
-            .unwrap_or_else(|| "Detached HEAD".into());
-        // A switch chosen from this menu confirms here once the picker names
-        // the branch it switched to: the check takes the branch icon's place
-        // and the tooltip says Switched, while the label, the width and the
-        // name stay (`copy_feedback`). A tracking branch created and switched
-        // to confirms the same way, its tooltip saying Created.
-        let confirmation = [
+        let status = self.work_status.as_deref();
+        let inputs = PickerInputs {
+            branch: status
+                .and_then(|status| status.branch.as_deref())
+                .map(Cow::Borrowed),
+            detached: status
+                .filter(|status| status.branch.is_none())
+                .and_then(|status| status.head.as_deref())
+                .map(Cow::Borrowed),
+            done: self.picker_confirmation(cx),
+        };
+        let form = match (compact, narrow) {
+            (false, _) => PickerForm::Full,
+            (true, false) => PickerForm::Compact,
+            (true, true) => PickerForm::Narrow,
+        };
+        // The picker's text, built only when what it is made of changes
+        // ([`PickerInputs`]), in every form the bars draw.
+        let (label, name, tooltip) = PICKER_TEXTS.with_borrow_mut(|texts| {
+            let text =
+                texts.get_where(|kept| *kept == inputs, || inputs.owned(), PickerText::build);
+            let tooltip = match form {
+                PickerForm::Narrow => &text.narrow_tooltip,
+                PickerForm::Full | PickerForm::Compact => &text.tooltip,
+            };
             (
-                workspace::confirmations::picker_created(&self.path, &branch),
-                workspace::confirmations::CREATE,
-            ),
-            (
-                workspace::confirmations::picker(&self.path, &branch),
-                workspace::confirmations::SWITCH,
-            ),
-        ]
-        .into_iter()
-        .find_map(|(mark, action)| copy_feedback::confirmed(&mark, cx).then_some(action.done));
-
+                text.labels[form as usize].clone(),
+                text.name.clone(),
+                tooltip.clone(),
+            )
+        });
         // Detached, HEAD is a commit: the picker draws the commit glyph in
         // both bars, where the full bar drew the branch glyph beside
-        // "Detached HEAD", and says which commit, as "Detached HEAD at" its
-        // short ID. In the compact bar, whose line then says only
-        // "Detached", its label is that ID, whole where "Detached HEAD"
-        // would be cut, and where even that line has no room the picker
-        // says "Detached" in its place: one commit glyph and the word
-        // (`empty_state::RepositoryEdge::compact_branch`).
-        let head = self
-            .work_status
-            .as_ref()
-            .filter(|status| status.branch.is_none())
-            .and_then(|status| status.head.as_deref())
-            .map(short_oid);
-        let edge = self.repository_edge().filter(|_| compact);
-        let compact_label = edge.as_ref().and_then(|edge| edge.compact_branch(narrow));
-        // Where the line leaves for the picker, which says its word, the
-        // picker's tooltip carries the line's advice after its name.
-        let advice = edge
-            .filter(|edge| narrow && edge.glyph().is_none())
-            .map(|edge| edge.advice());
-        let (label, named) = match (&head, compact_label) {
-            (Some(head), Some(label)) => (label, format!("Detached HEAD at {head}")),
-            (Some(head), None) => (branch.clone(), format!("Detached HEAD at {head}")),
-            (None, _) => (branch.clone(), branch.clone()),
-        };
-        let symbol = if confirmation.is_some() {
+        // "Detached HEAD" ([`PickerText::build`]).
+        let symbol = if inputs.done.is_some() {
             "icons/check.svg"
-        } else if head.is_some() {
+        } else if inputs.detached.is_some() {
             "icons/commit.svg"
         } else {
             "icons/branch.svg"
         };
         #[cfg(test)]
-        PICKER_LABEL.with(|drawn| drawn.replace(Some(label.clone())));
-        let tooltip = match (confirmation, advice) {
-            (Some(done), _) => format!("{done} · {branch}"),
-            (None, Some(advice)) => {
-                format!("{named} · {advice} · Switch branch and repository actions")
-            }
-            (None, None) => format!("{named} · Switch branch and repository actions"),
-        };
+        PICKER_LABEL.with(|drawn| drawn.replace(Some(label.to_string())));
         crate::views::note_control_icon(&"current-branch".into(), symbol);
         crate::views::note_control_tooltip(&"current-branch".into(), &tooltip);
         Button::new("current-branch")
@@ -258,10 +365,33 @@ impl GitTurtle {
                     self.operation_shown().is_some(),
                 )
             })
-            .accessibility_label(format!(
-                "Current branch: {named}. Switch or manage branches"
-            ))
+            .accessibility_label(name)
             .tooltip(tooltip)
+    }
+
+    /// The word the branch picker confirms with while a switch chosen from
+    /// its menu confirms, once the picker names the branch it switched to:
+    /// the check takes the branch icon's place and the tooltip says
+    /// Switched, while the label, the width and the name stay
+    /// (`copy_feedback`). A tracking branch created and switched to
+    /// confirms the same way, its tooltip saying Created. Each mark hashes
+    /// what it confirms, so a frame that asks allocates nothing.
+    fn picker_confirmation(&self, cx: &App) -> Option<&'static str> {
+        let branch = (self.work_status.as_ref())
+            .and_then(|status| status.branch.as_deref())
+            .unwrap_or("Detached HEAD");
+        [
+            (
+                workspace::confirmations::picker_created(&self.path, branch),
+                workspace::confirmations::CREATE,
+            ),
+            (
+                workspace::confirmations::picker(&self.path, branch),
+                workspace::confirmations::SWITCH,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(mark, action)| copy_feedback::confirmed(&mark, cx).then_some(action.done))
     }
 
     /// Replaces the existing picker ([`Self::branch_picker`]); its frequent
