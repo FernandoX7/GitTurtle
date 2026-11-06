@@ -151,6 +151,19 @@ pub struct TextPreviewWithSources {
     pub new: Vec<u8>,
 }
 
+/// What Git finds at an opened repository's path now
+/// ([`GitRepository::found_at_path`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FoundAtPath {
+    /// The repository as it was opened.
+    Same,
+    /// Another repository: the work tree enclosing the path, its own `.git`
+    /// gone, by its work-tree root (a bare repository's Git directory).
+    Other(PathBuf),
+    /// No repository, or no folder at the path.
+    None,
+}
+
 #[derive(Clone)]
 pub struct GitRepository {
     path: PathBuf,
@@ -214,6 +227,67 @@ impl GitRepository {
 
     pub fn is_bare(&self) -> bool {
         self.bare
+    }
+
+    /// What Git finds at this repository's path now: every command runs
+    /// there, and Git looks for a repository in each folder above one that
+    /// has none, so a work tree whose `.git` is gone (deleted, moved, a
+    /// failed clone cleaned up) is found as the work tree enclosing it, if
+    /// any. A passive read, which never fetches or writes.
+    pub fn found_at_path(&self) -> Result<FoundAtPath> {
+        if !self.path.is_dir() {
+            return Ok(FoundAtPath::None);
+        }
+        let output = run_git_output(
+            &self.path,
+            &[
+                "rev-parse",
+                if self.bare {
+                    "--absolute-git-dir"
+                } else {
+                    "--show-toplevel"
+                },
+            ],
+        )?;
+        if !output.status.success() {
+            let diagnostic = text(&output.stderr);
+            ensure!(
+                diagnostic.contains("not a git repository"),
+                "Git rev-parse failed: {}",
+                diagnostic.trim()
+            );
+            return Ok(FoundAtPath::None);
+        }
+        let found = path_from_bytes(trim_line(&output.stdout));
+        let same = found == self.path
+            || matches!(
+                (found.canonicalize(), self.path.canonicalize()),
+                (Ok(found), Ok(own)) if found == own
+            );
+        Ok(if same {
+            FoundAtPath::Same
+        } else {
+            FoundAtPath::Other(found)
+        })
+    }
+
+    /// Refuses, before Git starts, a write whose repository Git no longer
+    /// finds at its path ([`Self::found_at_path`]): run there, it would act
+    /// on the repository enclosing that path, or fail part way.
+    fn ensure_found_at_path(&self) -> Result<()> {
+        match self.found_at_path()? {
+            FoundAtPath::Same => Ok(()),
+            // Its own `.git` gone, or its work tree redirected elsewhere.
+            FoundAtPath::Other(other) => bail!(
+                "The repository changed: at {} Git now finds the repository at {}. Git was not started.",
+                self.path.display(),
+                other.display()
+            ),
+            FoundAtPath::None => bail!(
+                "The repository at {} is gone: Git finds no repository there. Git was not started.",
+                self.path.display()
+            ),
+        }
     }
 
     /// Resolve actual administration directories for local notifications.

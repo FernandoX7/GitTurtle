@@ -618,6 +618,9 @@ impl GitRepository {
 
     fn execute_inner(&self, operation: &WriteCommand) -> Result<WriteOutcome> {
         ensure!(!self.bare, "Open a working copy to perform Git operations");
+        // Every write runs at the repository's path: with its `.git` gone,
+        // Git would find the work tree enclosing it and write there.
+        self.ensure_found_at_path()?;
         let mut command = normal_command(&self.path);
         let mut input = None;
         let mut timeout = WRITE_TIMEOUT;

@@ -1,4 +1,6 @@
-use gitturtle_core::{ChangeArea, ChangeStatus, GitRepository, TextPreview, WriteCommand};
+use gitturtle_core::{
+    ChangeArea, ChangeStatus, FoundAtPath, GitRepository, TextPreview, WriteCommand,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -1047,4 +1049,58 @@ fn linked_worktree_status_index_branch_and_identity_remain_private() {
             .author,
         "Linked Author"
     );
+}
+
+/// A write runs at its repository's path, so with the repository's `.git`
+/// gone Git would find the work tree enclosing that path and write there:
+/// Stage all once staged the inner folder into the enclosing repository's
+/// index, and Commit committed it. Each write asks first and refuses,
+/// naming what Git finds there now, before Git starts.
+#[test]
+fn a_write_refuses_once_its_repository_is_gone_from_its_path() {
+    let f = Fixture::new();
+    f.write("outer.txt", "outer\n");
+    f.commit("outer");
+    let inner = f.root.join("inner");
+    GitRepository::init(&inner, "main").unwrap();
+    git(&inner, &["config", "user.name", "Inner Author"]);
+    git(&inner, &["config", "user.email", "inner@example.invalid"]);
+    git(&inner, &["config", "commit.gpgsign", "false"]);
+    fs::write(inner.join("inner.txt"), "inner\n").unwrap();
+    let repo = GitRepository::open(&inner).unwrap();
+    assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::Same);
+    repo.execute(&WriteCommand::StageAll).unwrap();
+    repo.execute(&WriteCommand::Commit {
+        message: "inner".into(),
+    })
+    .unwrap();
+
+    fs::remove_dir_all(inner.join(".git")).unwrap();
+    fs::write(inner.join("inner.txt"), "later\n").unwrap();
+    let outer = f.repo();
+    assert_eq!(
+        repo.found_at_path().unwrap(),
+        FoundAtPath::Other(outer.path().to_owned())
+    );
+    for command in [
+        WriteCommand::StageAll,
+        WriteCommand::Commit {
+            message: "into the enclosing repository".into(),
+        },
+    ] {
+        let error = format!("{:#}", repo.execute(&command).unwrap_err());
+        assert!(
+            error.contains("The repository changed")
+                && error.contains(&outer.path().display().to_string())
+                && error.contains("Git was not started"),
+            "{error}"
+        );
+    }
+    assert!(f.git(&["diff", "--cached", "--name-only"]).is_empty());
+    assert_eq!(f.git(&["log", "--format=%s"]), "outer");
+
+    fs::remove_dir_all(&inner).unwrap();
+    assert_eq!(repo.found_at_path().unwrap(), FoundAtPath::None);
+    let error = format!("{:#}", repo.execute(&WriteCommand::StageAll).unwrap_err());
+    assert!(error.contains("finds no repository there"), "{error}");
 }
