@@ -2456,3 +2456,20 @@ changes, none of which lies on the test's path (2 and 4 of 20 runs under
 full CPU load; with 100 ms slept between the bounds and the drag, 20 of 20,
 and none with the patch); upstream's own tree was not run. Remove it
 when upstream's tests open their modals at rest.
+
+The popover-motion test is test-only and changes no built code.
+`reduce_motion_shows_and_hides_a_click_opened_popover_at_rest` in
+`src/popover.rs` sets `App::set_reduce_motion` and opens a Popover with a
+click: it is drawn in that frame, asks for no frame after it, stays where it
+was drawn a frame later, and is gone in the frame after a click outside it.
+It then opens and closes a dropdown surface (`dropdown_popup`, the 150 ms
+slide and fade of Select, Combobox and DatePicker) with clicks on its
+trigger: drawn at rest in the frame it opens, asking for no frame, and gone
+after the closing click; without reduce motion the same click asks for the
+slide's next frame. The kit's Popover, under every dropdown menu the
+application opens, has no motion of its own, and the dropdown's motion goes
+through GPUI's animation element, which draws an animation's last frame at
+once while `App::reduce_motion` is set (`gpui-pre` `elements/animation.rs`),
+whichever input opened it, as a dialog's slide and fade do, so a click
+needed no runtime change. Remove the test with the dropdown motion, or when
+upstream tests its popups under reduced motion.

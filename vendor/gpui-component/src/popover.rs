@@ -569,6 +569,111 @@ mod tests {
         );
     }
 
+    /// A Button that opens and closes a dropdown surface below it on each
+    /// click, as Select's trigger does.
+    struct ClickedDropdown {
+        open: bool,
+    }
+
+    impl Render for ClickedDropdown {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    Button::new("dropdown-trigger")
+                        .label("Open")
+                        .w(px(100.))
+                        .h(px(30.))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open = !this.open;
+                            cx.notify();
+                        })),
+                )
+                .when(self.open, |this| {
+                    this.child(dropdown_popup(
+                        "dropdown",
+                        Bounds::new(point(px(0.), px(0.)), size(px(100.), px(30.))),
+                        div()
+                            .debug_selector(|| "dropdown-surface".into())
+                            .size(px(50.)),
+                        cx,
+                    ))
+                })
+        }
+    }
+
+    /// GitTurtle patch (test only): with reduce motion on, a popover a click
+    /// opens is drawn in the frame it opens and asks for no frame after it,
+    /// and a click takes it away in the next frame, as a dialog opens and
+    /// closes. The kit's Popover has no motion of its own; a dropdown surface
+    /// (`dropdown_popup`) slides and fades in over 150 ms through GPUI's
+    /// animation element, which draws its last frame at once under reduce
+    /// motion whether a key or a click opened it. Without reduce motion the
+    /// dropdown asks for its next frame.
+    #[gpui::test]
+    fn reduce_motion_shows_and_hides_a_click_opened_popover_at_rest(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let frames_asked = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.simulate_next_frame(cx))
+        };
+
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (_, popover) = cx.add_window_view({
+            let changes = changes.clone();
+            move |_, _| PopoverHarness { changes }
+        });
+        draw(popover);
+        frames_asked(popover);
+        popover.simulate_click(point(px(20.), px(20.)), Default::default());
+        draw(popover);
+        let opened = popover.debug_bounds("runtime-popover-content");
+        assert!(opened.is_some(), "the popover shows in the frame it opens");
+        assert_eq!(frames_asked(popover), 0, "the popover asks for no frame");
+        draw(popover);
+        assert_eq!(popover.debug_bounds("runtime-popover-content"), opened);
+        popover.simulate_click(point(px(300.), px(300.)), Default::default());
+        draw(popover);
+        assert!(popover.debug_bounds("runtime-popover-content").is_none());
+        assert_eq!(&*changes.borrow(), &[true, false]);
+
+        let (_, dropdown) = cx.add_window_view(|_, _| ClickedDropdown { open: false });
+        draw(dropdown);
+        frames_asked(dropdown);
+        dropdown.simulate_click(point(px(20.), px(15.)), Default::default());
+        draw(dropdown);
+        let opened = dropdown
+            .debug_bounds("dropdown-surface")
+            .expect("the dropdown shows in the frame it opens");
+        assert_eq!(
+            frames_asked(dropdown),
+            0,
+            "the dropdown's slide and fade ask for no frame"
+        );
+        draw(dropdown);
+        assert_eq!(
+            dropdown.debug_bounds("dropdown-surface"),
+            Some(opened),
+            "the dropdown opened at rest"
+        );
+        dropdown.simulate_click(point(px(20.), px(15.)), Default::default());
+        draw(dropdown);
+        assert!(dropdown.debug_bounds("dropdown-surface").is_none());
+
+        // Without reduce motion the same click starts the slide.
+        dropdown.update(|_, cx| cx.set_reduce_motion(false));
+        dropdown.simulate_click(point(px(20.), px(15.)), Default::default());
+        draw(dropdown);
+        assert!(dropdown.debug_bounds("dropdown-surface").is_some());
+        assert!(
+            frames_asked(dropdown) > 0,
+            "the slide asks for its next frame"
+        );
+    }
+
     /// How far from a window's edge [`SidesHarness`]'s triggers start and
     /// end: 6.5 px, as the Linux Main Menu's button starts at 13 pt, and
     /// 2 px, three device pixels at scale 1.5.
