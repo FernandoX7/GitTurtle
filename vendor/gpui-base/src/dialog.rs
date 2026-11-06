@@ -182,6 +182,11 @@ pub fn init(cx: &mut App) {
     // every one of 426 recorded fcitx5 pairs arrived (3 to 54 µs apart).
     cx.intercept_keystrokes(|event, window, cx| {
         let id = window.window_handle().window_id();
+        if event.keystroke.key == ENTER {
+            // Any Enter going down, a Command-Enter included, cancels the end
+            // a key-up in another window scheduled ([`end_released`]).
+            cx.default_global::<EnterPress>().key_downs += 1;
+        }
         if event.keystroke.key == ENTER && !key_up_withheld(&event.keystroke.modifiers) {
             let focused = window.focused(cx).map(|focus| focus.downgrade());
             let press = cx.default_global::<EnterPress>();
@@ -234,7 +239,8 @@ struct EnterPress {
     began: HashMap<WindowId, Option<WeakFocusHandle>>,
     /// The windows whose Enter came up while a press was recorded, with the
     /// key-up's number: the press ends once the application next runs a
-    /// task ([`end_released`]), unless an Enter goes down first, as the
+    /// task ([`end_released`]), unless an Enter goes down first, in that
+    /// window or, for a key-up in another window, in any window, as the
     /// press of an input method's repeat follows its release together. That
     /// task runs in the event loop's next idle pass: on Linux the spawn
     /// wakes the main-thread channel, read in the loop's next iteration,
@@ -246,6 +252,10 @@ struct EnterPress {
     released: HashMap<WindowId, u64>,
     /// The number of the last Enter key-up that left a press `released`.
     key_ups: u64,
+    /// The number of Enter key-downs in every window, a Command-Enter
+    /// included: one after a key-up in another window cancels the end that
+    /// key-up scheduled ([`end_released`]).
+    key_downs: u64,
 }
 
 impl Global for EnterPress {}
@@ -268,6 +278,28 @@ pub fn dialog_opened(window: &Window, cx: &mut App) {
 /// ([`EnterPress::released`]). A dialog's host notes it, and so does
 /// whatever holds the window's root, as the component `Root` does, since an
 /// Enter can come up with no dialog open.
+///
+/// A press ends only on an Enter key-up, never as its window loses focus:
+/// under X11 a held Enter's repeats arrive as fresh presses, and the focus
+/// leaves and comes back whenever another client grabs the keyboard (a
+/// global shortcut, a window move, a screenshot tool), so a press forgotten
+/// then let the next repeat confirm the reviewed write its dialog asked
+/// about. A key-up in a window with no press of its own ends the press of
+/// every window still holding Enter down once the application next runs a
+/// task, unless an Enter goes down first in any window: with none, the key
+/// came up after focus left the window it went down in, but an input
+/// method's repeat sends its press there right after its release, as the
+/// key stays down. Under X11 an unpaired release at a poll batch's end,
+/// whose press arrives in the next batch, after that task, still ends them:
+/// the residual the patch note records. A key-up in a window with nothing
+/// focused reaches no root listener that notes it, so the press stays
+/// recorded. One that lands in another application ends none: the next
+/// Return in the window is taken for a repeat of the press and swallowed,
+/// until its own key-up, which fails safe. A key-up in a window with a press
+/// of its own ends only that press: under X11 a held Enter's repeats record
+/// a press in the window focus moved to, and an unpaired release there that
+/// ended every window's press would let the next repeat back in the first
+/// window, a fresh press, confirm its dialog.
 pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
     if event.keystroke.key != ENTER {
         return;
@@ -276,36 +308,68 @@ pub fn note_key_up(event: &KeyUpEvent, window: &Window, cx: &mut App) {
     let Some(press) = cx.try_global::<EnterPress>() else {
         return;
     };
-    if press.released.contains_key(&window)
-        || !(press.down.contains(&window)
-            || press.blocked.contains(&window)
-            || press.began.contains_key(&window))
-    {
+    if press.released.contains_key(&window) {
         return;
     }
+    if !(press.down.contains(&window)
+        || press.blocked.contains(&window)
+        || press.began.contains_key(&window))
+    {
+        // No window holds Enter down while its key-up waits for its task:
+        // the interceptor takes a window out of `released` before marking it
+        // down, and `release` takes it out of `down` before recording it.
+        debug_assert!(press.down.iter().all(|held| !press.released.contains_key(held)));
+        let key_downs = press.key_downs;
+        let held: SmallVec<[WindowId; 1]> = press.down.iter().copied().collect();
+        for held in held {
+            release(held, Some(key_downs), cx);
+        }
+        return;
+    }
+    release(window, None, cx);
+}
+
+/// GitTurtle patch: Enter came up for the press recorded in `window`, in
+/// that window, or in another with `key_downs` the Enter key-downs counted
+/// as it came up ([`end_released`]). One in another window schedules the
+/// end of a press that only holds the key down too, so an Enter going down
+/// after it, in any window, keeps that window's mark, which a dialog opened
+/// there waits on ([`dialog_opened`]).
+fn release(window: WindowId, key_downs: Option<u64>, cx: &mut App) {
     let press = cx.global_mut::<EnterPress>();
     press.down.remove(&window);
-    if !press.blocked.contains(&window) && !press.began.contains_key(&window) {
+    if key_downs.is_none()
+        && !press.blocked.contains(&window)
+        && !press.began.contains_key(&window)
+    {
         return;
     }
     press.key_ups += 1;
     let key_up = press.key_ups;
     press.released.insert(window, key_up);
-    cx.spawn(async move |cx| cx.update(|cx| end_released(window, key_up, cx)))
+    cx.spawn(async move |cx| cx.update(|cx| end_released(window, key_up, key_downs, cx)))
         .detach();
 }
 
 /// GitTurtle patch: ends the press in `window` whose Enter came up as key-up
-/// `key_up`, unless an Enter went down since.
-fn end_released(window: WindowId, key_up: u64, cx: &mut App) {
+/// `key_up`, unless an Enter went down since in that window, or, for a
+/// key-up in another window, with `key_downs` the count as it came up, in
+/// any window: an input method's repeat sends its press right after its
+/// release, in the window focus moved to, so the key is still down and the
+/// press holds it down again.
+fn end_released(window: WindowId, key_up: u64, key_downs: Option<u64>, cx: &mut App) {
     if cx
         .try_global::<EnterPress>()
         .is_some_and(|press| press.released.get(&window) == Some(&key_up))
     {
         let press = cx.global_mut::<EnterPress>();
         press.released.remove(&window);
-        press.blocked.remove(&window);
-        press.began.remove(&window);
+        if key_downs.is_some_and(|key_downs| key_downs != press.key_downs) {
+            press.down.insert(window);
+        } else {
+            press.blocked.remove(&window);
+            press.began.remove(&window);
+        }
     }
 }
 
@@ -1490,6 +1554,218 @@ mod tests {
         enter(cx, None);
         enter(cx, Some(false));
         assert_eq!(confirms.get(), 1, "a fresh press after its key-up confirms");
+    }
+
+    /// Another window of the application, focused on its root, which notes
+    /// every key-up in it, as the component `Root` does.
+    struct Blank(FocusHandle);
+
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .track_focus(&self.0)
+                .capture_key_up(|event, window, cx| note_key_up(event, window, cx))
+        }
+    }
+
+    /// Opens a [`Blank`] window, focused on its root.
+    fn blank_window(cx: &mut gpui::TestAppContext) -> gpui::VisualTestContext {
+        let other = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            Blank(focus)
+        });
+        gpui::VisualTestContext::from_window(other.into(), cx)
+    }
+
+    fn activate(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+    }
+
+    /// Opens [`Pair`]'s B with an Enter press on A's Button in the active
+    /// window and sends one of the press's repeats, as X11 sends them, not
+    /// marked held, which confirms nothing; returns B's confirmations.
+    fn open_b_with_a_held_enter(
+        cx: &mut gpui::VisualTestContext,
+        view: &gpui::Entity<Pair>,
+    ) -> Rc<Cell<usize>> {
+        let (button, b, confirms) = view.read_with(cx, |pair, _| {
+            (pair.button.clone(), pair.b.clone(), pair.confirms.clone())
+        });
+        activate(cx);
+        focus_on(cx, &button);
+        enter(cx, Some(false));
+        assert!(cx.update(|window, _| b.is_focused(window)), "the press opened B");
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 0, "a repeat confirms nothing");
+        confirms
+    }
+
+    /// GitTurtle patch: a dialog an Enter press opened takes none of the
+    /// press's repeats across a focus bounce until the key comes up: under
+    /// X11 another client's keyboard grab (a global shortcut, a window move,
+    /// a screenshot tool) takes the window's focus and gives it back while
+    /// the key stays down, and the repeats that follow arrive as fresh
+    /// presses. A press forgotten as its window lost focus let the first of
+    /// them confirm the reviewed write the dialog asked about.
+    #[gpui::test]
+    fn a_held_enter_waits_out_a_focus_bounce(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = pair(cx);
+        let confirms = open_b_with_a_held_enter(cx, &view);
+        cx.deactivate_window();
+        activate(cx);
+        enter(cx, Some(false));
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 0, "no repeat after the focus came back confirms");
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
+    }
+
+    /// GitTurtle patch: a dialog that opens while its window has lost focus,
+    /// as one a read asked for lands, waits out the press that asked for it
+    /// as one opened at once does.
+    #[gpui::test]
+    fn a_dialog_opened_while_its_window_lost_focus_waits_for_the_key_up(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = pair(cx);
+        let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
+            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+        });
+        activate(cx);
+        focus_on(cx, &a);
+        enter(cx, Some(false));
+        cx.deactivate_window();
+        cx.update(|window, cx| {
+            b_open.set(true);
+            dialog_opened(window, cx);
+        });
+        focus_on(cx, &b);
+        activate(cx);
+        enter(cx, Some(false));
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 0, "no repeat of the press that asked for it confirms");
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
+    }
+
+    /// GitTurtle patch: an Enter whose key-up lands in another window of the
+    /// application, one with no press of its own, as focus moved there while
+    /// the key was held, ends the press where it began: the next Enter there,
+    /// once that window is active again, is a fresh press and confirms the
+    /// dialog the press opened. Left recorded, the press made that Enter one
+    /// of its repeats, which the dialog waited out, and one Return was lost.
+    #[gpui::test]
+    fn an_enter_released_in_another_window_ends_its_press(cx: &mut gpui::TestAppContext) {
+        let mut other = blank_window(cx);
+        let (view, cx) = pair(cx);
+        let confirms = open_b_with_a_held_enter(cx, &view);
+        activate(&mut other);
+        other.update(|window, cx| window.draw(cx).clear(cx));
+        other.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        activate(cx);
+        enter(cx, Some(false));
+        assert_eq!(
+            confirms.get(),
+            1,
+            "the first Enter after the window is active again was taken as a repeat of a press \
+             whose key-up came up in another window"
+        );
+    }
+
+    /// GitTurtle patch: an input method's repeat in another window of the
+    /// application, a release and a press together, as fcitx5 on Wayland
+    /// sends each repeat of a key held in a text field, ends no press: its
+    /// release lands where no press is recorded, but the press that follows
+    /// it shows the key is still down, so the press where the key went down
+    /// holds, and the dialog it opened waits out the next Enter there as one
+    /// of its repeats until the key comes up. Ended by the release, the press
+    /// let that Enter, an X11 repeat or the input method's next repeat once
+    /// focus came back, confirm the dialog.
+    #[gpui::test]
+    fn an_input_method_s_repeat_in_another_window_ends_no_press(cx: &mut gpui::TestAppContext) {
+        let mut other = blank_window(cx);
+        let (view, cx) = pair(cx);
+        let confirms = open_b_with_a_held_enter(cx, &view);
+        activate(&mut other);
+        other.update(|window, cx| window.draw(cx).clear(cx));
+        input_method_repeat(&mut other);
+        activate(cx);
+        enter(cx, Some(false));
+        assert_eq!(
+            confirms.get(),
+            0,
+            "an input method's repeat in another window ended the press, so the next Enter in \
+             its window, the key still down, confirmed the dialog the press opened"
+        );
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
+    }
+
+    /// GitTurtle patch: an Enter still down after another key ended its
+    /// repeats keeps its window's mark through an input method's repeat in
+    /// another window, so a dialog that opens there afterwards waits for the
+    /// key-up as one opened at once would. Cleared by the release, the mark
+    /// let the dialog take the next Enter there, the key still down.
+    #[gpui::test]
+    fn an_input_method_s_repeat_in_another_window_keeps_a_press_held_past_another_key(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut other = blank_window(cx);
+        let (view, cx) = pair(cx);
+        let (a, b, b_open, confirms) = view.read_with(cx, |pair, _| {
+            (pair.a.clone(), pair.b.clone(), pair.b_open.clone(), pair.confirms.clone())
+        });
+        activate(cx);
+        focus_on(cx, &a);
+        enter(cx, Some(false));
+        key_down(cx, "a");
+        activate(&mut other);
+        other.update(|window, cx| window.draw(cx).clear(cx));
+        input_method_repeat(&mut other);
+        activate(cx);
+        cx.update(|window, cx| {
+            b_open.set(true);
+            dialog_opened(window, cx);
+        });
+        focus_on(cx, &b);
+        enter(cx, Some(false));
+        assert_eq!(
+            confirms.get(),
+            0,
+            "an input method's repeat in another window cleared the press's mark, so a dialog \
+             opened after it took the next Enter, the key still down"
+        );
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
+    }
+
+    /// GitTurtle patch: an Enter whose key-up lands in another application,
+    /// which the application never sees, leaves its press recorded, so the
+    /// next Return in its window, a press of its own, is taken for one of its
+    /// repeats and swallowed until its own key-up: the one Return a press
+    /// whose key-up never arrives costs, which fails safe.
+    #[gpui::test]
+    fn an_enter_released_in_another_application_swallows_one_return(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = pair(cx);
+        let confirms = open_b_with_a_held_enter(cx, &view);
+        cx.deactivate_window();
+        activate(cx);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 0, "the next Return is swallowed");
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "and the one after its key-up confirms");
     }
 
     actions!(dialog_tests, [Probe]);

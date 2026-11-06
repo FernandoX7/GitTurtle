@@ -1065,7 +1065,8 @@ together, as every one of the 426 fcitx5 pairs recorded in QA-90's and
 QA-91's Wayland logs arrived, 3 to 54 µs apart with no other event between
 (FU21-E's security review). Such a stale press that a dialog
 waited out also takes the next Return in the window, until that Return comes
-up or another key goes down. A key the interceptor stops still reaches the
+up, another key goes down or an Enter key-up in another of the application's
+windows ends it (below). A key the interceptor stops still reaches the
 first key listener on the focused path, as GPUI hands it one: the component
 `Root`'s key-up listener, which takes no key-down, or in a window without it
 a dialog host's, which takes no Enter while the dialog waits. On macOS a
@@ -1122,9 +1123,10 @@ recorded, and the next plain Return presses no Button but the one the press
 began on, nor confirms a dialog opened meanwhile, until its own key-up ends
 the press: one Return swallowed, as by a press whose key-up never arrives
 (below), which fails safe. A press whose key-up
-never arrives, as where the window lost focus while it was held, counts as
-held until another key or an Enter key-up, so a Button focused by a pointer
-meanwhile takes one press before it acts. Under X11 a repeat's synthetic
+never arrives counts as held until another key or an Enter key-up, in its
+window or in another of the application's windows with no press of its own
+(below), so a Button focused by a pointer meanwhile takes one press before
+it acts. Under X11 a repeat's synthetic
 release can also end the press: the backend holds a key release back to
 pair it with the press of an autorepeat, but sends one still unpaired at
 the end of a poll batch (`vendor/gpui-pre-linux/src/linux/x11/client.rs`,
@@ -1145,3 +1147,68 @@ send a modified Enter's repeats as X11 delivers them; and the application's
 is `rewrite_review::tests::a_held_return_on_a_series_row_inspects_once`.
 Remove this part with the rest of the patch when upstream leaves Enter on a
 focused Button to the Button.
+
+The same patch ends a press only on an Enter key-up, never as its window
+loses focus (decided by the coordinator, 2026-11-06, after FU23-B's
+security re-check, replacing a rule that forgot a window's press as the
+window was deactivated): in its own window, or in another of the
+application's windows with focus inside its root and no press of its own,
+once no Enter goes down in any window before the application next runs a
+task. `note_key_up` in such a window ends, through `released` and
+`end_released`, the press of every window still holding Enter down, so on
+Wayland and macOS an Enter held in one window while focus moves to another,
+and released there, costs the first window nothing (FU18-C's re-check: the
+next Enter there was taken for a repeat and lost); under X11 the first
+window swallows one Return (below). Such a key-up shows the key came up
+after focus left the window it went down in, except X11's unpaired release
+at a poll batch's end (above), whose press arrives only in the next batch,
+after that task: the recorded residual, which can arrive through another
+window too, as the first repeat pair after focus enters it splits at a
+batch's end. A key-up in a window with nothing focused reaches no `Root`'s
+`capture_key_up`, so the press stays recorded and one Return is swallowed,
+which fails safe. Any Enter going down in any window before that task,
+Command-Enter included, cancels the end and leaves those presses held
+(decided by the coordinator, 2026-11-06, after FU23-B's code and security
+re-checks): an input method's repeat, as fcitx5 on Wayland sends each repeat
+of a key held in a text field, delivers its release where focus moved to,
+with no press recorded there, and its press after it in the same window,
+not in the one whose press the release ended, so the release ended that
+press and the next Enter there, the key still down, confirmed the dialog it
+opened. A press
+whose repeats another key ended, which only holds the key down, is one of
+them, so a dialog that opens in its window afterwards still waits for the
+key-up. A person who releases Enter in the other window and presses it
+again before that task, as within one slow frame, leaves the first window's
+press held, and its next Return swallowed, which fails safe. Under X11 a
+held Enter's autorepeats arrive as fresh presses (`is_held` unset), and the
+backend turns every FocusIn and FocusOut into the window's activation
+changing (`vendor/gpui-pre-linux/src/linux/x11/client.rs`), including the
+pair another client's keyboard grab causes, as a global shortcut, a window
+move or a screenshot tool takes the keyboard and gives it back while the key
+stays down. Forgetting the press on deactivation therefore let the first
+autorepeat after such a bounce confirm the reviewed write the press's dialog
+asked about (deleting a tag, dropping a stash, a merge, a forced worktree
+removal) or press a Button focused in it, and a dialog that opened while the
+window was inactive did not wait at all; a press that keeps its record
+through the bounce stops those repeats as before. An Enter key-up delivered
+to another application reaches none of the application's windows, so the
+press stays recorded and the next Return in its window, a press of its own,
+is taken for one of its repeats and swallowed, until its own key-up, which
+fails safe. Under X11 the autorepeats of an Enter held while focus moves to
+another of the application's windows reach that window, which then records a
+press of its own, so its key-up ends only that press, and the first window
+swallows one Return the same way (decided by the coordinator, 2026-11-06,
+after FU23-B's security re-check: had that key-up ended every window's
+press, an unpaired release at a batch's end reaching the other window would
+end the first window's too, and back there the next autorepeat, a fresh
+press, would confirm the write its dialog asked about); GPUI's Wayland
+client starts no repeat after the keyboard leaves a window, so there the
+other window has no press of its own and its key-up ends the first window's.
+The kit tests are
+`dialog::tests::a_held_enter_waits_out_a_focus_bounce`,
+`dialog::tests::a_dialog_opened_while_its_window_lost_focus_waits_for_the_key_up`,
+`dialog::tests::an_enter_released_in_another_window_ends_its_press`,
+`dialog::tests::an_input_method_s_repeat_in_another_window_ends_no_press`,
+`dialog::tests::an_input_method_s_repeat_in_another_window_keeps_a_press_held_past_another_key`,
+and
+`dialog::tests::an_enter_released_in_another_application_swallows_one_return`.
