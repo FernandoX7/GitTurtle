@@ -11680,6 +11680,15 @@ mod tests {
 
     /// A window on an empty repository, on the Repository page. Keep the
     /// returned directory until the test ends.
+    ///
+    /// The repository is made in /tmp, so its path, which the connection
+    /// pane's "Local worktree:" line shows above the help, is short on every
+    /// host (`/tmp/.tmp…` on Linux, `/private/tmp/.tmp…` on macOS), as
+    /// `worktrees::ring_room_tests::short_fixture`'s is. In a long TMPDIR that line
+    /// wrapped to six lines at 17 pt in a 440 × 490 window, and the help's
+    /// first line lay past every reveal of the connection walk's controls
+    /// that cuts no line, so no stop showed it whole
+    /// (`the_connection_walk_shows_every_help_line_whole`).
     fn repository_window(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
@@ -11688,7 +11697,7 @@ mod tests {
         // cross-thread wakes; the barriers in `open_panel` drain them before
         // teardown.
         cx.executor().allow_parking();
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = tempfile::tempdir_in("/tmp").unwrap();
         let result = std::process::Command::new("git")
             .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
             .arg(fixture.path())
