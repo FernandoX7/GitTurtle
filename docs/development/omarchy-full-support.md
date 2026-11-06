@@ -774,8 +774,11 @@ cover current upstream x86-64 Omarchy.
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
-       `preferences::test_settings_directory` (`preferences.rs:1052`) can leave `gitturtle-app-tests-*`
-       directories behind (background executors hold the `TempDir` past exit);
+       FU25-C landed 2026-11-06 (one test root per process, removed at exit, a killed process's root swept
+       by the next run); its review's nits: `make_writable`'s `chmod` follows a link swapped in after its
+       check (same user, permissions only), a kill between `tempdir_in` and the rename leaves a
+       `.gitturtle-app-tests-staging-*` directory, and `working_selection.rs:1158` and `text_review.rs:1028`
+       still name directories by pid and nanoseconds (single-test, self-removing; low);
        `views::tests::narrow_history_keeps_paging_in_the_column` reads status
        layouts kept from its first seed (fails at `ITERATIONS=2`: 214 of 216 after Older; several caches
        to empty; FU19-F1c's sweep).
