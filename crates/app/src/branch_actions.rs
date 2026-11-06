@@ -1092,8 +1092,19 @@ const OCCUPIED_REMEDY: &str = "Open that worktree from Worktrees…";
 /// it says and whether it is refused with a reason ([`PICKER_ITEMS`]).
 fn picker_item(menu: PopupMenu, item: PopupMenuItem) -> PopupMenu {
     #[cfg(test)]
-    {
-        let noted = match &item {
+    if let Some(noted) = PickerItem::of(&item) {
+        PICKER_ITEMS.with(|items| items.borrow_mut().push(noted));
+    }
+    menu.item(item)
+}
+
+#[cfg(test)]
+impl PickerItem {
+    /// What a test reads of `item`, a command, as the branch picker's and
+    /// the Git profile picker's menus note theirs; `None` for a label or a
+    /// separator.
+    pub(crate) fn of(item: &PopupMenuItem) -> Option<Self> {
+        let (label, name, disabled, reason_stated, checked) = match item {
             PopupMenuItem::Item {
                 label,
                 disabled,
@@ -1102,13 +1113,13 @@ fn picker_item(menu: PopupMenu, item: PopupMenuItem) -> PopupMenu {
                 accessibility_label,
                 reason_stated,
                 ..
-            } => Some((
+            } => (
                 label.to_string(),
                 accessibility_label,
                 *disabled,
                 *reason_stated,
                 checkable.then_some(*checked),
-            )),
+            ),
             PopupMenuItem::ElementItem {
                 name,
                 disabled,
@@ -1117,29 +1128,23 @@ fn picker_item(menu: PopupMenu, item: PopupMenuItem) -> PopupMenu {
                 accessibility_label,
                 reason_stated,
                 ..
-            } => Some((
+            } => (
                 name.as_ref().map(ToString::to_string).unwrap_or_default(),
                 accessibility_label,
                 *disabled,
                 *reason_stated,
                 checkable.then_some(*checked),
-            )),
-            _ => None,
+            ),
+            _ => return None,
         };
-        if let Some((label, name, disabled, reason_stated, checked)) = noted {
-            let name = name.as_ref().map(ToString::to_string);
-            PICKER_ITEMS.with(|items| {
-                items.borrow_mut().push(PickerItem {
-                    label,
-                    name,
-                    disabled,
-                    reason_stated,
-                    checked,
-                })
-            });
-        }
+        Some(Self {
+            label,
+            name: name.as_ref().map(ToString::to_string),
+            disabled,
+            reason_stated,
+            checked,
+        })
     }
-    menu.item(item)
 }
 
 /// A branch dialog's action `label`, unavailable while `refused` holds why,

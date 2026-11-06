@@ -3,7 +3,7 @@
 //! (`menu-item: <label> · <role>`), and each label's drawn style.
 use super::*;
 use crate::native_accessibility::menu_tests::menu_label_style;
-use crate::views::tests::{history_window, hold_quiet_reads_for_test, settle};
+use crate::views::tests::{draw, history_window, hold_quiet_reads_for_test, settle};
 use core::prelude::v1::test;
 use gitturtle_core::GitProfile;
 
@@ -232,7 +232,7 @@ async fn the_profile_menu_keeps_a_long_identity_inside_a_narrow_window(cx: &mut 
 /// with its scrollbar shown. A capped menu once squeezed its rows instead.
 #[gpui::test]
 async fn a_long_profile_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
-    use crate::views::tests::{assert_menu_keeps_its_rows, draw, menu_rows};
+    use crate::views::tests::{assert_menu_keeps_its_rows, menu_rows};
     let (_fixture, app, cx) = history_window(cx).await;
     cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
     let saved: Vec<_> = (1..=12)
@@ -352,4 +352,179 @@ async fn a_failed_save_is_said_once_by_the_form_that_shows_it(cx: &mut TestAppCo
     );
     let (_, said) = crate::copy_feedback::tests::alerted(cx).expect("the form's line is said");
     assert_eq!(said, error);
+}
+
+/// Closes the profile menu and opens it again, built afresh.
+async fn reopen(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes("escape");
+    settle(app, cx).await;
+    open_menu(app, cx).await;
+}
+
+/// The accessible name of each command the profile menu last built refused,
+/// once it is drawn under it and says why: its reason, after its command,
+/// in the name the menu keys rest on (`PopupMenuItem::reason_stated`).
+fn refused(cx: &mut VisualTestContext) -> Vec<String> {
+    let items = PROFILE_MENU_ITEMS.with(|items| items.borrow().clone());
+    assert!(!items.is_empty(), "the menu is built");
+    items
+        .into_iter()
+        .filter(|item| item.disabled)
+        .map(|item| {
+            let name = item.name.clone().unwrap_or_else(|| item.label.clone());
+            assert!(
+                item.reason_stated && name.starts_with(&format!("{}, ", item.label)),
+                "{item:?} says why it is refused"
+            );
+            let role = match item.checked {
+                Some(ticked) => {
+                    format!("MenuItemCheckBox {}", if ticked { "True" } else { "False" })
+                }
+                None => "MenuItem".into(),
+            };
+            let drawn = format!("menu-item: {name} · {role} disabled");
+            assert!(shown(cx, &drawn), "{drawn}");
+            name
+        })
+        .collect()
+}
+
+/// Every item the profile menu refuses says why, as the branch picker's do,
+/// heard as well as seen, and the menu keys rest on it: while a write runs,
+/// a profile is saved, the saved profiles are first read or the repository
+/// is, the write, the save or the read it waits for, in the room its
+/// command leaves; and where the saved profiles or the repository could not
+/// be read, a reason of its own beside it, which no wait's end changes. The
+/// open menu is built again as that reason changes, so a saved profile is
+/// offered once the repository's read lands and every item once the save
+/// ends. New profile… while the profiles were read or could not be, and
+/// the saved profiles while the repository was, were dimmed with nothing to
+/// say why, and stayed refused until the menu was opened again.
+#[gpui::test]
+async fn every_item_the_profile_menu_refuses_says_why(cx: &mut TestAppContext) {
+    const WORK: &str = "Work · qa@work.example";
+    const PERSONAL: &str = "Personal · qa@home.example";
+    const CREATE: &str = "New profile…";
+    const MANAGE: &str = "Manage profiles…";
+    let (_fixture, app, cx) = history_window(cx).await;
+    let store = || {
+        let mut store = Store::default();
+        store.definitions = vec![
+            definition("work", "Work", "qa@work.example"),
+            definition("personal", "Personal", "qa@home.example"),
+        ];
+        store
+    };
+    use_store(&app, cx, store()).await;
+    let with = |names: &[&str], why: &str| -> Vec<String> {
+        names.iter().map(|name| format!("{name}, {why}")).collect()
+    };
+    let set = |cx: &mut VisualTestContext, change: fn(&mut GitTurtle)| {
+        app.update(cx, |app, cx| {
+            change(app);
+            cx.notify();
+        });
+        draw(cx);
+    };
+
+    open_menu(&app, cx).await;
+    assert_eq!(
+        refused(cx),
+        Vec::<String>::new(),
+        "at rest nothing is refused"
+    );
+
+    set(cx, |app| app.operation_busy = Some("Fetching remote…"));
+    reopen(&app, cx).await;
+    assert_eq!(
+        refused(cx),
+        with(
+            &[WORK, PERSONAL, CREATE, MANAGE],
+            "available when fetching remote finishes"
+        ),
+        "a write's items are named by the write"
+    );
+    set(cx, |app| app.operation_busy = None);
+
+    // A save that starts with the menu open, as one after a profile's
+    // application does, refuses every item that acts until it ends.
+    reopen(&app, cx).await;
+    set(cx, |app| app.profiles.saving = true);
+    assert_eq!(
+        refused(cx),
+        with(
+            &[WORK, PERSONAL, CREATE, MANAGE],
+            "available when saving profile finishes"
+        ),
+        "a save refuses its items, built again as it starts"
+    );
+    set(cx, |app| app.profiles.saving = false);
+    assert_eq!(
+        refused(cx),
+        Vec::<String>::new(),
+        "the save's end offers them again"
+    );
+
+    set(cx, |app| app.profiles.store = None);
+    reopen(&app, cx).await;
+    assert_eq!(
+        refused(cx),
+        with(&[CREATE], "available when loading profiles finishes"),
+        "New profile… waits for the saved profiles it joins"
+    );
+    set(cx, |app| {
+        app.profiles.error = Some("store unreadable".into())
+    });
+    assert_eq!(
+        refused(cx),
+        with(&[CREATE], "storage unavailable"),
+        "built again as the read fails, New profile… says why beside it"
+    );
+    let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+    let reason = format!(
+        "menu-detail: {STORAGE_UNAVAILABLE} · {:?}",
+        gpui::Rgba::from(muted)
+    );
+    assert!(
+        shown(cx, &reason),
+        "the reason is drawn beside it in secondary text"
+    );
+    assert!(
+        shown(cx, "menu-item: Retry profile storage · MenuItem"),
+        "the way to read them again is offered"
+    );
+    cx.simulate_keystrokes("escape");
+    use_store(&app, cx, store()).await;
+
+    // The repository is read, as it is when it opens, then read again
+    // without success.
+    let repository = app.update(cx, |app, _| app.repository.take());
+    set(cx, |app| app.loading = Some("Reading local history…"));
+    open_menu(&app, cx).await;
+    assert_eq!(
+        refused(cx),
+        with(
+            &[WORK, PERSONAL],
+            "available when reading local history finishes"
+        ),
+        "a saved profile waits for the repository it is applied to"
+    );
+    set(cx, |app| app.loading = None);
+    assert_eq!(
+        refused(cx),
+        with(&[WORK, PERSONAL], "repository unavailable"),
+        "built again as the read ends without it, each says why beside it"
+    );
+    app.update(cx, |app, cx| {
+        app.repository = repository;
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(
+        refused(cx),
+        Vec::<String>::new(),
+        "built again as the repository is read, they are offered"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
 }

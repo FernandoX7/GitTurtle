@@ -1468,7 +1468,17 @@ pub(crate) struct AppDropdown {
     commit: Option<MenuCommit>,
     /// Whether the menu acts on HEAD itself ([`Self::follows_head`]).
     tip: bool,
+    /// Why its builder refuses items for the app's own state
+    /// ([`Self::follows_refusal`]).
+    refusal: Option<MenuRefusal>,
 }
+
+/// Why a button's menu refuses some of its items for a state of the app's
+/// own rather than a write's, by the first reason that holds, or `None`
+/// while none does ([`AppDropdown::follows_refusal`]): the Git profile
+/// picker's menu while a profile is saved, while the saved profiles are
+/// first read or cannot be, and while the repository is read or cannot be.
+pub(crate) type MenuRefusal = fn(&crate::GitTurtle) -> Option<&'static str>;
 
 /// What a menu that follows writes reads as it is built
 /// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],
@@ -1486,7 +1496,8 @@ pub(crate) struct AppDropdown {
 /// ([`AppDropdown::follows_head`]), whose Amend and Undo act on HEAD
 /// itself, which commit HEAD is; and why the items a write refuses wait
 /// ([`MenuWait`]), which they state, the write's label or the refresh after
-/// it.
+/// it; and, for a menu that also refuses items for the app's own state
+/// ([`AppDropdown::follows_refusal`]), why it does.
 /// The menu is built again when any of them changes; built again only for
 /// the write, a menu open as a cherry-pick stopped on conflicts offered
 /// those items once the write had ended, until it was opened again, one
@@ -1514,6 +1525,9 @@ struct MenuInputs {
     /// HEAD's commit, for a menu that acts on HEAD itself
     /// ([`Self::with_tip`]); `None` for every other menu.
     tip: Option<Option<String>>,
+    /// Why the menu refuses items for the app's own state, for a menu that
+    /// follows it ([`Self::with_refusal`]); `None` for every other menu.
+    refusal: Option<&'static str>,
 }
 
 /// The commit a commit's menu acts on, read as its object ID
@@ -1537,6 +1551,7 @@ impl MenuInputs {
                     == Some((**commit).as_ref())
             }),
             tip: None,
+            refusal: None,
         }
     }
 
@@ -1550,6 +1565,14 @@ impl MenuInputs {
                     .and_then(|status| status.head.clone()),
             );
         }
+        self
+    }
+
+    /// These inputs for a menu that refuses items for the app's own state
+    /// as well, which also reads why, where `refusal` reads it
+    /// ([`AppDropdown::follows_refusal`]).
+    fn with_refusal(mut self, app: &crate::GitTurtle, refusal: Option<MenuRefusal>) -> Self {
+        self.refusal = refusal.and_then(|refusal| refusal(app));
         self
     }
 
@@ -1588,6 +1611,19 @@ impl AppDropdown {
     /// reads HEAD each time it runs.
     pub(crate) fn follows_head(mut self) -> Self {
         self.tip = true;
+        self
+    }
+
+    /// The menu's builder also refuses items for a state of the app's own,
+    /// which `refusal` names by the first reason that holds, each item
+    /// saying why: following writes ([`Self::follows_writes`]), it is built
+    /// again as well once that reason changes ([`MenuInputs`]), so an item
+    /// refused for it states why as it now stands and is offered once it
+    /// ends. The Git profile picker's menu, built only as it opened or as a
+    /// write started or ended, kept a saved profile refused once the
+    /// repository read it waited for had landed, until it was opened again.
+    pub(crate) fn follows_refusal(mut self, refusal: MenuRefusal) -> Self {
+        self.refusal = Some(refusal);
         self
     }
 
@@ -1633,6 +1669,7 @@ impl AppMenu for Button {
             writes: None,
             commit: None,
             tip: false,
+            refusal: None,
         }
     }
 
@@ -1666,7 +1703,7 @@ impl RenderOnce for AppDropdown {
             .clone();
         let painted = anchor.clone();
         let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
-        let (writes, commit, tip) = (self.writes, self.commit, self.tip);
+        let (writes, commit, tip, refusal) = (self.writes, self.commit, self.tip, self.refusal);
         // The kit's popup host only moves a dropdown into the window, so one
         // taller than the room below its Button moved up over it; the side
         // is chosen here instead, from the same painted bounds as the room.
@@ -1713,7 +1750,9 @@ impl RenderOnce for AppDropdown {
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
                     let commit = commit.clone();
                     let read = move |app: &crate::GitTurtle| {
-                        MenuInputs::of(app, commit.as_ref()).with_tip(app, tip)
+                        MenuInputs::of(app, commit.as_ref())
+                            .with_tip(app, tip)
+                            .with_refusal(app, refusal)
                     };
                     let mut inputs = read(app.read(cx));
                     let open = open.clone();
