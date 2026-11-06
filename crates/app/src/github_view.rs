@@ -10371,6 +10371,10 @@ mod tests {
     /// height ([`sweep_reveals`]).
     type Walk<'a> = ((u8, f32, f32), &'a [Surface]);
 
+    /// The keys the reveal sweep walks each surface with, in turn ([`sweep_reveals`]): Tab
+    /// through every stop, then Shift+Tab, which reveals each from the other side.
+    const BOTH_WAYS: [&str; 2] = ["tab", "shift-tab"];
+
     /// What the reveal sweep found ([`sweep_reveals`]), each finding named by its surface,
     /// size and stop.
     #[derive(Default)]
@@ -10451,16 +10455,17 @@ mod tests {
     }
 
     /// Walks each of `walks`' surfaces on the offline fixture at its size (an interface size
-    /// and a window's width and height), with Tab through every stop and then with Shift+Tab,
-    /// each walk from the surface opened at the body's top (`focus_ring::sweep::walk_each`),
-    /// and returns what it found ([`Swept`]): every stop's ring that is not whole; every reveal
-    /// that left a line drawn in the frame ([`frame_lines`]) cut at an edge of the body where
-    /// a place the body's top edge can take keeps the focused control whole with its ring and,
-    /// drawn there, cuts no line ([`needless_cut`]), but at the content's top, which a reveal
-    /// keeps ([`review::clear_of_lines`]); and every line outside the lists inside the body
-    /// that no stop of the surface's two walks shows whole, with every text and Button outside
-    /// them part of which no stop shows at all.
-    async fn sweep_reveals(cx: &mut TestAppContext, walks: &[Walk<'_>]) -> Swept {
+    /// and a window's width and height), through every stop with each of `keys` in turn, Tab
+    /// and Shift+Tab ([`BOTH_WAYS`]) or one of them, each walk from the surface opened at the
+    /// body's top (`focus_ring::sweep::walk_each`), and returns what it found ([`Swept`]):
+    /// every stop's ring that is not whole; every reveal that left a line drawn in the frame
+    /// ([`frame_lines`]) cut at an edge of the body where a place the body's top edge can take
+    /// keeps the focused control whole with its ring and, drawn there, cuts no line
+    /// ([`needless_cut`]), but at the content's top, which a reveal keeps
+    /// ([`review::clear_of_lines`]); and every line outside the lists inside the body that no
+    /// stop of the surface's walks shows whole, with every text and Button outside them part
+    /// of which no stop shows at all.
+    async fn sweep_reveals(cx: &mut TestAppContext, walks: &[Walk<'_>], keys: &[&str]) -> Swept {
         use crate::native_accessibility::written;
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
         crate::views::tests::hold_quiet_reads_for_test(&app, cx);
@@ -10484,7 +10489,7 @@ mod tests {
                 let mut boxes: std::collections::BTreeMap<(i32, i32), (String, Pixels, Pixels)> =
                     Default::default();
                 let mut views: Vec<(Pixels, Pixels)> = Vec::new();
-                for key in ["tab", "shift-tab"] {
+                for &key in keys {
                     show_surface(
                         (&app, &panel, &pull, &files),
                         surface,
@@ -10725,26 +10730,6 @@ mod tests {
         );
     }
 
-    /// The walks of the reveal sweep at whose stops its run on 2026-11-05 found what FU20-GH6
-    /// traced ([`the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn`]): at 13 pt in a
-    /// 461 × 490 window, Overview and Source; at 18 pt there, the connection pane, the PR list,
-    /// Review, Changes, Source and Threads; at 13 pt in a 1,480 × 800 window, Threads.
-    const FOUND_WALKS: [Walk<'static>; 3] = [
-        ((13, 461., 490.), &[Surface::Overview, Surface::Source]),
-        (
-            (18, 461., 490.),
-            &[
-                Surface::Connection,
-                Surface::Pulls,
-                Surface::Review,
-                Surface::Changes,
-                Surface::Source,
-                Surface::Threads,
-            ],
-        ),
-        ((13, 1480., 800.), &[Surface::Threads]),
-    ];
-
     /// Fails with every finding of `swept` ([`sweep_reveals`]), each printed first.
     fn assert_swept(swept: Swept) {
         let findings: Vec<&String> = swept
@@ -10767,16 +10752,48 @@ mod tests {
         );
     }
 
-    /// The reveal sweep's walks at the stops where it found reveals to trace ([`FOUND_WALKS`]),
-    /// which the whole sweep takes too long to repeat in every gate
-    /// ([`the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn`]): every stop draws its
-    /// ring whole, no reveal leaves a line cut where a place clears every line, and every line
-    /// outside the lists is whole at some stop.
-    #[gpui::test]
-    async fn the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace(
-        cx: &mut TestAppContext,
-    ) {
-        assert_swept(sweep_reveals(cx, &FOUND_WALKS).await);
+    /// The reveal sweep's walks at the stops where its run on 2026-11-05 found what FU20-GH6
+    /// traced, which the whole sweep takes too long to repeat in every gate
+    /// ([`the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn`]): at 13 pt in a
+    /// 461 × 490 window, Overview and Source; at 18 pt there, the connection pane, the PR list,
+    /// Review, Changes, Source and Threads; at 13 pt in a 1,480 × 800 window, Threads. At every
+    /// stop of each walk the focused control draws its ring whole, no reveal leaves a line cut
+    /// where a place clears every line, and every line outside the lists is whole at some stop
+    /// ([`assert_swept`]). Each surface at its size is a test of its own, walked with Tab and
+    /// then with Shift+Tab, so a test runner takes them side by side: walked in one test, the
+    /// nine took about 74 s in a debug build on the Linux development host and ran past
+    /// nextest's 120 s limit on every hosted runner (run 42250019193). Threads in the wide
+    /// window, whose two walks of 24 stops each take about 16 s there, is two tests, one for
+    /// each key, and each walk shows every line outside the lists whole on its own.
+    mod the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace {
+        use super::*;
+
+        /// Writes a test for each walk listed, a surface at an interface size in a window's
+        /// width and height walked with the keys listed, that walks it through the reveal
+        /// sweep ([`sweep_reveals`]) and fails with its findings ([`assert_swept`]).
+        macro_rules! found_walks {
+            ($($name:ident: $surface:ident at $size:expr, by $keys:expr;)*) => {$(
+                #[gpui::test]
+                async fn $name(cx: &mut TestAppContext) {
+                    let walk: Walk<'_> = ($size, &[Surface::$surface]);
+                    assert_swept(sweep_reveals(cx, &[walk], &$keys).await);
+                }
+            )*};
+        }
+
+        found_walks! {
+            overview_at_13_pt: Overview at (13, 461., 490.), by BOTH_WAYS;
+            source_at_13_pt: Source at (13, 461., 490.), by BOTH_WAYS;
+            connection_at_18_pt: Connection at (18, 461., 490.), by BOTH_WAYS;
+            pulls_at_18_pt: Pulls at (18, 461., 490.), by BOTH_WAYS;
+            review_at_18_pt: Review at (18, 461., 490.), by BOTH_WAYS;
+            changes_at_18_pt: Changes at (18, 461., 490.), by BOTH_WAYS;
+            source_at_18_pt: Source at (18, 461., 490.), by BOTH_WAYS;
+            threads_at_18_pt: Threads at (18, 461., 490.), by BOTH_WAYS;
+            threads_at_13_pt_in_a_wide_window_by_tab: Threads at (13, 1480., 800.), by ["tab"];
+            threads_at_13_pt_in_a_wide_window_by_shift_tab:
+                Threads at (13, 1480., 800.), by ["shift-tab"];
+        }
     }
 
     /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
@@ -10787,7 +10804,7 @@ mod tests {
     /// the revealed part whole; and every line outside the lists inside the body is whole at
     /// some stop. It prints every finding before it fails. It takes about 3 min in a debug
     /// build (180 s on the Linux development host on 2026-11-06), too long for every gate:
-    /// the gate walks the stops where it found reveals to trace
+    /// the gate walks the stops where it found reveals to trace, a test for each walk
     /// ([`the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace`]), and this whole
     /// sweep stays opt-in.
     ///
@@ -10830,7 +10847,7 @@ mod tests {
     #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
     async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
         let walks = REVEAL_SIZES.map(|size| (size, &SURFACES[..]));
-        assert_swept(sweep_reveals(cx, &walks).await);
+        assert_swept(sweep_reveals(cx, &walks, &BOTH_WAYS).await);
     }
 
     /// A text of the panel works its lines out once for each change of what they follow from
