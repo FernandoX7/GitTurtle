@@ -313,6 +313,25 @@ impl ReflogBrowser {
         browser
     }
 
+    /// Selects the newest entry of `browser`, whose log has landed, and lets
+    /// that commit's read land, for tests in other modules that open the
+    /// Reflog as a person does (`focus_ring::sweep::open_dialog`).
+    pub(crate) fn select_newest(browser: &Entity<Self>, cx: &mut gpui::VisualTestContext) {
+        let entry = browser.read_with(cx, |this, _| {
+            let page = this.page.as_ref().expect("the log loaded");
+            page.entries.first().expect("the log has an entry").clone()
+        });
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
+        // As the log's read lands for the walk (`Opened::finish`).
+        browser.read_with(cx, |browser, _| browser.reader.drain());
+        cx.executor().run_until_parked();
+        assert!(
+            browser.read_with(cx, |browser, _| !browser.pending
+                && browser.commit.is_some()),
+            "the selected entry's commit is read"
+        );
+    }
+
     /// Whether the browser started a read: one yet to answer, or one that
     /// answered with a failure, as a review read while a write runs does.
     /// Its reader is drained first, so a read that was started has answered.
@@ -335,9 +354,17 @@ impl ReflogBrowser {
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
-            // The dialog clips its body to the body's bounds, and the browser
-            // keeps the focus ring's room inside them below its last control.
-            // The footer's gap gives the room back, so the footer stays put.
+            let shown = browser.clone();
+            // The browser keeps the focus ring's room inside its content below
+            // its last control, and the footer's gap gives the room back, so
+            // the footer stays put. It lies in the dialog's content, as the
+            // profile form does: its content takes what the cap leaves it and
+            // scrolls the rest, revealing the control Tab moves onto. In the
+            // dialog's own scrolling body, which reveals nothing, it took
+            // the height the window less 240 px leaves, more than a title and
+            // footer at 18 pt leave in a 1,480 × 800 window, so the selected
+            // entry's message, recovery name and Review recovery branch… took
+            // focus with their rings cut at the dialog's foot.
             dialog
                 .title(
                     native_accessibility::dialog_title("reflog-title", "Local reflog and recovery")
@@ -346,7 +373,7 @@ impl ReflogBrowser {
                 .width(appearance::dialog_width(px(740.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
-                .child(browser.clone())
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(crate::tags::dialog_footer("Done", None))
                 // Done and Escape close the dialog here, stopping the read.
                 // The kit's alert dialog never calls an `on_close` (its
@@ -1136,7 +1163,8 @@ impl Render for ReflogBrowser {
         let cue = crate::tags::ScrollCue::revealing(&self.entries, room);
         let shown =
             |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
-        let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
+        // It shrinks to what the dialog's cap leaves it (`Self::show`).
+        let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).min_h_0().px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending && place == ReadPlace::Log).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} · newest first", page.reference, crate::counted(page.entries.len(), "retained entry", "retained entries"))).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
@@ -3694,6 +3722,60 @@ mod tests {
             shows_whole(content, label),
             "scrolled to its end, the content {content:?} shows the branch name label {label:?}"
         );
+    }
+
+    /// At 18 pt in a 1,480 × 800 window the Reflog, its newest entry
+    /// selected, takes what its dialog's cap leaves it and scrolls the rest:
+    /// Tab reaches every stop, Review recovery branch… among them, and each
+    /// draws its whole ring, which no clip cuts. In the dialog's own
+    /// scrolling body the content took the window's height less 240 px, more
+    /// than the title and footer leave at 18 pt, and the dialog cut the
+    /// rings of the selected entry's message, the recovery branch's name and
+    /// Review recovery branch… at its foot.
+    #[gpui::test]
+    async fn selected_entry_stops_draw_whole_rings_at_18_pt(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, cx, _) =
+            crate::width_walk::open(crate::width_walk::Page::History, cx).await;
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        sweep::interface_size(cx, 18);
+        let browser = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let opened = browser.clone();
+        sweep::open_dialog(&app, cx, "the Reflog", move |app, window, cx| {
+            let browser = app.open_reflog_browser(window, cx);
+            *opened.borrow_mut() = browser.clone();
+            browser
+        })
+        .await;
+        let browser = browser.borrow().clone().expect("the Reflog opens");
+        ReflogBrowser::select_newest(&browser, cx);
+        crate::views::tests::settle(&app, cx).await;
+        let ring_room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let mut findings = Vec::new();
+        let mut reached = false;
+        sweep::walk_each(
+            &app,
+            cx,
+            "tab",
+            "the Reflog at 18 pt in 1,480 × 800",
+            18,
+            &mut findings,
+            &mut |cx, _, rings| {
+                let Some(review) = cx.debug_bounds("review-reflog-recovery") else {
+                    return;
+                };
+                let around = review.dilate(ring_room);
+                reached |= rings.iter().any(|ring| {
+                    (ring.bounds.left() - around.left()).abs() <= px(0.5)
+                        && (ring.bounds.top() - around.top()).abs() <= px(0.5)
+                        && (ring.bounds.right() - around.right()).abs() <= px(0.5)
+                        && (ring.bounds.bottom() - around.bottom()).abs() <= px(0.5)
+                });
+            },
+        );
+        assert!(findings.is_empty(), "{}", findings.join("\n"));
+        assert!(reached, "Tab draws Review recovery branch…'s ring");
     }
 
     /// The filled quads the last frame painted inside `area`, in logical
