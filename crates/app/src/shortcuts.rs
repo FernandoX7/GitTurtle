@@ -1500,6 +1500,12 @@ impl Listed {
         self.unread = pending;
     }
 
+    /// How many changes the list has counted, its opening's among them.
+    #[cfg(test)]
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes
+    }
+
     /// Whether Orca spoke the item the last change selected.
     pub(crate) fn spoken(&self) -> bool {
         self.spoken

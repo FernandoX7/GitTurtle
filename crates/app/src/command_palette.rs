@@ -4552,6 +4552,81 @@ mod render_tests {
         );
     }
 
+    /// A selected row the wheel takes out of the list is no change of
+    /// selection, nor is any frame drawn while it stays out, as the query's
+    /// caret draws them as it blinks: the list counts no change, and the
+    /// rest, which a change it was not sure Orca spoke would have the status
+    /// say whole, says nothing. Read from the toolkit's measuring of the
+    /// first row, the selected first row read as drawn there and not drawn
+    /// in the rows the list drew, a return made up on every frame, each
+    /// restarting the rest, which then said the command whole.
+    #[gpui::test]
+    fn a_selected_row_scrolled_out_of_the_list_is_no_change(cx: &mut TestAppContext) {
+        let (_app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let palette = OPENED_PALETTE
+            .with_borrow(|opened| opened.as_ref().and_then(WeakEntity::upgrade))
+            .expect("the open palette");
+        let changes =
+            |cx: &mut VisualTestContext| cx.update(|_, cx| palette.read(cx).listed.changes());
+        let row = "palette-command-0";
+        assert!(
+            cx.debug_bounds(row).is_some(),
+            "the selected first row is drawn"
+        );
+        let centre = cx
+            .debug_bounds("command-palette-results")
+            .expect("the list")
+            .center();
+        let counted = changes(cx);
+        crate::tags::tests::scroll_down(
+            cx,
+            centre,
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+        );
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_none(),
+            "the wheel takes the selected row out of the list"
+        );
+        // Frames 100 ms apart while it stays out, and the rest after them.
+        for _ in 0..10 {
+            heard.wait(cx, 100);
+        }
+        heard.wait(cx, 2000);
+        assert!(cx.debug_bounds(row).is_none(), "the row stays out");
+        assert_eq!(
+            changes(cx),
+            counted,
+            "the list counts no change of selection as the row leaves, nor at any frame after"
+        );
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "and the rest says nothing"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                heard.take_listed(),
+                Vec::<String>::new(),
+                "the adapter reports no change of selection"
+            );
+            assert_eq!(
+                heard.take_orca(),
+                Vec::<String>::new(),
+                "and Orca hears nothing"
+            );
+        }
+    }
+
     /// Wheels the palette's selected first row out of its list and back, in
     /// a window `height` tall, and types a key 50 ms after its return.
     fn row_brought_back(cx: &mut TestAppContext, height: f32) {
