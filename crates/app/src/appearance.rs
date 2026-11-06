@@ -1277,10 +1277,12 @@ impl Palette {
     /// row, each needs only the text rule ([`LABEL_RULE`]), so a hover alone
     /// never flattens secondary text into body text. On a surface where
     /// `text` itself reads below the floor, the floor is `text`'s own
-    /// contrast, which in practice makes the token `text` where such a
-    /// surface rests. `border` takes [`Self::resting_edge`], so dividers,
-    /// fields' outlines and the popup edge fitted from it
-    /// ([`Self::raised_edge`]) hold [`MORE_CONTRAST_EDGE`]; the disabled edge,
+    /// contrast, and since neither token reads above `text` on any of these
+    /// surfaces ([`Self::toward_text`]), it becomes `text`, or a shade of
+    /// `text`'s own luminance, where such a surface rests. `border` takes
+    /// [`Self::resting_edge`], so dividers, fields' outlines and the popup
+    /// edge fitted from it ([`Self::raised_edge`]) hold
+    /// [`MORE_CONTRAST_EDGE`]; the disabled edge,
     /// the unchecked Switch track and a dark field's fill keep the unadjusted
     /// palette's ([`Self::configure`]). Every other token stays: the hues,
     /// the accent with its foreground, hover and pressed fills, the
@@ -1313,23 +1315,31 @@ impl Palette {
 
     /// `color` moved toward `text` in 256ths of each sRGB channel ([`mix`]),
     /// to the first step that reads its floor on every surface of `floors`,
-    /// or `text`'s own contrast on one where that is lower. `text` reaches
-    /// every floor, so the walk ends there at the latest.
+    /// or `text`'s own contrast on one where that is lower, and reads above
+    /// `text` on none of them: secondary text never reads above body text.
+    /// Mixed in sRGB, a step can pass `text`'s luminance before it reaches
+    /// `text`, so the first step to reach `text`'s own contrast read above
+    /// it: Kanagawa Lotus's secondary text stopped at `#504F59`, 4.894:1
+    /// against its text's 4.871:1 on the hovered selected row, and One
+    /// Dark's at `#B0B5BD`, a thousandth above its text on every surface.
+    /// `text` reaches every floor and reads as itself, so the walk ends
+    /// there at the latest.
     fn toward_text(self, color: u32, floors: &[(u32, f64)]) -> u32 {
         let text = custom::luminance(self.text);
-        let floors: Vec<(f64, f64)> = floors
+        let floors: Vec<(f64, f64, f64)> = floors
             .iter()
             .map(|&(surface, floor)| {
                 let surface = custom::luminance(surface);
                 let reachable = custom::luminance_contrast(text, surface);
-                (surface, floor.min(reachable))
+                (surface, floor.min(reachable), reachable)
             })
             .collect();
         let reads = |color: u32| {
             let color = custom::luminance(color);
-            floors
-                .iter()
-                .all(|&(surface, floor)| custom::luminance_contrast(color, surface) >= floor)
+            floors.iter().all(|&(surface, floor, text)| {
+                let ratio = custom::luminance_contrast(color, surface);
+                ratio >= floor && ratio <= text
+            })
         };
         (0..=256)
             .map(|step| mix(color, self.text, step))
@@ -5913,28 +5923,50 @@ mod tests {
         }
     }
 
+    /// Secondary text never reads at a higher contrast than body text on the
+    /// same surface, in every built-in palette and, on Linux, every Omarchy
+    /// fixture, with More contrast off and on: on a row at rest (the canvas,
+    /// panel, subtle and raised surfaces), hovered, selected and hovered
+    /// while selected, and on the added and removed line tints, each as the
+    /// mode draws it. Contrast is measured in luminance, so a shade that
+    /// differs from `text` by hue still reads above it wherever it lies
+    /// further from the surface in luminance. Under More contrast, Kanagawa
+    /// Lotus's secondary text walked toward `text` in sRGB to `#504F59`,
+    /// darker than its text `#4F4F5F`, and read above it on every surface
+    /// (4.894:1 against 4.871:1 on the hovered selected row), as One Dark's
+    /// `#B0B5BD` did beside its text `#AEB5C2` by a thousandth.
     #[test]
     fn secondary_text_never_reads_above_body_text() {
-        for choice in ThemeChoice::ALL {
-            let palette = choice.palette();
-            for (surface, color) in [
-                ("canvas", palette.canvas),
-                ("panel", palette.panel),
-                ("subtle", palette.subtle),
-                ("hover", palette.hover),
-                ("selected", palette.selected),
-                ("hovered selected row", palette.row_hover(true)),
-                ("added tile", palette.added_background),
-                ("removed tile", palette.removed_background),
+        let mut failures = Vec::new();
+        for (name, chosen) in test_palettes() {
+            for (mode, palette) in [
+                ("off", chosen),
+                ("More contrast", chosen.with_more_contrast()),
             ] {
-                let text = contrast(palette.text, color);
-                let muted = contrast(palette.muted, color);
-                assert!(
-                    muted <= text,
-                    "{choice:?} muted {muted:.3}:1 above text {text:.3}:1 on {surface}"
-                );
+                for (state, surface) in [
+                    ("rest on canvas", palette.canvas),
+                    ("rest on panel", palette.panel),
+                    ("rest on subtle", palette.subtle),
+                    ("rest on raised", palette.raised()),
+                    ("hovered", palette.row_hover(false)),
+                    ("selected", palette.selected),
+                    ("hovered selected", palette.row_hover(true)),
+                    ("added lines", palette.added_background),
+                    ("removed lines", palette.removed_background),
+                ] {
+                    let text = contrast(palette.text, surface);
+                    let muted = contrast(palette.muted, surface);
+                    if muted > text {
+                        failures.push(format!(
+                            "{name} ({mode}) muted #{:06x} {muted:.3}:1 above text #{:06x} \
+                             {text:.3}:1 on {state} #{surface:06x}",
+                            palette.muted, palette.text
+                        ));
+                    }
+                }
             }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
@@ -7583,9 +7615,10 @@ mod tests {
     /// with faint tokens among them: secondary text and gutter numbers move
     /// toward `text` by the least step of `mix` that reads 7:1 on the
     /// resting surfaces and both line tints and 4.5:1 on hover and the
-    /// hovered selected row, or as `text` reads where that is lower, so they
-    /// stay apart from `text` wherever `text` reads 7:1 on every resting
-    /// surface, a hover falling short included; dividers hold 3:1 on the
+    /// hovered selected row, or as `text` reads where that is lower, and
+    /// reads above `text` on none of them, so they stay apart from `text`
+    /// wherever `text` reads 7:1 on every resting surface, a hover falling
+    /// short included, and never pass it; dividers hold 3:1 on the
     /// canvas, panel, subtle and raised surfaces, and so do the popup and
     /// resting edges fitted from them. Secondary text and gutter numbers are
     /// measured on the line tints as adjusted, where a line moved from a
@@ -7603,10 +7636,13 @@ mod tests {
         for (name, palette) in more_contrast_palettes() {
             let adjusted = palette.with_more_contrast();
             let surfaces = more_contrast_text_surfaces(adjusted);
+            // A step reads where it reaches its floor and reads above `text`
+            // on no surface.
             let reads = |color: u32| {
                 surfaces.iter().all(|&(_, surface, momentary)| {
-                    contrast(color, surface)
-                        >= more_contrast_text_floor(palette, surface, momentary)
+                    let ratio = contrast(color, surface);
+                    ratio >= more_contrast_text_floor(palette, surface, momentary)
+                        && ratio <= contrast(palette.text, surface)
                 })
             };
             let text_short = |momentary: bool| {

@@ -167,7 +167,12 @@ thinner declared margin as a decision, not an oversight:
 | One Dark secondary text against body text | muted 0.07% darker in luminance | muted needs its margin on the hovered selected row and may not read above text; only a darker derived selected row would let it drop below text with margin |
 
 Secondary text never reads above body text: a test holds it on every surface of
-every built-in. One Dark's shipped `muted` was a hair brighter than its upstream
+every built-in and Omarchy palette, at rest, hovered, selected and hovered while
+selected, with More contrast off and on. More contrast's walk toward `text` once
+passed it in luminance on the way, so One Dark's and Kanagawa Lotus's raised
+secondary text read a hair above their text (Lotus 4.894 against 4.871 on the
+hovered selected row); since 2026-11-06 no step above `text` counts, and both
+take `text` itself under More contrast. One Dark's shipped `muted` was a hair brighter than its upstream
 text, and its named pair needs more than that text's 4.62, so One Dark's `text`
 (mono-1) is tuned as well, the one upstream text this follow-up moves. The two
 now sit at parity: muted `#B0B5BC` is 0.07% darker in luminance than text
