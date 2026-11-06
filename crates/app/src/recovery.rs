@@ -81,6 +81,10 @@ fn restore_said(answer: &str) -> SharedString {
 }
 
 const STASH_PAGE_SIZE: usize = 40;
+/// What the Stashes detail says while the list is read.
+const READING_LIST: &str = "Reading stashes…";
+/// What it says while the chosen stash's saved changes are read.
+const READING_STASH: &str = "Reading saved changes…";
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
 /// than its inspection and it scrolls: about six lines of a patch.
@@ -1564,7 +1568,16 @@ pub(crate) struct StashBrowser {
     /// This showing of the file preview, which a line beneath an open
     /// control belongs to; [`Self::clear_preview`] starts a new one.
     showing: crate::system_preview::Showing,
+    /// The chosen stash's read of its saved changes.
     metadata_task: Option<Task<()>>,
+    /// The list's read, apart from the chosen stash's: a stash chosen while
+    /// the list is read, which the list still draws, starts its own read
+    /// and leaves the list's to land ([`Self::load_page`]), which only
+    /// another read of the list replaces, by `list_generation`. Sharing one
+    /// task and generation, the click's read replaced the list's, and
+    /// Refresh's answer never landed.
+    list_task: Option<Task<()>>,
+    list_generation: u64,
     preview_task: Option<Task<()>>,
     page: Option<StashPage>,
     offset: usize,
@@ -1704,7 +1717,7 @@ pub(crate) async fn open_selected_stash(app: &Entity<GitTurtle>, cx: &mut gpui::
         .read_with(cx, |app, _| app.recovery.browser.clone())
         .and_then(|browser| browser.upgrade())
         .expect("the Stashes dialog opens");
-    let read = browser.update(cx, |this, _| this.metadata_task.take());
+    let read = browser.update(cx, |this, _| this.list_task.take());
     read.expect("the list is read").await;
     cx.update(|window, cx| browser.update(cx, |this, cx| this.select_stash(0, window, cx)));
     let read = browser.update(cx, |this, _| this.metadata_task.take());
@@ -1765,7 +1778,7 @@ impl StashBrowser {
             crate::views::tests::draw(cx);
         }
         assert!(
-            browser.read_with(cx, |browser, _| browser.metadata_task.is_none()
+            browser.read_with(cx, |browser, _| browser.reading().is_none()
                 && browser.loading.is_none()),
             "the Stashes read lands"
         );
@@ -1786,6 +1799,8 @@ impl StashBrowser {
             preview_generation: 0,
             showing: crate::system_preview::Showing::next(),
             metadata_task: None,
+            list_task: None,
+            list_generation: 0,
             preview_task: None,
             page: None,
             offset: 0,
@@ -1885,8 +1900,12 @@ impl StashBrowser {
 
     fn load_page(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_restore(cx);
+        // The selection goes until the list lands, and with it the read of
+        // the stash it held.
         self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
+        self.metadata_task = None;
+        self.list_generation = self.list_generation.wrapping_add(1);
+        let generation = self.list_generation;
         self.clear_preview();
         self.snapshot = None;
         self.detail.scroll().set_offset(Point::default());
@@ -1898,7 +1917,7 @@ impl StashBrowser {
             .map(|stash| stash.oid.clone());
         self.selected = None;
         self.selected_file = None;
-        self.loading = Some("Reading stashes…");
+        self.loading = Some(READING_LIST);
         self.error = None;
         self.forget_restore_line(cx);
         self.forget_read_alert(cx);
@@ -1906,18 +1925,18 @@ impl StashBrowser {
         let response = self
             .metadata
             .submit_read(move || repo.stash_list(offset, STASH_PAGE_SIZE));
-        self.metadata_task = Some(cx.spawn_in(window, async move |this, cx| {
+        self.list_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
                     "Stash listing was interrupted. Refresh to try again."
                 ))
             });
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.generation != generation {
+                if this.list_generation != generation {
                     return;
                 }
-                this.metadata_task = None;
-                this.loading = None;
+                this.list_task = None;
+                this.loading = this.reading();
                 if !this.is_current(cx) {
                     this.read_alert = Some(crate::tags::alert_error_line(
                         &mut this.error,
@@ -1936,18 +1955,45 @@ impl StashBrowser {
                         // stays selected by its commit, never by its
                         // `stash@{n}`, and its saved changes are read
                         // again, focus where it was. Gone, nothing is
-                        // selected.
-                        let kept = kept
-                            .and_then(|oid| page.entries.iter().position(|stash| stash.oid == oid));
+                        // selected. A stash chosen while the list was read,
+                        // from the rows it still drew, stays selected the
+                        // same way: its read is left to land where the
+                        // list still names it as it did, and made again
+                        // where the list renumbered it, which the core
+                        // refuses to read by its old `stash@{n}`.
+                        let chosen = this
+                            .selected
+                            .and_then(|index| this.page.as_ref()?.entries.get(index))
+                            .cloned();
+                        let index = chosen
+                            .as_ref()
+                            .map(|stash| &stash.oid)
+                            .or(kept.as_ref())
+                            .and_then(|oid| {
+                                page.entries.iter().position(|stash| stash.oid == *oid)
+                            });
+                        let unchanged = chosen.as_ref().is_some_and(|stash| {
+                            index.is_some_and(|index| page.entries[index] == *stash)
+                        });
                         this.page = Some(page);
                         this.offset = offset;
-                        match kept {
+                        match index {
                             Some(index) => {
                                 this.stash_scroll
                                     .scroll_to_item(index, ScrollStrategy::Center);
-                                this.read_stash(index, window, cx);
+                                if unchanged {
+                                    this.selected = Some(index);
+                                } else {
+                                    this.selected = None;
+                                    this.read_stash(index, window, cx);
+                                }
                             }
-                            None => this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top),
+                            None => {
+                                if chosen.is_some() {
+                                    this.select_none(cx);
+                                }
+                                this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                            }
                         }
                     }
                     Err(error) => {
@@ -1963,6 +2009,34 @@ impl StashBrowser {
             });
         }));
         cx.notify();
+    }
+
+    /// What the detail says is being read: the chosen stash's saved changes,
+    /// else the list, whichever of the two reads still runs.
+    fn reading(&self) -> Option<&'static str> {
+        if self.metadata_task.is_some() {
+            Some(READING_STASH)
+        } else if self.list_task.is_some() {
+            Some(READING_LIST)
+        } else {
+            None
+        }
+    }
+
+    /// Selects nothing, dropping the chosen stash's read and what it showed,
+    /// as the list read again without the stash chosen meanwhile does.
+    fn select_none(&mut self, cx: &mut Context<Self>) {
+        self.cancel_restore(cx);
+        self.generation = self.generation.wrapping_add(1);
+        self.metadata_task = None;
+        self.clear_preview();
+        self.snapshot = None;
+        self.selected = None;
+        self.selected_file = None;
+        self.error = None;
+        self.loading = self.reading();
+        self.forget_restore_line(cx);
+        self.forget_read_alert(cx);
     }
 
     fn select_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2008,7 +2082,7 @@ impl StashBrowser {
         self.detail.scroll().set_offset(Point::default());
         self.selected = Some(index);
         self.selected_file = None;
-        self.loading = Some("Reading saved changes…");
+        self.loading = Some(READING_STASH);
         self.error = None;
         self.forget_restore_line(cx);
         self.forget_read_alert(cx);
@@ -2027,7 +2101,7 @@ impl StashBrowser {
                     return;
                 }
                 this.metadata_task = None;
-                this.loading = None;
+                this.loading = this.reading();
                 if !this.is_current(cx) {
                     this.read_alert = Some(crate::tags::alert_error_line(
                         &mut this.error,
@@ -2255,7 +2329,7 @@ impl StashBrowser {
     /// they look it: the window's busy spell, its own Review restore…'s
     /// preparation included, or the browser's own read.
     fn refusal(&self, cx: &App) -> (bool, bool) {
-        let busy = self.metadata_task.is_some();
+        let busy = self.reading().is_some();
         let (refused, dimmed) =
             crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
         (busy || refused, busy || dimmed)
@@ -3013,7 +3087,7 @@ impl Render for StashBrowser {
         let browser = cx.entity().downgrade();
         let narrow = window.viewport_size().width < px(800.);
         let height = (f32::from(window.viewport_size().height) - 230.).clamp(300., 620.);
-        let busy = self.metadata_task.is_some();
+        let busy = self.reading().is_some();
         let stashes = self.page.as_ref().map_or(0, |page| page.entries.len());
         let list = uniform_list(
             "saved-stashes",
@@ -4109,6 +4183,165 @@ mod tests {
         );
     }
 
+    /// Refresh's answer lands though a stash is clicked while the list is
+    /// read: with a stash saved from a terminal since the list was read,
+    /// Refresh, its read held, then a click on the older stash's row, which
+    /// the list still draws, then the read let go. The list shows the three
+    /// stashes, and the stash clicked stays selected by its commit, one row
+    /// down, its saved changes shown, while a click on a stash the answer
+    /// no longer lists selects nothing, and one on a stash the answer lists
+    /// unchanged stays selected, its read landing rather than made again.
+    /// A stash chosen with Home while the list is read leaves the answer
+    /// to land as a click does. The click's read replaced the list's, so
+    /// Refresh's answer was dropped and the list kept the two stashes it
+    /// showed before.
+    #[gpui::test]
+    async fn refresh_lands_past_a_stash_clicked_while_the_list_is_read(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let notes = repo.path().join("notes.txt");
+        for message in ["first", "second"] {
+            std::fs::write(&notes, message).unwrap();
+            git(
+                repo.path(),
+                &["stash", "push", "--include-untracked", "-m", message],
+            );
+        }
+        let (app, cx) = window(cx, &repo);
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        landed(&app, cx, "saved-stash-row-1");
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("the Stashes dialog opens");
+        let listed = |cx: &mut VisualTestContext| {
+            stashes.read_with(cx, |this, _| {
+                let page = this.page.as_ref().expect("the list");
+                let names: Vec<_> = page
+                    .entries
+                    .iter()
+                    .map(|stash| stash.name.clone())
+                    .collect();
+                let selected = this.selected.and_then(|index| page.entries.get(index));
+                (
+                    names,
+                    this.selected,
+                    selected.map(|stash| stash.oid.clone()),
+                    this.snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.stash.oid.clone()),
+                )
+            })
+        };
+        let (names, _, _, _) = listed(cx);
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[1].ends_with("first"), "{names:?}");
+        let first = stashes.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the list").entries[1].oid.clone()
+        });
+        std::fs::write(&notes, "third").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "third"],
+        );
+        let held = stashes.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        draw(cx);
+        let row = cx
+            .debug_bounds("saved-stash-row-1")
+            .expect("the list still draws the older stash");
+        cx.simulate_click(row.center(), Modifiers::none());
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        let (names, row, oid, shown) = listed(cx);
+        assert_eq!(names.len(), 3, "Refresh's answer lands: {names:?}");
+        assert!(names[0].ends_with("third"), "{names:?}");
+        assert_eq!(row, Some(2), "the stash clicked moved one row down");
+        assert_eq!(oid, Some(first.clone()), "and stays selected by its commit");
+        assert_eq!(shown, Some(first.clone()), "its saved changes shown");
+        assert!(
+            cx.debug_bounds("saved-stash-row-2").is_some(),
+            "its row is drawn"
+        );
+
+        // A click on a stash a terminal dropped meanwhile selects nothing
+        // once the answer lands without it.
+        git(repo.path(), &["stash", "drop", "-q", "stash@{0}"]);
+        let held = stashes.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        draw(cx);
+        let row = cx
+            .debug_bounds("saved-stash-row-0")
+            .expect("the list still draws the dropped stash");
+        cx.simulate_click(row.center(), Modifiers::none());
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        let (names, row, oid, shown) = listed(cx);
+        assert_eq!(names.len(), 2, "Refresh's answer lands: {names:?}");
+        assert_eq!(
+            (row, oid, shown),
+            (None, None, None),
+            "a stash the answer no longer lists stays selected nowhere"
+        );
+
+        // A click on a stash the answer lists as the list drew it, by the
+        // same `stash@{n}` and commit, stays selected, and its read, which
+        // waited behind the list's, lands rather than being made again.
+        let held = stashes.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        draw(cx);
+        let row = cx
+            .debug_bounds("saved-stash-row-1")
+            .expect("the list still draws the older stash");
+        cx.simulate_click(row.center(), Modifiers::none());
+        let clicked = stashes.read_with(cx, |this, _| this.generation);
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        let (names, row, oid, shown) = listed(cx);
+        assert_eq!(names.len(), 2, "Refresh's answer lands: {names:?}");
+        assert_eq!(row, Some(1), "the stash clicked stays selected");
+        assert_eq!(oid, Some(first.clone()), "by its commit");
+        assert_eq!(shown, Some(first), "its saved changes shown");
+        assert_eq!(
+            stashes.read_with(cx, |this, _| this.generation),
+            clicked,
+            "the click's read landed, never made again"
+        );
+
+        // A stash chosen from the keyboard while the list is read, with
+        // another saved from a terminal since, leaves Refresh's answer to
+        // land as a click does: Home on the rows the list still draws
+        // chooses the newest, which the answer puts one row down.
+        let second = stashes.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the list").entries[0].oid.clone()
+        });
+        std::fs::write(&notes, "fourth").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "fourth"],
+        );
+        let held = stashes.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+        draw(cx);
+        cx.simulate_keystrokes("home");
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        let (names, row, oid, shown) = listed(cx);
+        assert_eq!(names.len(), 3, "Refresh's answer lands: {names:?}");
+        assert!(names[0].ends_with("fourth"), "{names:?}");
+        assert_eq!(row, Some(1), "the stash chosen moved one row down");
+        assert_eq!(
+            oid,
+            Some(second.clone()),
+            "and stays selected by its commit"
+        );
+        assert_eq!(shown, Some(second), "its saved changes shown");
+    }
+
     /// A stashed image's sides offer the open control Compare's image
     /// captions offer, by the same rule, and it is one of the Stashes
     /// detail's controls, as a stashed document's is: stacked beneath the
@@ -4652,7 +4885,7 @@ mod tests {
             .expect("Stashes is open");
         let reading = |cx: &mut VisualTestContext| {
             browser.read_with(cx, |browser, _| {
-                browser.metadata_task.is_some() || browser.preview_task.is_some()
+                browser.reading().is_some() || browser.preview_task.is_some()
             })
         };
         crate::tags::tests::draw(cx);
