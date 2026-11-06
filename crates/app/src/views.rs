@@ -22205,6 +22205,9 @@ pub(crate) mod tests {
         let (_fixture, app, cx) = working_window(cx).await;
         cx.simulate_resize(size(px(1000.), px(700.)));
         settle(&app, cx).await;
+        // Empty, as a GPUI test's seeds share the thread and its caches.
+        CHROME_WIDTHS.with_borrow_mut(|cache| *cache = Measured::new());
+        STATUS_WIDTHS.with_borrow_mut(|cache| *cache = Measured::new());
         let measured = || {
             (
                 CHROME_MEASURED.with(std::cell::Cell::get),
