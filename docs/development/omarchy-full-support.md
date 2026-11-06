@@ -766,6 +766,14 @@ cover current upstream x86-64 Omarchy.
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
        The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
        untested (low).
+       FU26-C review (2026-11-06): the profiles menu's rebuild key ranks saving over storage over the repository
+       while its rows rank their own reason first, so a reason could stay stale until a save ends (no reachable path
+       found; fails safe); one helper per group's reason would feed both (`profiles.rs:200`, `:447`); an open menu
+       misses a storage read failure once profiles are loaded (no Retry until reopened; pre-existing; low).
+       FU26-B review (2026-11-06): `dialog_sides`' stretched-Button check measures text runs only, so a future ghost
+       Button reserving "Copied" beside a shorter label or carrying a trailing icon would fail it (widest content);
+       Copy commit ID's `flex_shrink(1.)` would clip rather than wrap a label too long for the column; two
+       `select_newest` test helpers in `reflog.rs` (low).
        A field's caret may keep blinking unfocused when its context menu closes with focus elsewhere
        (`on_blur` returns early while the menu is open, `vendor/gpui-base/src/input/base/state.rs:2569`; FU26-D re-check, low).
        The GitHub connection pane's "Local worktree: <path>" line wraps with the path (6 lines at
@@ -822,7 +830,7 @@ cover current upstream x86-64 Omarchy.
          form, Activity, the LFS form, the comparison form; verify); Reset column layout and
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
-         Left after FU19-F2 (queued 2026-11-06; FU26-B in flight): the ghost-Button rule at the dialogs F2 did not
+         Left after FU19-F2 (queued 2026-11-06; FU26-B landed the same day: the Reflog's Buttons on its text edge, the Reflog fitted to its dialog's cap, Load commits never wraps): the ghost-Button rule at the dialogs F2 did not
          cover (the Reflog's Review recovery branch…, `reflog.rs:1175`, stretched in a column;
          interactive rebase's Load commits, verify).
      - **FU20 (proposed):**
