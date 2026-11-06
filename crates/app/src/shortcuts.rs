@@ -1511,11 +1511,6 @@ impl Listed {
         std::mem::take(&mut self.unread)
     }
 
-    /// The status took the reading of the last change, as a move's at once.
-    pub(crate) fn read(&mut self) {
-        self.unread = false;
-    }
-
     /// Times the list's last change of selection, where the list speaks it
     /// ([`LIST_SPEAKS_SELECTION`]) and no frame has yet: the AT-SPI adapter
     /// reports a change once the frame that draws it is drawn, no earlier

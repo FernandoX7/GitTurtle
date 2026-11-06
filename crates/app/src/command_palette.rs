@@ -1017,24 +1017,52 @@ impl Palette {
     fn selected_command(&self) -> Option<usize> {
         self.results.get(self.selection.index).copied()
     }
-    /// The selection moved to another command, by a key, a click or the
-    /// query. The row it reaches reads its live reading at once, a row
-    /// holding its name ([`Self::held`]) included, while the row it leaves
-    /// keeps the name it holds until the rest: the AT-SPI adapter reports a
-    /// row's rename as it walks a frame's changes and the list's change of
-    /// selection after them, so a row renamed in the move's frame was still
-    /// the item Orca presents as its rename arrived, and would be spoken
-    /// before the row reached. Renamed at the rest, it is no longer
-    /// selected, and Orca does not speak it. The change is the list's
-    /// ([`Self::listed`]), timed by a frame after the one that draws it.
+    /// The query moved the selection to another command: the rest its change
+    /// begins follows it ([`Listed::changed`]).
     fn selection_moved(&mut self) {
         self.listed.changed();
+        self.reached();
+    }
+    /// The selection changed other than by the query, by a key, a click or
+    /// the selected row coming back into the list ([`Listed::moved`]): the
+    /// rest pending then follows it, where one is, and a later rest does
+    /// not. A move with none pending is heard from the list, and a query
+    /// that keeps its command selected long after is a reading no change of
+    /// selection led to, read whole: counted toward that later rest, a click
+    /// on a command the context cannot run and, 5 s on, a query that kept it
+    /// selected at another place rested on "1 of 1" alone.
+    fn list_moved(&mut self) {
+        self.listed.moved(self.settling.is_some());
+        self.reached();
+    }
+    /// The selection reached a command, the list's change ([`Self::listed`]),
+    /// timed by a frame after the one that draws it. The row it reaches
+    /// reads its live reading at once, a row holding its name
+    /// ([`Self::held`]) included, while the row it leaves keeps the name it
+    /// holds until the rest: the AT-SPI adapter reports a row's rename as it
+    /// walks a frame's changes and the list's change of selection after
+    /// them, so a row renamed in the move's frame was still the item Orca
+    /// presents as its rename arrived, and would be spoken before the row
+    /// reached. Renamed at the rest, it is no longer selected, and Orca does
+    /// not speak it.
+    fn reached(&mut self) {
         if self
             .held
             .as_ref()
             .is_some_and(|(command, _)| Some(*command) == self.selected_command())
         {
             self.held = None;
+        }
+    }
+    /// Notes whether this frame draws the selected command's row, `drawn`,
+    /// as the list lays out its rows: a selected row coming back into the
+    /// list, as the wheel, a resize or a text size can bring it, is a change
+    /// of its selection ([`Listed::laid_out`]), timed by this frame and the
+    /// next.
+    fn note_selected_row(&mut self, drawn: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.listed.laid_out(self.selected_command(), drawn) {
+            self.list_moved();
+            self.listed.time(window, cx, |this| &mut this.listed);
         }
     }
     /// Announces the selected command's reading once the query and the
@@ -1191,7 +1219,27 @@ impl Render for Palette {
         let list = uniform_list(
             "command-palette-list",
             count,
-            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                // Each frame the list first lays out its first row alone,
+                // twice, to measure it (`UniformList::measure_item`), and then
+                // the rows it draws. Read from a measuring call, a selected
+                // row scrolled out of the list read as leaving and coming back
+                // on every frame. A `0..1` call is read only where it says
+                // what the drawn rows say too: with one result, or with the
+                // first row selected and the list at its top with no scroll
+                // waiting, where the drawn rows begin at that row, as a list
+                // one row tall draws it alone.
+                let selected = this.selection.index;
+                let measuring = range == (0..1)
+                    && this.results.len() > 1
+                    && (selected != 0 || {
+                        let scroll = this.scroll.0.borrow();
+                        scroll.deferred_scroll_to_item.is_some()
+                            || scroll.base_handle.offset().y != px(0.)
+                    });
+                if !measuring {
+                    this.note_selected_row(range.contains(&selected), window, cx);
+                }
                 let context = this.context.availability.clone();
                 range
                     .map(|index| {
@@ -1310,7 +1358,7 @@ impl Render for Palette {
                                 let moved = this.selection.index != index;
                                 this.selection.index = index;
                                 if moved {
-                                    this.selection_moved();
+                                    this.list_moved();
                                 }
                                 this.activate(window, cx);
                             }));
@@ -1379,12 +1427,11 @@ impl Render for Palette {
                 let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
                 if this.selection.index != was {
-                    this.selection_moved();
+                    this.list_moved();
                     // The status takes the move's whole reading at once,
                     // quietly where the list speaks the move.
                     this.status = this.reading();
                     this.status_name = this.status.clone();
-                    this.listed.read();
                     this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
                 }
                 this.scroll
@@ -3787,6 +3834,279 @@ mod render_tests {
                 "Orca speaks the status's reading last: {orca:?}"
             );
         }
+    }
+
+    /// A query that keeps the selected command reads whole, even where a
+    /// click outside any rest selected that command: a click on a command
+    /// the context cannot run, which leaves the palette open, and, 5 s
+    /// later, a query that keeps that command selected at another place.
+    /// The rest announces the whole reading, on every platform: the click,
+    /// heard from the list on Linux, led to no rest. Counted toward the
+    /// query's rest, the click had the status say the place alone, "1 of
+    /// 1", though no change of selection led to it.
+    #[gpui::test]
+    fn a_query_that_keeps_a_clicked_command_reads_whole(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        // A key whose list draws, past its first rows, a command the context
+        // cannot run, and letters typed after it that keep that command
+        // selected at each key, at another place: the shortest part of its
+        // label that starts with the key.
+        let selects = |query: &str, command: usize| {
+            let found = matches(query);
+            let first = first_available(&found, &availability);
+            (found.get(first) == Some(&command)).then_some(first)
+        };
+        let (key, at, then) = ('a'..='z')
+            .map(String::from)
+            .find_map(|key| {
+                let results = matches(&key);
+                (1..results.len().min(6)).find_map(|at| {
+                    let spec = COMMANDS[results[at]];
+                    spec.id.reason(&availability)?;
+                    let label = spec.label.to_lowercase();
+                    (2..=label.len())
+                        .flat_map(|len| (0..=label.len() - len).map(move |start| (start, len)))
+                        .filter_map(|(start, len)| label.get(start..start + len))
+                        .filter(|part| part.starts_with(key.as_str()))
+                        .find(|part| {
+                            (key.len() + 1..=part.len())
+                                .filter_map(|end| part.get(..end))
+                                .all(|typed| selects(typed, results[at]).is_some())
+                                && selects(part, results[at]) != Some(at)
+                        })
+                        .map(|part| (key.clone(), at, part[key.len()..].to_owned()))
+                })
+            })
+            .expect("a command the context cannot run, and letters that keep it selected");
+        let query = format!("{key}{then}");
+        cx.simulate_input(&key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        // A second later, past the frame that timed the key's change.
+        heard.wait(cx, 1000);
+        heard.take();
+        let row = cx
+            .debug_bounds(format!("palette-command-{at}").leak())
+            .expect("the list draws the command's row");
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        heard.frame(cx);
+        assert_eq!(
+            heard.row_name(),
+            Some(reading_and_row(&key, at, &availability).1.as_str()),
+            "the click selects the command"
+        );
+        heard.wait(cx, 5000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        cx.simulate_input(&then);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let found = matches(&query);
+        let whole = reading_and_row(
+            &query,
+            first_available(&found, &availability),
+            &availability,
+        )
+        .0;
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "{query:?}, which keeps the clicked command selected, reads whole"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [whole],
+            "Orca speaks the whole reading, the list's selection unchanged"
+        );
+    }
+
+    /// A move inside the query's rest is the change of selection that rest
+    /// follows: a key, Down 200 ms later and, 200 ms after that, a key that
+    /// keeps Down's command selected at another place. Where the list speaks
+    /// its selection (Linux) and Orca surely spoke Down's change, the rest
+    /// says the command's place alone, which the row Orca spoke does not
+    /// say; elsewhere (macOS) the whole reading. Taken as the move's own,
+    /// Down led to no rest, and the status said the command a second time.
+    #[gpui::test]
+    fn a_move_inside_the_query_rest_leads_it(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        heard.take();
+        let first = |query: &str| first_available(&matches(query), &availability);
+        // A key, and a second one that keeps the command Down reaches from
+        // the first key's command selected, at another place.
+        let letters = || ('a'..='z').map(String::from);
+        let (key, then) = letters()
+            .flat_map(|key| letters().map(move |then| (key.clone(), then)))
+            .find(|(key, then)| {
+                let (found, query) = (matches(key), format!("{key}{then}"));
+                let down = first(key) + 1;
+                let kept = matches(&query);
+                found.len() > down
+                    && kept.get(first(&query)) == Some(&found[down])
+                    && first(&query) != down
+            })
+            .expect("a key, and a second one that keeps Down's command");
+        let query = format!("{key}{then}");
+        cx.simulate_input(&key);
+        heard.frame(cx);
+        heard.wait(cx, 200);
+        cx.simulate_keystrokes("down");
+        heard.frame(cx);
+        let (moved, row) = reading_and_row(&key, first(&key) + 1, &availability);
+        assert_eq!(heard.row_name(), Some(row.as_str()), "Down reaches {row:?}");
+        let own = if shortcuts::LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            vec![moved]
+        };
+        assert_eq!(
+            heard.take(),
+            own,
+            "Down is the list's where it speaks it, and the status's at once elsewhere"
+        );
+        heard.wait(cx, 200);
+        cx.simulate_input(&then);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let at = first(&query);
+        let said = if shortcuts::LIST_SPEAKS_SELECTION {
+            place_of(&query, at)
+        } else {
+            reading_and_row(&query, at, &availability).0
+        };
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&said),
+            "{query:?}, which keeps Down's command, rests on {said:?}"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            heard.take_orca().ends_with(&[row, said]),
+            "Orca speaks the row Down reached and then its place"
+        );
+    }
+
+    /// A selected row the wheel brings back into the list is a change of
+    /// selection: it enters the window's tree already selected, which the
+    /// AT-SPI adapter reports as a change of the list's selection, and Orca
+    /// speaks it. A key that selects another command 50 ms after it makes a
+    /// change Orca 51.1 drops as one of a burst, so the query's rest
+    /// announces the whole reading of the command it selects. Untimed, the
+    /// row's return left that key's change timed against the palette's
+    /// opening, and the rest said the command's place alone, the command
+    /// unheard.
+    #[gpui::test]
+    fn a_selected_row_brought_back_into_the_list_is_a_change(cx: &mut TestAppContext) {
+        row_brought_back(cx, 800.);
+    }
+
+    /// As [`a_selected_row_brought_back_into_the_list_is_a_change`], in a
+    /// list one row tall, as a short window at a large text size leaves it:
+    /// the list at its top draws its first row alone, the range the toolkit
+    /// lays out alone each frame to measure that row, so the row's return
+    /// is read from it.
+    #[gpui::test]
+    fn a_selected_row_brought_back_into_a_list_one_row_tall_is_a_change(cx: &mut TestAppContext) {
+        row_brought_back(cx, 354.);
+    }
+
+    /// Wheels the palette's selected first row out of its list and back, in
+    /// a window `height` tall, and types a key 50 ms after its return.
+    fn row_brought_back(cx: &mut TestAppContext, height: f32) {
+        let (app, cx) = hub(cx);
+        cx.simulate_resize(size(px(1200.), px(height)));
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        heard.take();
+        let results = matches("");
+        assert_eq!(
+            first_available(&results, &availability),
+            0,
+            "the whole list starts on its first command"
+        );
+        // The row Orca speaks, where the list speaks its selection.
+        #[cfg(target_os = "linux")]
+        let first = reading_and_row("", 0, &availability).1;
+        let key = ["g", "b", "t", "h", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| {
+                let found = matches(key);
+                found.get(first_available(&found, &availability)) != Some(&results[0])
+            })
+            .expect("a key that selects another command");
+        let row = "palette-command-0";
+        assert!(cx.debug_bounds(row).is_some(), "the selected row is drawn");
+        if height < 400. {
+            assert!(
+                cx.debug_bounds("palette-command-1").is_none(),
+                "the list draws its first row alone"
+            );
+        }
+        let centre = cx
+            .debug_bounds("command-palette-results")
+            .expect("the list")
+            .center();
+        crate::tags::tests::scroll_down(
+            cx,
+            centre,
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+        );
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_none(),
+            "the wheel takes the selected row out of the list"
+        );
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        crate::tags::tests::scroll_down(
+            cx,
+            centre,
+            gpui::ScrollDelta::Pixels(point(px(0.), px(600.))),
+        );
+        heard.frame(cx);
+        assert!(cx.debug_bounds(row).is_some(), "and brings it back");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_listed(),
+            std::slice::from_ref(&first),
+            "the adapter reports the row's return as a change of the list's selection"
+        );
+        // A key that selects another command 50 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        cx.simulate_input(key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let found = matches(key);
+        let whole = reading_and_row(key, first_available(&found, &availability), &availability).0;
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the command with its place"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [first, whole],
+            "Orca speaks the returned row, drops the key's change 50 ms after it, and speaks the \
+             status's reading"
+        );
     }
 
     /// A search that takes away the command Orca last spoke leaves Orca
