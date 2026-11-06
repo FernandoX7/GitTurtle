@@ -1223,5 +1223,6 @@ The kit tests are
 `dialog::tests::an_enter_released_in_another_window_ends_its_press`,
 `dialog::tests::an_input_method_s_repeat_in_another_window_ends_no_press`,
 `dialog::tests::an_input_method_s_repeat_in_another_window_keeps_a_press_held_past_another_key`,
+`dialog::tests::an_enter_released_where_it_repeated_ends_only_that_window_s_press`
 and
 `dialog::tests::an_enter_released_in_another_application_swallows_one_return`.

@@ -1750,6 +1750,38 @@ mod tests {
         assert_eq!(confirms.get(), 1, "a fresh press after the key-up confirms");
     }
 
+    /// GitTurtle patch: an Enter whose key-up lands in another window of the
+    /// application that recorded a press of its own, as a held Enter's X11
+    /// autorepeats reach the window focus moved to, ends only that window's
+    /// press: the next Enter where the key first went down is still taken for
+    /// one of its repeats and swallowed, until its own key-up. Had it ended
+    /// every window's press, an unpaired release at a poll batch's end
+    /// reaching the other window would end the first window's too, and back
+    /// there the next autorepeat, a fresh press, would confirm its dialog.
+    #[gpui::test]
+    fn an_enter_released_where_it_repeated_ends_only_that_window_s_press(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut other = blank_window(cx);
+        let (view, cx) = pair(cx);
+        let confirms = open_b_with_a_held_enter(cx, &view);
+        activate(&mut other);
+        other.update(|window, cx| window.draw(cx).clear(cx));
+        enter(&mut other, Some(false));
+        enter(&mut other, None);
+        activate(cx);
+        enter(cx, Some(false));
+        assert_eq!(
+            confirms.get(),
+            0,
+            "a key-up in another window that recorded a press of its own ended the press where \
+             the key first went down, so its next Enter confirmed the dialog the press opened"
+        );
+        enter(cx, None);
+        enter(cx, Some(false));
+        assert_eq!(confirms.get(), 1, "a fresh press after its own key-up confirms");
+    }
+
     /// GitTurtle patch: an Enter whose key-up lands in another application,
     /// which the application never sees, leaves its press recorded, so the
     /// next Return in its window, a press of its own, is taken for one of its
