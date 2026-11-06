@@ -800,13 +800,13 @@ cover current upstream x86-64 Omarchy.
          the D+E review's bounded list span, scrolled-editor test and padding rows;
          `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
          (`github_view*`, `focus_reveal.rs`).
-       - (A) Overflow and scroll cues, M (after FU18-B; FU20-A in flight at `73f886b0` with review fixups: the branch chooser, the profile dialogs and the worktree manager done, the row ring did not reproduce; the rest below stays): the worktree and profile managers
-         cut text with no scroll cue; a worktree row's ring against its border; the branch
-         chooser's Tab does not scroll rows into view (verify; `worktrees.rs`, `profiles.rs`,
-         `branch_actions.rs`); the conflict result draft's fixed 160 px height and 12 pt line
-         pitch at code 18 pt (`conflicts.rs:779`); the branch picker's and profiles menu's
-         disabled items without a reason (verify); a 16 × 2 px scrollbar strip above the
-         message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`).
+       - (A) Overflow and scroll cues, M (FU20-A landed 2026-11-05 night: the branch chooser,
+         the profile dialogs and the worktree manager; the row ring did not reproduce. FU20-A2
+         in flight; FU20-A3 briefed): the conflict result draft's fixed 160 px height and 12 pt
+         line pitch at code 18 pt (`conflicts.rs:779`, FU20-A2); a 16 × 2 px scrollbar strip
+         above the message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`,
+         FU20-A2); the branch picker's disabled items without a reason (verify, FU20-A3); the
+         profiles menu's disabled items without a reason (verify, with FU19-F's `profiles.rs`).
        - (History, remaining; FU20-H in flight from `f569ce8f` with all but the tracking-branch feedback) S: other generation bumps can strand the partial subscription
          (FU13-C 2, `history_updates.rs`, `history_search.rs`); Reflog and Tags rows keep index
          keys for their focus handles (no row menu or kept selection; FU19-G2, low); tracking-branch
@@ -846,7 +846,7 @@ cover current upstream x86-64 Omarchy.
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
        clip (brief 12).
-     - **Kit input drawing (FU20-GH3, by reading):** a multi-line Input clips its rows only sideways and paints one row past its viewport with no vertical clip (`vendor/gpui-base/src/input/base/state.rs:3416`, `element.rs:1187`): an overflowing text area (the review summary, the composers) may draw a row over its border; a native look first (QA-105), then a vendor fix with a security re-review. Also `conversations.rs:669` replaces a part selector (harmless).
+     - **Kit input drawing (FU20-GH3, by reading):** a multi-line Input paints one row past its viewport into its padding (`vendor/gpui-base/src/input/base/state.rs:3416`, `element.rs:1187`), clipped at the padded box (GPUI 0.3.4's `overflow_mask` clips y while x is hidden: FU20-GH3's re-check corrected the earlier "no vertical clip" reading), so no row can draw over the border; a native look in QA-105 confirms, and only a row seen past the box would need a vendor fix. Also `conversations.rs:669` replaces a part selector (harmless).
       - **Dialog Enter nits (FU18-C re-checks; FU19-D5's X11 residuals: a repeat's unpaired release at a poll batch's end can start a fresh press; a held Enter on a Button that keeps focus presses on each X11 repeat; macOS Enter-then-Command may lose one Return):** the window's Enter mark goes stale when the
        release lands in another window (one ignored Enter; clear it on deactivation); a
        single-line field's own Enter binding still runs on held repeats (no repository write
