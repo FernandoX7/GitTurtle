@@ -4,6 +4,7 @@ use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone, Copy)]
 pub(super) enum WorkingRow {
@@ -5176,39 +5177,55 @@ impl GitTurtle {
         // A write in flight leaves the actions inert at once (`write_from`,
         // `run_edge_action`) and dimmed once its spell looks busy.
         let looks_busy = self.operation_shown().is_some();
-        let branch = self
-            .work_status
-            .as_ref()
-            .and_then(|s| s.branch.clone())
-            .unwrap_or("Detached HEAD".into());
-        let selected_remote = self.remote_name.read(cx).value().trim().to_owned();
-        let selected_branch = self.remote_branch.read(cx).value().trim().to_owned();
-        let remote = self
-            .remotes
-            .iter()
-            .find(|remote| remote.name == selected_remote);
-        let target = format!("{selected_remote}/{selected_branch}");
-        let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
         let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
         // Where the compact bar has no room for the edge's line, it draws
         // the line's glyph, and a detached HEAD's picker says the line's
         // word, the line leaving, so the bar draws one commit glyph.
         let narrow = compact && edge_form.glyph;
         let branch_picker = self.render_branch_picker(compact, narrow, sync.picker, cx);
+        // The bar's text, built only when what it is made of changes
+        // ([`GitActionsInputs`]), and what else the frame reads of Targets'
+        // fields, borrowed from their text: Fetch's, Pull's and Push's
+        // confirmations for the target each acts on.
+        let (text, marks, remote_set, remote_branch_set, branch_empty) = {
+            let inputs = self.git_actions_inputs(cx);
+            let text = GIT_ACTIONS_TEXT.with_borrow_mut(|cache| {
+                cache
+                    .get_where(
+                        |kept| *kept == inputs,
+                        || inputs.owned(),
+                        |inputs| Rc::new(GitActionsText::build(inputs, self.repository_edge())),
+                    )
+                    .clone()
+            });
+            let branch = (self.work_status.as_ref())
+                .and_then(|status| status.branch.as_deref())
+                .unwrap_or("Detached HEAD");
+            let (remote, remote_branch) = (&*inputs.remote, &*inputs.remote_branch);
+            let marks = [
+                confirmations::sync("fetch", &self.path, &[remote]),
+                confirmations::sync("pull", &self.path, &[remote, remote_branch]),
+                confirmations::sync("push", &self.path, &[branch, remote, remote_branch]),
+            ];
+            (
+                text,
+                marks,
+                inputs.push_url.is_some(),
+                !remote_branch.is_empty(),
+                field_text(self.branch_name.read(cx)).is_empty(),
+            )
+        };
         // A repository at an edge (detached HEAD, no remote, no commits yet
         // or no upstream) says so in the counts' place, and its next action, if any,
         // joins the actions (`empty_state`).
-        let edge = self.repository_edge();
-        let glyph = edge
-            .as_ref()
-            .and_then(|edge| edge.glyph())
-            .filter(|_| narrow);
+        let edge = text.edge.as_ref();
+        let glyph = edge.and_then(|edge| edge.glyph).filter(|_| narrow);
         let line_left = narrow && glyph.is_none();
         // The edge's action joins the actions, after Push and before
         // Targets, so in a half tile it wraps with Targets rather than
         // pushing Push to a row of its own.
         let edge_action =
-            edge.as_ref().and_then(|edge| edge.action()).map(|action| {
+            edge.and_then(|edge| edge.action).map(|action| {
                 let labelled = edge_form.labelled && !compact;
                 let control = if labelled {
                     button(action.id, action.label, action.symbol, false).secondary()
@@ -5228,47 +5245,45 @@ impl GitTurtle {
             });
         // A line that leaves for the picker is not built at all.
         let shown = self.work_status.as_ref().filter(|_| !line_left);
-        let sync_state = shown.map(|status| {
-            if let Some(edge) = &edge {
+        let sync_state = shown.and_then(|status| {
+            if let Some(edge) = edge {
                 let caption = edge_form.caption && !compact;
-                return div()
-                    .px_2()
-                    .when(compact, |el| el.min_w_0())
-                    .child(
-                        EmptyState::new(
-                            "branch-edge",
-                            if compact {
-                                edge.compact_line()
-                            } else if caption {
-                                edge.line()
-                            } else {
-                                edge.short_line()
-                            },
+                return Some(
+                    div()
+                        .px_2()
+                        .when(compact, |el| el.min_w_0())
+                        .child(
+                            EmptyState::new(
+                                "branch-edge",
+                                if compact {
+                                    edge.compact_line.clone()
+                                } else if caption {
+                                    edge.line.clone()
+                                } else {
+                                    edge.short_line.clone()
+                                },
+                            )
+                            .named(edge.line.clone())
+                            .tooltip(edge.explanation.clone())
+                            .glyph(glyph)
+                            .truncating(compact)
+                            .inline(cx),
                         )
-                        .named(edge.line())
-                        .tooltip(edge.explanation())
-                        .glyph(glyph)
-                        .truncating(compact)
-                        .inline(cx),
-                    )
-                    .into_any_element();
+                        .into_any_element(),
+                );
             }
-            let explanation = status.upstream.as_ref().map_or_else(
-                || "No upstream is configured.".to_owned(),
-                |upstream| {
-                    format!("Compared with local {upstream}. Fetch to update remote information.")
-                },
-            );
             // The counts are always whole, in the form that fits
             // (`GitTurtle::sync_fit`), and always the state's accessible
             // name; the compact bar's tooltip leads with them too.
-            let summary = sync_summary(status);
+            let sync = text.sync.as_ref()?;
             let tooltip = if compact {
-                format!("{summary} · {explanation}")
+                sync.compact_tooltip.clone()
             } else {
-                explanation
+                sync.tooltip.clone()
             };
-            let count = |symbol: &'static str, value: u64, word: &'static str, color: u32| {
+            #[cfg(test)]
+            crate::views::note_control_tooltip(&"branch-sync-state".into(), &tooltip);
+            let count = |symbol: &'static str, text: &Count, word: &'static str, color: u32| {
                 div()
                     .flex()
                     .flex_shrink_0()
@@ -5281,9 +5296,9 @@ impl GitTurtle {
                             div()
                                 .debug_selector(move || format!("branch-{word}-count"))
                                 .child(if sync_form == crate::views::SyncForm::Words {
-                                    format!("{value} {word}")
+                                    text.words.clone()
                                 } else {
-                                    value.to_string()
+                                    text.number.clone()
                                 }),
                         )
                     })
@@ -5301,13 +5316,13 @@ impl GitTurtle {
                 .when(status.upstream.is_some(), |el| {
                     el.child(count(
                         "push",
-                        status.ahead,
+                        &sync.ahead,
                         "ahead",
                         if status.ahead > 0 { p.added } else { p.muted },
                     ))
                     .child(count(
                         "pull",
-                        status.behind,
+                        &sync.behind,
                         "behind",
                         if status.behind > 0 {
                             p.modified
@@ -5316,75 +5331,63 @@ impl GitTurtle {
                         },
                     ))
                 });
-            crate::native_accessibility::static_text(state, summary).into_any_element()
+            Some(
+                crate::native_accessibility::static_text(state, sync.summary.clone())
+                    .into_any_element(),
+            )
         });
-        let operation_state = self
-            .work_status
-            .as_ref()
-            .and_then(|s| s.operation.as_ref())
-            .map(|operation| {
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(5.))
-                    .bg(rgb(p.hover))
-                    .text_size(crate::appearance::ui_text(11.))
-                    .when(compact, |el| el.min_w_0().truncate())
-                    .text_color(rgb(p.warning))
-                    .child(format!("{operation} in progress"))
-            });
+        let operation_state = text.operation.clone().map(|operation| {
+            div()
+                .debug_selector(|| "git-operation-state".into())
+                .px_2()
+                .py_1()
+                .rounded(px(5.))
+                .bg(rgb(p.hover))
+                .text_size(crate::appearance::ui_text(11.))
+                .when(compact, |el| el.min_w_0().truncate())
+                .text_color(rgb(p.warning))
+                .child(operation)
+        });
         let actions = [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")]
             .into_iter()
-            .map(|(id, label)| {
-                let missing =
-                    remote.is_none() || (id != "fetch" && (selected_branch.is_empty() || detached));
+            .zip(&text.actions)
+            .zip(marks)
+            .map(|(((id, label), action), mark)| {
+                let missing = !remote_set || (id != "fetch" && (!remote_branch_set || detached));
                 let unavailable = looks_busy || missing;
-                let tooltip = if looks_busy {
-                    self.operation_busy.unwrap_or_default().to_owned()
-                } else if remote.is_none() {
-                    "No configured remote selected · Check Targets".to_owned()
-                } else if id != "fetch" && detached {
-                    "Switch to a local branch before pulling or pushing".to_owned()
-                } else if id != "fetch" && selected_branch.is_empty() {
-                    "Choose a remote branch in Targets".to_owned()
-                } else {
-                    match id {
-                        "fetch" => format!("Fetch from {selected_remote}"),
-                        "pull" => format!("Pull {target} into {branch} · fast-forward only"),
-                        _ => format!("Push {branch} to {target}"),
-                    }
-                };
-                let name = format!("{label}: {tooltip}");
                 // Each reads its confirmation where it was touched once Git
                 // reports success, for the target it acted on: labelled in its
                 // label's place, as an icon in its tooltip. Its name stays.
-                let (confirmation, target) = match id {
-                    "fetch" => (confirmations::FETCH, vec![selected_remote.as_str()]),
-                    "pull" => (
-                        confirmations::PULL,
-                        vec![selected_remote.as_str(), selected_branch.as_str()],
-                    ),
-                    _ => (
-                        confirmations::PUSH,
-                        vec![
-                            branch.as_str(),
-                            selected_remote.as_str(),
-                            selected_branch.as_str(),
-                        ],
-                    ),
+                let confirmation = match id {
+                    "fetch" => confirmations::FETCH,
+                    "pull" => confirmations::PULL,
+                    _ => confirmations::PUSH,
                 };
-                let mark = confirmations::sync(id, &self.path, &target);
+                #[cfg(test)]
+                crate::views::note_control_tooltip(
+                    &id.into(),
+                    if compact {
+                        &action.compact_tooltip
+                    } else {
+                        &action.tooltip
+                    },
+                );
                 // A surface fills only the action its state leads to: in
                 // Working Changes that is Commit, so Push there is the
                 // bordered secondary in the filled one's bounds
                 // (`tags::bordered_in_place`), and fills elsewhere.
                 let push = (id == "push").then_some(self.mode != WorkspaceMode::Working);
                 let control = if compact {
-                    let tooltip = format!("{label} · {tooltip}");
                     crate::views::compact_control_label(
-                        copy_feedback::feedback_button(mark, confirmation, "", tooltip, cx),
+                        copy_feedback::feedback_button(
+                            mark,
+                            confirmation,
+                            "",
+                            action.compact_tooltip.clone(),
+                            cx,
+                        ),
                         id,
-                        name.clone(),
+                        action.name.clone(),
                     )
                     .map(|button| match push {
                         Some(true) => button.primary(),
@@ -5404,7 +5407,7 @@ impl GitTurtle {
                         mark,
                         confirmation,
                         label,
-                        tooltip,
+                        action.tooltip.clone(),
                         cx,
                     )
                     .map(|button| match push {
@@ -5418,7 +5421,7 @@ impl GitTurtle {
                 // disabled edge, laid over its bounds.
                 refusing(control, move || id.into(), busy || missing, unavailable)
                     .debug_selector(move || id.into())
-                    .accessibility_label(name)
+                    .accessibility_label(action.name.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let remote = this.remote_name.read(cx).value().trim().to_owned();
                         let branch = this.remote_branch.read(cx).value().trim().to_owned();
@@ -5524,55 +5527,453 @@ impl GitTurtle {
                 .children(edge_action)
                 .child(targets)
         };
-        div().debug_selector(|| "git-actions".into()).flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
+        div()
+            .debug_selector(|| "git-actions".into())
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .bg(rgb(p.panel))
+            .border_b_1()
+            .border_color(rgb(p.border))
             .child(row)
-            .when(self.git_actions_open, |el| el.child(
-                div().px_4().pb_3().flex().flex_col().gap_2()
-                    .child(div().flex().flex_wrap().items_end().gap_3()
-                        .child(div().flex().flex_col().gap_1()
-                            .child(action_field_label("Find or create a branch", p.muted))
-                            .child(div().flex().items_center().gap_1()
-                                .child(div().w(appearance::ui_size(170.)).child(refusing_input(Input::new(&self.branch_name).aria_label("Branch to switch to or create").text_size(crate::appearance::ui_text(12.)), || "branch-name".into(), busy, looks_busy)))
-                                // Each reads Switched or Created where it was
-                                // touched once Git reports success, though the
-                                // name field it read has emptied.
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).map(|switch| refusing(switch, || "checkout-branch".into(), busy || branch_empty, looks_busy || branch_empty))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let branch = this.branch_name.read(cx).value().trim().to_owned();
-                                        let origin = confirmations::branch_form("checkout-branch", &this.path);
-                                        this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin.into()), window, cx);
-                                    })))
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).map(|create| refusing(create, || "create-branch".into(), busy || branch_empty, looks_busy || branch_empty))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let name = this.branch_name.read(cx).value().trim().to_owned();
-                                        let origin = confirmations::branch_form("create-branch", &this.path);
-                                        this.write_from(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", Some(origin.into()), window, cx);
-                                    })))))
-                        .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
-                        .child(div().w(appearance::ui_size(120.)).flex().flex_col().gap_1()
-                            .child(action_field_label("Remote", p.muted))
-                            .child(refusing_input(Input::new(&self.remote_name).aria_label("Git remote target").text_size(crate::appearance::ui_text(12.)), || "remote-name".into(), busy, looks_busy)))
-                        .child(div().w(appearance::ui_size(200.)).flex().flex_col().gap_1()
-                            .child(action_field_label("Remote branch", p.muted))
-                            .child(refusing_input(Input::new(&self.remote_branch).aria_label("Remote branch target").text_size(crate::appearance::ui_text(12.)), || "remote-branch".into(), busy, looks_busy))))
-                    .child(div().flex().items_center().gap_1p5().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
-                        .child(icon("remote", 12., p.muted))
-                        .child(div().min_w_0().truncate().child(remote.map_or_else(
-                            || "No remote configured · branch and commit actions are available locally".to_owned(),
-                            |remote| format!("Push to {} · {}", target, display_remote_url(&remote.push_url)),
-                        )))),
-            ))
+            .when(self.git_actions_open, |el| {
+                el.child(
+                    div()
+                        .px_4()
+                        .pb_3()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_end()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(action_field_label(
+                                            "Find or create a branch",
+                                            p.muted,
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(
+                                                    div().w(appearance::ui_size(170.)).child(
+                                                        refusing_input(
+                                                            Input::new(&self.branch_name)
+                                                                .aria_label(
+                                                                    "Branch to switch to or create",
+                                                                )
+                                                                .text_size(
+                                                                    crate::appearance::ui_text(12.),
+                                                                ),
+                                                            || "branch-name".into(),
+                                                            busy,
+                                                            looks_busy,
+                                                        ),
+                                                    ),
+                                                )
+                                                // Each reads Switched or Created where it was
+                                                // touched once Git reports success, though the
+                                                // name field it read has emptied.
+                                                .child(
+                                                    copy_feedback::feedback_button(
+                                                        confirmations::branch_form(
+                                                            "checkout-branch",
+                                                            &self.path,
+                                                        ),
+                                                        confirmations::SWITCH,
+                                                        "Switch",
+                                                        "Switch to the named local branch",
+                                                        cx,
+                                                    )
+                                                    .map(|switch| {
+                                                        refusing(
+                                                            switch,
+                                                            || "checkout-branch".into(),
+                                                            busy || branch_empty,
+                                                            looks_busy || branch_empty,
+                                                        )
+                                                    })
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        let branch = this
+                                                            .branch_name
+                                                            .read(cx)
+                                                            .value()
+                                                            .trim()
+                                                            .to_owned();
+                                                        let origin = confirmations::branch_form(
+                                                            "checkout-branch",
+                                                            &this.path,
+                                                        );
+                                                        this.write_from(
+                                                            WriteCommand::Checkout { branch },
+                                                            "Switching branch…",
+                                                            Some(origin.into()),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    })),
+                                                )
+                                                .child(
+                                                    copy_feedback::feedback_button(
+                                                        confirmations::branch_form(
+                                                            "create-branch",
+                                                            &self.path,
+                                                        ),
+                                                        confirmations::CREATE,
+                                                        "Create",
+                                                        "Create and switch to a branch from HEAD",
+                                                        cx,
+                                                    )
+                                                    .map(|create| {
+                                                        refusing(
+                                                            create,
+                                                            || "create-branch".into(),
+                                                            busy || branch_empty,
+                                                            looks_busy || branch_empty,
+                                                        )
+                                                    })
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        let name = this
+                                                            .branch_name
+                                                            .read(cx)
+                                                            .value()
+                                                            .trim()
+                                                            .to_owned();
+                                                        let origin = confirmations::branch_form(
+                                                            "create-branch",
+                                                            &this.path,
+                                                        );
+                                                        this.write_from(
+                                                            WriteCommand::CreateBranch {
+                                                                name,
+                                                                start_point: None,
+                                                            },
+                                                            "Creating branch…",
+                                                            Some(origin.into()),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    })),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(1.))
+                                        .h(crate::appearance::ui_size(32.))
+                                        .mx_1()
+                                        .bg(rgb(p.border)),
+                                )
+                                .child(
+                                    div()
+                                        .w(appearance::ui_size(120.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(action_field_label("Remote", p.muted))
+                                        .child(refusing_input(
+                                            Input::new(&self.remote_name)
+                                                .aria_label("Git remote target")
+                                                .text_size(crate::appearance::ui_text(12.)),
+                                            || "remote-name".into(),
+                                            busy,
+                                            looks_busy,
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .w(appearance::ui_size(200.))
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(action_field_label("Remote branch", p.muted))
+                                        .child(refusing_input(
+                                            Input::new(&self.remote_branch)
+                                                .aria_label("Remote branch target")
+                                                .text_size(crate::appearance::ui_text(12.)),
+                                            || "remote-branch".into(),
+                                            busy,
+                                            looks_busy,
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .text_size(crate::appearance::ui_text(11.))
+                                .text_color(rgb(p.muted))
+                                .child(icon("remote", 12., p.muted))
+                                .child(div().min_w_0().truncate().child(text.destination.clone())),
+                        ),
+                )
+            })
             .into_any_element()
+    }
+
+    /// What the Git action bar's text is made of now, borrowed.
+    fn git_actions_inputs<'a>(&'a self, cx: &'a App) -> GitActionsInputs<'a> {
+        let remote = field_text(self.remote_name.read(cx));
+        let push_url = (self.remotes.iter())
+            .find(|configured| configured.name == *remote)
+            .map(|configured| Cow::Borrowed(configured.push_url.as_str()));
+        GitActionsInputs {
+            status: self.work_status.as_deref().map(|status| SyncInputs {
+                branch: status.branch.as_deref().map(Cow::Borrowed),
+                head: status.head.is_some(),
+                detached: (status.head.as_deref())
+                    .filter(|_| status.branch.is_none())
+                    .map(Cow::Borrowed),
+                upstream: status.upstream.as_deref().map(Cow::Borrowed),
+                ahead: status.ahead,
+                behind: status.behind,
+                operation: status.operation.as_deref().map(Cow::Borrowed),
+            }),
+            remotes: !self.remotes.is_empty(),
+            remote_branch: field_text(self.remote_branch.read(cx)),
+            remote,
+            push_url,
+            busy: self.operation_shown(),
+        }
     }
 }
 
-/// The action bar's sync state as one line: the ahead and behind counts, or
-/// that no upstream is configured.
-fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
-    if status.upstream.is_some() {
-        format!("{} ahead, {} behind", status.ahead, status.behind)
-    } else {
-        "No upstream".into()
+/// What the Git action bar's text ([`GitActionsText`]) is made of, borrowed
+/// from the window's state, so a frame compares it with what each kept text
+/// was built from without building anything: the bar formatted its edge's
+/// lines or its counts with their tooltip, Fetch's, Pull's and Push's
+/// tooltips and names, the operation in progress and the branch and target
+/// they name in every frame, and copied Targets' fields to read them, only
+/// to draw the same text. The text is built again only when one of these
+/// changes (`GitTurtle::render_git_actions`); it reads no font, size or
+/// width, and holds every form a frame can draw, so a resize, a text size
+/// or the compact bar builds nothing. Each field is everything one of the
+/// text's builders reads, so a change any of them would show changes this.
+#[derive(PartialEq)]
+struct GitActionsInputs<'a> {
+    /// The working status, once read.
+    status: Option<SyncInputs<'a>>,
+    /// Whether a remote is configured, which decides the edge with the
+    /// status (`RepositoryEdge::of`).
+    remotes: bool,
+    /// Targets' remote and remote branch, trimmed, which Fetch, Pull and
+    /// Push act on.
+    remote: Cow<'a, str>,
+    remote_branch: Cow<'a, str>,
+    /// The push URL of the configured remote `remote` names, if one does:
+    /// Fetch, Pull and Push wait for one, and Targets says where Push goes.
+    push_url: Option<Cow<'a, str>>,
+    /// The running write's label once its spell looks busy, which Fetch,
+    /// Pull and Push say in place of their own tooltips.
+    busy: Option<&'static str>,
+}
+
+/// The parts of the working status the action bar's text shows
+/// ([`GitActionsInputs`]).
+#[derive(PartialEq)]
+struct SyncInputs<'a> {
+    branch: Option<Cow<'a, str>>,
+    /// Whether HEAD has a commit, which an unborn branch's edge reads, and
+    /// the commit where no branch is checked out, which a detached HEAD's
+    /// edge names; another commit on a branch changes neither.
+    head: bool,
+    detached: Option<Cow<'a, str>>,
+    upstream: Option<Cow<'a, str>>,
+    ahead: u64,
+    behind: u64,
+    operation: Option<Cow<'a, str>>,
+}
+
+impl GitActionsInputs<'_> {
+    /// These inputs as a key a cache keeps, owning what they borrowed.
+    fn owned(&self) -> GitActionsInputs<'static> {
+        let text = |text: &Cow<str>| Cow::Owned(String::from(&**text));
+        GitActionsInputs {
+            status: self.status.as_ref().map(|status| SyncInputs {
+                branch: status.branch.as_ref().map(text),
+                head: status.head,
+                detached: status.detached.as_ref().map(text),
+                upstream: status.upstream.as_ref().map(text),
+                ahead: status.ahead,
+                behind: status.behind,
+                operation: status.operation.as_ref().map(text),
+            }),
+            remotes: self.remotes,
+            remote: text(&self.remote),
+            remote_branch: text(&self.remote_branch),
+            push_url: self.push_url.as_ref().map(text),
+            busy: self.busy,
+        }
+    }
+}
+
+/// The Git action bar's text, as [`GitActionsInputs`] make it, each string
+/// shared, so a frame hands it to its element without copying it.
+struct GitActionsText {
+    /// The edge's lines, where the repository is at one.
+    edge: Option<EdgeText>,
+    /// The counts' text, where no edge takes their place.
+    sync: Option<SyncText>,
+    /// "… in progress", where an operation is.
+    operation: Option<SharedString>,
+    /// Fetch's, Pull's and Push's, in that order.
+    actions: [ActionText; 3],
+    /// What Targets says under its fields: where Push goes, or that no
+    /// remote is configured.
+    destination: SharedString,
+}
+
+/// An edge's lines in each form the bar draws, its glyph and its action
+/// (`empty_state::RepositoryEdge`).
+struct EdgeText {
+    line: SharedString,
+    short_line: SharedString,
+    compact_line: SharedString,
+    explanation: SharedString,
+    glyph: Option<&'static str>,
+    action: Option<crate::empty_state::EdgeAction>,
+}
+
+/// The counts' state: its accessible name, its tooltip in the full and the
+/// compact bar, and each count in both forms the counts fit in.
+struct SyncText {
+    summary: SharedString,
+    tooltip: SharedString,
+    compact_tooltip: SharedString,
+    ahead: Count,
+    behind: Count,
+}
+
+/// A count as a number, and with its word.
+struct Count {
+    number: SharedString,
+    words: SharedString,
+}
+
+/// Fetch's, Pull's or Push's tooltip in the full and the compact bar, and
+/// its accessible name.
+struct ActionText {
+    tooltip: SharedString,
+    compact_tooltip: SharedString,
+    name: SharedString,
+}
+
+impl GitActionsText {
+    /// The text `inputs` make, with the edge they put the repository at.
+    fn build(inputs: &GitActionsInputs, edge: Option<crate::empty_state::RepositoryEdge>) -> Self {
+        #[cfg(test)]
+        GIT_ACTIONS_TEXT_BUILT.with(|built| built.set(built.get() + 1));
+        let status = inputs.status.as_ref();
+        let detached = status.is_none_or(|status| status.branch.is_none());
+        let branch = status
+            .and_then(|status| status.branch.as_deref())
+            .unwrap_or("Detached HEAD");
+        let (remote, remote_branch) = (&*inputs.remote, &*inputs.remote_branch);
+        let target = format!("{remote}/{remote_branch}");
+        let edge = edge.map(|edge| EdgeText {
+            line: edge.line().into(),
+            short_line: edge.short_line().into(),
+            compact_line: edge.compact_line().into(),
+            explanation: edge.explanation().into(),
+            glyph: edge.glyph(),
+            action: edge.action(),
+        });
+        let sync = status.filter(|_| edge.is_none()).map(|status| {
+            let explanation = status.upstream.as_ref().map_or_else(
+                || "No upstream is configured.".to_owned(),
+                |upstream| {
+                    format!("Compared with local {upstream}. Fetch to update remote information.")
+                },
+            );
+            let summary = if status.upstream.is_some() {
+                format!("{} ahead, {} behind", status.ahead, status.behind)
+            } else {
+                "No upstream".into()
+            };
+            let count = |value: u64, word: &str| Count {
+                number: value.to_string().into(),
+                words: format!("{value} {word}").into(),
+            };
+            SyncText {
+                compact_tooltip: format!("{summary} · {explanation}").into(),
+                tooltip: explanation.into(),
+                summary: summary.into(),
+                ahead: count(status.ahead, "ahead"),
+                behind: count(status.behind, "behind"),
+            }
+        });
+        let actions =
+            [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")].map(|(id, label)| {
+                let tooltip: SharedString = if let Some(busy) = inputs.busy {
+                    busy.into()
+                } else if inputs.push_url.is_none() {
+                    "No configured remote selected · Check Targets".into()
+                } else if id != "fetch" && detached {
+                    "Switch to a local branch before pulling or pushing".into()
+                } else if id != "fetch" && remote_branch.is_empty() {
+                    "Choose a remote branch in Targets".into()
+                } else {
+                    match id {
+                        "fetch" => format!("Fetch from {remote}"),
+                        "pull" => format!("Pull {target} into {branch} · fast-forward only"),
+                        _ => format!("Push {branch} to {target}"),
+                    }
+                    .into()
+                };
+                ActionText {
+                    compact_tooltip: format!("{label} · {tooltip}").into(),
+                    name: format!("{label}: {tooltip}").into(),
+                    tooltip,
+                }
+            });
+        Self {
+            operation: (status.and_then(|status| status.operation.as_deref()))
+                .map(|operation| format!("{operation} in progress").into()),
+            destination: inputs.push_url.as_deref().map_or_else(
+                || "No remote configured · branch and commit actions are available locally".into(),
+                |url| format!("Push to {target} · {}", display_remote_url(url)).into(),
+            ),
+            edge,
+            sync,
+            actions,
+        }
+    }
+}
+
+/// [`GitActionsText`] by what it was made of, for the inputs drawn lately,
+/// so windows and repository tabs drawn in turn, and a state drawn again,
+/// such as the one before a write, keep their own.
+type GitActionsTextCache =
+    RefCell<crate::views::Measured<GitActionsInputs<'static>, Rc<GitActionsText>>>;
+
+thread_local! {
+    static GIT_ACTIONS_TEXT: GitActionsTextCache = const { RefCell::new(crate::views::Measured::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times the Git action bar's text was built
+    /// ([`GitActionsText::build`]), for a test.
+    static GIT_ACTIONS_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `input`'s text without the whitespace around it, borrowed from its rope
+/// where the rope keeps it in one piece, as it keeps a field's few words, so
+/// a frame reads a field without the two copies `InputState::value` makes.
+fn field_text(input: &InputState) -> Cow<'_, str> {
+    match input.text().as_str() {
+        Some(text) => Cow::Borrowed(text.trim()),
+        None => Cow::Owned(input.text().to_string().trim().to_owned()),
     }
 }
 
@@ -6438,5 +6839,299 @@ mod filled_action_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         drop(fixture);
+    }
+}
+
+#[cfg(test)]
+mod git_actions_text_tests {
+    use super::GIT_ACTIONS_TEXT_BUILT;
+    use crate::native_accessibility::written;
+    use crate::views::tests::{draw, history_window, hold_quiet_reads_for_test};
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// The Git action bar builds its text only when what it shows changes
+    /// ([`super::GitActionsInputs`]): frames at rest build none of it, where
+    /// every frame formatted the edge's lines or the counts and their
+    /// tooltip, Fetch's, Pull's and Push's tooltips and names, the operation
+    /// in progress and the branch and target they name, and copied both
+    /// Targets fields twice, only to draw the same text. A remote chosen in
+    /// Targets, an upstream with counts, changed counts, another remote
+    /// branch typed in Targets, a switched branch, a running write once it
+    /// looks busy, an operation in progress and a detached HEAD each build
+    /// it once, in the frame that shows them, and the bar draws the new
+    /// lines, tooltips and names; a write that does not look busy yet shows
+    /// nothing new and builds nothing, its end finds the text from before it
+    /// kept, and the compact form, which draws the counts' and the actions'
+    /// other forms, builds nothing either. What only the edge reads builds
+    /// it once alone, the line following: a detached HEAD at another commit,
+    /// a remote configured where Targets names none, and an unborn branch's
+    /// first commit.
+    #[gpui::test]
+    async fn the_git_actions_build_their_text_only_when_what_they_show_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        draw(cx);
+        let built = || GIT_ACTIONS_TEXT_BUILT.with(std::cell::Cell::get);
+        // The text built by frames at rest.
+        let at_rest = |cx: &mut VisualTestContext| {
+            let before = built();
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            built() - before
+        };
+        // The text built by `update` and the frames that draw it.
+        let builds =
+            |cx: &mut VisualTestContext,
+             update: &dyn Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)| {
+                let before = built();
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        update(app, window, cx);
+                        cx.notify()
+                    })
+                });
+                draw(cx);
+                built() - before
+            };
+        // Each change builds the text once, in the frame that draws it, and
+        // frames at rest after it build none.
+        let change =
+            |what: &str,
+             cx: &mut VisualTestContext,
+             update: &dyn Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)| {
+                assert_eq!(builds(cx, update), 1, "{what}: the text is built once");
+                assert_eq!(at_rest(cx), 0, "{what}: and not again at rest");
+            };
+        fn status(app: &mut GitTurtle) -> &mut gitturtle_core::RepositoryStatus {
+            Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+        }
+        let tooltip = |id: &str| {
+            crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get(id).cloned())
+        };
+        let actions = || ["fetch", "pull", "push"].map(|id| tooltip(id).unwrap_or_default());
+        let summary = || {
+            written::get("branch-sync-state").and_then(|line| line.node.value().map(str::to_owned))
+        };
+        let edge = || crate::empty_state::shown("branch-edge").map(|line| line.to_string());
+        let explanation = || {
+            written::get("branch-edge-line")
+                .and_then(|line| line.node.description().map(str::to_owned))
+        };
+        assert_eq!(at_rest(cx), 0, "frames at rest build none of the text");
+        assert_eq!(edge().as_deref(), Some("No remote"));
+        assert_eq!(
+            actions(),
+            ["No configured remote selected · Check Targets"; 3],
+            "no remote: each action says so"
+        );
+
+        change("a remote", cx, &|app, window, cx| {
+            app.remotes.push(gitturtle_core::Remote {
+                name: "origin".into(),
+                url: "https://example.invalid/fixture.git".into(),
+                push_url: "https://example.invalid/fixture.git".into(),
+            });
+            app.remote_name
+                .update(cx, |input, cx| input.set_value("origin", window, cx));
+            app.remote_branch
+                .update(cx, |input, cx| input.set_value("main", window, cx));
+        });
+        assert_eq!(edge().as_deref(), Some("No upstream · Push sets one"));
+        assert_eq!(
+            actions(),
+            [
+                "Fetch from origin",
+                "Pull origin/main into main · fast-forward only",
+                "Push main to origin/main",
+            ],
+            "a remote: each action names its target"
+        );
+
+        change("an upstream with counts", cx, &|app, _, _| {
+            let status = status(app);
+            status.upstream = Some("origin/main".into());
+            status.ahead = 2;
+            status.behind = 1;
+        });
+        assert!(
+            cx.debug_bounds("branch-edge-line").is_none(),
+            "the counts take the edge's place"
+        );
+        assert_eq!(summary().as_deref(), Some("2 ahead, 1 behind"));
+        assert_eq!(
+            tooltip("branch-sync-state").as_deref(),
+            Some("Compared with local origin/main. Fetch to update remote information.")
+        );
+
+        change("changed counts", cx, &|app, _, _| status(app).ahead = 3);
+        assert_eq!(summary().as_deref(), Some("3 ahead, 1 behind"));
+
+        change("another remote branch", cx, &|app, window, cx| {
+            app.remote_branch
+                .update(cx, |input, cx| input.set_value("  release ", window, cx));
+        });
+        assert_eq!(
+            actions()[1..],
+            [
+                "Pull origin/release into main · fast-forward only",
+                "Push main to origin/release",
+            ],
+            "another remote branch: Pull and Push name it, trimmed"
+        );
+
+        change("a switched branch", cx, &|app, _, _| {
+            status(app).branch = Some("feature/x".into())
+        });
+        assert_eq!(
+            actions()[1..],
+            [
+                "Pull origin/release into feature/x · fast-forward only",
+                "Push feature/x to origin/release",
+            ],
+            "a switched branch: Pull and Push name it"
+        );
+
+        assert_eq!(
+            builds(cx, &|app, _, _| app.operation_busy =
+                Some("Fetching remote…")),
+            0,
+            "a write that does not look busy yet shows nothing new"
+        );
+        let before = built();
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_shown().is_some()),
+            "the write looks busy"
+        );
+        assert_eq!(
+            built() - before,
+            1,
+            "a running write: the text is built once"
+        );
+        assert_eq!(at_rest(cx), 0, "a running write: and not again at rest");
+        assert_eq!(actions(), ["Fetching remote…"; 3]);
+        assert_eq!(
+            builds(cx, &|app, _, _| app.operation_busy = None),
+            0,
+            "the write's end finds the text it had before"
+        );
+        assert_eq!(actions()[0], "Fetch from origin");
+
+        change("an operation in progress", cx, &|app, _, _| {
+            status(app).operation = Some("Merge".into())
+        });
+        let operation = cx
+            .debug_bounds("git-operation-state")
+            .expect("the bar draws the operation");
+        change("another operation", cx, &|app, _, _| {
+            status(app).operation = Some("Cherry-pick".into())
+        });
+        assert!(
+            cx.debug_bounds("git-operation-state")
+                .is_some_and(|wider| wider.size.width > operation.size.width),
+            "the bar draws the new operation's words"
+        );
+
+        // The compact bar draws the counts' and the actions' other forms,
+        // built with the rest.
+        let before = built();
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(built(), before, "the compact form builds nothing");
+        assert_eq!(
+            tooltip("fetch").as_deref(),
+            Some("Fetch · Fetch from origin"),
+            "the compact Fetch leads its tooltip with its label"
+        );
+        assert_eq!(
+            crate::views::COMPACT_LABELS
+                .with(|names| names.borrow().get("push").cloned())
+                .as_deref(),
+            Some("Push: Push feature/x to origin/release")
+        );
+        assert_eq!(
+            tooltip("branch-sync-state").as_deref(),
+            Some(
+                "3 ahead, 1 behind · Compared with local origin/main. Fetch to update remote information."
+            ),
+            "the compact counts lead their tooltip with the counts"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        draw(cx);
+
+        let head = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .and_then(|status| status.head.clone())
+                .expect("the fixture's commit")
+        });
+        change("a detached HEAD", cx, &|app, _, _| {
+            status(app).branch = None
+        });
+        assert_eq!(edge(), Some(format!("Detached at {}", &head[..7])));
+        assert_eq!(
+            explanation(),
+            Some(format!(
+                "HEAD is at commit {} with no branch. Create a branch here to keep new commits on it.",
+                &head[..7]
+            ))
+        );
+        assert_eq!(
+            actions()[1..],
+            ["Switch to a local branch before pulling or pushing"; 2],
+            "a detached HEAD: Pull and Push say why they wait"
+        );
+
+        // The edge's own inputs, each changed alone: which commit a
+        // detached HEAD is at, whether any remote is configured where
+        // Targets names none of them, and whether the branch has a commit.
+        let other = "0123456789abcdef0123456789abcdef01234567";
+        change("detached at another commit", cx, &|app, _, _| {
+            status(app).head = Some(other.into())
+        });
+        assert_eq!(edge(), Some(format!("Detached at {}", &other[..7])));
+
+        change("an unborn branch with no remote", cx, &|app, window, cx| {
+            let status = status(app);
+            status.branch = Some("main".into());
+            status.head = None;
+            status.upstream = None;
+            app.remotes.clear();
+            app.remote_name
+                .update(cx, |input, cx| input.set_value("elsewhere", window, cx));
+        });
+        assert_eq!(edge().as_deref(), Some("No remote"));
+
+        change("a remote Targets does not name", cx, &|app, _, _| {
+            app.remotes.push(gitturtle_core::Remote {
+                name: "origin".into(),
+                url: "https://example.invalid/fixture.git".into(),
+                push_url: "https://example.invalid/fixture.git".into(),
+            });
+        });
+        assert_eq!(
+            edge().as_deref(),
+            Some("No commits to push yet"),
+            "a remote, though Targets names another: no longer No remote"
+        );
+
+        change("the branch's first commit", cx, &|app, _, _| {
+            status(app).head = Some(head.clone())
+        });
+        assert_eq!(
+            edge().as_deref(),
+            Some("No upstream · Push sets one"),
+            "a commit to push: no longer No commits to push yet"
+        );
     }
 }
