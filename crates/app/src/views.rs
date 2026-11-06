@@ -19952,6 +19952,10 @@ pub(crate) mod tests {
     /// all, so neither shows a clipped or lone ellipsis.
     #[gpui::test]
     async fn narrow_history_keeps_paging_in_the_column(cx: &mut TestAppContext) {
+        // Empty, as a GPUI test's seeds share the thread and its caches: the
+        // status lines counted after Older were kept by the first seed.
+        forget_status_text();
+        STATUS_PARTS.with_borrow_mut(|cache| *cache = Measured::new());
         let (_fixture, app, cx) =
             history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
         // Which of the count and the name each width has room for: at 493
