@@ -761,7 +761,9 @@ cover current upstream x86-64 Omarchy.
        `#[gpui::test]` layout uses the fixed-advance `NoopTextSystem` on every platform: find the
        race it hid, as FU20-M did for `more_contrast_moves_nothing_on_any_page`; the protected
        `gitturtle-gpui-testing` skill should say `width_walk::open` lands the walk's identity and
-       holds quiet reads.
+       holds quiet reads; `views::tests::narrow_history_keeps_paging_in_the_column` reads status
+       layouts kept from its first seed (fails at `ITERATIONS=2`: 214 of 216 after Older; several caches
+       to empty; FU19-F1c's sweep).
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
        - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
          focus returned once, never over a later click; a dialog opened as another closes keeps
