@@ -355,8 +355,12 @@ impl GitTurtle {
         let Some(path) = self.path.clone() else {
             return;
         };
+        // The shown repository's latest history, from its own root: its
+        // landing installs the snapshot in place, so it must never be the
+        // work tree enclosing the root, its `.git` gone.
         self.request_history_discovery(
             Job::Open {
+                root: Some(path.clone()),
                 path,
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
                 limit: history_paging::PAGE_SIZE,
@@ -467,6 +471,9 @@ impl GitTurtle {
                             }
                             _ => {}
                         }
+                    }
+                    Ok(Err(error)) if error.is::<worker::RepositoryGone>() => {
+                        this.tab_repository_gone(window, cx);
                     }
                     Ok(Err(error)) => {
                         this.error = Some(format!("Could not read local history: {error:#}"))
@@ -748,6 +755,7 @@ mod tests {
                 path: fixture.path().to_owned(),
                 scope: None,
                 limit: history_paging::PAGE_SIZE,
+                root: None,
             }))
             .unwrap()
             .unwrap();

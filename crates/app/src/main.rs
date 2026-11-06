@@ -1417,11 +1417,17 @@ impl GitTurtle {
         self.visible.clear();
         self.graph.clear();
         self.graph_notice = None;
+        // A tab opened before finds its own repository again or none; only a
+        // new tab's explicit open may land on the work tree enclosing `path`.
+        let root = self
+            .repository_tabs
+            .reopen_root(&path, self.scope.as_ref().map(|s| &s.1));
         self.request(
             Job::Open {
                 path,
                 scope: self.scope.as_ref().map(|s| s.1.clone()),
                 limit: self.limit,
+                root,
             },
             "Reading local history…",
             window,

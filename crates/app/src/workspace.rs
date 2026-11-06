@@ -2188,8 +2188,22 @@ impl GitTurtle {
                             this.file_paths.reset();
                             this.selected_file = None;
                         }
-                        this.operation_error
-                            .get_or_insert_with(|| format!("Working tree: {error:#}"));
+                        // Changes' Refresh is a passive reopen too: its
+                        // repository gone from its root, the tab is read as
+                        // History's Refresh reads it, whose failed Open marks
+                        // it and says why, never as the work tree enclosing
+                        // it. A tab marked already says why in its mark and
+                        // the preview, and the read adds nothing beside it,
+                        // as a quiet read adds nothing: with no repository
+                        // found there, those say the reasons any folder that
+                        // is not one gets, and this once said "is gone"
+                        // beside them.
+                        if error.is::<worker::RepositoryGone>() {
+                            this.tab_repository_gone(window, cx);
+                        } else {
+                            this.operation_error
+                                .get_or_insert_with(|| format!("Working tree: {error:#}"));
+                        }
                     }
                 }
                 this.try_automatic_refresh(window, cx);

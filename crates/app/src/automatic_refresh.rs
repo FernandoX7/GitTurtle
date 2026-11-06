@@ -442,6 +442,11 @@ impl GitTurtle {
                         }
                     }
                     Ok(Ok(_)) => {}
+                    // Gone from its root, the repository is read as Refresh
+                    // reads it, which marks the tab and says why.
+                    Ok(Err(error)) if error.is::<worker::RepositoryGone>() => {
+                        this.tab_repository_gone(window, cx);
+                    }
                     Ok(Err(error)) => {
                         this.operation_error
                             .get_or_insert_with(|| format!("Local refresh: {error:#}"));

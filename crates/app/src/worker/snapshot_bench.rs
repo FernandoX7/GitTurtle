@@ -25,6 +25,7 @@ fn read_snapshot_release_benchmark() {
         let snapshot = read_snapshot(
             repository.clone(),
             None,
+            None,
             MissingScope::Fail,
             crate::history_paging::PAGE_SIZE,
             &cancellation,

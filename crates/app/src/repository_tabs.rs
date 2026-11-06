@@ -217,6 +217,12 @@ pub struct SavedTab {
     pub path: SavedPath,
     #[serde(default)]
     pub bookmark: Bookmark,
+    /// Whether `path` is still the folder the person asked to open, its
+    /// explicit open never accepted (`Tab::resolved`). Written only then:
+    /// a tab saved without it, as every older session's, is the root its
+    /// open resolved, which a restore must find again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unresolved: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryEntry {
@@ -351,6 +357,14 @@ fn session_path() -> Result<PathBuf> {
 
 pub struct Tab {
     pub path: PathBuf,
+    /// Whether `path` is the work-tree root Git discovery found when the
+    /// person opened this tab, which every later passive reopen (Refresh,
+    /// quiet reads, a restore at launch) must find there again
+    /// ([`State::reopen_root`]): `false` only while a tab's explicit open of
+    /// the folder the person chose has not been accepted
+    /// ([`GitTurtle::tab_snapshot_accepted`]), when it may still land on
+    /// the work tree enclosing that folder.
+    resolved: bool,
     saved: Bookmark,
     warm: Option<WarmTab>,
     pub error: Option<String>,
@@ -509,6 +523,7 @@ impl State {
                 .into_iter()
                 .map(|tab| Tab {
                     path: tab.path.path(),
+                    resolved: !tab.unresolved,
                     saved: tab.bookmark,
                     warm: None,
                     error: None,
@@ -528,6 +543,27 @@ impl State {
     fn find(&self, path: &Path) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.path == path)
     }
+    /// The root an Open of `path` in the shown tab must find there again
+    /// (`worker::Job::Open::root`): the tab's own path once its explicit
+    /// open resolved it ([`Tab::resolved`]), or a worktree's own path, as
+    /// Git lists it, opened from its row. `None` for a tab's first,
+    /// explicit open of the folder the person chose (Open…, a dropped
+    /// folder, the projects list, a library group), which may land on the
+    /// work tree enclosing that folder. A guess that misses fails safe: the
+    /// tab shows its repository unavailable rather than open another.
+    pub(super) fn reopen_root(
+        &self,
+        path: &Path,
+        scope: Option<&worker::Scope>,
+    ) -> Option<PathBuf> {
+        let resolved = self
+            .active
+            .and_then(|index| self.tabs.get(index))
+            .is_some_and(|tab| tab.resolved && tab.path == path);
+        let worktree =
+            matches!(scope, Some(worker::Scope::Worktree { path: tree }) if tree == path);
+        (resolved || worktree).then(|| path.to_owned())
+    }
     fn saved(&self) -> Session {
         Session {
             version: 1,
@@ -537,6 +573,7 @@ impl State {
                 .map(|tab| SavedTab {
                     path: SavedPath::new(&tab.path),
                     bookmark: tab.saved.clone(),
+                    unresolved: !tab.resolved,
                 })
                 .collect(),
             active: self.active.unwrap_or(0),
@@ -979,6 +1016,7 @@ impl GitTurtle {
             }
             self.repository_tabs.tabs.push(Tab {
                 path: repo.path().to_owned(),
+                resolved: true,
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
@@ -1435,8 +1473,11 @@ impl GitTurtle {
         }
         self.repository_tabs.refusal = None;
         let index = self.repository_tabs.tabs.len();
+        // The folder the person chose: its open may land on the work tree
+        // enclosing it, whose root the tab keeps once it is accepted.
         self.repository_tabs.tabs.push(Tab {
             path: path.to_owned(),
+            resolved: false,
             saved: Bookmark::default(),
             warm: None,
             error: None,
@@ -1469,7 +1510,10 @@ impl GitTurtle {
         if let Some(index) = self.repository_tabs.active
             && let Some(tab) = self.repository_tabs.tabs.get_mut(index)
         {
+            // The root discovery found is the tab's repository from now on:
+            // a later passive reopen finds it again or shows it unavailable.
             tab.path = repo.path().to_owned();
+            tab.resolved = true;
             tab.error = None;
         }
         // Capture after receive installs the accepted metadata. A newly opened
@@ -1585,6 +1629,23 @@ impl GitTurtle {
         self.hub
             .update(cx, |hub, cx| hub.clear_error_matching(&error, cx));
         true
+    }
+    /// A read of the shown tab's repository found it gone from its root
+    /// (`worker::RepositoryGone`): Git finds another repository there, the
+    /// work tree enclosing it once its `.git` went, or none. The tab is read
+    /// again as Refresh reads it, a passive reopen that finds the repository
+    /// gone too, so the failed Open marks it " · unavailable" with the
+    /// reason, History says "Could not open repository", and the saved
+    /// session keeps the tab's path ([`Self::tab_opening_failed`]); it never
+    /// shows the other repository. A tab marked already keeps its mark, so
+    /// the reads the watcher asks for meanwhile ask for no further Open.
+    pub(super) fn tab_repository_gone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown_tab_unavailable() {
+            return;
+        }
+        if let Some(path) = self.path.clone() {
+            self.open(path, self.scope.clone(), window, cx);
+        }
     }
     pub(super) fn switch_repository_tab(
         &mut self,
@@ -2398,8 +2459,10 @@ impl GitTurtle {
     ) {
         if self.repository_tabs.find(&path).is_none() && self.repository_tabs.tabs.len() < MAX_TABS
         {
+            // The root the clone or create returned, as discovery resolved it.
             self.repository_tabs.tabs.push(Tab {
                 path: path.clone(),
+                resolved: true,
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
@@ -2561,8 +2624,10 @@ impl GitTurtle {
         }
         for path in &paths {
             if self.repository_tabs.find(path).is_none() {
+                // Opening a group is an explicit open of each folder.
                 self.repository_tabs.tabs.push(Tab {
                     path: path.clone(),
+                    resolved: false,
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
@@ -3524,6 +3589,515 @@ mod tests {
         assert_eq!(app.read_with(cx, |app, _| app.commits.len()), 0);
     }
 
+    /// Makes `folder`, the test's own temporary directory, a work tree with
+    /// one commit, "Enclosing commit", and returns its root, so a repository
+    /// inside it is nested in another wherever that directory lies. Git's
+    /// own `init`, since the app's refuses a folder that holds anything.
+    fn enclosing_work_tree(folder: &Path) -> PathBuf {
+        use crate::views::tests::{fixture_git, fixture_identity};
+        fixture_git(folder, &["init", "-q", "-b", "main"]);
+        fixture_identity(folder);
+        std::fs::write(folder.join("enclosing.txt"), "enclosing\n").unwrap();
+        fixture_git(folder, &["add", "enclosing.txt"]);
+        fixture_git(folder, &["commit", "-qm", "Enclosing commit"]);
+        gitturtle_core::GitRepository::open(folder)
+            .unwrap()
+            .path()
+            .to_owned()
+    }
+
+    /// What the window shows of its first tab: how many tabs, the tab's
+    /// path, whether it is marked " · unavailable", the window's error, its
+    /// repository's path and History's subjects.
+    type FirstTab = (
+        usize,
+        PathBuf,
+        bool,
+        Option<String>,
+        Option<PathBuf>,
+        Vec<String>,
+    );
+    fn first_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FirstTab {
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (
+                app.repository_tabs.tabs.len(),
+                tab.path.clone(),
+                app.tab_label(tab).0.ends_with(" · unavailable"),
+                app.error.clone(),
+                app.repository.as_ref().map(|repo| repo.path().to_owned()),
+                app.commits
+                    .iter()
+                    .map(|commit| commit.subject.clone())
+                    .collect(),
+            )
+        })
+    }
+
+    /// A tab stays on the repository the person opened. The History
+    /// fixture lies inside another work tree, and with its `.git` away Git
+    /// looks in the folder above and finds that one. A quiet read the
+    /// watcher asks for finds the repository gone, and the tab is read as
+    /// Refresh reads it: marked " · unavailable", History saying "Could not
+    /// open repository" and why, the enclosing repository's commit never
+    /// shown and its root never the tab's, and the saved session keeps the
+    /// tab's path. Refresh keeps that. Both once opened the enclosing
+    /// repository in the tab, with no mark and no error, and the next write
+    /// would have gone there. With its `.git` back, the next quiet read
+    /// finds the repository and clears the mark.
+    #[gpui::test]
+    async fn a_tab_never_moves_to_the_work_tree_enclosing_its_repository(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        assert_eq!(
+            first_tab(&app, cx),
+            (
+                1,
+                root.clone(),
+                false,
+                None,
+                Some(root.clone()),
+                vec!["fixture notes".into()]
+            ),
+            "the History fixture"
+        );
+        let (git, away) = (root.join(".git"), fixture.path().join("narrow-git-away"));
+        std::fs::rename(&git, &away).unwrap();
+        let gone = |cx: &mut VisualTestContext, after: &str| {
+            let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+            assert_eq!(
+                (tabs, path, marked, repository, subjects),
+                (
+                    1,
+                    root.clone(),
+                    true,
+                    Some(root.clone()),
+                    Vec::<String>::new()
+                ),
+                "{after}: marked, on its own repository"
+            );
+            let error = error.expect("the window says why");
+            assert!(
+                error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                    && error.contains(&format!(
+                        "finds the repository at {} there",
+                        enclosing.display()
+                    )),
+                "{after}: {error}"
+            );
+            assert!(
+                cx.debug_bounds("empty-state").is_some(),
+                "{after}: History says it could not open the repository"
+            );
+            let saved = app.read_with(cx, |app, _| app.repository_tabs.saved());
+            assert_eq!(saved.tabs[0].path.path(), root, "{after}: the saved path");
+            assert!(!saved.tabs[0].unresolved);
+        };
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        gone(cx, "a quiet read");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        gone(cx, "Refresh");
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        gone(cx, "a quiet read of a marked tab");
+
+        std::fs::rename(&away, &git).unwrap();
+        quiet_read_landed(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            first_tab(&app, cx),
+            (
+                1,
+                root.clone(),
+                false,
+                None,
+                Some(root),
+                vec!["fixture notes".into()]
+            ),
+            "back, it clears"
+        );
+    }
+
+    /// A tab restored at launch is a passive reopen too: saved by an older
+    /// session, with no word on how it was opened, its path is the root its
+    /// open resolved, and with that repository's `.git` gone, inside another
+    /// work tree, the restore marks it " · unavailable" and says why rather
+    /// than open the enclosing repository in it, and the session saved
+    /// after keeps its path. It once restored the enclosing repository.
+    #[gpui::test]
+    async fn a_restored_tab_never_opens_the_work_tree_enclosing_its_repository(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let enclosing = enclosing_work_tree(fixture.path());
+        let inner = crate::views::tests::fixture_repository(enclosing.join("inner"));
+        let root = inner.path().to_owned();
+        let saved: Session = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tabs": [{ "path": root.to_str().expect("a UTF-8 fixture path") }],
+            "active": 0,
+        }))
+        .unwrap();
+        std::fs::rename(root.join(".git"), fixture.path().join("inner-git-away")).unwrap();
+        let destination = isolated_session("restored-gone.json");
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved,
+            destination.clone(),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+        assert_eq!(
+            (tabs, path, marked, repository, subjects),
+            (1, root.clone(), true, None, Vec::<String>::new()),
+            "restored marked, on its own repository"
+        );
+        let error = error.expect("the window says why");
+        assert!(
+            error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                && error.contains(&enclosing.display().to_string()),
+            "{error}"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.save_repository_session(window, cx)));
+        settle_tab_test(&app, cx).await;
+        let after = Session::load_at(&destination).unwrap();
+        assert_eq!(after.tabs.len(), 1);
+        assert_eq!(after.tabs[0].path.path(), root, "the saved path stays");
+    }
+
+    /// A worktree's row opens that worktree's own root, as Git lists it, and
+    /// nothing else: the linked worktree lies inside the main work tree,
+    /// which lies inside another, and with its `.git` file gone Git finds
+    /// the main work tree from its folder. Its row opens a tab of its own,
+    /// marked " · unavailable" with the reason, and leaves the main tab as
+    /// it was; it once opened the main work tree, the new tab folded into
+    /// the main one, with no word that the worktree had gone.
+    #[gpui::test]
+    async fn a_worktree_row_never_opens_the_work_tree_enclosing_its_worktree(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        enclosing_work_tree(fixture.path());
+        let linked = root.join("linked");
+        crate::views::tests::fixture_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                linked.to_str().expect("a UTF-8 fixture path"),
+            ],
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let linked = linked.canonicalize().unwrap();
+        let row = app.update(cx, |app, cx| {
+            app.nav_mode = crate::NavMode::Worktrees;
+            app.rebuild_navigation(cx);
+            app.nav_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, crate::NavRow::Worktree(index)
+                        if app.worktrees[*index].path.canonicalize().ok().as_ref() == Some(&linked))
+                })
+                .expect("the linked worktree's row")
+        });
+        std::fs::remove_file(linked.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.activate_navigation(row, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let tabs = &app.repository_tabs.tabs;
+            assert_eq!(tabs.len(), 2, "a tab of its own");
+            assert_eq!(tabs[0].path, root, "the main tab as it was");
+            assert!(tabs[0].error.is_none());
+            assert_eq!(app.repository_tabs.active, Some(1));
+            assert_eq!(tabs[1].path.canonicalize().unwrap(), linked);
+            assert!(app.tab_label(&tabs[1]).0.ends_with(" · unavailable"));
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.starts_with(&format!(
+                    "The repository at {} is gone.",
+                    tabs[1].path.display()
+                )) && error.contains(&format!("finds the repository at {} there", root.display())),
+                "{error}"
+            );
+            assert!(app.repository.is_none() && app.commits.is_empty());
+        });
+    }
+
+    /// The History fixture inside another work tree, with its `.git` moved
+    /// away and quiet reads held, so only the read a test asks for runs:
+    /// the window, its root, the enclosing root and how the first tab reads
+    /// once that read has landed: marked, on its own repository, with a
+    /// reason that names the enclosing repository, nothing of it shown.
+    async fn gone_inside_another(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
+        PathBuf,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        (fixture, app, cx, root, enclosing)
+    }
+    fn assert_gone(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        tab: usize,
+        root: &Path,
+        enclosing: &Path,
+        after: &str,
+    ) {
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[tab];
+            assert_eq!(app.repository_tabs.active, Some(tab), "{after}");
+            assert_eq!(shown.path, root, "{after}: on its own repository");
+            assert!(
+                app.tab_label(shown).0.ends_with(" · unavailable"),
+                "{after}: marked"
+            );
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                    && error.contains(&format!(
+                        "finds the repository at {} there",
+                        enclosing.display()
+                    )),
+                "{after}: {error}"
+            );
+            assert!(app.commits.is_empty(), "{after}: no enclosing history");
+            // The enclosing repository's status names its own file and the
+            // tab's folder; the tab's own earlier status may still be shown.
+            let enclosing_entry =
+                |path: &Path| path == Path::new("enclosing.txt") || path.starts_with("narrow");
+            assert!(
+                app.work_status.as_ref().is_none_or(|status| {
+                    !status
+                        .entries
+                        .iter()
+                        .any(|entry| enclosing_entry(&entry.path))
+                }),
+                "{after}: no enclosing working state"
+            );
+        });
+    }
+
+    /// Show latest reads the shown repository's latest history from its own
+    /// root and installs it in place: with the `.git` away inside another
+    /// work tree, it once installed the enclosing repository's history in
+    /// the tab. It now marks the tab and says why, as Refresh does.
+    #[gpui::test]
+    async fn show_latest_never_installs_the_enclosing_repository(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Show latest");
+    }
+
+    /// Refresh in Changes reads the working state on the operation thread:
+    /// with the `.git` away inside another work tree, it once showed the
+    /// enclosing repository's status rows under the tab. It now marks the
+    /// tab and says why, as History's Refresh does, and shows none of them.
+    #[gpui::test]
+    async fn refresh_in_changes_never_shows_the_enclosing_status(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        std::fs::write(fixture.path().join("enclosing.txt"), "changed\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working
+                && app.repository_tabs.tabs[0].error.is_none()),
+            "in Changes, readable"
+        );
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh in Changes");
+        assert!(
+            app.read_with(cx, |app, _| app.working_rows.is_empty()),
+            "no enclosing rows"
+        );
+    }
+
+    /// The History fixture with its `.git` moved away and no repository
+    /// enclosing it: how the first tab reads once a read has found nothing
+    /// there. Marked, on its own repository, saying the reasons any folder
+    /// that is not a repository gets (`repository_access::explain`) in its
+    /// mark and the window, never that the repository is gone, which is
+    /// only for another repository Git finds at its path.
+    fn assert_not_a_repository(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        root: &Path,
+        after: &str,
+    ) {
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert_eq!(shown.path, root, "{after}: on its own repository");
+            assert!(
+                app.tab_label(shown).0.ends_with(" · unavailable"),
+                "{after}: marked"
+            );
+            let error = app.error.clone().expect("the window says why");
+            assert!(
+                error.starts_with("This folder is not an available Git repository.")
+                    && error.contains(&format!("Folder: {}", root.display()))
+                    && !error.contains("is gone"),
+                "{after}: {error}"
+            );
+            assert_eq!(
+                shown.error.as_ref(),
+                Some(&error),
+                "{after}: the mark's reason"
+            );
+            assert!(app.commits.is_empty(), "{after}: no history");
+        });
+    }
+
+    /// With its `.git` gone and no repository enclosing its folder, Refresh
+    /// fails as any open of a folder that is not a repository does, and the
+    /// tab is marked with those reasons; the saved session keeps its path.
+    #[gpui::test]
+    async fn refresh_with_no_repository_found_says_the_folder_is_not_one(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_not_a_repository(&app, cx, &root, "Refresh");
+        let saved = app.read_with(cx, |app, _| app.repository_tabs.saved());
+        assert_eq!(saved.tabs[0].path.path(), root, "the saved path");
+    }
+
+    /// Refresh in Changes, with its `.git` gone and no repository enclosing
+    /// its folder, marks the tab through its Open, which says the reasons
+    /// any folder that is not a repository gets; Refresh again in the
+    /// marked tab adds nothing beside them. It once said "Working tree: The
+    /// repository at … is gone. Git finds no repository there" above them.
+    #[gpui::test]
+    async fn refresh_in_changes_with_no_repository_found_says_only_why(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working
+                && app.work_status.is_some()
+                && app.repository_tabs.tabs[0].error.is_none()),
+            "in Changes, readable"
+        );
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        assert_not_a_repository(&app, cx, &root, "Refresh in Changes");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        // The failed Open shows History; Changes again, and Refresh there.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        let after = "Refresh in the marked tab's Changes";
+        assert_not_a_repository(&app, cx, &root, after);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working, "{after}: in Changes");
+            assert_eq!(app.operation_error, None, "{after}: nothing beside it");
+            assert!(app.work_status.is_none(), "{after}: no status");
+        });
+    }
+
+    /// A quiet read the watcher asks for, with the tab's `.git` gone and no
+    /// repository enclosing its folder, reads the tab as Refresh reads it:
+    /// marked, with the reasons any folder that is not a repository gets,
+    /// and nothing beside them; a quiet read of the marked tab keeps that.
+    /// It once left the tab unmarked, its history still shown, under
+    /// "Local refresh:" and Git's own "not a git repository".
+    #[gpui::test]
+    async fn a_quiet_read_with_no_repository_found_marks_the_tab(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        // The window's own first reads, the rescan the watcher's setup asks
+        // for among them, land before the `.git` goes: one running across
+        // the move reads the working state and then fails reading History.
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|_, cx| app.update(cx, |app, _| app.automatic.hold_quiet_reads(false)));
+        for after in ["a quiet read", "a quiet read of the marked tab"] {
+            quiet_read_landed(&app, cx);
+            crate::views::tests::settle(&app, cx).await;
+            assert_not_a_repository(&app, cx, &root, after);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_error.clone()),
+                None,
+                "{after}: nothing beside it"
+            );
+        }
+    }
+
+    /// A cold tab shown again is opened by its captured root: with its
+    /// `.git` away inside another work tree, the switch once opened the
+    /// enclosing repository in it. It now shows the tab marked, on its own
+    /// repository, and leaves the other tab as it was.
+    #[gpui::test]
+    async fn a_cold_switch_never_opens_the_enclosing_repository(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().to_owned(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "a cold switch");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.tabs.len(), 2);
+            assert_eq!(app.repository_tabs.tabs[1].path, other.path());
+        });
+    }
+
     /// A full local library refuses a repository where the person asked:
     /// Create workspace in the Local workspaces dialog says why in the
     /// dialog's own error line, announced at once, lists nothing as added
@@ -3643,6 +4217,7 @@ mod tests {
             for held in 0..MAX_TABS - 1 {
                 app.repository_tabs.tabs.push(Tab {
                     path: fixture.path().join(format!("held-{held}")),
+                    resolved: true,
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
@@ -3813,6 +4388,7 @@ mod tests {
             let mut state = State {
                 tabs: vec![Tab {
                     path: PathBuf::from("fixture"),
+                    resolved: true,
                     saved: bookmark.clone(),
                     warm: None,
                     error: None,
@@ -6582,6 +7158,7 @@ mod tests {
             tabs: vec![SavedTab {
                 path: SavedPath::new(&first_path),
                 bookmark: Bookmark::default(),
+                unresolved: false,
             }],
             ..Default::default()
         };
@@ -6773,6 +7350,7 @@ mod tests {
                     compare: true,
                     ..Default::default()
                 },
+                unresolved: false,
             }],
             ..Default::default()
         };
@@ -6884,6 +7462,7 @@ mod tests {
                     .map(|path| SavedTab {
                         path: SavedPath::new(path),
                         bookmark: Bookmark::default(),
+                        unresolved: false,
                     })
                     .collect(),
                 ..Default::default()
@@ -7099,6 +7678,7 @@ mod tests {
                 .map(|path| SavedTab {
                     path: SavedPath::Text((*path).into()),
                     bookmark: Bookmark::default(),
+                    unresolved: false,
                 })
                 .collect(),
             active,
@@ -7162,6 +7742,7 @@ mod tests {
         saved.tabs.push(SavedTab {
             path: SavedPath::new(&unavailable),
             bookmark: Bookmark::default(),
+            unresolved: false,
         });
         std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let loaded = Session::load_at(&path).unwrap();
@@ -7233,6 +7814,7 @@ mod tests {
             .map(|index| SavedTab {
                 path: SavedPath::Text(format!("/fixture/{index}")),
                 bookmark: Bookmark::default(),
+                unresolved: false,
             })
             .collect();
         saved.active = 11;
@@ -7410,6 +7992,7 @@ mod tests {
                 comparison: Some(SavedFile::new(&file)),
                 ..Default::default()
             },
+            unresolved: false,
         });
         let mut restored: Session =
             serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
