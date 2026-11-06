@@ -797,13 +797,13 @@ cover current upstream x86-64 Omarchy.
          the D+E review's bounded list span, scrolled-editor test and padding rows;
          `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
          (`github_view*`, `focus_reveal.rs`).
-       - (A) Overflow and scroll cues, M (FU20-A landed 2026-11-05 night: the branch chooser,
-         the profile dialogs and the worktree manager; the row ring did not reproduce. FU20-A2
-         in flight; FU20-A3 briefed): the conflict result draft's fixed 160 px height and 12 pt
-         line pitch at code 18 pt (`conflicts.rs:779`, FU20-A2); a 16 × 2 px scrollbar strip
-         above the message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`,
-         FU20-A2); the branch picker's disabled items without a reason (verify, FU20-A3); the
-         profiles menu's disabled items without a reason (verify, with FU19-F's `profiles.rs`).
+       - (A) Overflow and scroll cues, M (FU20-A and FU20-A2 landed 2026-11-05 night: the branch
+         chooser, the profile dialogs, the worktree manager, the conflict draft in whole code lines,
+         the commit message's overflow cue inside its viewport; FU20-A3 (the branch picker's
+         disabled reasons, the tracking-branch feedback) and FU20-A4 (the conflict review scrolling
+         in a short window, decided) in flight): the profiles menu's disabled items without a
+         reason (verify, with FU19-F's `profiles.rs`); `MESSAGE_FADE` in `commit_message.rs`
+         copies `tags::EDGE_FADE` (make it `pub(crate)` when `tags.rs` is next open).
        - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback is FU20-A3, in flight; left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
        - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
           (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
@@ -830,7 +830,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
+     - **Performance, S-M:** `workspace.rs`'s `render_git_actions` and `branch_actions.rs` format their strings each frame (FU20-P's finding; same rule as FU20-P); FU20-P (the chrome's text and the scope toolbar's count, in review: release measurement pending); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
        release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
@@ -841,7 +841,7 @@ cover current upstream x86-64 Omarchy.
        release lands in another window (one ignored Enter; clear it on deactivation); a
        single-line field's own Enter binding still runs on held repeats (no repository write
        submits that way).
-     - **Test infrastructure and nits:** `SerialExecutor::hold`'s blocking `send` on a full
+     - **Test infrastructure and nits:** the GitHub Files title-and-mode-row height reused from another text size for one frame (FU20-GH4); Kanagawa Lotus's secondary text reads above body text under More contrast on the hovered selected row (4.894 vs 4.871, since before FU19-C5; untested); `SerialExecutor::hold`'s blocking `send` on a full
        8-slot queue (`operations.rs:233`) and the hold delaying quiet jobs queued during the
        click (FU17-E); `github_view.rs`'s remaining test premises after FU18-D; tests calling
        `hold_quiet_reads(true)` directly and the other quiet-read wait helpers checked against
