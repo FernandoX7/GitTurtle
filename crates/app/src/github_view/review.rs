@@ -933,10 +933,14 @@ fn clear_of_lines(
     (first, last): (Pixels, Pixels),
 ) -> Pixels {
     let height = viewport.size.height;
-    // The part's and the content's ends allow layout's rounding.
+    // The content's ends allow layout's rounding, where the scroll stops whatever the edge.
     let slack = px(0.5);
     // A line is cut by any edge strictly inside it: an edge that stopped half a pixel inside
-    // a line, as at its other end, could cut a pixel of it once the scroll is laid out.
+    // a line, as at its other end, could cut a pixel of it once the scroll is laid out. The
+    // part, its ring's room about it, stays whole to the same hundredth: allowed half a pixel
+    // like the content's ends, the bottom edge at the foot of a line below it stopped the top
+    // edge half a pixel inside the PR list's first row at 18 pt in a 461 × 490 window, its
+    // ring's top edge cut by the body's clip.
     let within = px(0.01);
     let (top, bottom) = if bottom - top <= height {
         (top, bottom)
@@ -950,8 +954,8 @@ fn clear_of_lines(
     let lands = |at: Pixels| {
         at >= first - slack
             && at <= last + slack
-            && at <= top + slack
-            && at + height >= bottom - slack
+            && at <= top + within
+            && at + height >= bottom - within
             && !cuts(at)
             && !cuts(at + height)
     };
@@ -2338,10 +2342,37 @@ impl Panel {
                                     )),
                                 ),
                         )
+                        // Changes' patch and Source's box are parts of their own, as Threads'
+                        // pane is, each drawing its keyboard ring on its own edge: Tab onto one
+                        // shows that box whole with its ring. Revealed as the file's part, which
+                        // holds the title, the mode row and the range hint too and is taller than
+                        // the body at 18 pt in a 461 × 490 window, Tab onto the patch showed the
+                        // part's top and left the patch's foot, its ring with it, below the body.
                         .child(match self.review.mode {
-                            1 => self.render_source(cx),
+                            1 => {
+                                let element = div().flex_1().min_h_0().min_w_0().flex().flex_col();
+                                match &self.review.source {
+                                    Some(source) => self.ringed_part(
+                                        "source",
+                                        element,
+                                        &source.read(cx).focus_handle(cx),
+                                        cx,
+                                    ),
+                                    None => self.part("source", element, cx),
+                                }
+                                .child(self.render_source(cx))
+                                .into_any_element()
+                            }
                             2 => self.render_threads(Some(&file.filename), window, cx),
-                            _ => self.render_patch(window, cx),
+                            _ => self
+                                .ringed_part("patch", div(), &self.review.line_focus, cx)
+                                .flex_1()
+                                .min_h_0()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(self.render_patch(window, cx))
+                                .into_any_element(),
                         }),
                 )
                 .when(self.review.mode == 0, |element| {
@@ -2958,8 +2989,8 @@ mod tests {
         let lands = |at: Pixels| {
             at >= first - slack
                 && at <= last + slack
-                && at <= top + slack
-                && at + height >= bottom - slack
+                && at <= top + within
+                && at + height >= bottom - within
                 && !cuts(at)
                 && !cuts(at + height)
         };

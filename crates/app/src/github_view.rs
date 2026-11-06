@@ -10551,6 +10551,47 @@ mod tests {
         swept
     }
 
+    /// At 18 pt in a 461 × 490 window, every stop of the PR list, the connection pane above it,
+    /// Changes and Source, walked with Tab and with Shift+Tab from the surface opened at the
+    /// body's top, draws its ring whole inside every clip around it (`focus_ring::sweep`). The
+    /// reveal sweep found two cut ([`sweep_reveals`]): Tab onto the PR list's first row left
+    /// its ring's top edge half a pixel above the body's top, where the reveal's stop clear of
+    /// every line was allowed half a pixel inside the part it shows; and Tab onto Changes'
+    /// patch, which fits the body with its ring's room, revealed the file's part, which is
+    /// taller than the body, at its top, the patch's foot and its ring below the body's.
+    #[gpui::test]
+    async fn reveals_draw_the_pr_rows_and_the_files_boxes_rings_whole(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let mut failures = Vec::new();
+        for surface in [
+            Surface::Connection,
+            Surface::Pulls,
+            Surface::Changes,
+            Surface::Source,
+        ] {
+            for key in ["tab", "shift-tab"] {
+                show_surface((&app, &panel, &pull, &files), surface, (18, 461., 490.), cx).await;
+                sweep::walk_each(
+                    &app,
+                    cx,
+                    key,
+                    &format!("{surface:?} by {key}"),
+                    18,
+                    &mut failures,
+                    &mut |_, _, _| {},
+                );
+            }
+        }
+        sweep::assert_whole(failures);
+    }
+
     /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
     /// at 13 and 18 pt in a 461 × 490 window and a 1,480 × 800 one ([`REVEAL_SIZES`]), with
     /// Tab through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
@@ -10580,11 +10621,11 @@ mod tests {
     ///   bounds its node takes, no longer holds its run's middle, or as text outside every
     ///   label and Button; which of them each is, and why the reveal's own record of the
     ///   body's lines let it stop there, is not yet traced.
-    /// - Rings a clip cuts, at 18 pt in 461 × 490: the PR list's first row, 92.5..137.5,
-    ///   Tabbed onto from the list and from the connection pane (stops 2 and 3), whose ring
-    ///   crosses the list's clip half a pixel above the body's top and at its sides; and
-    ///   Changes' patch, 278..377 (stops 4 and 10), which fits the body with its ring's room
-    ///   but is revealed with its foot below the body's.
+    ///
+    /// Its rings a clip cut, at 18 pt in 461 × 490, closed in FU20-GH6
+    /// (`reveals_draw_the_pr_rows_and_the_files_boxes_rings_whole`): the PR list's first row,
+    /// whose ring the reveal left half a pixel above the body's top, and Changes' patch,
+    /// revealed as the file's part with its foot below the body's.
     #[gpui::test]
     #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
     async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
