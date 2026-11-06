@@ -10680,6 +10680,57 @@ mod tests {
         sweep::assert_whole(failures);
     }
 
+    /// Tab onto the destination field, the part the panel reopens onto, from the banner's Move
+    /// fixture head before it, and Shift+Tab onto it from Refresh PRs after it, draw the
+    /// field's accent edge and the ring outside it whole on the field's frame, as every kit
+    /// field draws them (`focus_ring::assert_input_ringed`), uncut by the body or any clip
+    /// around it: on the PR list, at 13 and 18 pt in a 1,480 × 973 window and a 461 × 490 one,
+    /// at scales 1.25 and 2.
+    #[gpui::test]
+    async fn tab_onto_the_destination_field_draws_its_ring_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let field = cx.read(|cx| panel.read(cx).destination.read(cx).focus_handle(cx));
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| field.is_focused(window));
+        let step = |cx: &mut VisualTestContext, key: &str| {
+            cx.simulate_keystrokes(key);
+            for _ in 0..2 {
+                crate::width_walk::frame(cx);
+            }
+            // Moving the pointer without a press keeps the ring.
+            cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+            crate::width_walk::frame(cx);
+        };
+        for scale in [1.25, 2.] {
+            for (interface, width, height) in [
+                (13, 1480., 973.),
+                (18, 1480., 973.),
+                (13, 461., 490.),
+                (18, 461., 490.),
+            ] {
+                cx.update(|window, _| window.set_scale_factor(scale));
+                show_surface(
+                    (&app, &panel, &pull, &[]),
+                    Surface::Pulls,
+                    (interface, width, height),
+                    cx,
+                )
+                .await;
+                cx.update(|window, cx| window.focus(&field, cx));
+                crate::width_walk::frame(cx);
+                for (away, back) in [("shift-tab", "tab"), ("tab", "shift-tab")] {
+                    let at = format!("{back} at {interface} pt in {width} × {height} at {scale}");
+                    step(cx, away);
+                    assert!(!focused(cx), "{at}: {away} leaves the field");
+                    step(cx, back);
+                    assert!(focused(cx), "{at}: {back} focuses the field");
+                    let text = cx.read(|cx| panel.read(cx).destination.read(cx).input_bounds());
+                    crate::focus_ring::assert_input_ringed(cx, text, &at);
+                }
+            }
+        }
+    }
+
     /// A row a list inside the body cuts at its edge is a line of the body as far as the list
     /// shows it (`review::keep_line`): at 18 pt in a 461 × 490 window, the changed-file list
     /// stacked above Changes shows its first row whole and the top of its second, which the
