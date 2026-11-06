@@ -766,6 +766,14 @@ cover current upstream x86-64 Omarchy.
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
        The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
        untested (low).
+       The GitHub connection pane's "Local worktree: <path>" line wraps with the path (6 lines at
+       ~120 characters, 17 pt, 440 × 490), and then no Tab stop shows its help's first line whole (every
+       control stays whole; FU26-A's review, `github_view.rs:11683`): the long path line against the
+       reveal rule (`review::clear_of_lines`), low.
+     - **A Refresh moves a tab whose `.git` vanished to an enclosing repository (found by FU26-A, 2026-11-06; FU26-E):**
+       `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
+       repository in the home directory) the tab silently shows, and later writes would target, that repository.
+       Decided: a passive reopen that resolves to another root shows the tab unavailable, never switches.
      - **Tests that fail under a long `TMPDIR` (found by FU25-C, 2026-11-06; possible macOS reds, as FU24-B's):**
        `a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus`, `the_connection_walk_shows_every_help_line_whole`
        and the two `a_quiet_read_*` tab-mark tests failed under FU25-C's private long `TMPDIR` on its base (as
@@ -799,7 +807,7 @@ cover current upstream x86-64 Omarchy.
          tuned and Lotus's body text a narrow exception). Left: a crossed word with no readable
          step may fall back nearer its moved line (no palette reaches it; low).
        - (F) Ghost Buttons in dialogs, M (decided 2026-11-05; FU19-F1 landed 2026-11-06: dialogs' side
-         padding max(16 px, the ghost pull + ring room) rounded up to the device pixel, the ten-dialog test; FU19-F2 next): dialogs' side padding max(16 px, label inset + ring room), 17 px at
+         padding max(16 px, the ghost pull + ring room) rounded up to the device pixel, the ten-dialog test; FU19-F2 landed the same afternoon: ghost Buttons on the text edge at FU18-B's dialog sites, tall dialog bodies scrolling in the app's own view with every Tab stop revealed, the series review's inspecting mode and its preview's and messages' rings): dialogs' side padding max(16 px, label inset + ring room), 17 px at
          18 pt, and the ghost-Button rule applied at FU18-B's dialog sites (profiles, signing,
          Fetch rules…, Worktree created, Activity, LFS source, rewrite review, revision
          choices, About's Copy bug diagnostics); the 0.75 rem bars keep their frames (the ring
@@ -807,7 +815,7 @@ cover current upstream x86-64 Omarchy.
          form, Activity, the LFS form, the comparison form; verify); Reset column layout and
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
-         Left after FU19-F2 (queued 2026-11-06): the ghost-Button rule at the dialogs F2 did not
+         Left after FU19-F2 (queued 2026-11-06; FU26-B in flight): the ghost-Button rule at the dialogs F2 did not
          cover (the Reflog's Review recovery branch…, `reflog.rs:1175`, stretched in a column;
          interactive rebase's Load commits, verify).
      - **FU20 (proposed):**
@@ -849,8 +857,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
-       release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
+     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); left from its count: the shared Button helpers in `main.rs` format per frame for every Button (`button_frame`'s placeholder label, `control_icon`'s path, `app_icon`'s URL parse; an app-wide round), `header_plan`/`chrome()` read `window.text_style()` 17 times a frame (read the line height once per frame), `fit_status_bar`'s `key_hints`, and a dialog error line's state key and text copy;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
