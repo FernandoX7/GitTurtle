@@ -345,14 +345,21 @@ impl Render for ActivityBrowser {
         let progress = app.operation_progress();
         let entries = app.activity.entries.clone();
         let error = app.activity.error.clone();
-        crate::native_accessibility::clips_children(div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
+        // Its actions, ghost Buttons at the dialog's text edge, stand the
+        // label of each line's first on that edge, their frames their pull
+        // before it (DESIGN.md, "One left edge"); the body keeps the pull
+        // with the ring's room on its left, and the ring's room on its
+        // right, given back through its margins, so its clip cuts neither.
+        let room = appearance::button_ring_room(cx);
+        let lead = crate::ghost_pull(window) + room;
+        crate::native_accessibility::clips_children(div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room).flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
-            .child(div().flex().flex_wrap().gap_2()
-                .child(crate::workspace::refusing(button("activity-refresh","Refresh current repository","",false),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+            .child(crate::edge_row(window)
+                .child(crate::workspace::refusing(crate::edge_button("activity-refresh","Refresh current repository").debug_selector(||"activity-refresh".into()),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
                     // Refused at once while a write runs, before it looks so.
                     if app.operation_busy.is_some() { return; }
                     window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
-                .child(crate::workspace::refusing(button("activity-reflog","Browse reflog…","",false).debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                .child(crate::workspace::refusing(crate::edge_button("activity-reflog","Browse reflog…").debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
                     // Refused at once while a write runs, before it looks so,
                     // and Activity stays open: `open_reflog_browser` refuses
                     // then, and closing first left neither dialog.

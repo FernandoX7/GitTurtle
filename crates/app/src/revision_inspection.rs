@@ -681,6 +681,19 @@ pub(crate) struct CompareForm {
     return_focus: Option<FocusHandle>,
 }
 impl CompareForm {
+    /// Empties the field the choices follow, so the first branches and tags
+    /// the read lists are its choices, for the walk of dialogs' ghost
+    /// Buttons (`dialog_sides`).
+    #[cfg(test)]
+    pub(crate) fn show_every_choice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let field = if self.selected_side == 0 {
+            &self.before
+        } else {
+            &self.after
+        };
+        field.update(cx, |input, cx| input.set_value("", window, cx));
+    }
+
     fn new(
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
@@ -850,9 +863,18 @@ impl Render for CompareForm {
             .take(8)
             .cloned()
             .collect();
+        // The choices, ghost Buttons at the dialog's text edge, stand their
+        // labels on that edge, their frames their pull before it, and wrap
+        // rather than run past the column (DESIGN.md, "One left edge"); the
+        // form keeps the pull with the ring's room on its left, and the
+        // ring's room on its right, given back through its margins, so its
+        // clip cuts neither them nor the fields' rings. The mode toggles, the
+        // chosen one filled, keep their frames at the edge.
+        let room = crate::appearance::button_ring_room(cx);
+        let lead = crate::ghost_pull(window) + room;
         crate::native_accessibility::clips_children(div().id("comparison-form").track_focus(&self.focus)
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
-            .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
+            .overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room).text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
@@ -862,7 +884,7 @@ impl Render for CompareForm {
             .child(div().flex().flex_wrap().gap_1().children([(ComparisonMode::Endpoints,"Endpoints · Before → After"),(ComparisonMode::SinceBranching,"Changes since branching")].into_iter().map(|(mode,label)|button(label,label,"",self.mode==mode).toggled(self.mode==mode).disabled(self.busy).on_click(cx.listener(move |this,_,_,cx|{this.mode=mode;cx.notify();}))))
                 .child(button("swap-revisions","Swap","",false).disabled(self.busy).on_click(cx.listener(|this,_,window,cx|{let before=this.before.read(cx).value();let after=this.after.read(cx).value();this.before.update(cx,|input,cx|input.set_value(after,window,cx));this.after.update(cx,|input,cx|input.set_value(before,window,cx));}))))
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
-            .children(choices.into_iter().enumerate().map(|(i,name)|button(("revision-choice",i),name.clone(),"",false).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));}))))
+            .children(choices.into_iter().enumerate().map(|(i,name)|crate::edge_row(window).child(crate::edge_button(("revision-choice",i),name.clone()).debug_selector(move ||format!("revision-choice-{i}")).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));})))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
             .children(self.error.as_ref().map(|error|failure_line("revision-comparison-error",error.clone()).text_color(rgb(p.removed))))))
     }

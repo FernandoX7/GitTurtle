@@ -698,12 +698,17 @@ impl Manager {
         let (owner, path, can_apply) = (&self.owner, &self.path, self.can_apply);
         let create_owner = owner.clone();
         let cue = crate::tags::ScrollCue::revealing(body, room);
-        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(body.observe())).id("profile-manager-content").debug_selector(|| "profile-manager-content".into()).max_h(px(430.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(body.scroll()).p(room).m(-room).flex().flex_col().gap_3()
+        // New profile…, a ghost Button at the dialog's text edge, stands its
+        // "+" on that edge, its frame its pull before it (DESIGN.md, "One
+        // left edge"); the body keeps the pull with the ring's room on its
+        // left, given back through its margin, so its clip cuts neither.
+        let lead = crate::ghost_pull(window) + room;
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(body.observe())).id("profile-manager-content").debug_selector(|| "profile-manager-content".into()).max_h(px(430.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col().gap_3()
             .child(div().flex().flex_col().gap_3().on_children_prepainted(body.controls(head, room))
                 .child(label("profiles-context", self.target.clone()).text_size(crate::appearance::ui_text(12.)))
                 .child(label("profiles-purpose", "Profiles choose Git author identity. Provider sign-in, credential helpers and private keys stay separate. Editing or deleting a definition does not change Git configuration.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .children(self.error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
-                .child(button("new-git-profile", "New profile…", "plus", false).track_focus(&create).debug_selector(|| "new-git-profile".into()).disabled(self.store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); })))
+                .child(edge_row(window).child(button("new-git-profile", "New profile…", "plus", false).track_focus(&create).debug_selector(|| "new-git-profile".into()).flex_shrink(1.).disabled(self.store.is_none()).on_click(move |_, window, cx| { let _ = create_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(None, window, cx); }); }))))
             .children(self.store.iter().flat_map(|store| &store.definitions).enumerate().map(|(index, profile)| {
                 let apply_owner = owner.clone(); let edit_owner = owner.clone(); let delete_owner = owner.clone();
                 let apply_profile = profile.clone(); let edit_profile = profile.clone(); let delete_profile = profile.clone(); let path = path.clone();
@@ -879,13 +884,19 @@ impl Render for ProfileForm {
             Some(signer.clone()),
         ];
         let cue = crate::tags::ScrollCue::revealing(&self.body, room);
-        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("profile-form").debug_selector(|| "profile-form".into()).max_h(px(420.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).flex().flex_col()
+        // Use current repository signing settings, a ghost Button at the
+        // dialog's text edge, stands its label on that edge, its frame its
+        // pull before it, and wraps rather than run past the form's column
+        // (`edge_button`); the form keeps the pull with the ring's room on
+        // its left, given back through its margin, so its clip cuts neither.
+        let lead = crate::ghost_pull(window) + room;
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("profile-form").debug_selector(|| "profile-form".into()).max_h(px(420.) + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col()
             .child(div().flex().flex_col().gap_3().on_children_prepainted(self.body.controls(controls, room))
             .child(label("profile-label", "Profile name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.label).aria_label("Profile name").disabled(self.pending))
             .child(label("profile-author-label", "Git author name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Profile Git author name").disabled(self.pending))
             .child(label("profile-email-label", "Git author email").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.email).aria_label("Profile Git author email").disabled(self.pending))
             .child(Checkbox::new("profile-capture-signing").track_focus(&signing).label("Include the existing signing configuration").checked(self.capture_signing).disabled(self.pending).on_click(cx.listener(|this, checked: &bool, _, cx| { this.capture_signing = *checked; cx.notify(); })))
-            .child(button("profile-use-current-signer", "Use current repository signing settings", "", false).track_focus(&signer).debug_selector(|| "profile-use-current-signer".into()).disabled(self.pending).on_click(cx.listener(|this, _, _, cx| { this.signing = this.current_signing.clone(); this.capture_signing = true; cx.notify(); })))
+            .child(edge_row(window).child(edge_button("profile-use-current-signer", "Use current repository signing settings").track_focus(&signer).debug_selector(|| "profile-use-current-signer".into()).disabled(self.pending).on_click(cx.listener(|this, _, _, cx| { this.signing = this.current_signing.clone(); this.capture_signing = true; cx.notify(); }))))
             .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {} · Annotated signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags, self.signing.annotated_tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").debug_selector(|| "profile-save-explanation".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(label("profile-save-pending", "Saving profile…").text_color(rgb(p.accent))))

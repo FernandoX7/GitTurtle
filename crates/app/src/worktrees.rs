@@ -181,10 +181,12 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(div().flex().flex_col().gap_3()
                     .child(native_accessibility::text("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
                     .child(native_accessibility::text("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(button("open-created-worktree", "Open in GitTurtle", "", false).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
-                        .child(button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }, "", false).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                        .child(button("edit-created-worktree", "Open in editor", "", false).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))))
+                    // Ghost Buttons at the dialog's text edge, each line's
+                    // first standing its label on it (`crate::edge_row`).
+                    .child(crate::edge_row(window)
+                        .child(crate::edge_button("open-created-worktree", "Open in GitTurtle").debug_selector(|| "open-created-worktree".into()).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
+                        .child(crate::edge_button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }).debug_selector(|| "reveal-created-worktree".into()).on_click(move |_, _, cx| cx.reveal_path(&finder)))
+                        .child(crate::edge_button("edit-created-worktree", "Open in editor").debug_selector(|| "edit-created-worktree".into()).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))))
                 .footer(crate::tags::dialog_footer("Done", None))
         });
     }

@@ -852,6 +852,11 @@ impl Render for AboutDetails {
         let room = appearance::button_ring_room(cx);
         self.body.reveal(window, cx);
         let copy = self.body.focus("copy-bug-diagnostics", cx);
+        // Copy bug diagnostics, a ghost Button at the dialog's text edge,
+        // stands its icon on that edge, its frame its pull before it
+        // (DESIGN.md, "One left edge"), so the details' left side keeps the
+        // pull with the ring's room, given back through their margin.
+        let lead = crate::ghost_pull(window) + room;
         let cue = crate::tags::ScrollCue::revealing(&self.body, room);
         cue.list(div()
             .on_children_prepainted(cue.observe(self.body.observe()))
@@ -862,6 +867,8 @@ impl Render for AboutDetails {
             .track_scroll(self.body.scroll())
             .px(room)
             .mx(-room)
+            .pl(lead)
+            .ml(-lead)
             .pb(room)
             .flex()
             .flex_col()
@@ -888,9 +895,10 @@ impl Render for AboutDetails {
             )
             // Enter on the focused button is its own, as Space is, not the
             // dialog's Done (`copy_key`).
-            .child(div().key_context(COPY_KEYS).capture_key_down(cx.listener(Self::copy_key)).on_children_prepainted(self.body.control(copy.clone(), room)).child(
+            .child(crate::edge_row(window).key_context(COPY_KEYS).capture_key_down(cx.listener(Self::copy_key)).on_children_prepainted(self.body.control(copy.clone(), room)).child(
                 copy_feedback::copy_button(self.diagnostics_mark(), "Copy bug diagnostics", "", cx)
                     .track_focus(&copy)
+                    .flex_shrink(1.)
                     .on_click(cx.listener(|this, _, window, cx| this.copy_report(window, cx))),
             )), "about-gitturtle-details-scrollbar")
         .min_h_0()

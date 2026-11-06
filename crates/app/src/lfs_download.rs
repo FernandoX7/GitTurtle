@@ -105,7 +105,7 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    fn open_lfs_download(
+    pub(super) fn open_lfs_download(
         &mut self,
         target: LfsDownloadTarget,
         window: &mut Window,
@@ -292,13 +292,21 @@ impl Render for LfsDownloadForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pointer = gitturtle_preview::detect_lfs_pointer(&self.target.pointer);
-        crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll()
+        // The remotes and Read configured source, ghost Buttons at the
+        // dialog's text edge, stand the label or icon of each line's first
+        // on that edge, their frames their pull before it (DESIGN.md, "One
+        // left edge"); the form keeps the pull with the ring's room on its
+        // left, and the ring's room on its right, given back through its
+        // margins, so its clip cuts neither them nor the field's ring.
+        let room = appearance::button_ring_room(cx);
+        let lead = crate::ghost_pull(window) + room;
+        crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room)
             .child(label("lfs-download-file", format!("File: {}", self.target.path.display())).text_size(appearance::ui_text(13.)))
             .when_some(pointer.as_ref(), |element, pointer| element.child(label("lfs-download-object", format!("sha256:{}\n{}", pointer.oid, crate::counted(pointer.size, "byte", "bytes"))).text_size(appearance::ui_text(12.))))
             .child(label("lfs-download-source-label", "Choose the configured source").text_size(appearance::ui_text(12.)))
             .child(Input::new(&self.remote).aria_label("Git LFS download remote"))
-            .child(div().flex().flex_wrap().gap_2().children(self.remotes.iter().take(12).enumerate().map(|(index, name)| { let name = name.clone(); button(("lfs-source-remote", index), name.clone(), "", false).disabled(self.pending).on_click(cx.listener(move |this, _, window, cx| { this.remote.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); this.prepare(window, cx); })) })))
-            .child(button("read-lfs-source", "Read configured source", "refresh", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx))))
+            .child(crate::edge_row(window).children(self.remotes.iter().take(12).enumerate().map(|(index, name)| { let name = name.clone(); crate::edge_button(("lfs-source-remote", index), name.clone()).debug_selector(move || format!("lfs-source-remote-{index}")).disabled(self.pending).on_click(cx.listener(move |this, _, window, cx| { this.remote.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); this.prepare(window, cx); })) })))
+            .child(crate::edge_row(window).child(button("read-lfs-source", "Read configured source", "refresh", false).debug_selector(|| "read-lfs-source".into()).flex_shrink(1.).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx)))))
             .when(self.pending, |element| element.child(label("lfs-source-loading", "Resolving the selected pointer, Git LFS tooling, and configured source…").text_size(appearance::ui_text(12.))))
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error, Some(appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))

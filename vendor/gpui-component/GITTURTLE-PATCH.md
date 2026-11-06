@@ -638,11 +638,15 @@ bound a dialog's default width and keeps a nested dialog's foot under its
 cap, and those tests pass without it.
 
 The dialog-sides patch (2026-11-05) modifies `src/dialog/dialog.rs` alone.
-Upstream pads every side of a dialog's panel 16 px. GitTurtle's ghost
-Buttons, transparent at rest, stand their content on a dialog's text edge and
-their frames their label inset before it, with their 3 px focus ring outside
-that (`DESIGN.md`, "One left edge"): 13 px at 13 pt, which 16 px holds, but
-14 px and 3 at 18 pt, which it does not. `set_dialog_side_room`, a public
+Upstream pads every side of a dialog's panel 16 px. The ghost Buttons,
+transparent at rest, at the text edge of the nine GitTurtle dialogs named
+below as its consumers stand their content, a leading icon, else their
+label, on that edge (Reflog's Review recovery branch…, stretched across its
+column, still stands its frame at the edge), and their frames and hover
+fills their label inset (`crate::ghost_pull`: 10 px at 13 pt, 14 px at
+18 pt) before it in the side padding, their 3 px focus ring outside the
+frame (`DESIGN.md`, "One left edge"): 13 px at 13 pt, which 16 px holds, but
+17 px at 18 pt, which it does not. `set_dialog_side_room`, a public
 function beside the dialog, installs a callback asked as each dialog is drawn
 for that window's room; a dialog whose caller sets no side padding of its own
 pads its left and right sides by the larger of that room and 16 px
@@ -668,7 +672,7 @@ padding on either side; and, in tests, the width walk's dialog padding check
 and `dialog_sides::the_ghost_room_lies_on_the_device_pixel`. The app's other
 caller of `set_dialog_side_room` is the ring-room sweep
 (`focus_ring::sweep`), which holds the sides at the installed room. The
-consumers are the dialogs with a ghost Button at their text edge (Git
+consumers are the dialogs whose ghost Buttons stand on their text edge (Git
 profiles and the profile form, Activity, Compare local revisions' choices,
 the rewritten-series review, Download an LFS preview, Worktree created,
 About's Copy bug diagnostics and Add remote's Fetch rules…), those readers,
@@ -678,14 +682,19 @@ and every other dialog, which keeps its text at the same edge. The kit test
 covers unset, larger, smaller and a caller's own padding on both sides; the
 app test `dialog_sides::dialogs_pad_their_sides_for_a_ghost_buttons_ring`
 opens ten of the app's dialogs (each consumer named above except Download
-an LFS preview and Worktree created, which its fixture cannot reach, plus
-the command palette, the GitHub panel and the theme editor) at 13 and 18 pt
-in a 461 × 490 and a 1,480 × 800 window and finds their text, or for the
-GitHub panel its footer's close Button, 16 px and 17 px inside the panel's
-edge, and every ring Tab draws in those with a ghost Button at their text
-edge, and in the palette, inside it. Remove this part of the patch when
-upstream lets an application set a dialog's default side padding, and
-those tests pass without it.
+an LFS preview and Worktree created, plus the command palette, the GitHub
+panel and the theme editor) at 13 and 18 pt in a 461 × 490 and a
+1,480 × 800 window and finds their text, or for the GitHub panel its
+footer's close Button, 16 px and 17 px inside the panel's edge, and every
+ring Tab draws in those with a ghost Button at their text edge, and in the
+palette, inside it. Download an LFS preview and Worktree created are
+reached by `dialog_sides::ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`,
+which opens them from their openers, with a working file's pointer and a
+worktree's plan the test makes, beside the other seven consumers, at the
+same sizes and windows, and in the half tile at scale 1.25 too, and finds
+every ring Tab draws in each of the nine inside the panel's edge. Remove this part of the patch when upstream lets
+an application set a dialog's default side padding, and those tests pass
+without it.
 
 The dialog-enter patch modifies `src/root.rs`, with the base patch's held
 Enter guard (base `GITTURTLE-PATCH.md`, "dialog-button"). `Root::open_dialog`

@@ -1855,7 +1855,7 @@ impl RemoteForm {
 }
 
 impl Render for RemoteForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div().flex().flex_col().gap_3()
             .child(div().flex().flex_col().gap_1().child(field_label("Remote name", cx)).child(Input::new(&self.name).disabled(self.expected.is_some())))
@@ -1870,8 +1870,10 @@ impl Render for RemoteForm {
             .when(!self.inherit_push, |element| element.child(div().flex().flex_col().gap_1().child(field_label("Push URLs", cx))
                 .children(self.expected.as_ref().filter(|remote| !remote.push_urls.is_empty()).map(|remote| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current: {}", remote.push_urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))))
                 .child(shortcuts::tab_leaves(Textarea::new(&self.push).h(crate::appearance::ui_size(70.)).aria_label("Push URLs, one per line")))))
-            .child(button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }, "", false)
-                .on_click(cx.listener(|this, _, _, cx| { this.advanced = !this.advanced; cx.notify(); })))
+            // A ghost Button at the dialog's text edge, its label on that
+            // edge and its frame its pull before it (`crate::edge_row`).
+            .child(crate::edge_row(window).child(crate::edge_button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }).debug_selector(|| "remote-advanced-settings".into())
+                .on_click(cx.listener(|this, _, _, cx| { this.advanced = !this.advanced; cx.notify(); }))))
             .when(self.advanced, |element| element.child(div().flex().flex_col().gap_2()
                 .child(Checkbox::new("remote-store-tracking-refs").label("Store fetched branches as remote-tracking references").checked(self.store_refs)
                     .on_click(cx.listener(|this, checked, _, cx| { this.store_refs = *checked; cx.notify(); })))

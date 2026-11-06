@@ -2465,6 +2465,70 @@ pub(crate) fn ghost_pull(window: &Window) -> Pixels {
     window.pixel_snap(appearance::ui_size(LABEL_INSET))
 }
 
+/// The line height of an [`edge_button`]'s label, of its text size: looser
+/// than a one-line Button's 1, so a wrapped label's lines keep their
+/// ascenders and descenders apart, and tighter than the dialog's text, so
+/// its lines read as one label.
+const EDGE_LABEL_LINE: f32 = 1.25;
+
+/// The space above and below an [`edge_button`]'s label at the default
+/// interface size: on one line the 28 px frame [`button`] gives a Button
+/// holds it, and each further line grows the frame by its line.
+const EDGE_LABEL_PADDING: f32 = 6.;
+
+/// A ghost Button with a label and no icon standing at a dialog's text edge,
+/// drawn as the shared [`button`] helper draws it, whose label wraps rather
+/// than run past the room its line gives it (DESIGN.md, "One left edge"):
+/// it never runs past the dialog's text column. Its caller stands it in a
+/// row pulled before the edge by [`ghost_pull`] ([`edge_row`]), so
+/// its label starts on the edge; where its label is wider than that row,
+/// it shrinks to the row, its frame ending on the column's right side, and
+/// its label wraps onto more lines, each starting where the first does, at
+/// word boundaries, or inside a word, such as a branch name, wider than the
+/// row; its frame grows by each line. On one line it is 28 px tall at the
+/// default size, with its label where `button` draws one. Its accessible
+/// name is its label. The profile form's Use current repository signing
+/// settings, about 389 px at 18 pt, ended in an ellipsis in a 461 px window,
+/// stretched across the form, and ran 26 px past the column standing as
+/// wide as its label.
+pub(crate) fn edge_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    let label = label.into();
+    crate::button_frame(id, &label, "", false)
+        .h_auto()
+        .min_h(appearance::ui_size(28.))
+        .py(appearance::ui_size(EDGE_LABEL_PADDING))
+        // The kit's Button keeps its width in a row; this one gives way to
+        // the row's.
+        .flex_shrink(1.)
+        .accessibility_label(label.clone())
+        .child(
+            // It fills the frame, so a wrapped label's lines start at its
+            // inset rather than centred in it.
+            div()
+                .flex_grow(1.)
+                .min_w_0()
+                .whitespace_normal()
+                .line_height(relative(EDGE_LABEL_LINE))
+                .child(label),
+        )
+}
+
+/// A row of ghost Buttons at a dialog's text edge, wrapping onto lines of
+/// their own where they do not fit beside each other: pulled before the
+/// edge by their label inset ([`ghost_pull`]), so each line's first
+/// Button stands its label, or its leading icon, on the edge and its frame
+/// and hover fill in the padding before it, and as wide as the text column
+/// past that, so none runs past the column ([`edge_button`]). A row holding
+/// a Button with a fill or an outline at rest, as a chosen toggle, is not
+/// one: such a row keeps its frames at the edge.
+pub(crate) fn edge_row(window: &Window) -> Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_2()
+        .ml(-crate::ghost_pull(window))
+}
+
 /// The kit's own padding at a dialog's sides, which [`dialog_ghost_room`]
 /// keeps where a ghost Button takes less.
 const DIALOG_SIDE_PADDING: Pixels = px(16.);

@@ -26,16 +26,23 @@ const SIZES: [(u8, f32, f32); 4] = [
     (18, 1480., 800.),
 ];
 
+/// The half tile at both text sizes on a display of fractional scale, 1.25,
+/// where a ghost Button's pull, 12.5 device pixels at 13 pt and about 17.3 at
+/// 18 pt, lies on the device pixel only as layout snaps it
+/// ([`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]; the test
+/// display's own scale is 2).
+const FRACTIONAL: [(u8, f32, f32, f32); 2] = [(13, 461., 490., 1.25), (18, 461., 490., 1.25)];
+
 /// A dialog the fixture opens from History: the ones with a ghost Button at
-/// their text edge that it can open (Git profiles, the profile form,
-/// Activity, Compare local revisions' choices, the rewritten-series review,
-/// About's Copy bug diagnostics and Add remote's Fetch rules…), the command
-/// palette, and the dialogs that size themselves from the padding (the
-/// GitHub panel's, whose Files fit reads it, and the theme editor's). Not
-/// here: Download an LFS preview and Worktree created, whose openers the
-/// fixture cannot reach (a working file's LFS pointer, a created worktree's
-/// plan). The signing site is no dialog of its own: it is the profile form's
-/// Use current repository signing settings, walked with the form.
+/// their text edge (Git profiles, the profile form, Activity, Compare local
+/// revisions' choices, the rewritten-series review, About's Copy bug
+/// diagnostics, Add remote's Fetch rules…, Download an LFS preview and
+/// Worktree created, the last two from their openers with a pointer and a
+/// plan the test makes), the command palette, and the dialogs that size
+/// themselves from the padding (the GitHub panel's, whose Files fit reads
+/// it, and the theme editor's). The signing site is no dialog of its own: it
+/// is the profile form's Use current repository signing settings, walked
+/// with the form.
 #[derive(Clone, Copy, Debug)]
 enum Site {
     About,
@@ -48,6 +55,8 @@ enum Site {
     RemoteForm,
     GitHub,
     ThemeEditor,
+    LfsSource,
+    WorktreeCreated,
 }
 
 impl Site {
@@ -63,6 +72,104 @@ impl Site {
         Site::GitHub,
         Site::ThemeEditor,
     ];
+
+    /// The dialogs with a ghost Button at their text edge, walked by
+    /// [`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]: those in
+    /// [`Self::ALL`], and Download an LFS preview and Worktree created,
+    /// opened from their openers with a working file's pointer and a
+    /// worktree's plan the fixture reads but never creates.
+    const GHOSTS: [Site; 9] = [
+        Site::About,
+        Site::Profiles,
+        Site::ProfileForm,
+        Site::Activity,
+        Site::RevisionChoices,
+        Site::RewriteReview,
+        Site::RemoteForm,
+        Site::LfsSource,
+        Site::WorktreeCreated,
+    ];
+
+    /// The rows of ghost Buttons standing at its text edge. Compare local
+    /// revisions lists up to eight choices, the fixture's first at least;
+    /// Download an LFS preview lists the repository's remotes, which the
+    /// fixture has none of, before Read configured source. Review messages'
+    /// row is drawn whole with no rewritten series to review, and Back to
+    /// series, which shows only while one is inspected, is not drawn.
+    fn ghost_rows(self) -> Vec<Row> {
+        let row = |selectors: &[(&'static str, Option<&'static str>)], icon: bool| Row {
+            ghosts: selectors
+                .iter()
+                .map(|(selector, label)| ((*selector).to_owned(), *label))
+                .collect(),
+            icon,
+            drawn: true,
+        };
+        match self {
+            Site::About => vec![row(&[("copy-bug-diagnostics", None)], true)],
+            Site::Profiles => vec![row(&[("new-git-profile", None)], true)],
+            Site::ProfileForm => vec![row(
+                &[(
+                    "profile-use-current-signer",
+                    Some("Use current repository signing settings"),
+                )],
+                false,
+            )],
+            Site::Activity => vec![row(
+                &[
+                    ("activity-refresh", Some("Refresh current repository")),
+                    ("activity-reflog", Some("Browse reflog…")),
+                ],
+                false,
+            )],
+            Site::RevisionChoices => (0..8)
+                .map(|choice| Row {
+                    ghosts: vec![(format!("revision-choice-{choice}"), None)],
+                    icon: false,
+                    drawn: choice == 0,
+                })
+                .collect(),
+            Site::RewriteReview => vec![row(
+                &[
+                    ("inspect-series-messages", Some("Review messages")),
+                    ("inspect-original-commit", Some("Inspect original files")),
+                    ("inspect-rewritten-commit", Some("Inspect rewritten files")),
+                    ("reload-series", Some("Refresh series")),
+                ],
+                false,
+            )],
+            Site::RemoteForm => vec![row(
+                &[("remote-advanced-settings", Some("Fetch rules…"))],
+                false,
+            )],
+            Site::LfsSource => vec![
+                Row {
+                    ghosts: (0..12)
+                        .map(|remote| (format!("lfs-source-remote-{remote}"), None))
+                        .collect(),
+                    icon: false,
+                    drawn: false,
+                },
+                row(&[("read-lfs-source", None)], true),
+            ],
+            Site::WorktreeCreated => vec![row(
+                &[
+                    ("open-created-worktree", Some("Open in GitTurtle")),
+                    (
+                        "reveal-created-worktree",
+                        Some(if cfg!(target_os = "macos") {
+                            "Show in Finder"
+                        } else {
+                            "Show in files"
+                        }),
+                    ),
+                    ("edit-created-worktree", Some("Open in editor")),
+                ],
+                false,
+            )],
+            _ => Vec::new(),
+        }
+    }
 
     /// Whether Tab walks it for its rings: every dialog with a ghost Button
     /// at its text edge, and the palette. The GitHub panel's and the theme
@@ -157,9 +264,15 @@ impl Site {
                 })
                 .await
             }
+            // With its Before field emptied, so the read's first branches
+            // and tags are its choices.
             Site::RevisionChoices => {
                 open_dialog(app, cx, &name, |app, window, cx| {
-                    app.open_compare_form(window, cx)
+                    let form = app.open_compare_form(window, cx);
+                    if let Some(form) = &form {
+                        form.update(cx, |form, cx| form.show_every_choice(window, cx));
+                    }
+                    form
                 })
                 .await
             }
@@ -187,8 +300,56 @@ impl Site {
                 })
                 .await
             }
+            // For a working file's pointer with no remote named, so the form
+            // reads nothing and says to choose one.
+            Site::LfsSource => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.remote_name
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                    let target = gitturtle_core::LfsDownloadTarget {
+                        path: "assets/large.bin".into(),
+                        blob_oid: None,
+                        pointer: format!(
+                            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12\n",
+                            "a".repeat(64)
+                        )
+                        .into_bytes(),
+                    };
+                    app.open_lfs_download(target, window, cx)
+                })
+                .await
+            }
+            // As a created worktree's write ends: its plan, read from the
+            // fixture for a folder that does not exist, never created.
+            Site::WorktreeCreated => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    let repo = app.repository.clone().expect("a repository");
+                    let destination = repo
+                        .path()
+                        .parent()
+                        .expect("the fixture's folder")
+                        .join("walk-worktree");
+                    let plan = repo
+                        .create_worktree_plan(&destination, "walk-worktree", true, "HEAD")
+                        .expect("a worktree plan");
+                    let path = app.path.clone().expect("a repository path");
+                    let command = gitturtle_core::WorktreeCommand::Create(plan);
+                    app.finish_worktree_write(&path, &command, true, window, cx)
+                })
+                .await
+            }
         }
     }
+}
+
+/// A row of ghost Buttons at a dialog's text edge, each line's first
+/// standing on it: each Button's debug selector with its label where the
+/// test knows it, whether a leading icon starts their content, and whether
+/// the fixture draws the row's first.
+struct Row {
+    ghosts: Vec<(String, Option<&'static str>)>,
+    icon: bool,
+    drawn: bool,
 }
 
 /// `bounds` in the window's logical pixels.
@@ -272,8 +433,9 @@ fn inside(panel: Bounds<Pixels>) -> Bounds<Pixels> {
 /// Button at its text edge, and the palette's, inside the panel's edge.
 /// Without the app's room installed, or with the room less the ring's 3 px,
 /// the text started 16 px inside at 18 pt, where the 14 px pull and the 3 px
-/// ring take 17. The ghost Buttons stand on that edge today, their frames
-/// not yet pulled before it, so their rings lie 13 and 14 px inside it.
+/// ring take 17. The ghost Buttons pulled before that edge, their rings end
+/// 3 px inside the panel's edge at 13 pt and on it at 18 pt
+/// ([`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]).
 #[gpui::test]
 async fn dialogs_pad_their_sides_for_a_ghost_buttons_ring(cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
@@ -374,6 +536,338 @@ async fn dialogs_pad_their_sides_for_a_ghost_buttons_ring(cx: &mut TestAppContex
             }
             sweep::close_dialogs(cx, &at, interface, &mut failures);
             views::tests::settle(&app, cx).await;
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The fill a shared control paints at rest in the ghost Buttons' walk
+/// (`appearance::mark_controls`), a hue nothing in the app paints, almost
+/// clear: a ghost Button transparent at rest paints it, so the walk finds
+/// its frame among the painted quads with the clip that cuts it.
+fn control_mark() -> Hsla {
+    hsla(0.789, 0.987, 0.456, 0.004)
+}
+
+/// The clip the last frame drew a shared control's `frame` under, where it
+/// drew the frame whole inside it: None for one below a scrolling body's
+/// fold, or cut by its edge.
+fn whole_in_view(cx: &mut VisualTestContext, frame: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    // At whatever opacity the variant paints it.
+    let mark = control_mark();
+    let marked = |background: gpui_kit::Background| {
+        background.as_solid().is_some_and(|color| {
+            (color.h - mark.h).abs() < 0.001
+                && (color.s - mark.s).abs() < 0.001
+                && (color.l - mark.l).abs() < 0.001
+        })
+    };
+    let slack = px(0.25);
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        window.painted_quads().into_iter().find_map(|quad| {
+            let (drawn, clip) = (
+                logical(quad.bounds, scale),
+                logical(quad.content_mask.bounds, scale),
+            );
+            let at_frame = (drawn.left() - frame.left()).abs() <= slack
+                && (drawn.top() - frame.top()).abs() <= slack
+                && (drawn.right() - frame.right()).abs() <= slack
+                && (drawn.bottom() - frame.bottom()).abs() <= slack;
+            let whole = drawn.left() >= clip.left() - slack
+                && drawn.right() <= clip.right() + slack
+                && drawn.top() >= clip.top() - slack
+                && drawn.bottom() <= clip.bottom() + slack;
+            (marked(quad.background) && at_frame && whole).then_some(clip)
+        })
+    })
+}
+
+/// The text runs the last frame drew above the open dialog's backdrop under
+/// `clip`, or a clip inside it, whose centre lies in `frame`, in the
+/// window's logical pixels, top first:
+/// a control's label, where `clip` is the control's own, and not the text of
+/// what is drawn over it, as a dialog's footer is over a control below its
+/// body's fold.
+fn runs_in(
+    cx: &mut VisualTestContext,
+    frame: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+) -> Vec<Bounds<Pixels>> {
+    let mark = gpui_kit::Background::from(text_mark());
+    let slack = px(0.25);
+    let mut runs: Vec<_> = cx.update(|window, _| {
+        let (scale, viewport) = (window.scale_factor(), window.viewport_size());
+        let quads = window.painted_quads();
+        // Above the dialog's backdrop: the page's text beneath it lies
+        // under clips inside the dialog's too.
+        let backdrop = quads
+            .iter()
+            .filter(|quad| {
+                let drawn = logical(quad.bounds, scale);
+                drawn.size.width >= viewport.width - px(1.)
+                    && drawn.size.height >= viewport.height - px(1.)
+            })
+            .map(|quad| quad.order)
+            .max()
+            .unwrap_or(0);
+        quads
+            .into_iter()
+            .filter(|quad| quad.background == mark && quad.order > backdrop)
+            .filter_map(|quad| {
+                let (run, under) = (
+                    logical(quad.bounds, scale),
+                    logical(quad.content_mask.bounds, scale),
+                );
+                // A Button clips its label to its own content too.
+                let within = under.left() >= clip.left() - slack
+                    && under.top() >= clip.top() - slack
+                    && under.right() <= clip.right() + slack
+                    && under.bottom() <= clip.bottom() + slack;
+                (within && frame.contains(&run.center())).then_some(run)
+            })
+            .collect()
+    });
+    runs.sort_by(|a, b| f32::from(a.top()).total_cmp(&f32::from(b.top())));
+    runs
+}
+
+/// What `site`'s ghost Buttons drew in the last frame, against the dialog's
+/// `panel` and its text's `edge`, added to `failures`, and each that stands
+/// at the edge whole in view added to `measured` with `opening`, the dialog
+/// as it was opened, and read only once in each opening: the first Button of each
+/// line of a row stands its frame its pull before the edge, on the device
+/// pixel, and starts its label there, or with a leading icon its icon, the
+/// icon's width and gap before its label; every line of a label without an
+/// icon starts there, and together they are as wide as the label, so one
+/// wider than its room wraps rather than end in an ellipsis; and no Button
+/// runs past the dialog's text column on the right.
+fn ghost_findings(
+    cx: &mut VisualTestContext,
+    site: Site,
+    (opening, at): (&str, &str),
+    (panel, edge): (Bounds<Pixels>, Pixels),
+    measured: &mut std::collections::HashSet<String>,
+    failures: &mut Vec<String>,
+) {
+    let (scale, pull, padding, icon, space) = cx.update(|window, cx| {
+        (
+            window.scale_factor(),
+            crate::ghost_pull(window),
+            gpui_kit::component::dialog::dialog_side_padding(window, cx),
+            appearance::ui_size(16.) + appearance::ui_size(6.),
+            views::line_widths(&[(" ", appearance::ui_text(12.))], window),
+        )
+    });
+    let device = |x: Pixels| (f32::from(x) * scale * 100.).round() / 100.;
+    let slack = px(0.25);
+    let column = panel.right() - px(1.) - padding;
+    // The edge is the text the panel draws leftmost, which lies its padding
+    // inside its 1 px edge, on the device pixel nearest that, so a label
+    // drawn left of the edge cannot pass for it: text stands on whole device
+    // pixels, and at scale 1.25 the 1 px edge is 1.25 of them.
+    let inset = edge - panel.left() - px(1.);
+    if (f32::from(inset - padding) * scale).abs() >= 0.5 {
+        failures.push(format!(
+            "{at}: the text starts {inset:?} inside the panel's edge, not on the device \
+             pixel nearest its padding, {padding:?}"
+        ));
+    }
+    for row in site.ghost_rows() {
+        let drawn: Vec<_> = row
+            .ghosts
+            .iter()
+            .filter_map(|(selector, label)| {
+                cx.debug_bounds(selector.clone().leak())
+                    .map(|frame| (selector, *label, frame))
+            })
+            .collect();
+        for (index, (selector, label, frame)) in drawn.iter().enumerate() {
+            if frame.right() > column + slack {
+                failures.push(format!(
+                    "{at}: {selector} at {frame:?} runs past the text column, which ends at \
+                     {column:?}"
+                ));
+            }
+            // Only the first Button of each line stands at the edge.
+            let first = !drawn[..index]
+                .iter()
+                .any(|(_, _, other)| (other.top() - frame.top()).abs() < px(1.));
+            if !first {
+                continue;
+            }
+            let Some(clip) = whole_in_view(cx, *frame) else {
+                continue;
+            };
+            let runs = runs_in(cx, *frame, clip);
+            let Some(&start) = runs.first() else {
+                failures.push(format!("{at}: {selector} at {frame:?} draws no label"));
+                continue;
+            };
+            if !measured.insert(format!("{opening}: {selector}")) {
+                continue;
+            }
+            if device(frame.left() + pull) != device(edge) {
+                failures.push(format!(
+                    "{at}: {selector}'s frame starts at {:?}, not its pull, {pull:?}, before \
+                     the text's edge {edge:?}",
+                    frame.left()
+                ));
+            }
+            if row.icon {
+                let content = start.left() - icon;
+                if (content - edge).abs() > px(1. / scale) {
+                    failures.push(format!(
+                        "{at}: {selector}'s icon starts at about {content:?}, not on the \
+                         text's edge {edge:?}"
+                    ));
+                }
+                continue;
+            }
+            for line in &runs {
+                if device(line.left()) != device(edge) {
+                    failures.push(format!(
+                        "{at}: {selector}'s label has a line at {:?}, not on the text's edge \
+                         {edge:?}",
+                        line.left()
+                    ));
+                }
+            }
+            if let Some(label) = label {
+                let whole = cx.update(|window, _| {
+                    views::line_widths(&[(label, appearance::ui_text(12.))], window)
+                });
+                let lines = runs.len() as f32;
+                let drawn: Pixels = runs.iter().map(|line| line.size.width).sum();
+                if drawn + space * (lines - 1.) + px(1.) * lines < whole {
+                    failures.push(format!(
+                        "{at}: {selector} draws {drawn:?} of its {whole:?} label on {lines} \
+                         line(s) in a frame {:?} wide",
+                        frame.size.width
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Every dialog with a ghost Button standing at its text edge, at 13 and
+/// 18 pt in a 461 × 490 half tile and a 1,480 × 800 window, stands it by the
+/// rule (DESIGN.md, "One left edge"): the first Button of each line stands
+/// its label, or its leading icon, on the dialog's text edge and its frame
+/// its pull before it, on the device pixel, and no Button runs past the
+/// text column on the right, a label wider than its room wrapping onto lines
+/// that start on the edge, as Use current repository signing settings does
+/// at 18 pt in the half tile; and Tab draws every ring inside the dialog's
+/// edge. The half tile is read at scale 1.25 too ([`FRACTIONAL`]). Each is
+/// read whole in view at one size at least. Download an LFS
+/// preview and Worktree created open from their openers. Standing their
+/// frames on the edge, the Buttons started their content 10 px past it at
+/// 13 pt and 14 px at 18 pt; New profile…, the signing Button, Compare local
+/// revisions' choices and Copy bug diagnostics, stretched across the
+/// dialog, centred it, and the signing Button's label ended in an ellipsis
+/// at 18 pt in the half tile.
+#[gpui::test]
+async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
+    sweep::prepare(&app, cx);
+    let mut failures = Vec::new();
+    let mut measured = std::collections::HashSet::new();
+    for (interface, width, height, scale) in SIZES
+        .map(|(interface, width, height)| (interface, width, height, 2.))
+        .into_iter()
+        .chain(FRACTIONAL)
+    {
+        cx.simulate_resize(size(px(width), px(height)));
+        // A resize takes the test display's scale, 2.
+        cx.update(|window, _| window.set_scale_factor(scale));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                appearance::apply_text_sizes(interface, app.settings.code_text_size, window, cx);
+                cx.notify();
+            })
+        });
+        // After the palette the walk and a text size apply, which clears
+        // the mark.
+        appearance::mark_controls(control_mark());
+        width_walk::frame(cx);
+        width_walk::frame(cx);
+        for site in Site::GHOSTS {
+            let at = format!("{site:?} at {interface} pt in {width} × {height} at scale {scale}");
+            site.open(&app, cx).await;
+            let Some((panel, Some(edge))) = drawn(cx) else {
+                failures.push(format!("{at}: no dialog panel with text drawn"));
+                sweep::close_dialogs(cx, &at, interface, &mut Vec::new());
+                continue;
+            };
+            ghost_findings(
+                cx,
+                site,
+                (&at, &at),
+                (panel, edge),
+                &mut measured,
+                &mut failures,
+            );
+            let mut sweep_findings = Vec::new();
+            sweep::walk_each(
+                &app,
+                cx,
+                "tab",
+                &at,
+                interface,
+                &mut sweep_findings,
+                &mut |cx, stop, rings| {
+                    let Some((panel, edge)) = drawn(cx) else {
+                        failures.push(format!("{stop}: no dialog panel drawn"));
+                        return;
+                    };
+                    // Read again with each stop's focus, as a scrolling body
+                    // reveals a Button below its fold.
+                    if let Some(edge) = edge {
+                        ghost_findings(
+                            cx,
+                            site,
+                            (&at, stop),
+                            (panel, edge),
+                            &mut measured,
+                            &mut failures,
+                        );
+                    }
+                    let inside = inside(panel);
+                    let slack = px(0.25);
+                    for ring in rings {
+                        let ring = ring.bounds;
+                        if ring.left() < inside.left() - slack
+                            || ring.right() > inside.right() + slack
+                            || ring.top() < inside.top() - slack
+                            || ring.bottom() > inside.bottom() + slack
+                        {
+                            failures.push(format!(
+                                "{stop}: a ring at {ring:?} leaves the inside of the dialog's \
+                                 edge, {inside:?}"
+                            ));
+                        }
+                    }
+                },
+            );
+            sweep::close_dialogs(cx, &at, interface, &mut failures);
+            views::tests::settle(&app, cx).await;
+        }
+    }
+    for site in Site::GHOSTS {
+        for row in site.ghost_rows().into_iter().filter(|row| row.drawn) {
+            let (selector, _) = &row.ghosts[0];
+            let opened = format!("{site:?} at ");
+            let read = format!(": {selector}");
+            if !measured
+                .iter()
+                .any(|key| key.starts_with(&opened) && key.ends_with(&read))
+            {
+                failures.push(format!(
+                    "{site:?}: {selector} is never drawn whole in view at the dialog's edge"
+                ));
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

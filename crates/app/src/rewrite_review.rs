@@ -759,6 +759,11 @@ impl Render for SeriesBrowser {
         // through its margin, so the inputs and buttons at its edges draw
         // their rings whole, as the interactive rebase form does.
         let room = appearance::button_ring_room(cx);
+        // Its actions and Back to series, ghost Buttons at the dialog's text
+        // edge, stand the label or icon of each line's first on that edge,
+        // their frames their pull before it (DESIGN.md, "One left edge"), so
+        // the body's left side keeps the pull with the ring's room.
+        let lead = crate::ghost_pull(window) + room;
         // The series draws the window's keyboard ring on its own 1 px edge,
         // after a key, until a pointer press.
         let ringed = self
@@ -780,7 +785,7 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        crate::native_accessibility::clips_children(div().id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().px(room).mx(-room).pb(room).max_h(px(height) + room).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
+        crate::native_accessibility::clips_children(div().id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().px(room).mx(-room).pl(lead).ml(-lead).pb(room).max_h(px(height) + room).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
@@ -791,11 +796,11 @@ impl Render for SeriesBrowser {
                     // repeats, as the dialog's own Enter acts.
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" if !event.is_held && gpui_kit::base::enter_press_began_on(&this.focus, window, cx) => this.inspect_selected(window, cx), "enter" => {}, _ => return } cx.stop_propagation(); }))
                     .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll))))
-                .child(div().flex().flex_wrap().gap_2()
-                    .child(button("inspect-series-messages", "Review messages", "", false).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
-                    .child(button("inspect-original-commit", "Inspect original files", "", false).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
-                    .child(button("inspect-rewritten-commit", "Inspect rewritten files", "", false).disabled(selected.as_ref().is_none_or(|row| row.rewritten.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))))
-                    .child(button("reload-series", "Refresh series", "", false).disabled(self.pending || self.network_pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
+                .child(crate::edge_row(window)
+                    .child(crate::edge_button("inspect-series-messages", "Review messages").debug_selector(|| "inspect-series-messages".into()).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
+                    .child(crate::edge_button("inspect-original-commit", "Inspect original files").debug_selector(|| "inspect-original-commit".into()).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
+                    .child(crate::edge_button("inspect-rewritten-commit", "Inspect rewritten files").debug_selector(|| "inspect-rewritten-commit".into()).disabled(selected.as_ref().is_none_or(|row| row.rewritten.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))))
+                    .child(crate::edge_button("reload-series", "Refresh series").debug_selector(|| "reload-series".into()).disabled(self.pending || self.network_pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(div().w(px(150.)).child(Input::new(&self.remote).aria_label("Publication remote").disabled(self.network_pending)))
                     .child(div().w(px(170.)).child(Input::new(&self.remote_branch).aria_label("Publication remote branch").disabled(self.network_pending)))
@@ -809,7 +814,11 @@ impl Render for SeriesBrowser {
                         .child(button("cancel-publication-review", "Cancel publication review", "", false).on_click(cx.listener(|this, _, _, cx| { this.publication = None; cx.notify(); }))))))
             )
             .when(self.inspecting, |element| element
-                .child(div().flex().flex_wrap().items_center().gap_2().child(button("back-rewrite-series", "Back to series", "arrow-left", false).track_focus(&self.back).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
+                // Back to series stands its icon on the text edge; the
+                // inspected commit beside it takes the rest of the row and
+                // wraps there, never onto a line of its own, which would
+                // start at the row's pulled left, its pull before the edge.
+                .child(crate::edge_row(window).items_center().child(button("back-rewrite-series", "Back to series", "arrow-left", false).track_focus(&self.back).debug_selector(|| "back-rewrite-series".into()).flex_shrink(1.).on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))).child(div().debug_selector(|| "rewrite-inspect-label".into()).flex_1().min_w_0().text_size(appearance::ui_text(12.)).child(self.inspect_label.clone())))
                 .when(self.messages.is_none(), |element| element.child(div().debug_selector(|| "series-files".into()).h(px(130.)).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(uniform_list("series-files", self.files.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
@@ -920,6 +929,59 @@ mod tests {
                 assert_eq!(browser.preview_retained_bytes(), 0);
             })
         });
+    }
+
+    /// An inspected commit's description, beside Back to series in a row
+    /// pulled before the dialog's text edge, takes the rest of that row and
+    /// wraps there, at 13 and 18 pt in a 461 × 490 window: a subject longer
+    /// than the room beside the Button wrapped onto a line of its own, which
+    /// started at the row's pulled left, 10 px before the text edge at 13 pt
+    /// and 14 px at 18 pt.
+    #[gpui::test]
+    async fn an_inspected_commits_description_wraps_beside_back_to_series(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, set_interface_text_size, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(app.downgrade(), repo, "origin".into(), "main".into(), window, cx)
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        cx.update(|_, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = format!(
+                    "Rewritten 0123456789 · {}",
+                    "Keep the subject of a rewritten commit whole ".repeat(3)
+                );
+                cx.notify();
+            })
+        });
+        for interface in [13, 18] {
+            set_interface_text_size(cx, &app, interface);
+            let back = cx.debug_bounds("back-rewrite-series").expect("Back to series");
+            let label = cx
+                .debug_bounds("rewrite-inspect-label")
+                .expect("the inspected commit's description");
+            assert!(
+                label.left() >= back.right(),
+                "at {interface} pt the description at {label:?} starts left of Back to series' \
+                 right side, {:?}",
+                back.right()
+            );
+            assert!(
+                label.size.height > back.size.height,
+                "at {interface} pt the description wraps beside the Button: {label:?}"
+            );
+        }
     }
 
     /// An inspected commit's document, in the series review's file box, which
