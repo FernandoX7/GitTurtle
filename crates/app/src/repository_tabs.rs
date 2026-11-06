@@ -1980,8 +1980,26 @@ impl GitTurtle {
         );
         self.history_horizontal
             .set_offset(point(px(horizontal_x), px(0.)));
+        // With no saved commit to select, the restore ends here in History,
+        // where History's search asked for meanwhile opens, after a page or
+        // a search reply as after the snapshot. One bound for Compare, as an
+        // older bookmark with no captured comparison is, held it for a
+        // Compare that never came, and it was lost.
         if selected.is_none() {
-            self.repository_tabs.restoring = None;
+            self.end_restore_in_history(window, cx);
+        }
+    }
+    /// Ends a cold tab's restore that stops in History short of the reads it
+    /// had left, as one that finds no saved commit, or whose page it cannot
+    /// read or finds empty past the end (`finish_tab_snapshot`,
+    /// `receive_history_page`): History's search asked for meanwhile opens
+    /// there (`run_pending_search`). Decision (2026-11-05): every way a
+    /// restore ends runs that search or drops it, and a restore always ends;
+    /// left set with no read under way, it held the search, and the tab's
+    /// later replies took the saved selection.
+    pub(super) fn end_restore_in_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repository_tabs.restoring.take().is_some() {
+            self.run_pending_search(window, cx);
         }
     }
     pub(super) fn restore_tab_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8365,6 +8383,109 @@ mod tests {
             draw_tab_frames(cx);
             app.read_with(cx, |app, _| {
                 assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert!(
+                    app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
+                    "{when}: History shows"
+                );
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
+        }
+    }
+
+    /// History's search, asked for while a cold tab's snapshot is read,
+    /// opens where a restore bound for Compare, as an older session's
+    /// bookmark with no captured comparison is, finds no saved commit to
+    /// select in its saved query's results or its saved page, and no saved
+    /// selection: the restore ends there in History
+    /// (`restore_tab_selection`). Held for a Compare that never came, the
+    /// search was lost, and focus stayed on History's list.
+    #[gpui::test]
+    async fn a_search_asked_for_while_a_restore_finds_no_commit_opens_in_history(
+        cx: &mut TestAppContext,
+    ) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let (list, search) = app.read_with(cx, |app, cx| {
+            (app.focus.clone(), app.search.read(cx).focus_handle(cx))
+        });
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        let bookmark = app.read_with(cx, |app, _| app.repository_tabs.tabs[1].saved.clone());
+        let tip = bookmark.selected_oid.clone().expect("the tip is selected");
+        for (round, when) in ["its query's results", "its saved page"]
+            .into_iter()
+            .enumerate()
+        {
+            let searched = round == 0;
+            if round > 0 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle_tab_test(&app, cx).await;
+                draw_tab_frames(cx);
+            }
+            app.update(cx, |app, _| {
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = Bookmark {
+                    comparison: None,
+                    compare: true,
+                    selection: None,
+                    // The tip, which neither the search for the older
+                    // commit nor the page past the tip lists.
+                    selected_oid: Some(tip.clone()),
+                    query: if searched {
+                        "first".into()
+                    } else {
+                        String::new()
+                    },
+                    pinned: (!searched).then(|| SavedHistoryScope::Commit(tip.clone())),
+                    offset: usize::from(!searched),
+                    ..bookmark.clone()
+                };
+            });
+            let held = hold_reads(&app, cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            draw_tab_frames(cx);
+            cx.simulate_keystrokes(find);
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository.is_none(), "{when}: still read");
+                assert!(app.repository_tabs.restore_lands_in_compare(), "{when}");
+            });
+            assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "{when}: kept");
+            drop(held);
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            assert!(
+                app.read_with(cx, |app, _| app.repository.is_some()),
+                "{when}: landed"
+            );
+            if searched {
+                // The saved query is searched once its typing pause is over.
+                assert!(
+                    app.read_with(cx, |app, _| app.repository_tabs.restoring.is_some()),
+                    "{when}: restoring"
+                );
+                cx.executor()
+                    .advance_clock(crate::history_search::SEARCH_DEBOUNCE);
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert!(!app.commits.is_empty(), "{when}: its rows are listed");
+                assert_eq!(app.selected_commit, None, "{when}: no saved commit");
                 assert!(
                     app.page == AppPage::Repository && app.mode == WorkspaceMode::History,
                     "{when}: History shows"
