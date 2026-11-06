@@ -900,6 +900,9 @@ struct Palette {
     /// changes.
     status_node: usize,
     scroll: UniformListScrollHandle,
+    /// The rows the list last asked its rows for in this frame
+    /// ([`Self::note_drawn_rows`]).
+    drawn_rows: Option<std::ops::Range<usize>>,
     error: Option<String>,
     _subscription: Subscription,
 }
@@ -992,6 +995,7 @@ impl Palette {
             unheard: false,
             status_node: 0,
             scroll: UniformListScrollHandle::new(),
+            drawn_rows: None,
             error: None,
             _subscription: subscription,
         };
@@ -1117,6 +1121,22 @@ impl Palette {
         if self.listed.laid_out(self.selected_command(), drawn) {
             self.list_moved(cx);
             self.listed.time(window, cx, |this| &mut this.listed);
+        }
+    }
+    /// Notes, once the list has laid out this frame's rows, whether it drew
+    /// the selected command's row ([`Self::note_selected_row`]). Each frame
+    /// the list asks for its first row alone, in its layout and again as it
+    /// prepaints, to measure it (`UniformList::measure_item`), and then for
+    /// the rows it draws, so the last rows it asked for are the ones drawn,
+    /// whatever their range ([`Self::drawn_rows`]). Read from a measuring
+    /// call, a selected row scrolled out of the list read as leaving and
+    /// coming back on every frame; told apart by their range, the drawn
+    /// rows of a list one row tall, its first row alone at its top, read as
+    /// a measuring call, so the second row's return there went untimed, and
+    /// a key 50 ms after it, whose change Orca drops, was taken as spoken.
+    fn note_drawn_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(rows) = self.drawn_rows.take() {
+            self.note_selected_row(rows.contains(&self.selection.index), window, cx);
         }
     }
     /// Announces the selected command's reading once the query and the
@@ -1274,6 +1294,7 @@ impl Render for Palette {
         // This frame draws the list's last change of selection, which the
         // AT-SPI adapter reports once it is drawn (`Listed::time`).
         self.listed.time(window, cx, |this| &mut this.listed);
+        self.drawn_rows = None;
         let p = palette(cx);
         let count = self.results.len();
         let desired_height = appearance::ui_size(if count == 0 {
@@ -1297,27 +1318,10 @@ impl Render for Palette {
         let list = uniform_list(
             "command-palette-list",
             count,
-            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                // Each frame the list first lays out its first row alone,
-                // twice, to measure it (`UniformList::measure_item`), and then
-                // the rows it draws. Read from a measuring call, a selected
-                // row scrolled out of the list read as leaving and coming back
-                // on every frame. A `0..1` call is read only where it says
-                // what the drawn rows say too: with one result, or with the
-                // first row selected and the list at its top with no scroll
-                // waiting, where the drawn rows begin at that row, as a list
-                // one row tall draws it alone.
-                let selected = this.selection.index;
-                let measuring = range == (0..1)
-                    && this.results.len() > 1
-                    && (selected != 0 || {
-                        let scroll = this.scroll.0.borrow();
-                        scroll.deferred_scroll_to_item.is_some()
-                            || scroll.base_handle.offset().y != px(0.)
-                    });
-                if !measuring {
-                    this.note_selected_row(range.contains(&selected), window, cx);
-                }
+            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                // The last rows asked for this frame are the ones the list
+                // draws (`note_drawn_rows`).
+                this.drawn_rows = Some(range.clone());
                 let context = this.context.availability.clone();
                 range
                     .map(|index| {
@@ -1578,7 +1582,23 @@ impl Render for Palette {
                     // surface it lies on.
                     .border_color(rgb(p.raised_edge()))
                     .rounded(px(6.))
-                    .when(count > 0, |element| element.child(list))
+                    .when(count > 0, |element| {
+                        let view = cx.weak_entity();
+                        element.child(list).child(
+                            // Prepainted after the list, as it has asked for
+                            // the rows it draws.
+                            gpui_kit::canvas(
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.note_drawn_rows(window, cx);
+                                    });
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_0(),
+                        )
+                    })
                     .when(count == 0, |element| {
                         element.child(
                             native_accessibility::text(
@@ -4426,11 +4446,110 @@ mod render_tests {
     /// As [`a_selected_row_brought_back_into_the_list_is_a_change`], in a
     /// list one row tall, as a short window at a large text size leaves it:
     /// the list at its top draws its first row alone, the range the toolkit
-    /// lays out alone each frame to measure that row, so the row's return
-    /// is read from it.
+    /// also lays out each frame to measure that row, and the row's return
+    /// is read from the rows drawn ([`Palette::note_drawn_rows`]).
     #[gpui::test]
     fn a_selected_row_brought_back_into_a_list_one_row_tall_is_a_change(cx: &mut TestAppContext) {
         row_brought_back(cx, 354.);
+    }
+
+    /// As [`a_selected_row_brought_back_into_a_list_one_row_tall_is_a_change`],
+    /// with the second command selected: the wheel takes the list to its
+    /// top, where it draws its first row alone, and back onto the second
+    /// row, whose return the AT-SPI adapter reports and Orca speaks, and a
+    /// key 50 ms later makes a change Orca drops, so the rest says the whole
+    /// reading of the command the key selects. Told apart from the toolkit's
+    /// measuring of the first row by their range, the rows drawn at the top
+    /// read as a measuring call, so the return went untimed, and the rest
+    /// said the place alone, Orca's last word the second command.
+    #[gpui::test]
+    fn a_second_row_brought_back_into_a_list_one_row_tall_is_a_change(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        cx.simulate_resize(size(px(1200.), px(354.)));
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        heard.step(cx, "down");
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let results = matches("");
+        // The row Orca speaks, where the list speaks its selection.
+        #[cfg(target_os = "linux")]
+        let second = reading_and_row("", 1, &availability).1;
+        let key = ["g", "b", "t", "h", "c", "s", "r", "p"]
+            .into_iter()
+            .find(|key| {
+                let found = matches(key);
+                found.get(first_available(&found, &availability)) != Some(&results[1])
+            })
+            .expect("a key that selects another command");
+        let row = "palette-command-1";
+        assert!(
+            cx.debug_bounds(row).is_some(),
+            "Down selects the second row"
+        );
+        let centre = cx
+            .debug_bounds("command-palette-results")
+            .expect("the list")
+            .center();
+        crate::tags::tests::scroll_down(
+            cx,
+            centre,
+            gpui::ScrollDelta::Pixels(point(px(0.), px(600.))),
+        );
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_none() && cx.debug_bounds("palette-command-0").is_some(),
+            "the wheel takes the list to its top, where it draws its first row alone"
+        );
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        crate::tags::tests::scroll_down(
+            cx,
+            centre,
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-60.))),
+        );
+        heard.frame(cx);
+        assert!(
+            cx.debug_bounds(row).is_some(),
+            "and back onto the second row"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_listed(),
+            std::slice::from_ref(&second),
+            "the adapter reports the row's return as a change of the list's selection"
+        );
+        // A key that selects another command 50 ms later.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
+        cx.simulate_input(key);
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        let found = matches(key);
+        let whole = reading_and_row(key, first_available(&found, &availability), &availability).0;
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&whole),
+            "the rest announces the command with its place"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [second, whole],
+            "Orca speaks the returned row, drops the key's change 50 ms after it, and speaks the \
+             status's reading"
+        );
     }
 
     /// Wheels the palette's selected first row out of its list and back, in
