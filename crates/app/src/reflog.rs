@@ -1249,9 +1249,9 @@ mod tests {
     }
 
     /// The Reflog opens with focus in its filter field, which draws its focus
-    /// whole: the field's 1 px accent edge and the kit's ring 3 px around it,
-    /// every side inside the dialog's clips. It opened with focus on the
-    /// dialog's shell, which draws nothing. Escape still closes it and
+    /// whole: the field's 1 px accent edge and the Button's ring in the 3 px
+    /// around it, every side inside the dialog's clips. It opened with focus
+    /// on the dialog's shell, which draws nothing. Escape still closes it and
     /// returns focus to the History list that opened it.
     #[gpui::test]
     async fn the_reflog_opens_with_its_filter_focused_and_ringed(cx: &mut TestAppContext) {

@@ -9,8 +9,8 @@
 //! window blurred, and again with focus back on the stop, its layout
 //! otherwise the same; under a dialog, only those it paints above its
 //! backdrop. Nothing that lands on the page between those frames, such as a
-//! refresh moving History's selected row, counts. A Button's 2 px ring,
-//! an Input's accent edge and the kit's ring outside it, and a list's or a
+//! refresh moving History's selected row, counts. A Button's 2 px ring, an
+//! Input's accent edge and the Button's ring outside it, and a list's or a
 //! pane's 1 px edge all count, so a stop shows its focus however it draws it.
 //! The modules whose dialogs need their own fixtures walk them with
 //! [`walk`]: `discard::tests`, `worktrees::tests` and `github_view::tests`.

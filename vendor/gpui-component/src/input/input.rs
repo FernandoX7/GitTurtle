@@ -20,7 +20,7 @@ use rust_i18n::t;
 
 use super::state::{TextInputState, sync_focused_input_registry};
 use super::{InputContentType, InputState, sync_native_content_type};
-use crate::ThemeStyled as _;
+use crate::styled::apply_focus_ring;
 
 fn accessibility_role(
     is_multi_line: bool,
@@ -609,9 +609,11 @@ impl RenderOnce for Input {
             .items_center()
             .gap(gap_x)
             .refine_style(&self.style)
+            // GitTurtle patch: the Button's ring, which the application sets
+            // (`Theme::button_focus_ring`), in place of `focus_ring_style`'s.
             .when(
                 focused && self.appearance && self.bordered && self.focus_bordered,
-                |this| this.focus_ring_style(window, cx),
+                |this| apply_focus_ring(this, cx.theme().button_focus_ring, window, cx),
             )
             .children(prefix.map(|p| {
                 div()

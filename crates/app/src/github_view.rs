@@ -6919,9 +6919,14 @@ mod tests {
             !cx.update(|window, _| window.context_stack().is_empty()),
             "the frame draws the field that holds focus"
         );
-        // The field's own accent edge shows its focus whole. The kit's ring
-        // outside it is cut at the panel's left edge, whose scroll clip keeps
-        // no ring room, as it is when the panel opens with focus there.
+        // The field's own accent edge shows its focus whole. The Button's
+        // ring outside it is not what this reads: this window installs no
+        // palette, so `button_focus_ring` keeps the kit's default, 3 px of
+        // `ring` at half opacity with no gap, and the field draws that ring.
+        // Its strips are `ring` at half, not the accent the match below asks
+        // for exactly, so the field's 1 px edge is the one outline it finds.
+        // With a palette installed, the Button's ring in the full accent
+        // would match as well.
         let accent = cx.read(|cx| gpui_kit::component::Theme::global(cx).ring);
         let edges: Vec<_> = focus_ring::painted_outlines(cx, accent)
             .into_iter()

@@ -64,9 +64,10 @@ application that leaves it alone draws exactly the upstream ring. A focused
 Button, disabled or not, draws the setting through the same absolutely
 positioned child `focus_ring_style` draws, which takes no layout space.
 `focus_ring_style` passes the default through that shared code, so it and its
-other callers (Input, Select, Checkbox, Radio, Combobox, NumberInput,
-DatePicker and OtpInput) draw as before, and the focused Button's tinted border
-is unchanged. `Theme::focus_ring = false` and `Button::focus_ring(false)` still
+other callers (Select, Radio, Combobox, NumberInput, DatePicker and OtpInput)
+draw as before, and the focused Button's tinted border is unchanged. Input and
+Checkbox draw the setting too, through the field and checkbox focus-ring patch
+below. `Theme::focus_ring = false` and `Button::focus_ring(false)` still
 draw no ring.
 
 `cargo test --locked -p gitturtle focused_buttons_draw_the_theme_button_focus_ring`
@@ -337,6 +338,45 @@ Follow system unchecked, checked and, on Linux, disabled by the Omarchy theme.
 at least 6 of 255 in one channel in every palette. Remove this part of the
 patch when upstream Switch draws a focus indicator and a hover state, or offers
 equivalent settings, and those tests pass without it.
+
+The field and checkbox focus-ring patch modifies `src/input/input.rs`,
+`src/checkbox.rs` and the documentation of `src/styled.rs` and
+`src/theme/mod.rs`. Upstream Input and Checkbox draw `focus_ring_style`'s
+ring, 3 px of the theme's `ring` at half opacity directly outside the border.
+Over the canvas, panel or `subtle` that half ring read under 3:1 in 16 of
+GitTurtle's 20 built-in palettes, More contrast off and on (Porcelain 2.27:1,
+Sandstone 2.06:1, Kanagawa Lotus 1.88:1, Braden 2.09:1), where the Switch,
+drawing `Theme::button_focus_ring` at full strength, held 3:1. A focused,
+bordered Input and a focused Checkbox now draw `Theme::button_focus_ring`
+through the shared `apply_focus_ring`, as a Button and a Switch do: the same
+absolutely positioned child, which takes no layout space. Their own edges are
+unchanged: a focused Input's 1 px border still takes full `ring`, as a focused
+bordered Button's does, and a Checkbox's indicator, which the ring surrounds
+with its label, keeps its border. At the setting's default the ring is
+upstream's; GitTurtle's, 2 px with a 1 px gap, takes the same 3 px outside the
+edge, so the room containers keep for it is unchanged. `Theme::focus_ring =
+false` and `focus_ring(false)` still draw no ring, and key, focus, Enter and
+accessibility handling are unchanged.
+
+The consumers are every bordered kit Input the app draws, such as Create
+branch…'s name, the Reflog's, the worktree manager's and Tags' filters and the
+rebase base field, and every kit Checkbox, such as those in Settings and the
+branch, ignore, recovery, profile, Compare and editor Find forms; the app
+installs the setting where it applies a palette (`crates/app/src/appearance.rs`).
+`cargo test --locked -p gitturtle every_palette_draws_kit_focus_rings_at_three_to_one`
+focuses a field, a checkbox and a Switch in every built-in palette, More
+contrast off and on, and composites each quad they paint in the ring colour
+over the canvas, panel and `subtle`, requiring 3:1 with `ring` the palette's
+accent. `focused_fields_and_checkboxes_draw_the_theme_button_focus_ring` reads
+the ring a focused field and checkbox paint at the default and at GitTurtle's
+setting (width, gap, corners and colour), the field's edge in `ring`, nothing
+moved, and no ring with `Theme::focus_ring` off. `focus_ring::assert_input_ringed`
+requires the installed ring, whole inside every clip, around the app's own
+fields in the Reflog, worktree and interactive rebase tests. How the ring
+renders in the real window still needs native inspection. Remove this part of
+the patch when upstream Input and Checkbox draw a focus indicator of at least
+3:1 against their surroundings or follow an equivalent setting, and those
+tests pass without it.
 
 The switch-row patch also modifies `src/switch.rs`. Upstream Switch draws only
 a label beside its track, at the kit's text size, and sets no accessible

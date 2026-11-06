@@ -124,8 +124,9 @@ pub struct Theme {
     /// which costs no space and cannot be clipped.
     #[serde(default = "default_true")]
     pub focus_ring: bool,
-    /// The ring a focused [`crate::button::Button`] draws, default the ring
-    /// every other control draws.
+    /// The ring a focused [`crate::button::Button`] draws, and with it a
+    /// focused Switch, bordered Input and Checkbox; default the ring every
+    /// other control draws.
     ///
     /// Set in code, not read from theme files. A Button often has no border of
     /// its own, so an application can give it a wider or more opaque ring, or

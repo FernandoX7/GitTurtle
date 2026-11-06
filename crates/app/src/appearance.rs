@@ -6367,6 +6367,162 @@ mod tests {
         });
     }
 
+    /// Every focus ring a kit control draws, a text field's, a checkbox's and
+    /// a Switch's, read from the frame with the control focused: each quad in
+    /// the theme's ring colour around it, at the opacity it is painted with,
+    /// over each surface such a control rests on (the canvas a dialog shows,
+    /// the panel and `subtle`), reads 3:1 (WCAG 1.4.11), in every built-in
+    /// palette with More contrast off and on, with the ring the palette's
+    /// accent. All three draw the Button's ring, 2 px of the full accent 1 px
+    /// outside their edge, and each must paint a quad of the ring's width:
+    /// the field's own 1 px accent edge, in the same colour, is not its ring.
+    /// The field and the checkbox drew the kit's, 3 px at half opacity
+    /// directly outside it, which read under 3:1 in 16 of the 20 palettes:
+    /// 2.27:1 on Porcelain's canvas, 2.06:1 on Sandstone's `subtle`.
+    #[gpui::test]
+    fn every_palette_draws_kit_focus_rings_at_three_to_one(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::component::checkbox::Checkbox;
+        use gpui_kit::component::input::{Input, InputState};
+        use gpui_kit::component::switch::Switch;
+        use gpui_kit::{
+            AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _,
+            InteractiveElement as _, IntoElement, ParentElement as _, Render, ScaledPixels,
+            Styled as _, div, point,
+        };
+
+        struct Controls {
+            field: Entity<InputState>,
+            checkbox: FocusHandle,
+            switch: FocusHandle,
+        }
+        impl Render for Controls {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_8()
+                    .p_8()
+                    .child(
+                        div()
+                            .debug_selector(|| "ring-field".into())
+                            .w(px(160.))
+                            .child(Input::new(&self.field)),
+                    )
+                    .child(
+                        div().debug_selector(|| "ring-checkbox".into()).child(
+                            Checkbox::new("ring-checkbox")
+                                .track_focus(&self.checkbox)
+                                .label("Include"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "ring-switch".into())
+                            .child(Switch::new("ring-switch").track_focus(&self.switch)),
+                    )
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| Controls {
+            field: cx.new(|cx| InputState::new(window, cx)),
+            checkbox: cx.focus_handle(),
+            switch: cx.focus_handle(),
+        });
+        let handles = cx.update(|_, cx| {
+            let view = view.read(cx);
+            [
+                ("ring-field", view.field.read(cx).focus_handle(cx)),
+                ("ring-checkbox", view.checkbox.clone()),
+                ("ring-switch", view.switch.clone()),
+            ]
+        });
+        let mut failures = Vec::new();
+        for more in [false, true] {
+            for choice in ThemeChoice::ALL {
+                cx.update(|window, cx| {
+                    set_more_contrast(more, cx);
+                    choice.apply(Some(window), cx);
+                });
+                for (id, handle) in &handles {
+                    cx.update(|window, cx| window.focus(handle, cx));
+                    crate::tags::tests::draw(cx);
+                    let control = cx.debug_bounds(id).expect("the control");
+                    let (applied, ring, width, mut rings) = cx.update(|window, cx| {
+                        let scale = window.scale_factor();
+                        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                        let theme = Theme::global(cx);
+                        let (ring, width) = (packed(theme.ring), theme.button_focus_ring.width);
+                        let rings = window
+                            .painted_quads()
+                            .into_iter()
+                            .filter(|quad| quad.border_widths.top.as_f32() > 0.)
+                            .filter(|quad| {
+                                packed(quad.border_color) == ring && quad.border_color.a > 0.
+                            })
+                            .filter(|quad| {
+                                let drawn = Bounds::from_corners(
+                                    point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                                    point(
+                                        logical(quad.bounds.right()),
+                                        logical(quad.bounds.bottom()),
+                                    ),
+                                );
+                                control.dilate(px(8.)).contains(&drawn.origin)
+                            })
+                            .map(|quad| {
+                                (quad.border_color.to_rgb(), logical(quad.border_widths.top))
+                            })
+                            .collect::<Vec<_>>();
+                        (palette(cx), ring, width, rings)
+                    });
+                    // GPUI paints a border-only quad once per side.
+                    rings.dedup();
+                    if ring != applied.accent {
+                        failures.push(format!(
+                            "{choice:?} more {more}: ring {ring:06x}, not the accent {:06x}",
+                            applied.accent
+                        ));
+                    }
+                    // The field's own 1 px edge takes the accent too, so a
+                    // quad in the ring colour alone does not show its ring.
+                    if !rings
+                        .iter()
+                        .any(|(_, drawn)| (*drawn - width).abs() < px(0.01))
+                    {
+                        failures.push(format!(
+                            "{choice:?} more {more}: {id} draws no {width:?} ring, only {rings:?}"
+                        ));
+                    }
+                    for (layer, _) in rings {
+                        for (surface, beneath) in [
+                            ("canvas", applied.canvas),
+                            ("panel", applied.panel),
+                            ("subtle", applied.subtle),
+                        ] {
+                            let ratio = contrast(composite(layer, beneath), beneath);
+                            if ratio < custom::GRAPHIC {
+                                failures.push(format!(
+                                    "{choice:?} more {more}: {id} at {:.2} on the {surface} \
+                                     {beneath:06x}: {ratio:.2}:1",
+                                    layer.a
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cx.update(|_, cx| set_more_contrast(false, cx));
+        failures.dedup();
+        assert!(
+            failures.is_empty(),
+            "kit focus rings below {}:1\n{}",
+            custom::GRAPHIC,
+            failures.join("\n")
+        );
+    }
+
     #[gpui::test]
     fn palette_application_hands_the_shared_button_its_fills_and_label(
         cx: &mut gpui::TestAppContext,

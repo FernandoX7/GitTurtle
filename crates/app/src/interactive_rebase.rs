@@ -963,9 +963,9 @@ mod tests {
     use core::prelude::v1::test;
 
     /// The rebase form opens with focus in its base field, which draws its
-    /// focus whole: its 1 px accent edge and the kit's ring outside it, whose
-    /// left side and foot the form's clip cut. It opened with focus on the
-    /// dialog's shell, which draws nothing. Once commits load, the sequence
+    /// focus whole: its 1 px accent edge and the Button's ring outside it,
+    /// whose left side and foot the form's clip cut. It opened with focus on
+    /// the dialog's shell, which draws nothing. Once commits load, the sequence
     /// holds focus and, after a key, draws its 1 px edge in the accent on all
     /// four sides; reopened on that sequence, the form starts there, ringed.
     #[gpui::test]

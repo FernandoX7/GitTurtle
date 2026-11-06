@@ -4,7 +4,8 @@ use crate::{
     ActiveTheme, Disableable, IconName, RoleOverride, Selectable, Sizable, Size, icon::IconNamed,
     text::Text, tooltip::ComponentTooltip, v_flex,
 };
-use crate::{StyledExt as _, ThemeStyled as _};
+use crate::StyledExt as _;
+use crate::styled::apply_focus_ring;
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
     ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
@@ -279,8 +280,10 @@ impl RenderOnce for Checkbox {
                 _ => this,
             })
             .rounded(cx.theme().radius * 0.5)
+            // GitTurtle patch: the Button's ring, which the application sets
+            // (`Theme::button_focus_ring`), in place of `focus_ring_style`'s.
             .when(is_focused && self.focus_ring_enabled, |this| {
-                this.focus_ring_style(window, cx)
+                apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
             })
             .refine_style(&self.style)
             .child(

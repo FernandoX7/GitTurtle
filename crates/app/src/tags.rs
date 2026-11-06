@@ -1643,20 +1643,49 @@ pub(crate) mod tests {
             && mask.bottom() + slack >= ring.bottom()
     }
 
-    /// Where the window painted each quad, then where each of `selectors`
-    /// lies.
+    /// Where the window painted each quad but the outlines drawn as `ring`
+    /// draws its strips, transparent and edged in its width and colour, then
+    /// where each of `selectors` lies. A focused Button, field or checkbox
+    /// paints those strips when `ring` is installed and a ring taking no room
+    /// paints none, so the layouts the ring-room checks compare both take
+    /// the installed ring and leave out the same outlines: its strips and any
+    /// other outline drawn alike, such as the theme editor's focused colour
+    /// picker's 2 px accent edge, in both. The scene orders quads by what each
+    /// overlaps, which those strips change, so the quads are listed by place
+    /// and size.
     fn layout(
         cx: &mut VisualTestContext,
         selectors: &[&'static str],
+        ring: FocusRing,
     ) -> (Vec<Bounds<Pixels>>, Vec<Bounds<Pixels>>) {
-        let quads = cx.update(|window, _| {
+        let mut quads: Vec<Bounds<Pixels>> = cx.update(|window, cx| {
             let scale = window.scale_factor();
+            let color = Theme::global(cx).ring.alpha(ring.opacity);
+            let width = ring.width;
             window
                 .painted_quads()
                 .into_iter()
+                .filter(|quad| {
+                    let widths = quad.border_widths;
+                    !(width > px(0.)
+                        && quad.background.is_transparent()
+                        && quad.border_color == color
+                        && [widths.top, widths.right, widths.bottom, widths.left]
+                            .into_iter()
+                            .all(|side| (side.as_f32() / scale - f32::from(width)).abs() < 0.01))
+                })
                 .map(|quad| logical(quad.bounds, scale))
                 .collect()
         });
+        let key = |bounds: &Bounds<Pixels>| {
+            (
+                bounds.left(),
+                bounds.top(),
+                bounds.size.width,
+                bounds.size.height,
+            )
+        };
+        quads.sort_by(|a, b| key(a).partial_cmp(&key(b)).expect("finite bounds"));
         let elements = selectors
             .iter()
             .map(|selector| rendered(cx, selector))
@@ -1749,14 +1778,16 @@ pub(crate) mod tests {
         fixed: &[&'static str],
     ) {
         assert_rings_whole(cx, controls);
+        let installed = cx.read(|cx| Theme::global(cx).button_focus_ring);
         let selectors = [controls, fixed].concat();
         park_pointer(cx);
-        let with_room = layout(cx, &selectors);
+        let with_room = layout(cx, &selectors, installed);
         for &control in controls {
             let center = rendered(cx, control).center();
             wheel(cx, center);
             park_pointer(cx);
-            if let Some(moved) = first_move(&with_room, &layout(cx, &selectors), &selectors) {
+            let after = layout(cx, &selectors, installed);
+            if let Some(moved) = first_move(&with_room, &after, &selectors) {
                 panic!("a wheel step over {control} scrolls content that fits: it moves {moved}");
             }
         }
@@ -1799,7 +1830,7 @@ pub(crate) mod tests {
         let footprint = installed.gap + installed.width;
         let selectors = [controls, fixed].concat();
         park_pointer(cx);
-        let with_room = layout(cx, &selectors);
+        let with_room = layout(cx, &selectors, installed);
         install_ring(
             cx,
             app,
@@ -1810,7 +1841,8 @@ pub(crate) mod tests {
             },
         );
         park_pointer(cx);
-        if let Some(moved) = first_move(&layout(cx, &selectors), &with_room, &selectors) {
+        let without_room = layout(cx, &selectors, installed);
+        if let Some(moved) = first_move(&without_room, &with_room, &selectors) {
             panic!("the room moves {moved}");
         }
         for &control in controls {

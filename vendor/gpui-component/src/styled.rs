@@ -17,8 +17,9 @@ const FOCUS_RING_OPACITY: f32 = 0.5;
 /// The default is the ring every control in the kit draws: 3px of the theme's
 /// `ring` colour at half opacity, directly outside the border.
 /// [`crate::Theme::button_focus_ring`] lets an application draw a different one
-/// around Buttons alone. Width and gap are expected to be non-negative: a
-/// negative gap paints the ring over the element's own fill.
+/// around Buttons, Switches, Inputs and Checkboxes. Width and gap are expected
+/// to be non-negative: a negative gap paints the ring over the element's own
+/// fill.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FocusRing {
     /// How wide the ring is.
@@ -434,9 +435,10 @@ pub trait ThemeStyled: Styled + Sized {
 
 /// Tint `element`'s border with the focus colour and draw `ring` outside it.
 ///
-/// [`ThemeStyled::focus_ring_style`] draws the default ring through this and
-/// Button draws [`crate::Theme::button_focus_ring`], so both are the same
-/// absolutely positioned child, which takes no layout space.
+/// [`ThemeStyled::focus_ring_style`] draws the default ring through this, and
+/// Button, Switch, Input and Checkbox draw [`crate::Theme::button_focus_ring`],
+/// so all are the same absolutely positioned child, which takes no layout
+/// space.
 pub(crate) fn apply_focus_ring<E: Styled + ParentElement>(
     mut element: E,
     ring: FocusRing,

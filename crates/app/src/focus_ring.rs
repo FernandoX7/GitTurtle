@@ -281,50 +281,71 @@ pub(crate) fn painted_outlines_where(
 
 /// The focused kit Input whose text lies in `text` draws its focus whole in
 /// the last frame: its own 1 px edge in the theme's ring colour, the accent,
-/// and the kit's ring outside that edge, every side of both inside the clips
-/// around the field.
+/// and outside that edge the ring a focused Button draws, the installed
+/// `Theme::button_focus_ring` (2 px of the full accent 1 px out, once a
+/// palette is applied), every side of both inside the clips around the
+/// field.
 #[cfg(test)]
 pub(crate) fn assert_input_ringed(
     cx: &mut gpui_kit::VisualTestContext,
     text: Bounds<Pixels>,
     field: &str,
 ) {
-    use gpui_kit::component::{FocusRing, Theme};
-    let kit = FocusRing::default();
-    let (edge_color, ring_color) = cx.read(|cx| {
-        let ring = Theme::global(cx).ring;
-        (ring, ring.alpha(kit.opacity))
+    use gpui_kit::component::Theme;
+    let (setting, edge_color, ring_color) = cx.read(|cx| {
+        let theme = Theme::global(cx);
+        let setting = theme.button_focus_ring;
+        (setting, theme.ring, theme.ring.alpha(setting.opacity))
     });
-    let edges: Vec<_> = painted_outlines(cx, edge_color)
+    let slack = px(1.);
+    let near = |drawn: Bounds<Pixels>, expected: Bounds<Pixels>| {
+        [
+            (drawn.left(), expected.left()),
+            (drawn.top(), expected.top()),
+            (drawn.right(), expected.right()),
+            (drawn.bottom(), expected.bottom()),
+        ]
+        .into_iter()
+        .all(|(drawn, expected)| (drawn - expected).abs() <= slack)
+    };
+    // At full opacity the ring is in the edge's colour too, so the edge is
+    // the innermost outline in it around the text.
+    let enclosing: Vec<_> = painted_outlines(cx, edge_color)
         .into_iter()
         .filter(|edge| edge.bounds.contains(&text.center()))
         .collect();
-    let [edge] = edges[..] else {
-        panic!("{field}: one accent edge around the field, {text:?}: {edges:?}");
+    let area = |outline: &PaintedOutline| {
+        f32::from(outline.bounds.size.width) * f32::from(outline.bounds.size.height)
+    };
+    let Some(edge) = enclosing
+        .iter()
+        .copied()
+        .min_by(|a, b| area(a).total_cmp(&area(b)))
+    else {
+        panic!("{field}: no accent edge around the field, {text:?}");
     };
     assert_eq!(edge.width, px(1.), "{field}: {edge:?}");
     assert!(
         edge.whole,
         "{field}: a clip cuts the field's edge: {edge:?}"
     );
-    let around = edge.bounds.dilate(kit.gap + kit.width);
-    let slack = px(1.);
+    let around = edge.bounds.dilate(setting.gap + setting.width);
+    let others: Vec<_> = enclosing
+        .iter()
+        .filter(|outline| outline.bounds != edge.bounds && !near(outline.bounds, around))
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{field}: one accent edge around the field, {text:?}: {enclosing:?}"
+    );
     let rings: Vec<_> = painted_outlines(cx, ring_color)
         .into_iter()
-        .filter(|ring| {
-            [
-                (ring.bounds.left(), around.left()),
-                (ring.bounds.top(), around.top()),
-                (ring.bounds.right(), around.right()),
-                (ring.bounds.bottom(), around.bottom()),
-            ]
-            .into_iter()
-            .all(|(drawn, expected)| (drawn - expected).abs() <= slack)
-        })
+        .filter(|ring| near(ring.bounds, around))
         .collect();
     let [ring] = rings[..] else {
-        panic!("{field}: one ring around the field's edge, {around:?}: {rings:?}");
+        panic!("{field}: one ring around the field's edge, {around:?}, as {setting:?}: {rings:?}");
     };
+    assert_eq!(ring.width, setting.width, "{field}: {ring:?}");
     assert!(
         ring.whole,
         "{field}: a clip cuts the field's ring: {ring:?}"
