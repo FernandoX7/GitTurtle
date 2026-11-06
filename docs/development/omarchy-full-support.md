@@ -756,10 +756,10 @@ cover current upstream x86-64 Omarchy.
          focus returned once, never over a later click; a dialog opened as another closes keeps
          its return; Back's return forgotten on every way out of Settings; a dialog opened before
          Back's frame keeps focus; History's search held for a loading tab and run or dropped as
-         its restore ends). Left as FU19-A5 (briefed): the held search lost at
-         `restore_tab_selection`'s `selected.is_none()`; a read the person starts during a
-         restore drops it (decided); Back's control inside a first dialog as a return target;
-         restores stuck by `history_paging.rs`'s early returns. Still to verify: a live
+         its restore ends). FU19-A5 landed too (every restore end runs or drops the held search; a
+         restore always ends, including a refused 4 KiB query and a write-refused search).
+         Left (low): an opener drawn on both pages keeps BASE behaviour; a refused page leaves
+         `history_paging.scope` pinned; a saved offset beyond `next_offset` shows an empty window. Still to verify: a live
          preparation dimming Projects while its shortcut cancels it (PG5, `main.rs`).
        - (C2) Editor highlights' palette rules: FU19-C2 to C5 landed 2026-11-05 night (More
          contrast word tints beyond their lines, Find's other matches fitted by the text rule, the
@@ -800,8 +800,8 @@ cover current upstream x86-64 Omarchy.
        - (A) Overflow and scroll cues, M (FU20-A and FU20-A2 landed 2026-11-05 night: the branch
          chooser, the profile dialogs, the worktree manager, the conflict draft in whole code lines,
          the commit message's overflow cue inside its viewport; FU20-A3 landed (the branch picker's and branch dialogs'
-         disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 (the conflict review scrolling
-         in a short window, decided) in flight): the profiles menu's disabled items without a
+         disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 landed (the conflict review scrolling in a short
+         window, decided; a focus the app moves for the person reveals its target)): the profiles menu's disabled items without a
          reason (verify, with FU19-F's `profiles.rs`); `MESSAGE_FADE` in `commit_message.rs`
          copies `tags::EDGE_FADE` (make it `pub(crate)` when `tags.rs` is next open).
        - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
