@@ -751,8 +751,8 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
-     - **FU19 (B, C, D and G landed 2026-11-05 afternoon; A, C2 and E+H in flight; F waits for FU19-A's kit dialog file):**
-       - (A, in flight from `cf08ff43`) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
+     - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
+       - (A, in flight from `cf08ff43` as FU19-A2/A3; items 1-3, 5a and CR1's first two edge cases done, CR1's third in A3) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
          app's recheck moves it at 300 ms, overriding a click (FU13-A 2-3; kit `dialog.rs`,
          `main.rs`); a dialog opened while another closes loses its restore target (FU13-A 4,
          `main.rs`); `open()` clears `page_return_focus` while Ctrl+1/2 from Settings leave it
@@ -764,7 +764,7 @@ cover current upstream x86-64 Omarchy.
          Find waits for the tab, verify, `main.rs`); `modal_return_focus` untested
          (`page_navigation.rs:392`); a live preparation still dims Projects while its
          shortcut cancels it (PG5, verify, `main.rs`).
-       - (C2, in flight from `0824b23e`) Editor highlights' palette rules (decided 2026-11-05
+       - (C2, in flight from `0824b23e` as FU19-C3/C4: item 1 done, its review fixups and the hover tokens in C4) Editor highlights' palette rules (decided 2026-11-05
          afternoon): under More contrast the word tint beyond its line from the canvas, Find's other
          matches in their own fitted colour, the selection and current match apart, each with a
          lightness gap, Off byte-identical; in every mode a hovered row never heavier than the
@@ -790,7 +790,7 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
-       - (GitHub Files, in flight as FU20-GH2 from `1d30af48`, item 0 done; decided 2026-11-05) the panel's Files section fits a narrow
+       - (GitHub Files, in flight as FU20-GH3's review fixups at `eb4ccfee` (items 0-2, the padding rows and the selector done); left after it: one run a text with an `#[ignore]` release bench (FU20-GH item 3: `text_lines` `review.rs:442` runs for every text each frame, `Collecting::spans` allocates), the sweep once and always-on when green (item 4), rows over-reported above an editor's box at the top, stacked Changes' range hint below the body's foot, the first frame when Files is the first section; decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
@@ -800,26 +800,26 @@ cover current upstream x86-64 Omarchy.
          the D+E review's bounded list span, scrolled-editor test and padding rows;
          `the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn` always-on once green
          (`github_view*`, `focus_reveal.rs`).
-       - (A) Overflow and scroll cues, M (after FU18-B): the worktree and profile managers
+       - (A) Overflow and scroll cues, M (after FU18-B; FU20-A in flight at `73f886b0` with review fixups: the branch chooser, the profile dialogs and the worktree manager done, the row ring did not reproduce; the rest below stays): the worktree and profile managers
          cut text with no scroll cue; a worktree row's ring against its border; the branch
          chooser's Tab does not scroll rows into view (verify; `worktrees.rs`, `profiles.rs`,
          `branch_actions.rs`); the conflict result draft's fixed 160 px height and 12 pt line
          pitch at code 18 pt (`conflicts.rs:779`); the branch picker's and profiles menu's
          disabled items without a reason (verify); a 16 × 2 px scrollbar strip above the
          message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`).
-       - (History, remaining) S: other generation bumps can strand the partial subscription
+       - (History, remaining; FU20-H in flight from `f569ce8f` with all but the tracking-branch feedback) S: other generation bumps can strand the partial subscription
          (FU13-C 2, `history_updates.rs`, `history_search.rs`); Reflog and Tags rows keep index
          keys for their focus handles (no row menu or kept selection; FU19-G2, low); tracking-branch
          creation gives no feedback (brief 9 task C, verify, `branch_actions.rs:1347`);
          `labelled_scope_toolbar_width` reads the line key itself (`views.rs:6594`; verify it runs
          each frame); a stash click during a list read drops Refresh's answer (`recovery.rs`, FU19-G review).
-       - (C) Text cuts, M (vendor, security re-review): GPUI's own `.truncate()`
-         (`LineWrapper::truncate_line`, gpui-pre 0.3.4) cuts between characters and trims
-         punctuation per character, and draws every overflow ellipsis (subjects, branches, tabs,
-         paths); the floors that mirror it (`views.rs` `scope_name_min_width`, `repository_tabs.rs`
-         `tab_label_widths`, `workspace.rs`'s composer heading floor) follow it. The app's own cuts
-         move to grapheme clusters with FU19-D5 (in flight, with Return in a rewritten series).
-       - (D) Small visible polish, S: popover clicks not audited for reduce motion
+       - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
+          (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
+          cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
+          the 78,000-line core for a rare visual cut is not worth its upkeep and review surface. Revisit if
+          `gpui-pre` is vendored for another reason or upstream cuts at clusters. The app's own cuts follow
+          grapheme clusters (FU19-D5, landed).
+        - (D) Small visible polish, S (FU20-D in flight from `f569ce8f`: the Settings empty name and `LineKey` against a scale change): popover clicks not audited for reduce motion
          (`popover.rs`); the tab ring's padding at scale 1.5 and `tab_whole_widths` allocating
          per frame (PH1, `repository_tabs.rs:2709`); `LineKey` caches against a display-scale
          change (`editor_find.rs`, verify); a still-loading file restarts its decode on
@@ -846,7 +846,8 @@ cover current upstream x86-64 Omarchy.
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
        clip (brief 12).
-     - **Dialog Enter nits (FU18-C re-checks):** the window's Enter mark goes stale when the
+     - **Kit input drawing (FU20-GH3, by reading):** a multi-line Input clips its rows only sideways and paints one row past its viewport with no vertical clip (`vendor/gpui-base/src/input/base/state.rs:3416`, `element.rs:1187`): an overflowing text area (the review summary, the composers) may draw a row over its border; a native look first (QA-105), then a vendor fix with a security re-review. Also `conversations.rs:669` replaces a part selector (harmless).
+      - **Dialog Enter nits (FU18-C re-checks; FU19-D5's X11 residuals: a repeat's unpaired release at a poll batch's end can start a fresh press; a held Enter on a Button that keeps focus presses on each X11 repeat; macOS Enter-then-Command may lose one Return):** the window's Enter mark goes stale when the
        release lands in another window (one ignored Enter; clear it on deactivation); a
        single-line field's own Enter binding still runs on held repeats (no repository write
        submits that way).
