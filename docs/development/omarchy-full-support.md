@@ -761,11 +761,16 @@ cover current upstream x86-64 Omarchy.
        row the list may have just spoken at a search's rest (as the palette did); the palette's first
        row may be heard twice on open (QA-106 listens); the Linux Main Menu's 0.25 rem gap beside a
        selected first tab at 11 pt may let its ring reach into the tab (verify, `views.rs`
-       `tab_list_room`, as FU22-C fixed between tabs).
+       `tab_list_room`, as FU22-C fixed between tabs). Palette, pre-existing (FU22-B review): a key
+       burst that ends on the reading it started from stays silent even where Orca last spoke another
+       row; a click on an unavailable row leaves the status's reading stale (only the error alert is
+       heard); held Down repeats under 100 ms apart leave the row they end on unheard (QA-94's quiet
+       moves).
      - **Test infrastructure (2026-11-06; FU20-M and FU22-A (the PDF helper test's torn status read)
-       landed, the testing skill names the recurring races; FU23-A in flight):** (verify) `564d0be6` credits macOS font metrics, but
-       `#[gpui::test]` layout uses the fixed-advance `NoopTextSystem` on every platform: find the
-       race it hid, as FU20-M did for `more_contrast_moves_nothing_on_any_page`;
+       landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
+       macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
+       `preferences::test_settings_directory` (`preferences.rs:1052`) can leave `gitturtle-app-tests-*`
+       directories behind (background executors hold the `TempDir` past exit);
        `views::tests::narrow_history_keeps_paging_in_the_column` reads status
        layouts kept from its first seed (fails at `ITERATIONS=2`: 214 of 216 after Older; several caches
        to empty; FU19-F1c's sweep).
@@ -810,19 +815,15 @@ cover current upstream x86-64 Omarchy.
          the commit message's overflow cue inside its viewport; FU20-A3 landed (the branch picker's and branch dialogs'
          disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 landed (the conflict review scrolling in a short
          window, decided; a focus the app moves for the person reveals its target)): the profiles menu's disabled items without a
-         reason (verify, with FU19-F's `profiles.rs`); `MESSAGE_FADE` in `commit_message.rs`
-         copies `tags::EDGE_FADE` (make it `pub(crate)` when `tags.rs` is next open).
-       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
+         reason (verify, with FU19-F's `profiles.rs`);
+       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left (FU22-D landed 2026-11-06: `FocusReveal` keeps handles only for drawn, focused or elsewhere-held controls): a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
        - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
           (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
           cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
           the 78,000-line core for a rare visual cut is not worth its upkeep and review surface. Revisit if
           `gpui-pre` is vendored for another reason or upstream cuts at clusters. The app's own cuts follow
           grapheme clusters (FU19-D5, landed).
-        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale): popover clicks not audited for reduce motion
-         (`popover.rs`); the tab ring's padding at scale 1.5 and `tab_whole_widths` allocating
-         per frame (PH1, `repository_tabs.rs:2709`); a still-loading file restarts its decode on
-         reselection (verify, `main.rs`); the caret drawn late after focus (kit blink, verify);
+        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale; FU22-C landed 2026-11-06: tabs keep a ring's room apart at 11 pt (the 1.5 padding was the shared outset rounding), a preview chosen again during its in-process decode takes it over (every other phase still stops on supersede, Back and close), popover reduce motion did not reproduce (guard test); `tab_whole_widths` is test-only): the caret drawn late after focus (kit blink, verify; FU23-B in flight);
          the 2026-10-28 taste items decided then (profile tile, review row
          pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
          verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
@@ -837,7 +838,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label and `empty_state.rs:131-140`'s edge tooltip and id still format each frame; FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
+     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); `ChromeText` makes about 15 allocations a frame (`views.rs:4287`,
        release measurement first); `tags.rs:212` reads `window.text_style()` each frame;
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
