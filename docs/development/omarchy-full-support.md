@@ -790,7 +790,7 @@ cover current upstream x86-64 Omarchy.
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
      - **FU20 (proposed):**
-       - (GitHub Files, in flight as FU20-GH3's review fixups at `eb4ccfee` (items 0-2, the padding rows and the selector done); left after it: one run a text with an `#[ignore]` release bench (FU20-GH item 3: `text_lines` `review.rs:442` runs for every text each frame, `Collecting::spans` allocates), the sweep once and always-on when green (item 4), rows over-reported above an editor's box at the top, stacked Changes' range hint below the body's foot, the first frame when Files is the first section; decided 2026-11-05) the panel's Files section fits a narrow
+       - (GitHub Files: FU20-GH landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return; rows over-reported above an editor's box fixed); left: FU20-GH4 (briefed, hard): `top_line` recorded only while a file is selected, stacked Changes' range hint below the body's foot, the first frame when Files is the first section, the `mode_row_width` cache's tests; FU20-GH5 (briefed): one run a text with an `#[ignore]` release bench (`text_lines` `review.rs:442` runs for every text each frame, `Collecting::spans` allocates), the sweep once and always-on when green; also soft-wrapped rows above an editor's top row uncounted (low) and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
          rest (never fewer than five lines), the mode row wrapping inside the body's width,
          every ring whole (FU18-F's sweep at 461 × 490: the mode Buttons' rings reach x 449.5 /
@@ -819,13 +819,11 @@ cover current upstream x86-64 Omarchy.
           the 78,000-line core for a rare visual cut is not worth its upkeep and review surface. Revisit if
           `gpui-pre` is vendored for another reason or upstream cuts at clusters. The app's own cuts follow
           grapheme clusters (FU19-D5, landed).
-        - (D) Small visible polish, S (FU20-D in flight from `f569ce8f`: the Settings empty name and `LineKey` against a scale change): popover clicks not audited for reduce motion
+        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale): popover clicks not audited for reduce motion
          (`popover.rs`); the tab ring's padding at scale 1.5 and `tab_whole_widths` allocating
-         per frame (PH1, `repository_tabs.rs:2709`); `LineKey` caches against a display-scale
-         change (`editor_find.rs`, verify); a still-loading file restarts its decode on
+         per frame (PH1, `repository_tabs.rs:2709`); a still-loading file restarts its decode on
          reselection (verify, `main.rs`); the caret drawn late after focus (kit blink, verify);
-         a Settings entry with an empty accessible name at Tab 47 (AT-SPI walk first,
-         `settings.rs`); the 2026-10-28 taste items decided then (profile tile, review row
+         the 2026-10-28 taste items decided then (profile tile, review row
          pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
          verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
          `settings-themes.png` retaken (with a native round).
