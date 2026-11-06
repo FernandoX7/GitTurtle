@@ -52,6 +52,73 @@ const PROFILE_ICON: &str = "icons/user.svg";
 
 use crate::native_accessibility::text as label;
 
+/// What the header picker's label is made of
+/// ([`GitTurtle::profile_label`]): borrowed from the window's state where it
+/// is compared, owned where a cache keeps it ([`Self::owned`]).
+#[derive(Clone, PartialEq)]
+pub(super) enum ProfileLabel<'a> {
+    /// The profile assigned to the worktree, by its label, and whether the
+    /// effective identity differs from it.
+    Assigned { label: Cow<'a, str>, differs: bool },
+    /// The effective author's name, with no profile assigned.
+    Effective(Cow<'a, str>),
+    /// Neither: the picker says "Profiles".
+    None,
+}
+
+impl ProfileLabel<'_> {
+    /// The label as the picker draws it.
+    fn text(self) -> String {
+        #[cfg(test)]
+        PROFILE_LABELS_BUILT.with(|built| built.set(built.get() + 1));
+        match self {
+            Self::Assigned { label, differs } => {
+                format!("{label}{}", if differs { " · differs" } else { "" })
+            }
+            Self::Effective(name) => name.into_owned(),
+            Self::None => "Profiles".into(),
+        }
+    }
+
+    /// This label as a key a cache keeps, owning what it borrowed.
+    pub(super) fn owned(&self) -> ProfileLabel<'static> {
+        match self {
+            Self::Assigned { label, differs } => ProfileLabel::Assigned {
+                label: Cow::Owned(String::from(&**label)),
+                differs: *differs,
+            },
+            Self::Effective(name) => ProfileLabel::Effective(Cow::Owned(String::from(&**name))),
+            Self::None => ProfileLabel::None,
+        }
+    }
+}
+
+/// Whether an assigned profile matches the effective identity, by both.
+type ProfileMatches =
+    std::cell::RefCell<crate::views::Measured<(Definition, gitturtle_core::GitProfile), bool>>;
+/// The picker's label as drawn, by what it is made of.
+type ProfileTitles =
+    std::cell::RefCell<crate::views::Measured<ProfileLabel<'static>, SharedString>>;
+
+thread_local! {
+    /// Whether each assigned profile drawn lately matches the effective
+    /// identity, by both ([`GitTurtle::profile_label`]).
+    static PROFILE_MATCHES: ProfileMatches =
+        const { std::cell::RefCell::new(crate::views::Measured::new()) };
+    /// The picker's label as drawn lately, by what it is made of
+    /// ([`GitTurtle::shown_profile_title`]).
+    static PROFILE_TITLES: ProfileTitles =
+        const { std::cell::RefCell::new(crate::views::Measured::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times the picker's label was formatted
+    /// ([`ProfileLabel::text`]), for a test.
+    pub(crate) static PROFILE_LABELS_BUILT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// The profile menu's first line: the identity Git authors with now, after
 /// "Current:", so it is not read as one of the saved profiles below it. A
 /// missing name or email is left out rather than drawn as empty brackets.
@@ -96,30 +163,54 @@ impl GitTurtle {
     /// The header picker's label: the assigned profile, marked where it
     /// differs from the effective identity, or the effective author's name.
     pub(super) fn profile_title(&self) -> String {
+        self.profile_label().text()
+    }
+
+    /// What [`Self::profile_title`] is made of, borrowed, so the header
+    /// compares it each frame without formatting the label: the assigned
+    /// profile's label and whether the effective identity differs from it,
+    /// or else the effective author's name, if any. Whether it differs is
+    /// decided again only when the assigned profile or the effective
+    /// identity changes ([`PROFILE_MATCHES`]): its comparison clones the
+    /// profile's identity.
+    pub(super) fn profile_label(&self) -> ProfileLabel<'_> {
         let assignment = self
             .path
             .as_ref()
             .and_then(|path| self.profiles.store.as_ref()?.assigned(path));
-        let mismatch = assignment.is_some_and(|saved| {
-            self.profile
-                .as_ref()
-                .is_some_and(|effective| !saved.identity().matches(effective))
-        });
-        assignment
-            .map(|saved| {
-                format!(
-                    "{}{}",
-                    saved.label,
-                    if mismatch { " · differs" } else { "" }
+        match (assignment, self.profile.as_ref()) {
+            (Some(saved), effective) => ProfileLabel::Assigned {
+                label: Cow::Borrowed(&saved.label),
+                differs: effective.is_some_and(|effective| {
+                    !PROFILE_MATCHES.with_borrow_mut(|matches| {
+                        *matches.get_where(
+                            |(kept, against)| kept == saved && against == effective,
+                            || (saved.clone(), effective.clone()),
+                            |(saved, effective)| saved.identity().matches(effective),
+                        )
+                    })
+                }),
+            },
+            (None, Some(effective)) if !effective.name.is_empty() => {
+                ProfileLabel::Effective(Cow::Borrowed(&effective.name))
+            }
+            (None, _) => ProfileLabel::None,
+        }
+    }
+
+    /// [`Self::profile_title`] as the picker draws it, formatted again only
+    /// when what it is made of changes ([`PROFILE_TITLES`]).
+    fn shown_profile_title(&self) -> SharedString {
+        let label = self.profile_label();
+        PROFILE_TITLES.with_borrow_mut(|titles| {
+            titles
+                .get_where(
+                    |kept| *kept == label,
+                    || label.owned(),
+                    |label| label.clone().text().into(),
                 )
-            })
-            .unwrap_or_else(|| {
-                self.profile
-                    .as_ref()
-                    .filter(|profile| !profile.name.is_empty())
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| "Profiles".into())
-            })
+                .clone()
+        })
     }
 
     /// The picker, [`ROW_CONTROL`] px tall at the default interface size, as
@@ -133,7 +224,7 @@ impl GitTurtle {
         row: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let title = self.profile_title();
+        let title = self.shown_profile_title();
         let owner = cx.entity().downgrade();
         let size = ROW_CONTROL;
         crate::views::note_control_icon(&"profile".into(), PROFILE_ICON);

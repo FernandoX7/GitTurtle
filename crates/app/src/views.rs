@@ -4381,8 +4381,8 @@ pub(crate) enum SyncForm {
     Icons,
 }
 
-/// The text the full chrome lays out, other than its fixed labels.
-#[derive(Clone, Default, PartialEq)]
+/// The text the full chrome lays out, other than its fixed labels, built
+/// only to be measured, when what it is made of changes ([`ChromeInputs`]).
 struct ChromeText {
     changes: String,
     profile: String,
@@ -4409,6 +4409,92 @@ struct ChromeText {
     /// that label with its repository, as the progress label starts.
     busy: String,
     busy_named: String,
+}
+
+/// What [`ChromeText`] is made of, borrowed from the window's state, so a
+/// render compares it with what each kept [`ChromeWidths`] was measured
+/// from without building the text: the chrome built its fifteen strings at
+/// every lookup, ten a frame on the repository page, only to find them
+/// unchanged. The text is built and measured again only when one of these
+/// changes, or the font, the sizes or the scale do
+/// (`GitTurtle::chrome_widths`). Each field is everything one of the text's
+/// builders reads, so a change any of them would show changes this.
+#[derive(PartialEq)]
+struct ChromeInputs<'a> {
+    /// The working status, once read: the count `changes_label` reads, the
+    /// branch, HEAD and upstream the branch, its compact label and the
+    /// edge read, the counts and the operation in progress.
+    status: Option<StatusInputs<'a>>,
+    /// Whether a remote is configured, which decides the edge with them
+    /// (`RepositoryEdge::of`).
+    remotes: bool,
+    /// What the profile picker's label is made of
+    /// (`GitTurtle::profile_label`).
+    profile: crate::profiles::ProfileLabel<'a>,
+    /// The repository and the running write's repository, each with the
+    /// name it was given, if any (`GitTurtle::project_name`).
+    repository: Option<NamedPath<'a>>,
+    operation_repository: Option<NamedPath<'a>>,
+    /// The running write's own label.
+    busy: Option<&'static str>,
+}
+
+/// The parts of the working status the chrome's text shows
+/// ([`ChromeInputs`]).
+#[derive(PartialEq)]
+struct StatusInputs<'a> {
+    entries: usize,
+    branch: Option<Cow<'a, str>>,
+    head: Option<Cow<'a, str>>,
+    upstream: bool,
+    ahead: u64,
+    behind: u64,
+    operation: Option<Cow<'a, str>>,
+}
+
+/// A repository's path and the name it was given, if any, of which
+/// `GitTurtle::project_name` makes the name it shows.
+#[derive(PartialEq)]
+struct NamedPath<'a> {
+    path: Cow<'a, std::path::Path>,
+    named: Option<Cow<'a, str>>,
+}
+
+impl<'a> NamedPath<'a> {
+    /// `path` with the name `names` gives it, if any.
+    fn of(path: &'a std::path::Path, names: &'a HashMap<PathBuf, String>) -> Self {
+        Self {
+            named: names.get(path).map(|name| Cow::Borrowed(name.as_str())),
+            path: Cow::Borrowed(path),
+        }
+    }
+}
+
+impl ChromeInputs<'_> {
+    /// These inputs as a key a cache keeps, owning what they borrowed.
+    fn owned(&self) -> ChromeInputs<'static> {
+        let text = |text: &Cow<str>| Cow::Owned(String::from(&**text));
+        let named = |named: &NamedPath| NamedPath {
+            path: Cow::Owned(named.path.to_path_buf()),
+            named: named.named.as_ref().map(text),
+        };
+        ChromeInputs {
+            status: self.status.as_ref().map(|status| StatusInputs {
+                entries: status.entries,
+                branch: status.branch.as_ref().map(text),
+                head: status.head.as_ref().map(text),
+                upstream: status.upstream,
+                ahead: status.ahead,
+                behind: status.behind,
+                operation: status.operation.as_ref().map(text),
+            }),
+            remotes: self.remotes,
+            profile: self.profile.owned(),
+            repository: self.repository.as_ref().map(named),
+            operation_repository: self.operation_repository.as_ref().map(named),
+            busy: self.busy,
+        }
+    }
 }
 
 /// The widths `ChromeText` and the chrome's fixed labels take, each as its
@@ -4500,12 +4586,16 @@ impl ChromeWidths {
     }
 }
 
+/// [`ChromeWidths`] by font, sizes, scale factor and what the text is made
+/// of ([`ChromeInputs`]).
+type ChromeWidthsCache = RefCell<Measured<(LineKey, u32, ChromeInputs<'static>), ChromeWidths>>;
+
 thread_local! {
-    /// [`ChromeWidths`] for each chrome text, font, sizes and scale factor
-    /// drawn lately, so the windows and text sizes drawn in turn keep their
-    /// own; its widths snap to the window's device pixels.
-    static CHROME_WIDTHS: RefCell<Measured<(LineKey, u32, ChromeText), ChromeWidths>> =
-        const { RefCell::new(Measured::new()) };
+    /// [`ChromeWidths`] for what each chrome text was made of, and each
+    /// font, sizes and scale factor, drawn lately, so the windows and text
+    /// sizes drawn in turn keep their own; its widths snap to the window's
+    /// device pixels.
+    static CHROME_WIDTHS: ChromeWidthsCache = const { RefCell::new(Measured::new()) };
     /// The header's repository name and path as they show in their room
     /// (`GitTurtle::shown_identity`), for each text, room, font, size and
     /// scale factor drawn lately.
@@ -5504,18 +5594,59 @@ impl GitTurtle {
         compare_toolbar_height(column, columns.content - rail, window)
     }
 
-    /// `ChromeWidths` for the chrome's current text, measured again only when
-    /// the text, the font or the sizes change, so a steady render asks the
-    /// text system nothing. Each window's text, and each text size, keeps
-    /// its own ([`Measured`]): kept in one slot, two windows' repositories
-    /// measured again on each other's frames.
+    /// `ChromeWidths` for the chrome's current text, built and measured
+    /// again only when what it is made of ([`ChromeInputs`]), the font, the
+    /// sizes or the scale change, so a steady render builds none of its
+    /// strings and asks the text system nothing. Each window's text, and
+    /// each text size, keeps its own ([`Measured`]): kept in one slot, two
+    /// windows' repositories measured again on each other's frames.
     fn chrome_widths(&self, window: &Window) -> ChromeWidths {
+        let line = LineKey::current(window);
+        let scale = window.scale_factor().to_bits();
+        let inputs = self.chrome_inputs();
+        CHROME_WIDTHS.with_borrow_mut(|cache| {
+            *cache.get_where(
+                |(kept_line, kept_scale, kept)| {
+                    *kept_scale == scale && *kept_line == line && *kept == inputs
+                },
+                || (line.clone(), scale, inputs.owned()),
+                |_| ChromeWidths::measure(&self.chrome_text(), window),
+            )
+        })
+    }
+
+    /// What the chrome's text is made of now, borrowed.
+    fn chrome_inputs(&self) -> ChromeInputs<'_> {
+        let names = &self.project_names;
+        ChromeInputs {
+            status: self.work_status.as_deref().map(|status| StatusInputs {
+                entries: status.entries.len(),
+                branch: status.branch.as_deref().map(Cow::Borrowed),
+                head: status.head.as_deref().map(Cow::Borrowed),
+                upstream: status.upstream.is_some(),
+                ahead: status.ahead,
+                behind: status.behind,
+                operation: status.operation.as_deref().map(Cow::Borrowed),
+            }),
+            remotes: !self.remotes.is_empty(),
+            profile: self.profile_label(),
+            repository: (self.repository.as_ref()).map(|repo| NamedPath::of(repo.path(), names)),
+            operation_repository: (self.operation_repository.as_deref())
+                .map(|path| NamedPath::of(path, names)),
+            busy: self.operation_busy,
+        }
+    }
+
+    /// The chrome's text, as [`ChromeInputs`] make it.
+    fn chrome_text(&self) -> ChromeText {
+        #[cfg(test)]
+        CHROME_TEXT_BUILT.with(|built| built.set(built.get() + 1));
         let status = self.work_status.as_ref();
         let edge = self.repository_edge();
         let branch = status
             .and_then(|status| status.branch.clone())
             .unwrap_or("Detached HEAD".into());
-        let text = ChromeText {
+        ChromeText {
             changes: self.changes_label(),
             profile: self.profile_title(),
             // The label beside which the line is measured
@@ -5548,15 +5679,7 @@ impl GitTurtle {
             busy_named: self
                 .operation_busy
                 .map_or_else(String::new, |label| self.operation_text(label)),
-        };
-        let key = (
-            LineKey::current(window),
-            window.scale_factor().to_bits(),
-            text,
-        );
-        CHROME_WIDTHS.with_borrow_mut(|cache| {
-            *cache.get(key, |(_, _, text)| ChromeWidths::measure(text, window))
-        })
+        }
     }
 
     /// The shared `button` helper's width around a `label` this wide: its
@@ -7629,6 +7752,9 @@ thread_local! {
     /// How many times [`ChromeWidths`] and [`StatusWidths`] were measured,
     /// for a test.
     static CHROME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the chrome's text was built (`GitTurtle::chrome_text`),
+    /// for a test.
+    static CHROME_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static STATUS_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many times the status line's whole text was measured for spare
     /// hints ([`STATUS_TEXT`]), for a test.
@@ -21960,6 +22086,222 @@ pub(crate) mod tests {
             "the chrome's and the status bar's widths are measured once for each size"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The chrome builds its text only when what it is made of changes
+    /// ([`ChromeInputs`]): frames at rest build none of it, nor the profile
+    /// picker's label, where every lookup, ten a frame, built its fifteen
+    /// strings only to find them unchanged, and formatted the profile's
+    /// label to compare it. A switched branch, changed counts, a renamed
+    /// project, another profile, a remote, a running write, an operation in
+    /// progress and a new text size each build it once, in the frame that
+    /// shows them, and the widths the chrome lays out are the new labels' as
+    /// the bar draws them; a state drawn lately, such as the write's end,
+    /// finds its text kept.
+    #[gpui::test]
+    async fn the_chrome_builds_its_text_only_when_what_it_shows_changes(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(&app, cx).await;
+        let built = || CHROME_TEXT_BUILT.with(std::cell::Cell::get);
+        let labels = || crate::profiles::PROFILE_LABELS_BUILT.with(std::cell::Cell::get);
+        // The chrome's text and the profile's label built by frames at rest.
+        let at_rest = |cx: &mut VisualTestContext| {
+            let before = (built(), labels());
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            (built() - before.0, labels() - before.1)
+        };
+        // Each change builds the text once, in the frame that draws it, and
+        // frames at rest after it build none.
+        let change = |what: &str, cx: &mut VisualTestContext, update: &dyn Fn(&mut GitTurtle)| {
+            let before = built();
+            app.update(cx, |app, cx| {
+                update(app);
+                cx.notify()
+            });
+            draw(cx);
+            assert_eq!(built() - before, 1, "{what}: the text is built once");
+            assert_eq!(at_rest(cx), (0, 0), "{what}: and not again at rest");
+        };
+        fn status(app: &mut GitTurtle) -> &mut gitturtle_core::RepositoryStatus {
+            Arc::make_mut(app.work_status.as_mut().expect("the status is read"))
+        }
+        // The width the chrome lays out for `pick`, and `text`'s as its
+        // control draws it, at `size` and `weight` (the interface weight
+        // where `None`).
+        let width = |cx: &mut VisualTestContext,
+                     pick: fn(&ChromeWidths) -> Pixels,
+                     text: &str,
+                     size: f32,
+                     weight: Option<FontWeight>| {
+            cx.update(|window, cx| {
+                let weight = weight.unwrap_or(window.text_style().font_weight);
+                (
+                    pick(&app.read(cx).chrome_widths(window)),
+                    laid_out_text_width(
+                        shaped_width(text, appearance::ui_text(size), weight, window),
+                        window,
+                    ),
+                )
+            })
+        };
+        assert_eq!(
+            at_rest(cx),
+            (0, 0),
+            "frames at rest build none of the text, nor the profile's label"
+        );
+
+        let picker = cx
+            .debug_bounds("current-branch")
+            .expect("the branch picker");
+        let branch = "feature/a-branch-name-long-enough-to-widen-the-picker";
+        change("a switched branch", cx, &|app| {
+            status(app).branch = Some(branch.into())
+        });
+        let (laid, drawn) = width(cx, |w| w.branch, branch, 12., Some(FontWeight::MEDIUM));
+        assert_eq!(laid, drawn, "the branch's width is the new name's");
+        assert!(
+            cx.debug_bounds("current-branch")
+                .is_some_and(|wider| wider.size.width > picker.size.width),
+            "the picker draws the new name"
+        );
+
+        change("one fewer working file", cx, &|app| {
+            status(app).entries.pop();
+        });
+        let (laid, drawn) = width(cx, |w| w.changes, "Changes · 2", 12., None);
+        assert_eq!(laid, drawn, "the Changes label's width is the new count's");
+
+        let name = "A renamed project";
+        change("a renamed project", cx, &|app| {
+            let path = app.repository.as_ref().expect("a repository").path();
+            app.project_names.insert(path.to_owned(), name.into());
+        });
+        let (laid, drawn) = width(cx, |w| w.name, name, 14., Some(FontWeight::SEMIBOLD));
+        assert_eq!(laid, drawn, "the compact header's name is the new one's");
+
+        let button = cx
+            .debug_bounds("profile-button")
+            .expect("the profile picker");
+        let profile = "Alexandra Montgomery-Fitzgerald";
+        change("another profile", cx, &|app| {
+            app.profile = Some(gitturtle_core::GitProfile {
+                name: profile.into(),
+                ..app.profile.clone().unwrap_or_default()
+            });
+        });
+        let (laid, drawn) = cx.update(|window, cx| {
+            (
+                app.read(cx).chrome_widths(window).profile,
+                laid_out_text_width(
+                    shaped_width(
+                        profile,
+                        window.rem_size(),
+                        window.text_style().font_weight,
+                        window,
+                    ),
+                    window,
+                ),
+            )
+        });
+        assert_eq!(laid, drawn, "the profile's width is the new label's");
+        assert!(
+            cx.debug_bounds("profile-button")
+                .is_some_and(|wider| wider.size.width > button.size.width),
+            "the picker draws the new label"
+        );
+
+        change("a remote", cx, &|app| {
+            app.remotes.push(gitturtle_core::Remote {
+                name: "origin".into(),
+                url: "https://example.invalid/fixture.git".into(),
+                push_url: "https://example.invalid/fixture.git".into(),
+            });
+        });
+        for (pick, text) in [
+            (
+                (|w: &ChromeWidths| w.edge) as fn(&ChromeWidths) -> Pixels,
+                "No upstream · Push sets one",
+            ),
+            (|w| w.edge_short, "No upstream"),
+        ] {
+            let (laid, drawn) = width(cx, pick, text, 12., None);
+            assert_eq!(laid, drawn, "the edge's widths are {text:?}'s");
+        }
+
+        change("an upstream with counts", cx, &|app| {
+            let status = status(app);
+            status.upstream = Some("origin/main".into());
+            status.ahead = 3;
+            status.behind = 1_204;
+        });
+        for (pick, text) in [
+            (
+                (|w: &ChromeWidths| w.ahead) as fn(&ChromeWidths) -> Pixels,
+                "3 ahead",
+            ),
+            (|w| w.behind, "1204 behind"),
+            (|w| w.behind_count, "1204"),
+        ] {
+            let (laid, drawn) = width(cx, pick, text, 11., None);
+            assert_eq!(laid, drawn, "the counts' widths are {text:?}'s");
+        }
+        assert!(
+            cx.debug_bounds("branch-behind-count").is_some(),
+            "the bar draws the counts"
+        );
+
+        change("a running write", cx, &|app| {
+            app.operation_busy = Some("Fetching");
+        });
+        let (laid, drawn) = width(cx, |w| w.busy, "Fetching", 11., None);
+        assert_eq!(laid, drawn, "the write's label's width");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-progress").is_some(),
+            "the header draws the write's progress"
+        );
+        let before = built();
+        app.update(cx, |app, cx| {
+            app.operation_busy = None;
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            built(),
+            before,
+            "the write's end finds the text it had before"
+        );
+
+        change("an operation in progress", cx, &|app| {
+            status(app).operation = Some("Rebase".into())
+        });
+        let (laid, drawn) = width(cx, |w| w.operation, "Rebase in progress", 11., None);
+        assert_eq!(laid, drawn, "the operation's width");
+
+        let before = built();
+        cx.update(|window, cx| appearance::apply_text_sizes(16, 12, window, cx));
+        draw(cx);
+        assert_eq!(built() - before, 1, "a new text size builds the text once");
+        assert_eq!(at_rest(cx), (0, 0), "and not again at rest");
+        let (laid, drawn) = width(cx, |w| w.branch, branch, 12., Some(FontWeight::MEDIUM));
+        assert_eq!(
+            laid, drawn,
+            "16 pt: the branch's width is its own at that size"
+        );
+        let before = built();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        assert_eq!(built(), before, "13 pt again finds its text kept");
+        let (laid, drawn) = width(cx, |w| w.branch, branch, 12., Some(FontWeight::MEDIUM));
+        assert_eq!(laid, drawn, "13 pt: the branch's width");
     }
 
     /// The status bar's room for Cancel, and so the idle bar's hints, follow
