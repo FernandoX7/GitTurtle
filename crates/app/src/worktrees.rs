@@ -1519,20 +1519,29 @@ pub(crate) mod ring_room_tests {
             // half tile and at 13 pt in the shorter window, its scrollbar
             // cues them beside it, clear of the content and its rings' room.
             // Taking all the dialog's cap leaves it, the content holds them
-            // whole at 13 pt in the half tile.
+            // whole at 13 pt in the half tile with Linux's test fonts.
             let content = rendered(cx, "worktree-manager-content");
             let track = rendered(cx, "worktree-manager-scrollbar");
             let overflows = rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
                 || cx
                     .debug_bounds("remove-managed-worktree")
                     .is_none_or(|remove| remove.bottom() > content.bottom());
-            let fits = height == 490. && size == 13;
-            assert!(
-                overflows != fits,
-                "at {size} pt in 461 × {height} the details overflow the content \
-                 {content:?}: {overflows}"
-            );
-            if fits {
+            // Whether they fit at 13 pt in the half tile turns on the
+            // platform's font metrics: they fit with Linux's test fonts and run
+            // past the fold with macOS's (hosted run 42154950197). Where they
+            // must run past it, at 18 pt and in the shorter window, they do on
+            // every platform; either way the cue follows the overflow.
+            if !(height == 490. && size == 13) {
+                assert!(
+                    overflows,
+                    "at {size} pt in 461 × {height} the details overflow the content {content:?}"
+                );
+            }
+            if !overflows {
+                assert!(
+                    crate::tags::tests::painted_thumb(cx, track).is_none(),
+                    "at {size} pt in 461 × {height} a content that holds its details paints no thumb"
+                );
                 continue;
             }
             let thumb = crate::tags::tests::painted_thumb(cx, track).unwrap_or_else(|| {
