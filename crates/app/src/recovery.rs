@@ -1598,6 +1598,15 @@ pub(crate) struct StashBrowser {
     file_scroll: UniformListScrollHandle,
     stash_focus: FocusHandle,
     file_focus: FocusHandle,
+    /// Tracked, never a Tab stop, by the column that holds the chosen
+    /// stash's inspection, the detail with its footer: whether focus lies
+    /// anywhere inside it ([`Self::release_inspection_focus`]), on a control
+    /// the detail lists for its reveal or on one a comparison draws with a
+    /// handle of its own, as a model's canvas and timeline do, or any a kind
+    /// of content adds later. A press in the column never focuses it: its
+    /// controls take focus as they did, and a press on anything else there
+    /// leaves focus where it was.
+    inspection_focus: FocusHandle,
     loading: Option<&'static str>,
     error: Option<String>,
     preview_error: Option<String>,
@@ -1822,6 +1831,7 @@ impl StashBrowser {
             stash_focus: cx.focus_handle().tab_stop(true),
             // The saved files likewise: Tab passed them by.
             file_focus: cx.focus_handle().tab_stop(true),
+            inspection_focus: cx.focus_handle(),
             loading: None,
             error: None,
             preview_error: None,
@@ -1907,6 +1917,7 @@ impl StashBrowser {
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
         self.clear_preview();
+        self.release_inspection_focus(window, cx);
         self.snapshot = None;
         self.detail.scroll().set_offset(Point::default());
         // The selected stash, by its stash commit, which the list read
@@ -1990,7 +2001,7 @@ impl StashBrowser {
                             }
                             None => {
                                 if chosen.is_some() {
-                                    this.select_none(cx);
+                                    this.select_none(window, cx);
                                 }
                                 this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
                             }
@@ -2025,11 +2036,18 @@ impl StashBrowser {
 
     /// Selects nothing, dropping the chosen stash's read and what it showed,
     /// as the list read again without the stash chosen meanwhile does.
-    fn select_none(&mut self, cx: &mut Context<Self>) {
+    fn select_none(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_restore(cx);
         self.generation = self.generation.wrapping_add(1);
         self.metadata_task = None;
         self.clear_preview();
+        // As in `read_stash`, a guard: the list read again that calls this
+        // cleared the inspection as it started, and a stash chosen during
+        // that read is inspected only after the list lands, its read behind
+        // the list's on the one serial reader, so nothing is drawn here
+        // today. Another reader or order would leave focus on the
+        // inspection this clears.
+        self.release_inspection_focus(window, cx);
         self.snapshot = None;
         self.selected = None;
         self.selected_file = None;
@@ -2037,6 +2055,24 @@ impl StashBrowser {
         self.loading = self.reading();
         self.forget_restore_line(cx);
         self.forget_read_alert(cx);
+    }
+
+    /// Before the chosen stash's inspection stops being drawn, moves focus
+    /// held anywhere inside it ([`Self::inspection_focus`]: the saved files,
+    /// a group, a text mode, the comparison and whatever it draws, such as
+    /// a model's canvas, or the footer's actions) to the stash list, the
+    /// nearest control of the same list that stays drawn: on the stash's
+    /// row where the list read again keeps it selected, which the list
+    /// scrolls into view as it lands ([`Self::load_page`]), else on the
+    /// list alone. Focus left there stayed on a control no frame drew while
+    /// the list was read, and once the stash had gone, on one no frame
+    /// would draw again, where no key acted. Focus elsewhere, on the list,
+    /// Refresh or the pager, stays where it is. Asked of the frame that
+    /// last drew the inspection, before the next one leaves it out.
+    fn release_inspection_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.snapshot.is_some() && self.inspection_focus.contains_focused(window, cx) {
+            window.focus(&self.stash_focus, cx);
+        }
     }
 
     fn select_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2050,9 +2086,10 @@ impl StashBrowser {
         }
     }
 
-    /// Selects stash `index` and reads its saved changes, leaving focus
-    /// where it is, as the list read again keeps its stash selected
-    /// ([`Self::load_page`]).
+    /// Selects stash `index` and reads its saved changes, as the list read
+    /// again keeps its stash selected ([`Self::load_page`]), leaving focus
+    /// where it is unless it lay on the inspection this clears, which hands
+    /// it to the stash list ([`Self::release_inspection_focus`]).
     fn read_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(stash) = self
             .page
@@ -2078,6 +2115,13 @@ impl StashBrowser {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.clear_preview();
+        // Every way that clears the inspection releases its focus first.
+        // Here it guards an order the reads keep today: a click or key
+        // focuses the list before choosing (`select_stash`), and the list
+        // read again, which calls this for a renumbered stash, cleared the
+        // inspection as it started, while a stash chosen during that read
+        // lands after it on the one serial reader.
+        self.release_inspection_focus(window, cx);
         self.snapshot = None;
         self.detail.scroll().set_offset(Point::default());
         self.selected = Some(index);
@@ -3467,7 +3511,11 @@ impl Render for StashBrowser {
             // Stacked, the gap between the list and the detail, 0.75 rem,
             // gives way down to 0.25 rem where the detail needs its floor.
             .when(stacked, |element| element.child(div().debug_selector(|| "stash-stack-gap".into()).flex_shrink(STACKED_SPARE_SHRINK).h(rems(0.75)).min_h(rems(0.25))))
-            .when(detail, |element| element.child(div().debug_selector(|| "stash-detail-column".into()).flex_1().min_w_0().min_h_0().when_some(floor, |column, floor| column.flex_basis(floor)).flex().flex_col().gap_2().child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
+            // The column tracks whether focus lies in the inspection
+            // ([`Self::inspection_focus`]); a press in it has GPUI focus
+            // only the control pressed, whose own listener runs first, and
+            // never the column, which would hold a focus no key acts on.
+            .when(detail, |element| element.child(div().debug_selector(|| "stash-detail-column".into()).track_focus(&self.inspection_focus).on_any_mouse_down(|_, window, _| window.prevent_default()).flex_1().min_w_0().min_h_0().when_some(floor, |column, floor| column.flex_basis(floor)).flex().flex_col().gap_2().child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
                 .children(self.loading.map(|loading| native_accessibility::text("stash-detail-loading", loading).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
@@ -4181,6 +4229,132 @@ mod tests {
             (None, None),
             "a dropped stash leaves nothing selected"
         );
+    }
+
+    /// Focus on the chosen stash's inspection, which a cleared snapshot
+    /// stops drawing, moves to the stash list, the nearest control of the
+    /// same list still drawn, and never stays on a control no frame draws.
+    /// With Drop… focused in the footer beside the list, Refresh leaves the
+    /// list focused while Git reads it and once it lands, its stash's row
+    /// selected and shown; focus on Refresh itself stays where it is; and
+    /// with the saved files focused, Refresh after a terminal dropped the
+    /// stash leaves the list focused with nothing selected. Focus stayed on
+    /// the saved files and on Drop…, which no frame drew while the list was
+    /// read, and with the stash gone, on nothing the keys could reach.
+    #[gpui::test]
+    async fn a_cleared_inspection_gives_its_focus_to_the_stash_list(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let notes = repo.path().join("notes.txt");
+        for message in ["first", "second", "third"] {
+            std::fs::write(&notes, message).unwrap();
+            git(
+                repo.path(),
+                &["stash", "push", "--include-untracked", "-m", message],
+            );
+        }
+        let (app, cx) = window(cx, &repo);
+        // Beside the list, the restore actions are the detail's footer,
+        // outside its scroll.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        let (list, files) = stashes.read_with(cx, |this, _| {
+            (this.stash_focus.clone(), this.file_focus.clone())
+        });
+        let on = |cx: &mut VisualTestContext, focus: &FocusHandle| {
+            cx.update(|window, _| focus.is_focused(window))
+        };
+        let refresh = |cx: &mut VisualTestContext| {
+            let held = stashes.read_with(cx, |this, _| this.metadata.hold());
+            cx.update(|window, cx| stashes.update(cx, |this, cx| this.load_page(0, window, cx)));
+            draw(cx);
+            held
+        };
+
+        // Drop…, in the footer beside the list.
+        tab_to(&stashes, "drop-saved-stash", cx);
+        let held = refresh(cx);
+        assert!(
+            stashes.read_with(cx, |this, _| this.snapshot.is_none()),
+            "the inspection is cleared while the list is read"
+        );
+        assert!(on(cx, &list), "the list takes focus while it is read");
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        assert!(on(cx, &list), "and keeps it once the list lands");
+        assert_eq!(
+            stashes.read_with(cx, |this, _| (this.selected, this.snapshot.is_some())),
+            (Some(0), true),
+            "its stash stays selected and inspected"
+        );
+        let (row, shown) = (
+            cx.debug_bounds("saved-stash-row-0")
+                .expect("its row is drawn"),
+            cx.debug_bounds("stash-list").expect("the list is drawn"),
+        );
+        assert!(
+            row.top() >= shown.top() - px(0.5) && row.bottom() <= shown.bottom() + px(0.5),
+            "its row {row:?} is shown in the list {shown:?}"
+        );
+
+        // Focus outside the inspection, on Refresh, stays there.
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        let before = cx.update(|window, cx| window.focused(cx));
+        let in_detail = cx.update(|window, cx| stashes.read(cx).detail.focused(window));
+        assert!(
+            before
+                .as_ref()
+                .is_some_and(|focus| *focus != list && *focus != files)
+                && in_detail.is_none(),
+            "Shift-Tab leaves the list for Refresh, outside the inspection"
+        );
+        let held = refresh(cx);
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            cx.update(|window, cx| window.focused(cx)),
+            before,
+            "focus outside the inspection stays where it was"
+        );
+
+        // The saved files, with the stash dropped from a terminal.
+        cx.update(|window, cx| window.focus(&files, cx));
+        draw(cx);
+        assert!(on(cx, &files), "the saved files hold focus");
+        // A press on the inspection's text focuses nothing: the column that
+        // tracks the inspection's focus never takes it.
+        let name = cx
+            .debug_bounds("stash-detail-name")
+            .expect("the stash's name is drawn");
+        cx.simulate_click(name.center(), Modifiers::none());
+        draw(cx);
+        assert!(
+            on(cx, &files),
+            "a press on the stash's name leaves focus on the saved files"
+        );
+        git(repo.path(), &["stash", "drop", "-q", "stash@{0}"]);
+        let held = refresh(cx);
+        assert!(
+            on(cx, &list) && !on(cx, &files),
+            "the list takes focus from the saved files while it is read"
+        );
+        drop(held);
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            stashes.read_with(cx, |this, _| (this.selected, this.snapshot.is_some())),
+            (None, false),
+            "the dropped stash leaves nothing selected"
+        );
+        assert!(on(cx, &list), "and the list keeps focus");
     }
 
     /// Refresh's answer lands though a stash is clicked while the list is
@@ -4956,6 +5130,68 @@ mod tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Focus on a stashed 3D model's canvas, which the comparison draws with
+    /// a focus handle of its own that the detail's reveal does not know,
+    /// moves to the stash list as Refresh clears the inspection, as it does
+    /// from any of the inspection's controls
+    /// ([`StashBrowser::release_inspection_focus`]). The release once asked
+    /// only the controls the detail and the footer listed, so focus stayed
+    /// on a canvas no frame drew again.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_cleared_inspection_takes_focus_off_a_stashed_models_canvas(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let model = |scale: &str| format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n");
+        let shape = (
+            "shape.obj",
+            model("2").into_bytes(),
+            model("1").into_bytes(),
+        );
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[shape],
+            (1480., 980., 13),
+            (0, "model-canvas-1"),
+        );
+        let canvas = cx
+            .debug_bounds("model-canvas-1")
+            .expect("the model's canvas is drawn");
+        cx.simulate_click(canvas.center(), Modifiers::none());
+        crate::views::tests::draw(cx);
+        let (list, files, detail) = browser.read_with(cx, |this, _| {
+            (
+                this.stash_focus.clone(),
+                this.file_focus.clone(),
+                this.detail.clone(),
+            )
+        });
+        let (focused, listed) =
+            cx.update(|window, cx| (window.focused(cx), detail.holds_focus(window, cx)));
+        assert!(
+            focused
+                .as_ref()
+                .is_some_and(|focus| *focus != list && *focus != files)
+                && !listed,
+            "the click focuses the canvas, a control the detail does not list"
+        );
+        let held = browser.read_with(cx, |this, _| this.metadata.hold());
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.load_page(0, window, cx)));
+        crate::views::tests::draw(cx);
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the list takes focus from the canvas while it is read"
+        );
+        drop(held);
+        StashBrowser::lands(&browser, cx);
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "and keeps it once the list lands"
+        );
     }
 
     /// A stashed 3D model's canvas, focused from the keyboard, keeps its
