@@ -590,6 +590,100 @@ fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) ->
     .child(selection.piece(piece))
 }
 
+/// How tall the message's edge fades are at the default interface size,
+/// as a scrolling list's are (`tags`' `EDGE_FADE`): they scale with the
+/// interface text and take at most a quarter of the viewport.
+const MESSAGE_FADE: f32 = 8.;
+
+/// The message viewport's overflow cue, built as the frame paints, after
+/// the list has laid out in it (`in_frame`), as a scrolling list's is
+/// (`tags::ScrollCue::list`): along a track a thumb moves on
+/// ([`crate::tags::SHORTEST_SCROLL_TRACK`]) the always-visible scrollbar,
+/// which draws nothing where the message fits; along a shorter track a
+/// soft fade at each edge the message continues past
+/// ([`message_fades`]); and in a sliver shorter than one fade, nothing. An
+/// inspector whose 45% cap lies just past the toolbar row it reserves
+/// leaves the viewport that sliver, about 112 px tall at 18 pt, and the
+/// bar's track, in the canvas colour, drew a 16 × 2 px strip on the
+/// panel's bottom border; somewhat taller, up to 233 px at 18 pt, it
+/// leaves the viewport 4 to 55 px, where the kit's 48 px thumb cannot
+/// move. Built from the list's bounds in this frame, the cue follows a
+/// resize or a cap that shrinks the viewport in the frame that shrinks it.
+/// Tests find the bar, while it is drawn, by its id.
+fn message_cue(scroll: ListState, cx: &App) -> impl IntoElement {
+    let surface: Hsla = rgb(palette(cx).panel).into();
+    div().absolute().size_full().flex().flex_col().child(
+        crate::in_frame::in_frame(move |_, _, _| {
+            if scroll.viewport_bounds().size.height < crate::tags::SHORTEST_SCROLL_TRACK {
+                return message_fades(scroll, surface).into_any_element();
+            }
+            crate::in_frame::probed(
+                div()
+                    .debug_selector(|| "commit-message-scrollbar".into())
+                    .size_full()
+                    .child(
+                        Scrollbar::vertical(&scroll)
+                            .id("commit-message-scrollbar")
+                            .mode(ScrollbarMode::Always),
+                    ),
+                "scrollbar",
+            )
+            .into_any_element()
+        })
+        .named("commit-message-scrollbar"),
+    )
+}
+
+/// The fades over a message viewport too short for a thumb that moves
+/// ([`message_cue`]): at each edge the message continues past, a band as
+/// wide as the viewport and [`MESSAGE_FADE`] tall, at most a quarter of it,
+/// opaque at the edge in the inspector's panel colour and clear inward, so
+/// the cut lines dissolve into the surface; none at an end the message is
+/// scrolled to, none where it fits, and none in a viewport shorter than
+/// one fade, where a band would be a pixel or two. It reads the list's
+/// offset and reach as it paints, after the list clamped them in the same
+/// frame, so a wheel or a resize moves the fades in the frame that scrolls
+/// it, and it inserts no hitbox, so a wheel over a fade scrolls the
+/// message.
+fn message_fades(scroll: ListState, surface: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            let list = scroll.viewport_bounds();
+            let full = appearance::ui_size(MESSAGE_FADE);
+            if list.size.height < full {
+                return;
+            }
+            let fade = full.min(list.size.height / 4.);
+            // Half a pixel either way is an end, as a scrolling list's.
+            let slack = px(0.5);
+            let scrolled = -scroll.scroll_px_offset_for_scrollbar().y;
+            let band = |angle: f32| {
+                linear_gradient(
+                    angle,
+                    linear_color_stop(surface.opacity(0.), 0.),
+                    linear_color_stop(surface, 1.),
+                )
+            };
+            if scrolled > slack {
+                // Toward the top, opaque at the viewport's top edge.
+                let top = Bounds::new(list.origin, size(list.size.width, fade));
+                window.paint_quad(fill(top, band(0.)));
+            }
+            if scrolled < scroll.max_offset_for_scrollbar().y - slack {
+                // Toward the bottom, opaque at the viewport's bottom edge.
+                let bottom = Bounds::new(
+                    point(list.left(), list.bottom() - fade),
+                    size(list.size.width, fade),
+                );
+                window.paint_quad(fill(bottom, band(180.)));
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 impl GitTurtle {
     fn message_commit(&self, file_history: bool) -> Option<&Commit> {
         if file_history {
@@ -812,7 +906,7 @@ impl GitTurtle {
                 })
                 .child(list)
                 .child(selection.registrar(scroll.clone()))
-                .child(Scrollbar::vertical(&scroll).id("commit-message-scrollbar").mode(ScrollbarMode::Always))
+                .child(message_cue(scroll.clone(), cx))
             )
             .into_any_element()
     }
@@ -1915,6 +2009,251 @@ pub(crate) mod tests {
             assert!(text >= 4.5, "{choice:?}: text {text:.2}:1");
             assert!(muted >= 4.5, "{choice:?}: metadata {muted:.2}:1");
         }
+    }
+
+    /// The quads the last frame painted on `area` as wide as a scrollbar's
+    /// track: the track's own fill and edge, filled with the canvas in a
+    /// palette, or clear without one.
+    fn tracks_on(cx: &mut VisualTestContext, area: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| {
+                    let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                    Bounds::new(
+                        point(logical(origin.x), logical(origin.y)),
+                        size(logical(extent.width), logical(extent.height)),
+                    )
+                })
+                .filter(|quad| {
+                    (quad.size.width - Scrollbar::width()).abs() < px(0.5) && quad.intersects(&area)
+                })
+                .collect()
+        })
+    }
+
+    /// The edge fades the last frame painted over the message viewport at
+    /// `viewport`: the height of the one along its top and of the one along
+    /// its bottom, each as wide as the viewport, in the inspector's panel
+    /// colour, opaque at its edge and clear inward.
+    fn fades_on(
+        cx: &mut VisualTestContext,
+        viewport: Bounds<Pixels>,
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        cx.update(|window, cx| {
+            let surface: Hsla = rgb(palette(cx).panel).into();
+            let toward = |angle: f32| {
+                linear_gradient(
+                    angle,
+                    linear_color_stop(surface.opacity(0.), 0.),
+                    linear_color_stop(surface, 1.),
+                )
+            };
+            let (up, down) = (toward(0.), toward(180.));
+            let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.5);
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let (mut top, mut bottom) = (None, None);
+            for quad in window.painted_quads() {
+                let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                let band = Bounds::new(
+                    point(logical(origin.x), logical(origin.y)),
+                    size(logical(extent.width), logical(extent.height)),
+                );
+                if !near(band.left(), viewport.left()) || !near(band.right(), viewport.right()) {
+                    continue;
+                }
+                if quad.background == up && near(band.top(), viewport.top()) {
+                    assert!(top.is_none(), "one fade along {viewport:?}'s top");
+                    top = Some(band.size.height);
+                } else if quad.background == down && near(band.bottom(), viewport.bottom()) {
+                    assert!(bottom.is_none(), "one fade along {viewport:?}'s bottom");
+                    bottom = Some(band.size.height);
+                }
+            }
+            (top, bottom)
+        })
+    }
+
+    /// The cue the message viewport drew in the last frame.
+    #[derive(Debug, PartialEq)]
+    enum Cue {
+        Nothing,
+        /// The heights of the fades along its top and its bottom.
+        Fades(Option<Pixels>, Option<Pixels>),
+        Bar,
+    }
+
+    /// The cue the message viewport drew in the last frame, checked
+    /// against the rule for its height and its overflow: the always-visible
+    /// bar, inside the viewport and the viewport's height, along a track a
+    /// thumb moves on, where the message overflows (the bar's element is
+    /// there, painting nothing, where it fits); otherwise no bar element
+    /// and, where the message overflows a viewport at least one fade tall,
+    /// a fade at the edge it continues past, a quarter of the viewport at
+    /// most; nothing in a shorter sliver. Returns the cue and the viewport.
+    fn drawn_cue(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        at: &str,
+    ) -> (Cue, Bounds<Pixels>) {
+        let panel = cx.debug_bounds("commit-message-panel").unwrap();
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let overflow = cx
+            .read(|cx| app.read(cx).inspector_message.overflow())
+            .unwrap();
+        let tracks = tracks_on(cx, panel);
+        let fades = fades_on(cx, viewport);
+        let height = viewport.size.height;
+        let thumb = height >= crate::tags::SHORTEST_SCROLL_TRACK;
+        assert_eq!(
+            cx.debug_bounds("commit-message-scrollbar").is_some(),
+            thumb,
+            "{at}: a bar element only along a track a thumb moves on, {viewport:?}"
+        );
+        for track in &tracks {
+            assert_eq!(
+                (track.top(), track.bottom(), track.right()),
+                (viewport.top(), viewport.bottom(), viewport.right()),
+                "{at}: {track:?} runs inside {viewport:?}"
+            );
+        }
+        let fade = appearance::ui_size(MESSAGE_FADE);
+        let cue = if !tracks.is_empty() {
+            assert_eq!(fades, (None, None), "{at}: no fade beside the bar");
+            Cue::Bar
+        } else if fades != (None, None) {
+            for band in [fades.0, fades.1].into_iter().flatten() {
+                assert!(
+                    (band - fade.min(height / 4.)).abs() < px(0.5),
+                    "{at}: a fade {band:?} in {viewport:?}"
+                );
+            }
+            Cue::Fades(fades.0, fades.1)
+        } else {
+            Cue::Nothing
+        };
+        let expected = if overflow <= px(0.) || (!thumb && height < fade) {
+            "nothing"
+        } else if thumb {
+            "bar"
+        } else {
+            "fades"
+        };
+        let drawn = match cue {
+            Cue::Nothing => "nothing",
+            Cue::Fades(..) => "fades",
+            Cue::Bar => "bar",
+        };
+        assert_eq!(
+            drawn, expected,
+            "{at}: {viewport:?} overflowing by {overflow:?}"
+        );
+        (cue, viewport)
+    }
+
+    /// The message cues its overflow inside its viewport, and as the rule
+    /// for that viewport's height has it: an inspector whose 45% cap lies
+    /// just past the toolbar row it reserves, 112 or 118 px tall at 18 pt,
+    /// leaves the viewport a sliver 1.5 or 4 px tall over the long message,
+    /// and its track drew a strip that tall and 16 px wide on the panel's
+    /// bottom border; it draws nothing there. In 160 and 200 px inspectors
+    /// the viewport, 23 and 41 px tall, is too short for the kit's 48 px
+    /// thumb to move, and the message, which showed one or two cut lines
+    /// with no cue, fades its bottom edge at its top and its top edge alone
+    /// at its end; a 520 px inspector draws the bar the viewport's full
+    /// height. In a History window at 18 pt in 461 × 490, where the message
+    /// overflows a viewport a thumb moves along, at 13 pt in 1,480 × 800,
+    /// where it fits, and in File History at 18 pt in 461 × 490, whose
+    /// panel takes 45% of the shorter room between its header and footer,
+    /// the cue follows the same rule: there the 15 px viewport fades its
+    /// bottom edge, where its track drew 16 × 15 px.
+    #[gpui::test]
+    async fn the_message_cues_its_overflow_inside_its_viewport(cx: &mut TestAppContext) {
+        let body = "A body long enough to run past the panel's cap. ".repeat(12);
+        let (probe, app, short) = fixture(cx, vec![commit("a", "Selected title", &body)]);
+        short.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let scroll = short.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            state
+                .as_ref()
+                .expect("the message is presented")
+                .scroll
+                .clone()
+        });
+        for (height, fades) in [
+            (112., false),
+            (118., false),
+            (160., true),
+            (200., true),
+            (520., false),
+        ] {
+            probe.update(short, |probe, cx| {
+                (probe.width, probe.height, probe.toolbar) = (156., height, true);
+                cx.notify();
+            });
+            scroll.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            draw(short);
+            let at = format!("a {height} px inspector at 18 pt");
+            let (cue, viewport) = drawn_cue(short, &app, &at);
+            if height < 150. {
+                assert!(viewport.size.height > px(0.), "{at}: a sliver {viewport:?}");
+                assert_eq!(cue, Cue::Nothing, "{at}: no strip");
+            } else if fades {
+                assert!(
+                    (px(20.)..px(50.)).contains(&viewport.size.height),
+                    "{at}: {viewport:?}"
+                );
+                assert!(
+                    matches!(cue, Cue::Fades(None, Some(_))),
+                    "{at}: at its top the message fades its bottom edge alone, not {cue:?}"
+                );
+                scroll.scroll_to_end();
+                draw(short);
+                let (cue, _) = drawn_cue(short, &app, &format!("{at}, scrolled to the end"));
+                assert!(
+                    matches!(cue, Cue::Fades(Some(_), None)),
+                    "{at}: at its end the message fades its top edge alone, not {cue:?}"
+                );
+            } else {
+                assert_eq!(cue, Cue::Bar, "{at}");
+            }
+        }
+        short.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+
+        let (_fixture, app, cx) = crate::views::tests::history_window_from(
+            cx,
+            crate::views::tests::history_script(2, 40),
+        )
+        .await;
+        for (text, width, height, cue) in
+            [(18, 461., 490., Cue::Bar), (13, 1480., 800., Cue::Nothing)]
+        {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("History at {text} pt in {width} × {height}");
+            assert_eq!(drawn_cue(cx, &app, &at).0, cue, "{at}");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::file_history::tests::open_landed(&app, cx).await;
+        draw(cx);
+        // A 15 px viewport over the overflowing message, where a 16 × 15 px
+        // track drew, its thumb with no room to move.
+        let (cue, viewport) = drawn_cue(cx, &app, "File History at 18 pt in 461 × 490");
+        assert!(
+            viewport.size.height < crate::tags::SHORTEST_SCROLL_TRACK
+                && matches!(cue, Cue::Fades(None, Some(_))),
+            "File History at 18 pt in 461 × 490: {cue:?} in {viewport:?}"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// In an 18 pt 461 × 490 half tile, where Copy message keeps only its
