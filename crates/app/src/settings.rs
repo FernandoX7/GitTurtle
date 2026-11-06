@@ -2586,7 +2586,7 @@ impl GitTurtle {
                     .items_center()
                     .gap_2()
                     .child(div().debug_selector(|| "settings-editor-field".into()).flex_1().min_w_0()
-                        .child(Input::new(&self.settings_editor).aria_label("Preferred external editor")))
+                        .child(Input::new(&self.settings_editor).aria_label("External editor")))
                     .child(Button::new("save-external-editor")
                         .track_focus(&save_editor)
                         .debug_selector(|| "save-external-editor".into())
@@ -5107,7 +5107,9 @@ fn setting_text<E: Styled + ParentElement>(
 }
 
 /// A labelled field which a write leaves `(refused, dimmed)`
-/// (`workspace::refusing_input`).
+/// (`workspace::refusing_input`), named by its label, the words drawn above
+/// it: its placeholder is no name, yet the Git identity's Name and Email
+/// fields, named by nothing else, were announced by it ("Your name").
 fn settings_field(
     label: &'static str,
     input: &Entity<InputState>,
@@ -5131,7 +5133,7 @@ fn settings_field(
                 })),
         )
         .child(crate::workspace::refusing_input(
-            Input::new(input),
+            Input::new(input).aria_label(label),
             || format!("settings-field-{label}"),
             refused,
             dimmed,
@@ -8062,6 +8064,72 @@ mod picker_tests {
             !cx.read(|cx| app.read(cx).settings.follow_system),
             "the locked row turned Follow system on"
         );
+    }
+
+    /// Tab walks Settings with a repository open in a 1,480 × 800 window at
+    /// 13 pt, and every text field it stops on is named by the words drawn
+    /// beside it, read from the node the drawn field writes. The Git
+    /// identity's Name and Email fields had no name of their own, so their
+    /// nodes carried only their placeholders: the 47th stop, Name, after the
+    /// 20 theme cards and the page's other controls, read "Your name".
+    #[gpui::test]
+    fn every_settings_field_tab_reaches_is_named(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        let fields = cx.read(|cx| {
+            let app = app.read(cx);
+            [
+                ("External editor", app.settings_editor.clone()),
+                ("Default branch", app.settings_branch.clone()),
+                ("Name", app.identity_name.clone()),
+                ("Email", app.identity_email.clone()),
+            ]
+        });
+        let handles: Vec<FocusHandle> = cx.read(|cx| {
+            fields
+                .iter()
+                .map(|(_, field)| field.focus_handle(cx))
+                .collect()
+        });
+        // Each field Tab stops on: its stop, its expected name and the name
+        // its node gives.
+        let mut reached: Vec<(usize, &str, Option<String>)> = Vec::new();
+        let mut order: Vec<FocusHandle> = Vec::new();
+        for _ in 0..200 {
+            cx.simulate_keystrokes("tab");
+            settle(cx);
+            let focused = cx
+                .update(|window, cx| window.focused(cx))
+                .expect("Tab keeps focus");
+            if order.contains(&focused) {
+                break;
+            }
+            order.push(focused.clone());
+            if let Some(at) = handles.iter().position(|handle| *handle == focused) {
+                let (expected, field) = &fields[at];
+                let name = crate::views::tests::input_node(cx, field)
+                    .label()
+                    .map(str::to_owned);
+                reached.push((order.len(), *expected, name));
+            }
+        }
+        for (expected, _) in &fields {
+            let (stop, _, name) = reached
+                .iter()
+                .find(|(_, field, _)| field == expected)
+                .unwrap_or_else(|| panic!("Tab reaches the {expected} field: {reached:?}"));
+            assert_eq!(
+                name.as_deref(),
+                Some(*expected),
+                "stop {stop}: the {expected} field is named by its label"
+            );
+        }
     }
 
     /// The default branch's field is named by its title, "Default branch",
