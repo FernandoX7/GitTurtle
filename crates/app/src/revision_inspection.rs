@@ -165,11 +165,17 @@ impl GitTurtle {
             let cancel = form.clone();
             let confirm = form.clone();
             let cancel_action = form.clone();
+            let shown = form.clone();
             dialog
                 .title("Compare local revisions")
                 .width(appearance::dialog_width(px(660.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .child(form.clone())
+                // In the dialog's content, as the profile form is: the form
+                // takes what the cap leaves it and scrolls the rest,
+                // revealing the control Tab moves onto, with the ring's room
+                // below its last choice, which the footer's gap gives back.
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(
                     DialogFooter::new()
                         .child(
@@ -679,6 +685,9 @@ pub(crate) struct CompareForm {
     accepted: Arc<AtomicBool>,
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
+    /// The form's scroll, which reveals the control Tab moves onto: its
+    /// choices lie below its fold in a half tile.
+    body: crate::focus_reveal::FocusReveal,
 }
 impl CompareForm {
     /// Empties the field the choices follow, so the first branches and tags
@@ -730,6 +739,7 @@ impl CompareForm {
             accepted: Arc::new(AtomicBool::new(false)),
             focus: cx.focus_handle(),
             return_focus,
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
         };
         for (side, input) in [form.before.clone(), form.after.clone()]
             .into_iter()
@@ -872,21 +882,43 @@ impl Render for CompareForm {
         // chosen one filled, keep their frames at the edge.
         let room = crate::appearance::button_ring_room(cx);
         let lead = crate::ghost_pull(window) + room;
-        crate::native_accessibility::clips_children(div().id("comparison-form").track_focus(&self.focus)
-            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
-            .overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room).text_size(crate::appearance::ui_text(12.))
+        // A field or Button Tab moves onto scrolls into view with its ring's
+        // room (`focus_reveal`), and the room around the controls keeps
+        // their rings whole at the form's edges, given back through its
+        // margin, its cap growing by it; a wrapper keeps the room below the
+        // last choice inside the dialog's clip.
+        self.body.reveal(window, cx);
+        let [before, after] =
+            [&self.before, &self.after].map(|field| field.read(cx).focus_handle(cx));
+        let modes = [ComparisonMode::Endpoints, ComparisonMode::SinceBranching]
+            .map(|mode| self.body.focus(("comparison-mode", mode as usize), cx));
+        let swap = self.body.focus("swap-revisions", cx);
+        let picks: Vec<_> = (0..choices.len())
+            .map(|i| self.body.focus(("revision-choice", i), cx))
+            .collect();
+        let mut controls = vec![Some(before), Some(after), None, None];
+        controls.extend(picks.iter().cloned().map(Some));
+        let toggles = vec![
+            Some(modes[0].clone()),
+            Some(modes[1].clone()),
+            Some(swap.clone()),
+        ];
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("comparison-form").track_focus(&self.focus)
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)) + room * 2.).min_h_0()
+            .overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead).text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
-            .child(div().flex().flex_col().gap_3()
+            .child(div().flex().flex_col().gap_3().on_children_prepainted(self.body.controls(controls, room))
             .child(div().child("Before").child(Input::new(&self.before).aria_label("Before: local branch, tag, or commit revision").disabled(self.busy)))
             .child(div().child("After").child(Input::new(&self.after).aria_label("After: local branch, tag, or commit revision").disabled(self.busy)))
-            .child(div().flex().flex_wrap().gap_1().children([(ComparisonMode::Endpoints,"Endpoints · Before → After"),(ComparisonMode::SinceBranching,"Changes since branching")].into_iter().map(|(mode,label)|button(label,label,"",self.mode==mode).toggled(self.mode==mode).disabled(self.busy).on_click(cx.listener(move |this,_,_,cx|{this.mode=mode;cx.notify();}))))
-                .child(button("swap-revisions","Swap","",false).disabled(self.busy).on_click(cx.listener(|this,_,window,cx|{let before=this.before.read(cx).value();let after=this.after.read(cx).value();this.before.update(cx,|input,cx|input.set_value(after,window,cx));this.after.update(cx,|input,cx|input.set_value(before,window,cx));}))))
+            .child(div().flex().flex_wrap().gap_1().on_children_prepainted(self.body.controls(toggles, room)).children([(ComparisonMode::Endpoints,"Endpoints · Before → After"),(ComparisonMode::SinceBranching,"Changes since branching")].into_iter().zip(modes).map(|((mode,label),focus)|button(label,label,"",self.mode==mode).track_focus(&focus).toggled(self.mode==mode).disabled(self.busy).on_click(cx.listener(move |this,_,_,cx|{this.mode=mode;cx.notify();}))))
+                .child(button("swap-revisions","Swap","",false).track_focus(&swap).disabled(self.busy).on_click(cx.listener(|this,_,window,cx|{let before=this.before.read(cx).value();let after=this.after.read(cx).value();this.before.update(cx,|input,cx|input.set_value(after,window,cx));this.after.update(cx,|input,cx|input.set_value(before,window,cx));}))))
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
-            .children(choices.into_iter().enumerate().map(|(i,name)|crate::edge_row(window).child(crate::edge_button(("revision-choice",i),name.clone()).debug_selector(move ||format!("revision-choice-{i}")).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));})))))
+            .children(choices.into_iter().zip(picks).enumerate().map(|(i,(name,focus))|crate::edge_row(window).child(crate::edge_button(("revision-choice",i),name.clone()).track_focus(&focus).debug_selector(move ||format!("revision-choice-{i}")).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));})))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
-            .children(self.error.as_ref().map(|error|failure_line("revision-comparison-error",error.clone()).text_color(rgb(p.removed))))))
+            .children(self.error.as_ref().map(|error|failure_line("revision-comparison-error",error.clone()).text_color(rgb(p.removed))))), "comparison-form-scrollbar").min_h_0())
     }
 }
 

@@ -174,19 +174,39 @@ impl GitTurtle {
         };
         let plan = plan.clone();
         let owner = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, window, _| {
-            let open_owner = owner.clone(); let open_path = plan.destination.clone();
-            let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
+        // The body's scroll, which reveals the action Tab moves onto, kept
+        // across the frames the dialog builds its content in.
+        let body = crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard);
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let (plan, owner, body) = (plan.clone(), owner.clone(), body.clone());
+            // In the dialog's content, as the profile form is: the body takes
+            // what the cap leaves it and scrolls the rest, revealing the
+            // action Tab moves onto, with the ring's room around the actions,
+            // given back through its margin, and below them inside the
+            // dialog's clip, which the footer's gap gives back. In the
+            // dialog's own scrolling body, which reveals nothing, Open in
+            // editor's ring was cut at its foot at 18 pt in a 461 × 490
+            // window.
             dialog.title(native_accessibility::dialog_title("worktree-created-title", "Worktree created"))
-                .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(div().flex().flex_col().gap_3()
-                    .child(native_accessibility::text("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
-                    .child(native_accessibility::text("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
-                    // Ghost Buttons at the dialog's text edge, each line's
-                    // first standing its label on it (`crate::edge_row`).
-                    .child(crate::edge_row(window)
-                        .child(crate::edge_button("open-created-worktree", "Open in GitTurtle").debug_selector(|| "open-created-worktree".into()).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
-                        .child(crate::edge_button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }).debug_selector(|| "reveal-created-worktree".into()).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                        .child(crate::edge_button("edit-created-worktree", "Open in editor").debug_selector(|| "edit-created-worktree".into()).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))))
+                .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, window, cx| {
+                    let open_owner = owner.clone(); let open_path = plan.destination.clone();
+                    let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
+                    let room = appearance::button_ring_room(cx);
+                    let lead = crate::ghost_pull(window) + room;
+                    body.reveal(window, cx);
+                    let actions = ["open-created-worktree", "reveal-created-worktree", "edit-created-worktree"].map(|id| body.focus(id, cx));
+                    let cue = crate::tags::ScrollCue::revealing(&body, room);
+                    content.min_h_0().child(div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(body.observe())).id("worktree-created-body").debug_selector(|| "worktree-created-body".into()).min_h_0().overflow_y_scroll().track_scroll(body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col().gap_3()
+                        .child(native_accessibility::text("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
+                        .child(native_accessibility::text("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
+                        // Ghost Buttons at the dialog's text edge, each line's
+                        // first standing its label on it (`crate::edge_row`).
+                        .child(crate::edge_row(window).on_children_prepainted(body.controls(actions.iter().cloned().map(Some).collect(), room))
+                            .child(crate::edge_button("open-created-worktree", "Open in GitTurtle").track_focus(&actions[0]).debug_selector(|| "open-created-worktree".into()).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
+                            .child(crate::edge_button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }).track_focus(&actions[1]).debug_selector(|| "reveal-created-worktree".into()).on_click(move |_, _, cx| cx.reveal_path(&finder)))
+                            .child(crate::edge_button("edit-created-worktree", "Open in editor").track_focus(&actions[2]).debug_selector(|| "edit-created-worktree".into()).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))), "worktree-created-scrollbar").min_h_0()))
+                })
                 .footer(crate::tags::dialog_footer("Done", None))
         });
     }

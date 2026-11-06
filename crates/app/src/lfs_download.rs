@@ -127,9 +127,17 @@ impl GitTurtle {
         let form =
             cx.new(|cx| LfsDownloadForm::new(owner, repo, target, remote, remotes, window, cx));
         form.update(cx, |this, cx| this.prepare(window, cx));
-        window.open_alert_dialog(cx, move |dialog, window, _| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
+            let shown = form.clone();
+            // In the dialog's content, as the profile form is: the form takes
+            // what the cap leaves it and scrolls the rest, revealing the
+            // control Tab moves onto, with the ring's room below it, which
+            // the footer's gap gives back. In the dialog's own scrolling
+            // body, at 18 pt in a 461 × 490 window, the form was taller than
+            // what the cap left, so that body cut Read configured source's
+            // ring at its foot and revealed nothing.
             dialog
                 .title(native_accessibility::dialog_title(
                     "lfs-download-title",
@@ -137,7 +145,8 @@ impl GitTurtle {
                 ))
                 .width(appearance::dialog_width(px(650.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .child(form.clone())
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(crate::tags::dialog_footer(
                     "Review download",
                     Some("Cancel"),
@@ -167,6 +176,8 @@ struct LfsDownloadForm {
     pending: bool,
     error: Option<String>,
     _subscription: Subscription,
+    /// The form's scroll, which reveals the control Tab moves onto.
+    body: crate::focus_reveal::FocusReveal,
 }
 impl Drop for LfsDownloadForm {
     fn drop(&mut self) {
@@ -215,6 +226,7 @@ impl LfsDownloadForm {
             pending: false,
             error: None,
             _subscription: subscription,
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
         }
     }
     fn cancel(&mut self) {
@@ -297,19 +309,40 @@ impl Render for LfsDownloadForm {
         // on that edge, their frames their pull before it (DESIGN.md, "One
         // left edge"); the form keeps the pull with the ring's room on its
         // left, and the ring's room on its right, given back through its
-        // margins, so its clip cuts neither them nor the field's ring.
+        // margins, so its clip cuts neither them nor the field's ring. It
+        // keeps the ring's room above and below its controls too, given
+        // back through its margin, and a wrapper keeps the room below them
+        // inside the dialog's clip.
         let room = appearance::button_ring_room(cx);
         let lead = crate::ghost_pull(window) + room;
-        crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room)
+        // A control Tab moves onto scrolls into view with its ring's room
+        // (`focus_reveal`).
+        self.body.reveal(window, cx);
+        let field = self.remote.read(cx).focus_handle(cx);
+        let read = self.body.focus("read-lfs-source", cx);
+        let remotes: Vec<_> = (0..self.remotes.len().min(12))
+            .map(|index| self.body.focus(("lfs-source-remote", index), cx))
+            .collect();
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        // At most 450 px, and never more than the whole dialog's cap, its
+        // title and footer included: a loose bound only. What holds the
+        // body to the room the cap leaves it is the `min_h_0` chain from
+        // the dialog's content down to this list, which shrinks it to that
+        // room and scrolls the rest.
+        let cap = px(450.).min(appearance::dialog_max_height(window));
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("lfs-download-review-content").flex().flex_col().gap_3().max_h(cap + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead)
             .child(label("lfs-download-file", format!("File: {}", self.target.path.display())).text_size(appearance::ui_text(13.)))
             .when_some(pointer.as_ref(), |element, pointer| element.child(label("lfs-download-object", format!("sha256:{}\n{}", pointer.oid, crate::counted(pointer.size, "byte", "bytes"))).text_size(appearance::ui_text(12.))))
             .child(label("lfs-download-source-label", "Choose the configured source").text_size(appearance::ui_text(12.)))
-            .child(Input::new(&self.remote).aria_label("Git LFS download remote"))
-            .child(crate::edge_row(window).children(self.remotes.iter().take(12).enumerate().map(|(index, name)| { let name = name.clone(); crate::edge_button(("lfs-source-remote", index), name.clone()).debug_selector(move || format!("lfs-source-remote-{index}")).disabled(self.pending).on_click(cx.listener(move |this, _, window, cx| { this.remote.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); this.prepare(window, cx); })) })))
-            .child(crate::edge_row(window).child(button("read-lfs-source", "Read configured source", "refresh", false).debug_selector(|| "read-lfs-source".into()).flex_shrink(1.).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx)))))
+            // Reported from a wrapper of its own: a list that tracks its
+            // scroll hands its own children's bounds to the scroll handle,
+            // not to its `on_children_prepainted`.
+            .child(div().flex().flex_col().on_children_prepainted(self.body.control(field, room)).child(Input::new(&self.remote).aria_label("Git LFS download remote")))
+            .child(crate::edge_row(window).on_children_prepainted(self.body.controls(remotes.iter().cloned().map(Some).collect(), room)).children(self.remotes.iter().take(12).zip(&remotes).enumerate().map(|(index, (name, focus))| { let name = name.clone(); crate::edge_button(("lfs-source-remote", index), name.clone()).track_focus(focus).debug_selector(move || format!("lfs-source-remote-{index}")).disabled(self.pending).on_click(cx.listener(move |this, _, window, cx| { this.remote.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); this.prepare(window, cx); })) })))
+            .child(crate::edge_row(window).on_children_prepainted(self.body.controls(vec![Some(read.clone())], room)).child(button("read-lfs-source", "Read configured source", "refresh", false).track_focus(&read).debug_selector(|| "read-lfs-source".into()).flex_shrink(1.).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.prepare(window, cx)))))
             .when(self.pending, |element| element.child(label("lfs-source-loading", "Resolving the selected pointer, Git LFS tooling, and configured source…").text_size(appearance::ui_text(12.))))
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| crate::tags::error_line("lfs-download-error", error, Some(appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning))))
-            .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))))
+            .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))), "lfs-download-scrollbar").min_h_0())
     }
 }

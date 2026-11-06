@@ -1266,13 +1266,18 @@ fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App)
         .map_or("Add remote".into(), |remote| {
             format!("Edit {}", remote.name)
         });
-    window.open_alert_dialog(cx, move |dialog, window, _| {
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         let submit = form.clone();
+        let shown = form.clone();
+        // In the dialog's content, as the profile form is: the form takes
+        // what the cap leaves it and scrolls the rest, with the ring's room
+        // below its last control, which the footer's gap gives back.
         dialog
             .title(title.clone())
             .width(appearance::dialog_width(px(580.), window))
             .max_h(appearance::dialog_max_height(window))
-            .child(form.clone())
+            .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+            .content(move |content, _, _| content.min_h_0().child(shown.clone()))
             .footer(crate::tags::dialog_footer(
                 "Review settings",
                 Some("Cancel"),
@@ -1726,6 +1731,9 @@ struct RemoteForm {
     /// its review failed a fresh node each time it opens again
     /// (`native_accessibility::refusal_line`).
     opened: usize,
+    /// The form's scroll, which reveals the control Tab moves onto: its
+    /// last controls lie below its fold in a half tile.
+    body: FocusReveal,
 }
 
 impl RemoteForm {
@@ -1782,6 +1790,7 @@ impl RemoteForm {
             advanced: false,
             error: None,
             opened: 0,
+            body: FocusReveal::new(Trigger::Keyboard),
         }
     }
 
@@ -1857,7 +1866,49 @@ impl RemoteForm {
 impl Render for RemoteForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        div().flex().flex_col().gap_3()
+        // The form lies in the dialog's content, as the profile form does,
+        // and takes what the dialog's cap leaves it, scrolling the rest,
+        // cued (`tags::ScrollCue`): the field or control Tab moves onto
+        // scrolls into view with its ring's room (`focus_reveal`), where in
+        // the dialog's own scrolling body Tab left its last controls below
+        // the fold at 18 pt in a half tile. It keeps that room around its
+        // controls, given back through its margin, and the pull of Fetch
+        // rules…, a ghost Button at the dialog's text edge, with it on its
+        // left, so nothing moves and its clip cuts no frame or ring; a
+        // wrapper keeps the room below them inside the dialog's clip.
+        let room = appearance::button_ring_room(cx);
+        let lead = crate::ghost_pull(window) + room;
+        self.body.reveal(window, cx);
+        let [name, fetch, push, rules] = [
+            self.name.read(cx).focus_handle(cx),
+            self.fetch.read(cx).focus_handle(cx),
+            self.push.read(cx).focus_handle(cx),
+            self.rules.read(cx).focus_handle(cx),
+        ];
+        let [inherit, advanced, store] = [
+            "remote-push-inherits-fetch",
+            "remote-advanced-settings",
+            "remote-store-tracking-refs",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        // The form's children in order, those that take focus with their
+        // handle.
+        let mut controls = vec![Some(name)];
+        if self.expected.is_some() {
+            controls.push(None);
+        }
+        controls.extend([Some(fetch), Some(inherit.clone())]);
+        if !self.inherit_push {
+            controls.push(Some(push));
+        }
+        controls.push(Some(advanced.clone()));
+        let mut rules_controls = vec![Some(store.clone())];
+        if self.store_refs {
+            rules_controls.push(Some(rules));
+        }
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("remote-form").debug_selector(|| "remote-form".into()).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col()
+            .child(div().flex().flex_col().gap_3().on_children_prepainted(self.body.controls(controls, room))
             .child(div().flex().flex_col().gap_1().child(field_label("Remote name", cx)).child(Input::new(&self.name).disabled(self.expected.is_some())))
             .children(self.expected.as_ref().map(|remote| {
                 div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current fetch: {}", remote.urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))
@@ -1865,22 +1916,22 @@ impl Render for RemoteForm {
             .child(div().flex().flex_col().gap_1().child(field_label(if self.expected.is_some() { "New fetch URLs" } else { "Fetch URLs" }, cx))
                 .child(shortcuts::tab_leaves(Textarea::new(&self.fetch).h(crate::appearance::ui_size(70.)).aria_label("Fetch URLs, one per line")))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(if self.expected.is_some() { "One URL per line. Leave blank to preserve the existing URLs." } else { "One URL or local repository path per line." })))
-            .child(Checkbox::new("remote-push-inherits-fetch").label("Use fetch URLs for push").checked(self.inherit_push)
+            .child(Checkbox::new("remote-push-inherits-fetch").track_focus(&inherit).label("Use fetch URLs for push").checked(self.inherit_push)
                 .on_click(cx.listener(|this, checked, _, cx| { this.inherit_push = *checked; cx.notify(); })))
             .when(!self.inherit_push, |element| element.child(div().flex().flex_col().gap_1().child(field_label("Push URLs", cx))
                 .children(self.expected.as_ref().filter(|remote| !remote.push_urls.is_empty()).map(|remote| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current: {}", remote.push_urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))))
                 .child(shortcuts::tab_leaves(Textarea::new(&self.push).h(crate::appearance::ui_size(70.)).aria_label("Push URLs, one per line")))))
             // A ghost Button at the dialog's text edge, its label on that
             // edge and its frame its pull before it (`crate::edge_row`).
-            .child(crate::edge_row(window).child(crate::edge_button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }).debug_selector(|| "remote-advanced-settings".into())
+            .child(crate::edge_row(window).child(crate::edge_button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }).track_focus(&advanced).debug_selector(|| "remote-advanced-settings".into())
                 .on_click(cx.listener(|this, _, _, cx| { this.advanced = !this.advanced; cx.notify(); }))))
-            .when(self.advanced, |element| element.child(div().flex().flex_col().gap_2()
-                .child(Checkbox::new("remote-store-tracking-refs").label("Store fetched branches as remote-tracking references").checked(self.store_refs)
+            .when(self.advanced, |element| element.child(div().flex().flex_col().gap_2().on_children_prepainted(self.body.controls(rules_controls, room))
+                .child(Checkbox::new("remote-store-tracking-refs").track_focus(&store).label("Store fetched branches as remote-tracking references").checked(self.store_refs)
                     .on_click(cx.listener(|this, checked, _, cx| { this.store_refs = *checked; cx.notify(); })))
                 .when(self.store_refs, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line"))))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
             // Announced at once, again each time the form opens with it.
-            .children(self.error.as_ref().map(|error| native_accessibility::refusal_line("remote-form-error", self.opened, error.clone(), |line| line.text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
+            .children(self.error.as_ref().map(|error| native_accessibility::refusal_line("remote-form-error", self.opened, error.clone(), |line| line.text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))), "remote-form-scrollbar").min_h_0())
     }
 }
 

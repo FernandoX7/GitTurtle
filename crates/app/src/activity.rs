@@ -318,13 +318,21 @@ impl GitTurtle {
         let browser = cx.new(|cx| ActivityBrowser {
             owner: owner.downgrade(),
             _observer: cx.observe(&owner, |_, _, cx| cx.notify()),
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
         });
-        window.open_alert_dialog(cx, move |dialog, window, _| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let shown = browser.clone();
+            // In the dialog's content, as the profile form is: the body
+            // takes what the cap leaves it and scrolls the rest, revealing
+            // the action Tab moves onto, with the ring's room below it,
+            // which the footer's gap gives back, rather than rely on the
+            // dialog's own scrolling body, which reveals nothing.
             dialog
                 .title("GitTurtle activity")
                 .width(appearance::dialog_width(px(760.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .child(browser.clone())
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
+                .content(move |content, _, _| content.min_h_0().child(shown.clone()))
                 .footer(crate::tags::dialog_footer("Done", None))
         });
     }
@@ -332,6 +340,9 @@ impl GitTurtle {
 struct ActivityBrowser {
     owner: WeakEntity<GitTurtle>,
     _observer: Subscription,
+    /// The body's scroll, which reveals the action Tab moves onto: below
+    /// its fold in a half tile at 18 pt.
+    body: crate::focus_reveal::FocusReveal,
 }
 impl Render for ActivityBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -350,16 +361,24 @@ impl Render for ActivityBrowser {
         // before it (DESIGN.md, "One left edge"); the body keeps the pull
         // with the ring's room on its left, and the ring's room on its
         // right, given back through its margins, so its clip cuts neither.
+        // It keeps the ring's room above and below them too, and a wrapper
+        // keeps the room below inside the dialog's clip.
         let room = appearance::button_ring_room(cx);
         let lead = crate::ghost_pull(window) + room;
-        crate::native_accessibility::clips_children(div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().pl(lead).ml(-lead).pr(room).mr(-room).flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
+        // An action Tab moves onto scrolls into view with its ring's room
+        // (`focus_reveal`).
+        self.body.reveal(window, cx);
+        let [refresh, reflog] =
+            ["activity-refresh", "activity-reflog"].map(|id| self.body.focus(id, cx));
+        let cue = crate::tags::ScrollCue::revealing(&self.body, room);
+        div().flex().flex_col().min_h_0().pb(room).child(cue.list(div().on_children_prepainted(cue.observe(self.body.observe())).id("activity-browser-content").max_h(body_height + room * 2.).min_h_0().overflow_y_scroll().track_scroll(self.body.scroll()).p(room).m(-room).pl(lead).ml(-lead).flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
-            .child(crate::edge_row(window)
-                .child(crate::workspace::refusing(crate::edge_button("activity-refresh","Refresh current repository").debug_selector(||"activity-refresh".into()),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+            .child(crate::edge_row(window).on_children_prepainted(self.body.controls(vec![Some(refresh.clone()), Some(reflog.clone())], room))
+                .child(crate::workspace::refusing(crate::edge_button("activity-refresh","Refresh current repository").track_focus(&refresh).debug_selector(||"activity-refresh".into()),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
                     // Refused at once while a write runs, before it looks so.
                     if app.operation_busy.is_some() { return; }
                     window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
-                .child(crate::workspace::refusing(crate::edge_button("activity-reflog","Browse reflog…").debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                .child(crate::workspace::refusing(crate::edge_button("activity-reflog","Browse reflog…").track_focus(&reflog).debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
                     // Refused at once while a write runs, before it looks so,
                     // and Activity stays open: `open_reflog_browser` refuses
                     // then, and closing first left neither dialog.
@@ -376,7 +395,7 @@ impl Render for ActivityBrowser {
                         .child(div().child(format!("{} · {}",entry.repository,entry.target)))
                         .child(div().text_color(rgb(p.muted)).child(if entry.outcome==Outcome::Running{progress.clone().unwrap_or(entry.explanation)}else{entry.explanation}))
                 }))
-                .when(app.activity.entries.is_empty(),|el|el.child(div().p_3().child("No GitTurtle operations recorded yet.")))))).into_any_element()
+                .when(app.activity.entries.is_empty(),|el|el.child(div().p_3().child("No GitTurtle operations recorded yet."))))), "activity-scrollbar").min_h_0()).into_any_element()
     }
 }
 

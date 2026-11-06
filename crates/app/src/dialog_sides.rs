@@ -171,6 +171,29 @@ impl Site {
         }
     }
 
+    /// The ghost Buttons at its text edge that Tab reaches on the fixture,
+    /// each of which must draw its ring there: every one but the series
+    /// review's three that wait for a selected pair, and the choices past
+    /// Compare local revisions' first.
+    fn tab_reaches(self) -> &'static [&'static str] {
+        match self {
+            Site::About => &["copy-bug-diagnostics"],
+            Site::Profiles => &["new-git-profile"],
+            Site::ProfileForm => &["profile-use-current-signer"],
+            Site::Activity => &["activity-refresh", "activity-reflog"],
+            Site::RevisionChoices => &["revision-choice-0"],
+            Site::RewriteReview => &["reload-series"],
+            Site::RemoteForm => &["remote-advanced-settings"],
+            Site::LfsSource => &["read-lfs-source"],
+            Site::WorktreeCreated => &[
+                "open-created-worktree",
+                "reveal-created-worktree",
+                "edit-created-worktree",
+            ],
+            _ => &[],
+        }
+    }
+
     /// Whether Tab walks it for its rings: every dialog with a ghost Button
     /// at its text edge, and the palette. The GitHub panel's and the theme
     /// editor's many stops are walked by their own sweeps.
@@ -429,8 +452,9 @@ fn inside(panel: Bounds<Pixels>) -> Bounds<Pixels> {
 /// starts 16 px inside the panel's 1 px edge at 13 pt and 17 px at 18 pt, on
 /// the device pixel (the GitHub panel's at its own inset past that), and the
 /// control its footer ends with, where it has a name, ends as far inside the
-/// right edge; and Tab draws every ring of each dialog with a ghost
-/// Button at its text edge, and the palette's, inside the panel's edge.
+/// right edge; and every Tab stop of each dialog with a ghost Button at its
+/// text edge, and of the palette, draws a whole ring, which no clip cuts,
+/// inside the panel's edge.
 /// Without the app's room installed, or with the room less the ring's 3 px,
 /// the text started 16 px inside at 18 pt, where the 14 px pull and the 3 px
 /// ring take 17. The ghost Buttons pulled before that edge, their rings end
@@ -495,9 +519,9 @@ async fn dialogs_pad_their_sides_for_a_ghost_buttons_ring(cx: &mut TestAppContex
                 }
             }
             if site.walked() {
-                // The sweep's own findings, such as a ring a scrolling body
-                // cuts inside the dialog, belong to the focus sweeps; this
-                // walk asks only that each ring lie inside the dialog.
+                // The sweep's own findings count too: a stop that draws no
+                // ring, as one a scrolling body never brings into view, and
+                // a ring a clip cuts.
                 let mut sweep_findings = Vec::new();
                 let mut seen = 0;
                 sweep::walk_each(
@@ -530,6 +554,7 @@ async fn dialogs_pad_their_sides_for_a_ghost_buttons_ring(cx: &mut TestAppContex
                         }
                     },
                 );
+                failures.extend(sweep_findings);
                 if seen == 0 {
                     failures.push(format!("{at}: Tab drew no ring"));
                 }
@@ -758,15 +783,21 @@ fn ghost_findings(
 /// its pull before it, on the device pixel, and no Button runs past the
 /// text column on the right, a label wider than its room wrapping onto lines
 /// that start on the edge, as Use current repository signing settings does
-/// at 18 pt in the half tile; and Tab draws every ring inside the dialog's
-/// edge. The half tile is read at scale 1.25 too ([`FRACTIONAL`]). Each is
-/// read whole in view at one size at least. Download an LFS
+/// at 18 pt in the half tile; and every Tab stop draws a whole ring, which no
+/// clip cuts, inside the dialog's edge, each Button [`Site::tab_reaches`]
+/// names drawing its ring at one stop: a scrolling body reveals the control
+/// Tab moves onto. The half tile is read at scale 1.25 too
+/// ([`FRACTIONAL`]). Each Button is read whole in view at one size at least. Download an LFS
 /// preview and Worktree created open from their openers. Standing their
 /// frames on the edge, the Buttons started their content 10 px past it at
 /// 13 pt and 14 px at 18 pt; New profile…, the signing Button, Compare local
 /// revisions' choices and Copy bug diagnostics, stretched across the
 /// dialog, centred it, and the signing Button's label ended in an ellipsis
-/// at 18 pt in the half tile.
+/// at 18 pt in the half tile. In the dialog's own scrolling body, which
+/// reveals nothing, or with no reveal of their own, Compare local
+/// revisions' choices took focus below the form's fold in the half tile,
+/// and Read configured source's, Open in editor's and the series list's
+/// rings were cut at the foot at 18 pt there.
 #[gpui::test]
 async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = width_walk::open(width_walk::Page::History, cx).await;
@@ -809,7 +840,11 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
                 &mut measured,
                 &mut failures,
             );
+            // Every stop draws a whole ring, as the sweep finds it, and Tab
+            // reaches each of the site's Buttons it must, drawing its ring.
             let mut sweep_findings = Vec::new();
+            let mut reached = std::collections::HashSet::new();
+            let ring_room = cx.update(|_, cx| appearance::button_ring_room(cx));
             sweep::walk_each(
                 &app,
                 cx,
@@ -822,6 +857,20 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
                         failures.push(format!("{stop}: no dialog panel drawn"));
                         return;
                     };
+                    for selector in site.tab_reaches() {
+                        let Some(frame) = cx.debug_bounds(selector) else {
+                            continue;
+                        };
+                        let around = frame.dilate(ring_room);
+                        if rings.iter().any(|ring| {
+                            (ring.bounds.left() - around.left()).abs() <= px(0.5)
+                                && (ring.bounds.top() - around.top()).abs() <= px(0.5)
+                                && (ring.bounds.right() - around.right()).abs() <= px(0.5)
+                                && (ring.bounds.bottom() - around.bottom()).abs() <= px(0.5)
+                        }) {
+                            reached.insert(*selector);
+                        }
+                    }
                     // Read again with each stop's focus, as a scrolling body
                     // reveals a Button below its fold.
                     if let Some(edge) = edge {
@@ -851,6 +900,12 @@ async fn ghost_buttons_stand_their_labels_on_a_dialogs_text_edge(cx: &mut TestAp
                     }
                 },
             );
+            failures.extend(sweep_findings);
+            for selector in site.tab_reaches() {
+                if !reached.contains(selector) {
+                    failures.push(format!("{at}: Tab never draws {selector}'s ring"));
+                }
+            }
             sweep::close_dialogs(cx, &at, interface, &mut failures);
             views::tests::settle(&app, cx).await;
         }
