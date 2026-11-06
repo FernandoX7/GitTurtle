@@ -920,6 +920,20 @@ pub(crate) mod ring_room_tests {
     use gpui::accesskit::Toggled;
     use gpui_kit::component::Theme;
 
+    /// A fixture directory whose path is short on every platform, so the
+    /// selected worktree's path in its details takes one line at 13 pt in a
+    /// 461 × 490 half tile, as the test text system lays it out:
+    /// `/tmp/.tmp…/second` on Linux and `/private/tmp/.tmp…/second` on
+    /// macOS. In the system's temporary directory, macOS's
+    /// `/private/var/folders/…/T/.tmp…/second` wrapped, and the details,
+    /// 3 px clear of the content's fold with the path on one line, ran past
+    /// it there (hosted run 42154950197).
+    fn short_fixture() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .expect("a fixture directory in /tmp")
+    }
+
     /// The manager on `repo`, opened in a window, with its first refresh
     /// finished.
     async fn opened_manager<'a>(
@@ -1473,7 +1487,7 @@ pub(crate) mod ring_room_tests {
     /// at 13 and 18 pt: it kept one, with nothing to cue the other.
     #[gpui::test]
     async fn a_half_tile_keeps_two_worktree_rows_whole(cx: &mut TestAppContext) {
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = short_fixture();
         let repo = tagged_repository(fixture.path());
         let folder = fixture.path().join("second");
         git(
@@ -1519,25 +1533,22 @@ pub(crate) mod ring_room_tests {
             // half tile and at 13 pt in the shorter window, its scrollbar
             // cues them beside it, clear of the content and its rings' room.
             // Taking all the dialog's cap leaves it, the content holds them
-            // whole at 13 pt in the half tile with Linux's test fonts.
+            // whole at 13 pt in the half tile, where the worktree's path
+            // takes one line of them (`short_fixture`), and paints no thumb.
             let content = rendered(cx, "worktree-manager-content");
             let track = rendered(cx, "worktree-manager-scrollbar");
             let overflows = rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
                 || cx
                     .debug_bounds("remove-managed-worktree")
                     .is_none_or(|remove| remove.bottom() > content.bottom());
-            // Whether they fit at 13 pt in the half tile turns on the
-            // platform's font metrics: they fit with Linux's test fonts and run
-            // past the fold with macOS's (hosted run 42154950197). Where they
-            // must run past it, at 18 pt and in the shorter window, they do on
-            // every platform; either way the cue follows the overflow.
-            if !(height == 490. && size == 13) {
-                assert!(
-                    overflows,
-                    "at {size} pt in 461 × {height} the details overflow the content {content:?}"
-                );
-            }
-            if !overflows {
+            let fits = height == 490. && size == 13;
+            assert!(
+                overflows != fits,
+                "at {size} pt in 461 × {height} the details {:?} overflow the content \
+                 {content:?}: {overflows}",
+                rendered(cx, "worktree-selected-identity")
+            );
+            if fits {
                 assert!(
                     crate::tags::tests::painted_thumb(cx, track).is_none(),
                     "at {size} pt in 461 × {height} a content that holds its details paints no thumb"
