@@ -10065,7 +10065,7 @@ mod tests {
     /// window: the changed-file list, holding twelve files, scrolled half a row inside itself
     /// and standing past the body's top edge, and Source's text, standing past the body's
     /// foot, each tell the body their viewport ([`review::clipped`]), so the row the list's own
-    /// edge cuts beyond the body's, and the part of a row under Source's clip, inside the
+    /// edge cuts, past that edge, and the part of a row under Source's clip, inside the
     /// editor's bottom padding, are none of its lines: no line of the body crosses either
     /// edge of either. Past the body's edge, where the clip around them is the body's, the
     /// body once took such a row for a line, and a reveal could refuse a stop that cut nothing
@@ -10590,6 +10590,56 @@ mod tests {
             }
         }
         sweep::assert_whole(failures);
+    }
+
+    /// A row a list inside the body cuts at its edge is a line of the body as far as the list
+    /// shows it (`review::keep_line`): at 18 pt in a 461 × 490 window, the changed-file list
+    /// stacked above Changes shows its first row whole and the top of its second, which the
+    /// body's lines hold from the row's top to the list's foot. Counted only where the list
+    /// showed it whole, the second row reported nothing, and the body's reveals took the file
+    /// name and status the list shows of it for room between lines: Tab onto the Review tab
+    /// stopped the body's foot through that status line, as Tab onto Source's text at 13 pt
+    /// stopped its top through the third row's file name, though no place the body could
+    /// scroll to cleared every line there.
+    #[gpui::test]
+    async fn a_row_a_list_cuts_is_a_line_of_the_body_where_the_list_shows_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        show_surface(
+            (&app, &panel, &pull, &files),
+            Surface::Changes,
+            (18, 461., 490.),
+            cx,
+        )
+        .await;
+        let slack = px(0.5);
+        let list = cx.debug_bounds("github-file-rows").expect("the file list");
+        let rows: Vec<Bounds<Pixels>> = indexed("github-file-row-", files.len())
+            .into_iter()
+            .filter_map(|row| cx.debug_bounds(row))
+            .collect();
+        let cut: Vec<&Bounds<Pixels>> = rows
+            .iter()
+            .filter(|row| row.top() < list.bottom() - slack && row.bottom() > list.bottom() + slack)
+            .collect();
+        let [row] = cut[..] else {
+            panic!("the list {list:?} cuts one row at its foot: {rows:?}");
+        };
+        let lines = panel.read_with(cx, |panel, cx| panel.review.body_blocks.lines(cx));
+        assert!(
+            lines.iter().any(|(top, bottom)| {
+                (*top - row.top()).abs() <= slack && (*bottom - list.bottom()).abs() <= slack
+            }),
+            "the row {row:?} the list {list:?} cuts is a line of the body to the list's foot: \
+             {lines:?}"
+        );
     }
 
     /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,

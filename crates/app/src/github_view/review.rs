@@ -498,19 +498,28 @@ impl Collecting {
         }
     }
 }
-/// Keeps in `blocks` the line from `top` to `bottom` where it lies whole in `span`
-/// ([`Collecting::spans`]): a line a list or a clip inside the container hides or cuts is that
-/// list's or clip's to show, not the container's.
-fn keep_line(blocks: &Blocks, top: Pixels, bottom: Pixels, span: (Pixels, Pixels)) {
-    if whole_in(top, bottom, span) {
+/// Keeps in `blocks` the part of the line from `top` to `bottom` that lies in `span`
+/// ([`Collecting::spans`]), where a person can see it, the line whole where it lies in `span`
+/// to half a pixel either way, layout's rounding: a line a list or a clip inside the container
+/// hides is that list's or clip's to show, not the container's, while the part of a line that
+/// a list's or a clip's edge leaves in view, as the changed-file list's foot leaves of its
+/// last row, is a line the container's edges must not cut again, as an editor's row is
+/// ([`editor_lines`]). A part thinner than layout's rounding is none. Kept only where they lay
+/// whole, the rows a list cut reported nothing: in a 461 × 490 window, Tab onto the Review tab
+/// in Files at 18 pt stopped the body's foot through the status line the changed-file list's
+/// foot left in view of its second row, and Tab onto Source at 13 pt stopped the body's top
+/// through the file name of its third.
+fn keep_line(blocks: &Blocks, top: Pixels, bottom: Pixels, (shown, ends): (Pixels, Pixels)) {
+    let slack = px(0.5);
+    let whole = top >= shown - slack && bottom <= ends + slack;
+    let (top, bottom) = if whole {
+        (top, bottom)
+    } else {
+        (top.max(shown), bottom.min(ends))
+    };
+    if bottom - top > if whole { Pixels::ZERO } else { slack } {
         blocks.lines_drawing.borrow_mut().push((top, bottom));
     }
-}
-/// Whether the line from `top` to `bottom` lies whole in `span`, half a pixel either way being
-/// layout's rounding ([`keep_line`]).
-fn whole_in(top: Pixels, bottom: Pixels, (shown, ends): (Pixels, Pixels)) -> bool {
-    let slack = px(0.5);
-    top >= shown - slack && bottom <= ends + slack && bottom > top
 }
 thread_local! {
     /// The body whose content is prepainting while it collects its lines
@@ -596,8 +605,9 @@ fn drawn_line_height(window: &Window) -> Pixels {
 }
 /// `list`, a list that scrolls inside the panel's body and clips its rows, in an element that
 /// tells the body collecting lines the list's viewport while the list prepaints, so the rows
-/// it has scrolled out of itself report no lines ([`Collecting::visible`]). The element is as
-/// tall as the list and stands where it would.
+/// it has scrolled out of itself report no lines and a row its edge cuts reports the part it
+/// shows ([`Collecting::visible`], [`keep_line`]). The element is as tall as the list and
+/// stands where it would.
 pub(super) fn clipped(list: impl IntoElement) -> Div {
     clipped_with(list, None)
 }
@@ -2114,8 +2124,9 @@ impl Panel {
                         "Up and Down select a file. {} moves to its patch.",
                         shortcuts::ENTER
                     ))
-                    // Its rows are lines of the body where the list shows them whole: the
-                    // rows it has scrolled out of itself are none ([`clipped`]).
+                    // Its rows are lines of the body where the list shows them, the part it
+                    // shows of one its edge cuts: the rows it has scrolled out of itself are
+                    // none ([`clipped`], [`keep_line`]).
                     .child(
                         clipped(
                             uniform_list(
@@ -2631,7 +2642,7 @@ impl Panel {
                 }
             }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(clipped(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
                 // The selection's edge overlays the row, so its text keeps Source's place.
-                // Each row is a line of the body, where the list shows it whole ([`clipped`]).
+                // Each row is a line of the body where the list shows it ([`clipped`]).
                 patch_row(index,row,column,row_height,cx).child(one_line()).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)).size_full())))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
