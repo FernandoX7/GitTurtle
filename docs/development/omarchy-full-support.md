@@ -799,12 +799,12 @@ cover current upstream x86-64 Omarchy.
          (`github_view*`, `focus_reveal.rs`).
        - (A) Overflow and scroll cues, M (FU20-A and FU20-A2 landed 2026-11-05 night: the branch
          chooser, the profile dialogs, the worktree manager, the conflict draft in whole code lines,
-         the commit message's overflow cue inside its viewport; FU20-A3 (the branch picker's
-         disabled reasons, the tracking-branch feedback) and FU20-A4 (the conflict review scrolling
+         the commit message's overflow cue inside its viewport; FU20-A3 landed (the branch picker's and branch dialogs'
+         disabled reasons; the tracking-branch feedback already worked, now covered); FU20-A4 (the conflict review scrolling
          in a short window, decided) in flight): the profiles menu's disabled items without a
          reason (verify, with FU19-F's `profiles.rs`); `MESSAGE_FADE` in `commit_message.rs`
          copies `tags::EDGE_FADE` (make it `pub(crate)` when `tags.rs` is next open).
-       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback is FU20-A3, in flight; left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
+       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback covered by FU20-A3 (landed); left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
        - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
           (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
           cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
