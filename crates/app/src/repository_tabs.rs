@@ -3706,7 +3706,7 @@ mod tests {
         let nested = canonical.join("nested");
         std::fs::create_dir(&nested).unwrap();
         let unavailable = fixture.path().join("missing");
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         let mut preferences = Preferences::default();
         preferences
             .project_names
@@ -3842,7 +3842,7 @@ mod tests {
             let repository = crate::views::tests::fixture_repository(
                 fixture.path().join(format!("repo-{index}")),
             );
-            let saved = fixture.path().join(format!("session-{index}.json"));
+            let saved = isolated_session(&format!("session-{index}.json"));
             let mut captured = None;
             let window = cx.add_window(|window, cx| {
                 let app = cx.new(|cx| {
@@ -4038,6 +4038,14 @@ mod tests {
         repo
     }
 
+    /// Where a test window saves its tab session, `name` in a directory of the
+    /// test process's root that goes with the root at exit. A window's queued
+    /// save can run after its test, and a save makes its folder again, so a
+    /// session in the test's fixture came back outside it once it was gone.
+    fn isolated_session(name: &str) -> PathBuf {
+        preferences::test_directories::until_exit("tab-session").join(name)
+    }
+
     /// A window that is `window_size` from its first frame, opening `initial`
     /// with `saved` as its repository session and saving to `save_path`.
     /// `add_window_view` opens a maximized window and runs the deferred open
@@ -4097,7 +4105,7 @@ mod tests {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let repo = linear_history_fixture(fixture.path().join("history"), 500);
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         cx.update(|cx| {
             cx.bind_keys([KeyBinding::new("end", LastRow, Some("GitTurtleList"))]);
@@ -4253,7 +4261,7 @@ mod tests {
             cx,
             repo.path().to_owned(),
             Session::default(),
-            fixture.path().join("isolated-session.json"),
+            isolated_session("isolated-session.json"),
             size(px(1920.), px(1080.)),
         );
         let window_cx = &mut window_cx;
@@ -4328,7 +4336,7 @@ mod tests {
         let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -4422,7 +4430,7 @@ mod tests {
         let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -4563,7 +4571,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         let open_key = if cfg!(target_os = "macos") {
             "cmd-o"
         } else {
@@ -4796,7 +4804,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -5014,7 +5022,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -5626,7 +5634,7 @@ mod tests {
                 .to_owned()
         });
         let initial = paths[0].clone();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -6294,7 +6302,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let initial = repo.path().to_owned();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         cx.update(|cx| {
             // A dialog otherwise slides in on a wall-clock animation.
@@ -6483,7 +6491,7 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
         let path = repository.path().to_owned();
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -6552,7 +6560,7 @@ mod tests {
         let second = crate::views::tests::fixture_repository(fixture.path().join("new-tab"));
         let first_path = first.path().canonicalize().unwrap();
         let second_path = second.path().canonicalize().unwrap();
-        let save_path = fixture.path().join("isolated-session.json");
+        let save_path = isolated_session("isolated-session.json");
         let saved = Session {
             version: 1,
             active: 0,
@@ -6737,7 +6745,7 @@ mod tests {
             new_mode: "100644".into(),
             status: gitturtle_core::ChangeStatus::Added,
         };
-        let destination = fixture.path().join("isolated-session.json");
+        let destination = isolated_session("isolated-session.json");
         let saved = Session {
             version: 1,
             tabs: vec![SavedTab {

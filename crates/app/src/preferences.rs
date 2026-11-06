@@ -1132,10 +1132,7 @@ pub(crate) mod test_directories {
     impl TestDirectory {
         /// A new, empty directory named `<sequence>-<label>`.
         pub(crate) fn new(label: &str) -> Self {
-            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path = root().join(format!("{sequence}-{label}"));
-            fs::create_dir(&path).expect("create a test directory");
-            Self(path)
+            Self(until_exit(label))
         }
 
         pub(crate) fn path(&self) -> &Path {
@@ -1147,6 +1144,17 @@ pub(crate) mod test_directories {
         fn drop(&mut self) {
             remove_tree(&self.0);
         }
+    }
+
+    /// A new, empty directory named `<sequence>-<label>` that stays until the
+    /// root goes at exit, for files that work still running after a test
+    /// writes: a save makes its folder again, so one aimed at a directory the
+    /// test removed would otherwise bring it back outside the root.
+    pub(crate) fn until_exit(label: &str) -> PathBuf {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = root().join(format!("{sequence}-{label}"));
+        fs::create_dir(&path).expect("create a test directory");
+        path
     }
 
     fn root() -> &'static Path {
