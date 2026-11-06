@@ -1264,9 +1264,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// before a frame never had the blur that stops it and blinked, redrawing
     /// the window, until it was next focused and left. A field focused
     /// already, whose focus GPUI reports no more, has its blink paused, so
-    /// its caret shows at once and holds, as the clear button's `clean` and
-    /// `focus` leave a caret in the off half of its blink; a pause starts
-    /// no cursor that has not started.
+    /// its caret shows at once and holds: edits pause the caret themselves,
+    /// as the clear button's `clean` before its `focus` does, and this pause
+    /// still shows the caret of a focused field focused again with no edit;
+    /// a pause starts no cursor that has not started.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         self.blink_cursor.update(cx, |cursor, cx| cursor.pause(cx));
@@ -2291,6 +2292,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.undo_manager.break_transaction_coalescing();
         self.selected_range = (0..self.text.len()).into();
+        // GitTurtle patch: a selection moves the caret, so it pauses it, as
+        // `select_to_with_affinity` does.
+        self.pause_blink_cursor(cx);
         cx.notify();
     }
 
@@ -2465,6 +2469,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         if self.selected_range.is_empty() {
             self.update_preferred_column();
         }
+        // GitTurtle patch: the selection's moving end is the caret, so a
+        // selection pauses it as a move does: it shows at once after
+        // Shift+arrow, a Shift-click or a drag, and holds through the drag.
+        // Upstream paused only moves, so a caret hidden in its blink stayed
+        // hidden as a selection grew from it.
+        self.pause_blink_cursor(cx);
         cx.notify()
     }
 
@@ -2935,9 +2945,14 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         }
         let selection_before = self.selected_range;
 
-        if self.blink_cursor.read(cx).visible() {
-            self.pause_blink_cursor(cx);
-        }
+        // GitTurtle patch: every edit pauses the caret, shown or hidden in
+        // its blink, so it shows at once and holds a whole interval. Upstream
+        // paused only a shown caret, so an edit by a bound action, which no
+        // key-down reaches (cut, paste, undo, redo), made while the caret was
+        // hidden drew none until the blink came round. A pause starts no
+        // cursor that has not started, so text set in an unfocused field
+        // still never starts it blinking.
+        self.pause_blink_cursor(cx);
 
         // NOTE: The normalization keeps the UTF-16 length, but may change the
         // UTF-8 byte length, so all the byte-offset calculations below must
@@ -3075,6 +3090,10 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             return;
         }
         let selection_before = self.selected_range;
+        // GitTurtle patch: an input method's composition is an edit, and
+        // pauses the caret as `replace_text_in_range` does; under Wayland's
+        // text input its updates arrive with no key-down to pause it.
+        self.pause_blink_cursor(cx);
 
         let starts_composition = self.ime_marked_range.is_none();
         if starts_composition {

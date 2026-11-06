@@ -2,7 +2,6 @@ use gpui::{Context, Pixels, Task, px};
 use instant::Duration;
 
 static INTERVAL: Duration = Duration::from_millis(500);
-static PAUSE_DELAY: Duration = Duration::from_millis(300);
 
 // On Windows, Linux, we should use integer to avoid blurry cursor.
 #[cfg(not(target_os = "macos"))]
@@ -109,6 +108,14 @@ impl BlinkCursor {
     }
 
     /// Pause the blinking, and delay 500ms to resume the blinking.
+    ///
+    /// GitTurtle patch: the pause lasts one interval, as upstream's note
+    /// says, so a caret that a key, an edit or a move has just shown is held
+    /// a whole visible phase of the blink from the last of them before it
+    /// blinks off, as a start holds it on focus and as GTK and AppKit hold
+    /// an insertion point that has just moved. Upstream's pause lasted
+    /// 300 ms, and its end blinks the caret off, so a caret typed or moved
+    /// hid again before it had stood shown for one phase.
     pub(crate) fn pause(&mut self, cx: &mut Context<Self>) {
         // GitTurtle patch: a cursor that is not blinking, a new one or one
         // stopped on blur, pauses nothing and schedules nothing, so text set
@@ -126,7 +133,7 @@ impl BlinkCursor {
         // delay 500ms to start the blinking
         let epoch = self.next_epoch();
         self._task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(PAUSE_DELAY).await;
+            cx.background_executor().timer(INTERVAL).await;
 
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| {
@@ -196,7 +203,7 @@ mod tests {
         // it, after which the caret blinks again.
         cursor.update(cx, |cursor, cx| cursor.pause(cx));
         cursor.update(cx, |cursor, cx| cursor.start(cx));
-        wait(cx, PAUSE_DELAY - Duration::from_millis(1));
+        wait(cx, INTERVAL - Duration::from_millis(1));
         assert!(visible(cx), "shown through the pause");
         wait(cx, Duration::from_millis(1));
         assert!(!visible(cx), "blinks off as the pause ends");
@@ -243,5 +250,43 @@ mod tests {
                 "{which} keeps its caret shown for the next focus"
             );
         }
+    }
+
+    /// GitTurtle patch: a pause, which every key, edit and caret move makes,
+    /// shows a caret hidden in its blink at once and holds it shown one whole
+    /// interval from the last pause, a full visible phase, before it blinks
+    /// off; upstream's pause ended 300 ms after it, with the caret hidden.
+    #[gpui::test]
+    fn a_pause_holds_the_caret_a_whole_interval(cx: &mut TestAppContext) {
+        let cursor = cx.new(|_| BlinkCursor::new());
+        let visible = |cx: &mut TestAppContext| cursor.read_with(cx, |cursor, _| cursor.visible());
+        let wait = |cx: &mut TestAppContext, time: Duration| {
+            cx.executor().advance_clock(time);
+            cx.run_until_parked();
+        };
+        let pause = |cx: &mut TestAppContext| cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        wait(cx, INTERVAL);
+        assert!(!visible(cx), "hidden in its blink");
+        pause(cx);
+        assert!(visible(cx), "a pause shows the caret at once");
+        wait(cx, INTERVAL - Duration::from_millis(1));
+        assert!(visible(cx), "and holds it until an interval has passed");
+        wait(cx, Duration::from_millis(1));
+        assert!(!visible(cx), "then blinks it off");
+        wait(cx, INTERVAL);
+        assert!(visible(cx), "and on again an interval later");
+        // A pause during a pause, as each key of a word makes, holds the
+        // caret an interval from itself.
+        pause(cx);
+        wait(cx, INTERVAL / 2);
+        pause(cx);
+        wait(cx, INTERVAL - Duration::from_millis(1));
+        assert!(
+            visible(cx),
+            "a second pause holds it an interval from itself"
+        );
+        wait(cx, Duration::from_millis(1));
+        assert!(!visible(cx), "then blinks it off");
     }
 }
