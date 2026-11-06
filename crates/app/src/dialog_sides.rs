@@ -36,9 +36,10 @@ const FRACTIONAL: [(u8, f32, f32, f32); 2] = [(13, 461., 490., 1.25), (18, 461.,
 /// A dialog the fixture opens from History: the ones with a ghost Button at
 /// their text edge (Git profiles, the profile form, Activity, Compare local
 /// revisions' choices, the rewritten-series review, About's Copy bug
-/// diagnostics, Add remote's Fetch rules…, Download an LFS preview and
-/// Worktree created, the last two from their openers with a pointer and a
-/// plan the test makes), the command palette, and the dialogs that size
+/// diagnostics, Add remote's Fetch rules…, Download an LFS preview,
+/// Worktree created and the Reflog, the second and third from their openers
+/// with a pointer and a plan the test makes, the Reflog with its newest
+/// entry selected), the command palette, and the dialogs that size
 /// themselves from the padding (the GitHub panel's, whose Files fit reads
 /// it, and the theme editor's). The signing site is no dialog of its own: it
 /// is the profile form's Use current repository signing settings, walked
@@ -57,6 +58,7 @@ enum Site {
     ThemeEditor,
     LfsSource,
     WorktreeCreated,
+    Reflog,
 }
 
 impl Site {
@@ -75,10 +77,12 @@ impl Site {
 
     /// The dialogs with a ghost Button at their text edge, walked by
     /// [`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]: those in
-    /// [`Self::ALL`], and Download an LFS preview and Worktree created,
-    /// opened from their openers with a working file's pointer and a
-    /// worktree's plan the fixture reads but never creates.
-    const GHOSTS: [Site; 9] = [
+    /// [`Self::ALL`], Download an LFS preview and Worktree created, opened
+    /// from their openers with a working file's pointer and a worktree's
+    /// plan the fixture reads but never creates, and the Reflog, whose
+    /// newest entry's details hold Copy commit ID and Review recovery
+    /// branch….
+    const GHOSTS: [Site; 10] = [
         Site::About,
         Site::Profiles,
         Site::ProfileForm,
@@ -88,6 +92,7 @@ impl Site {
         Site::RemoteForm,
         Site::LfsSource,
         Site::WorktreeCreated,
+        Site::Reflog,
     ];
 
     /// The rows of ghost Buttons standing at its text edge. Compare local
@@ -95,7 +100,9 @@ impl Site {
     /// Download an LFS preview lists the repository's remotes, which the
     /// fixture has none of, before Read configured source. Review messages'
     /// row is drawn whole with no rewritten series to review, and Back to
-    /// series, which shows only while one is inspected, is not drawn.
+    /// series, which shows only while one is inspected, is not drawn. The
+    /// Reflog's selected entry shows Copy commit ID below its selector and
+    /// IDs, and Review recovery branch… below the recovery branch's name.
     fn ghost_rows(self) -> Vec<Row> {
         let row = |selectors: &[(&'static str, Option<&'static str>)], icon: bool| Row {
             ghosts: selectors
@@ -167,6 +174,13 @@ impl Site {
                 ],
                 false,
             )],
+            Site::Reflog => vec![
+                row(&[("copy-reflog-oid", None)], true),
+                row(
+                    &[("review-reflog-recovery", Some("Review recovery branch…"))],
+                    false,
+                ),
+            ],
             _ => Vec::new(),
         }
     }
@@ -190,6 +204,7 @@ impl Site {
                 "reveal-created-worktree",
                 "edit-created-worktree",
             ],
+            Site::Reflog => &["copy-reflog-oid", "review-reflog-recovery"],
             _ => &[],
         }
     }
@@ -206,6 +221,17 @@ impl Site {
     /// where its Buttons at that edge start their labels.
     fn text_at_edge(self) -> bool {
         !matches!(self, Site::GitHub)
+    }
+
+    /// How far past its padding its text starts: the Reflog starts its text,
+    /// its title's among it, at a field's text inset, where its fields' text
+    /// starts (`appearance::FIELD_TEXT_INSET`), so its ghost Buttons stand
+    /// their content there.
+    fn text_inset(self) -> Pixels {
+        match self {
+            Site::Reflog => appearance::FIELD_TEXT_INSET,
+            _ => px(0.),
+        }
     }
 
     /// The control its footer ends with, at the dialog's right text edge,
@@ -360,6 +386,22 @@ impl Site {
                     app.finish_worktree_write(&path, &command, true, window, cx)
                 })
                 .await
+            }
+            // With its newest entry selected and that commit read, so its
+            // details show Copy commit ID, the recovery branch's name and
+            // Review recovery branch….
+            Site::Reflog => {
+                let browser = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let opened = browser.clone();
+                open_dialog(app, cx, &name, move |app, window, cx| {
+                    let browser = app.open_reflog_browser(window, cx);
+                    *opened.borrow_mut() = browser.clone();
+                    browser
+                })
+                .await;
+                let browser = browser.borrow().clone().expect("the Reflog opens");
+                crate::reflog::ReflogBrowser::select_newest(&browser, cx);
+                views::tests::settle(app, cx).await;
             }
         }
     }
@@ -663,8 +705,9 @@ fn runs_in(
 /// as it was opened, and read only once in each opening: the first Button of each
 /// line of a row stands its frame its pull before the edge, on the device
 /// pixel, and starts its label there, or with a leading icon its icon, the
-/// icon's width and gap before its label; every line of a label without an
-/// icon starts there, and together they are as wide as the label, so one
+/// icon's width and gap before its label; on one line its frame ends its
+/// inset past its label, as wide as its content rather than stretched
+/// across the column; every line of a label without an icon starts there, and together they are as wide as the label, so one
 /// wider than its room wraps rather than end in an ellipsis; and no Button
 /// runs past the dialog's text column on the right.
 fn ghost_findings(
@@ -688,14 +731,16 @@ fn ghost_findings(
     let slack = px(0.25);
     let column = panel.right() - px(1.) - padding;
     // The edge is the text the panel draws leftmost, which lies its padding
-    // inside its 1 px edge, on the device pixel nearest that, so a label
-    // drawn left of the edge cannot pass for it: text stands on whole device
-    // pixels, and at scale 1.25 the 1 px edge is 1.25 of them.
+    // and the site's text inset inside its 1 px edge, on the device pixel
+    // nearest that, so a label drawn left of the edge cannot pass for it:
+    // text stands on whole device pixels, and at scale 1.25 the 1 px edge is
+    // 1.25 of them.
     let inset = edge - panel.left() - px(1.);
-    if (f32::from(inset - padding) * scale).abs() >= 0.5 {
+    let text = padding + site.text_inset();
+    if (f32::from(inset - text) * scale).abs() >= 0.5 {
         failures.push(format!(
             "{at}: the text starts {inset:?} inside the panel's edge, not on the device \
-             pixel nearest its padding, {padding:?}"
+             pixel nearest its padding and text inset, {text:?}"
         ));
     }
     for row in site.ghost_rows() {
@@ -737,6 +782,19 @@ fn ghost_findings(
                     "{at}: {selector}'s frame starts at {:?}, not its pull, {pull:?}, before \
                      the text's edge {edge:?}",
                     frame.left()
+                ));
+            }
+            // As wide as its content: on one line its frame ends its inset
+            // past its label, so a Button stretched across its column, its
+            // content centred or not, fails.
+            if let [line] = runs.as_slice()
+                && frame.right() > line.right() + pull + px(1.)
+            {
+                failures.push(format!(
+                    "{at}: {selector}'s frame ends at {:?}, past its label's end {:?} and \
+                     its inset {pull:?}",
+                    frame.right(),
+                    line.right()
                 ));
             }
             if row.icon {

@@ -1163,8 +1163,20 @@ impl Render for ReflogBrowser {
         let cue = crate::tags::ScrollCue::revealing(&self.entries, room);
         let shown =
             |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
+        // Copy commit ID and Review recovery branch…, ghost Buttons at the
+        // content's text edge, a field's text inset past the dialog's
+        // padding, stand their content on that edge, each in a row pulled
+        // before it by its label inset (`crate::edge_row`) inside a wrapper
+        // at that inset, as the labels stand (DESIGN.md, "One left edge"),
+        // and as wide as their content: in wrappers that stretched them
+        // across the column, they centred it. The pull passes the inset at
+        // 18 pt, by 3 px, so the content keeps that with the ring's room on
+        // its left, given back through its margin, and its clip cuts neither
+        // the hover fill nor the ring.
+        let lead = (crate::ghost_pull(window) - TEXT_INSET).max(px(0.)) + room;
+        let (copy_row, review_row) = (crate::edge_row(window), crate::edge_row(window));
         // It shrinks to what the dialog's cap leaves it (`Self::show`).
-        let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).min_h_0().px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
+        let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).min_h_0().px(room).mx(-room).pl(lead).ml(-lead).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending && place == ReadPlace::Log).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} · newest first", page.reference, crate::counted(page.entries.len(), "retained entry", "retained entries"))).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
@@ -1181,7 +1193,7 @@ impl Render for ReflogBrowser {
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
-                    .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_hash_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
+                    .child(shown(copy.clone()).ml(TEXT_INSET).child(copy_row.child(copy_feedback::copy_hash_button(mark, "Copy commit ID", "", cx).track_focus(&copy).flex_shrink(1.).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone())))))
                     .children(loading_below)
                     .children(error_below)
             })
@@ -1200,7 +1212,7 @@ impl Render for ReflogBrowser {
                 .when(self.changes.len() > 100, |element| element.child(out_of_reach(fade(div()).id("reflog-file-limit-pane").child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))))
                 .child(fade(div()).child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.))))
                 .child(fade(shown(name)).child(Input::new(&self.name).aria_label("New recovery branch name")))
-                .child(fade(shown(review.clone())).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
+                .child(fade(shown(review.clone())).ml(TEXT_INSET).child(review_row.child(crate::edge_button("review-reflog-recovery", "Review recovery branch…").track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))))
                 // The review's loading row and error stand below the button
                 // that asked for it, the content's last children.
                 .children(loading_after_review)
