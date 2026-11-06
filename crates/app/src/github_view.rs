@@ -10323,7 +10323,7 @@ mod tests {
     }
 
     /// Walks each of `surfaces` on the offline fixture, at each of `sizes` (an interface size
-    /// and a window width, 490 px tall), with Tab through every stop and then with Shift+Tab,
+    /// and a window's width and height), with Tab through every stop and then with Shift+Tab,
     /// each walk from the surface opened at the body's top (`focus_ring::sweep::walk_each`),
     /// and returns what it found ([`Swept`]): every stop's ring that is not whole; every reveal
     /// that left a line drawn in the frame ([`frame_lines`]) cut at an edge of the body where
@@ -10335,7 +10335,7 @@ mod tests {
     async fn sweep_reveals(
         cx: &mut TestAppContext,
         surfaces: &[Surface],
-        sizes: impl IntoIterator<Item = (u8, f32)>,
+        sizes: impl IntoIterator<Item = (u8, f32, f32)>,
     ) -> Swept {
         use crate::native_accessibility::written;
         let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
@@ -10349,9 +10349,9 @@ mod tests {
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         let slack = px(0.5);
         let mut swept = Swept::default();
-        for (interface, width) in sizes {
+        for (interface, width, height) in sizes {
             for &surface in surfaces {
-                let at = format!("{surface:?} at {interface} pt in {width} × 490");
+                let at = format!("{surface:?} at {interface} pt in {width} × {height}");
                 // Each line outside the lists by its place, and whether a stop showed it whole;
                 // each text and Button outside them by its place and extent in the content; and
                 // the extent of the content each stop showed.
@@ -10364,7 +10364,7 @@ mod tests {
                     show_surface(
                         (&app, &panel, &pull, &files),
                         surface,
-                        (interface, width, 490.),
+                        (interface, width, height),
                         cx,
                     )
                     .await;
@@ -10391,7 +10391,17 @@ mod tests {
                                 .filter_map(|list| cx.debug_bounds(list))
                                 .collect();
                             let scale = cx.update(|window, _| window.scale_factor());
+                            // What a list inside the body holds is the list's to show, where
+                            // its own scroll has taken it too: the conversation list's rows
+                            // below its foot once counted as text no stop of the body showed.
+                            let listed: Vec<String> = BODY_LISTS
+                                .iter()
+                                .flat_map(|list| written::inside(list))
+                                .collect();
                             for id in written::inside("github-panel") {
+                                if listed.contains(&id) {
+                                    continue;
+                                }
                                 let Some(text) = written::get(&id) else {
                                     continue;
                                 };
@@ -10542,29 +10552,43 @@ mod tests {
     }
 
     /// The reveal sweep over every surface of the panel ([`SURFACES`]) on the offline fixture,
-    /// at 13, 17, 18 and 19 pt (19 is clamped to the largest interface size, 18, as the
-    /// preference is) in windows 430 to 500 px wide, every 5 px, 490 px tall, with Tab
-    /// through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
+    /// at 13 and 18 pt in a 461 × 490 window and a 1,480 × 800 one ([`REVEAL_SIZES`]), with
+    /// Tab through every stop and then Shift+Tab ([`sweep_reveals`]): at every stop the focused
     /// control draws its ring whole, or its top edge where it cannot fit the body; no reveal
     /// leaves a line cut at either of the body's edges where a place clears every line with
     /// the revealed part whole; and every line outside the lists inside the body is whole at
-    /// some stop. Each surface and size takes about 8 s in a debug build, so the sweep is
-    /// opt-in; it prints every finding before it fails. Its findings on Linux at 13 and 18 pt
-    /// in a 461 × 490 window (FU18-F) are open: Files' file column, its file list 210 px wide
-    /// scaled with the text beside a column of controls that do not wrap below it, runs past
-    /// the body's right edge, where the clip cuts the rings of Changes, Source, Threads,
-    /// Comment on selection and the file's Conversations pane; at 18 pt the column's fixed
-    /// 324 px leaves Changes' patch and Source no height; and lines outside the lists that no
-    /// stop shows whole.
+    /// some stop. It takes about 3.5 min in a debug build and is opt-in until its findings
+    /// close; it prints every finding before it fails.
+    ///
+    /// Run on Linux on 2026-11-05 (FU20-GH5), it found 133 in 872 stops. The 114 texts no stop
+    /// showed were the conversation list's own rows, scrolled out of the list below its foot or
+    /// above its top, which the sweep counted as the body's because only the rows crossing the
+    /// list's viewport counted as the list's; the list's reveals are
+    /// `conversation_reveals_leave_no_line_cut_at_the_lists_edges`'s, and the sweep now leaves
+    /// whatever a list in the body holds to that list. No line outside the lists was never
+    /// whole. Open, each at its stop as the finding names it:
+    /// - Reveals that leave a line cut at the body's foot where a clear place keeps the focus
+    ///   whole, at 461 × 490: at 13 pt, Tab onto Open captured local comparison in Overview
+    ///   (stop 10), a 12 px run of text at 369.5..381.5 that no label or Button holds, so it
+    ///   reports no line; at 18 pt, the review summary in Review (stop 15) above a line at
+    ///   333..360, Source in Source (stops 4 and 10) above the file's bound line at
+    ///   333.5..360.5, and the Files section's third tab in Changes, Source and Threads (stops
+    ///   0, 14 and 22) above a line at 348.5..371; at 13 pt in 1,480 × 800, Threads' file
+    ///   Conversations pane (stop 4) above the two bound lines at 678.5..698. Source's first
+    ///   line, 70..89.5, is left cut at the top at 13 pt in 461 × 490 (stops 4 and 10). Each
+    ///   such line the sweep names by no label, which reads as a label whose visible part, the
+    ///   bounds its node takes, no longer holds its run's middle, or as text outside every
+    ///   label and Button; which of them each is, and why the reveal's own record of the
+    ///   body's lines let it stop there, is not yet traced.
+    /// - Rings a clip cuts, at 18 pt in 461 × 490: the PR list's first row, 92.5..137.5,
+    ///   Tabbed onto from the list and from the connection pane (stops 2 and 3), whose ring
+    ///   crosses the list's clip half a pixel above the body's top and at its sides; and
+    ///   Changes' patch, 278..377 (stops 4 and 10), which fits the body with its ring's room
+    ///   but is revealed with its foot below the body's.
     #[gpui::test]
     #[ignore = "Opt-in reveal sweep: run with --ignored; prints every finding"]
     async fn the_reveal_sweep_finds_every_line_whole_and_every_ring_drawn(cx: &mut TestAppContext) {
-        let sizes = [13u8, 17, 18, 19].into_iter().flat_map(|size| {
-            (430..=500)
-                .step_by(5)
-                .map(move |width| (size, width as f32))
-        });
-        let swept = sweep_reveals(cx, &SURFACES, sizes).await;
+        let swept = sweep_reveals(cx, &SURFACES, REVEAL_SIZES).await;
         let findings: Vec<&String> = swept
             .cuts
             .iter()
