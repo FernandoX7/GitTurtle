@@ -5316,7 +5316,8 @@ impl GitTurtle {
     /// The room the tab strip leaves its tab list in this window, with Menu
     /// and Workspaces as `labels` has them, each labelled or its 28 px icon:
     /// the strip spans the window's body ([`body_size`]) inside its `px_2`,
-    /// its controls `gap_1` apart, and holds the window controls
+    /// its controls a ring's room apart (`repository_tabs::tab_gap`), and
+    /// holds the window controls
     /// (`window_chrome::strip_width`), Menu, the list, the 28 px New tab and
     /// Workspaces, every length snapped to device pixels as layout snaps
     /// it. Labels are measured as layout lays them out, rounded up to a
@@ -5336,7 +5337,7 @@ impl GitTurtle {
         cx: &App,
     ) -> Pixels {
         let rem = window.rem_size();
-        let gap = window.pixel_snap(rem * 0.25);
+        let gap = crate::repository_tabs::tab_gap(window);
         let control = window.pixel_snap(appearance::ui_size(28.));
         let menu = if labels.menu { labelled_menu } else { control };
         let workspaces = if labels.workspaces {

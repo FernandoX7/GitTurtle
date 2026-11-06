@@ -10,7 +10,18 @@ pub(super) enum Side {
 }
 
 fn client_decorated(window: &Window) -> bool {
+    #[cfg(test)]
+    if CLIENT_DECORATED.with(std::cell::Cell::get) {
+        return true;
+    }
     matches!(window.window_decorations(), Decorations::Client { .. })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether a test draws its window as client-decorated, with the window
+    /// controls in the tab strip: GPUI's test window never is.
+    pub(crate) static CLIENT_DECORATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The window buttons drawn on `side`: none where the window is not
@@ -39,17 +50,18 @@ fn buttons(side: Side, window: &Window, cx: &App) -> Vec<WindowButton> {
 }
 
 /// The width the window controls and the drag region take from the
-/// repository tab strip, its `gap_1` beside each included: each side's 28 px
-/// buttons, `gap_1` apart, with the group's `mr_2` or `ml_2`, and the drag
-/// region's least width after the tabs. Nothing where the window is not
-/// client-decorated.
+/// repository tab strip, its gap (`repository_tabs::tab_gap`) beside each
+/// included, as the strip and the tab list draw it: each side's 28 px
+/// buttons, the same gap apart ([`controls`]), with the group's `mr_2` or
+/// `ml_2`, and the drag region's least width after the tabs. Nothing where
+/// the window is not client-decorated.
 pub(super) fn strip_width(window: &Window, cx: &App) -> Pixels {
     if !client_decorated(window) {
         return px(0.);
     }
     let snap = |length: Pixels| window.pixel_snap(length);
     let rem = window.rem_size();
-    let gap = snap(rem * 0.25);
+    let gap = crate::repository_tabs::tab_gap(window);
     let control = snap(appearance::ui_size(28.));
     let group = |side| match buttons(side, window, cx).len() {
         0 => px(0.),
@@ -87,7 +99,10 @@ pub(super) fn controls(
             .flex()
             .items_center()
             .flex_shrink_0()
-            .gap_1()
+            // A ring's room apart, as the strip's controls and its tabs are:
+            // at 11 pt a focused control's ring reached a device pixel into
+            // the one beside it (`repository_tabs::tab_gap`).
+            .gap(crate::repository_tabs::tab_gap(window))
             .when(matches!(side, Side::Left), |group| group.mr_2())
             .when(matches!(side, Side::Right), |group| group.ml_2())
             .children(buttons)
@@ -118,6 +133,7 @@ fn control(
         WindowButton::Close => ("close-window", "Close window", IconName::WindowClose),
     };
     button(id, "", "", false)
+        .debug_selector(move || id.into())
         .icon(Icon::new(symbol).size(appearance::ui_size(16.)))
         .rounded_full()
         .accessibility_label(label)

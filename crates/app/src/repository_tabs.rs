@@ -2759,7 +2759,10 @@ impl GitTurtle {
                 .debug_selector(|| "repository-tab-strip".into())
                 .flex()
                 .items_center()
-                .gap_1()
+                // A ring's room between its controls, as between its tabs:
+                // the 0.25 rem left Main Menu's ring reaching into a selected
+                // first tab at 11 pt (`tab_gap`).
+                .gap(tab_gap(window))
                 .px_2()
                 .min_h(tab_strip_height(window, cx))
                 .bg(rgb(colors.panel))
@@ -2886,6 +2889,7 @@ impl GitTurtle {
                 ))
                 .child(
                     button("new-repository-tab", "", "plus", false)
+                        .debug_selector(|| "new-repository-tab".into())
                         .accessibility_label("Open repository tab")
                         .tooltip(format!(
                             "Open a repository tab · {}",
@@ -3037,6 +3041,16 @@ pub(super) fn tab_list_ring_room(window: &Window, cx: &App) -> Pixels {
 /// device pixel into the next tab, whose selected fill, painted after it,
 /// covered that pixel, and a focused tab's ring reached over the tab before
 /// it. From 12 pt up the 0.25 rem holds the ring, so nothing moves there.
+///
+/// The strip keeps its controls the same gap apart, the window controls
+/// beside it and each other, Main Menu, the tab list, New tab and
+/// Workspaces, and predicts the list's
+/// room with it (`GitTurtle::tab_list_room`, `window_chrome::strip_width`):
+/// with the strip's 0.25 rem, at 11 pt and scale factor 1.25 or 2 Main
+/// Menu's ring reached a device pixel into a selected first tab, whose fill
+/// covered it, the first tab's ring a device pixel over Menu, and New tab's
+/// and Workspaces' rings, and each window control's and its neighbour's,
+/// into each other.
 pub(super) fn tab_gap(window: &Window) -> Pixels {
     let ring = appearance::BUTTON_FOCUS_RING;
     window
@@ -5378,6 +5392,195 @@ mod tests {
                                     "{at}: into the tab beside it, {neighbour:?}: {report}"
                                 ));
                             }
+                        }
+                    }
+                    cx.update(|window, cx| window.blur(cx));
+                    draw(cx);
+                }
+            }
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        reset_strip_text(cx, &app);
+        settle_tab_test(&app, cx).await;
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The strip keeps a ring's room beside its tab list and between its
+    /// controls ([`tab_gap`]): Main Menu focused from the keyboard beside a
+    /// selected first tab draws its ring clear of that tab's frame and
+    /// covered by nothing painted after it, the first tab's ring stays clear
+    /// of Menu, and New tab's and Workspaces' rings stay clear of each other,
+    /// as do the window controls' in a client-decorated window, at 11, 13
+    /// and 18 pt at scale factors 1.25, 1.5, 1.75 and 2 in a
+    /// 1480 × 800 and a 461 × 490 window. At 11 pt and scale factor 1.25 or
+    /// 2 the strip's 0.25 rem gap left Menu's ring a device pixel into the
+    /// first tab, whose selected fill, painted after it, covered that pixel,
+    /// and the first tab's ring a device pixel over Menu; the window
+    /// controls' `gap_1` let each control's ring reach a device pixel into
+    /// the one beside it.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_strip_keeps_a_rings_room_beside_its_tabs(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, rendered};
+        use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+        /// Focuses the window's first control, then presses Tab until
+        /// `selector` draws a ring.
+        fn tab_onto(cx: &mut VisualTestContext, selector: &'static str) {
+            cx.update(|window, cx| {
+                window.blur(cx);
+                window.focus_next(cx);
+            });
+            draw(cx);
+            for _ in 0..64 {
+                let element = rendered(cx, selector);
+                if !appearance::painted_button(cx, element).1.is_empty() {
+                    return;
+                }
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+            }
+            panic!("Tab never reaches {selector}");
+        }
+        /// Each ring the last frame painted around the centre of `element`,
+        /// in device pixels, with every filled quad painted after it that
+        /// reaches into its band.
+        type Ring = (Bounds<f32>, Vec<Bounds<f32>>);
+        fn rings_around(cx: &mut VisualTestContext, element: Bounds<f32>) -> Vec<Ring> {
+            cx.update(|window, cx| {
+                let installed = cx.theme().button_focus_ring;
+                let color = cx.theme().ring.alpha(installed.opacity);
+                let device = |b: Bounds<ScaledPixels>| {
+                    Bounds::from_corners(
+                        point(b.left().as_f32(), b.top().as_f32()),
+                        point(b.right().as_f32(), b.bottom().as_f32()),
+                    )
+                };
+                let quads = window.painted_quads();
+                let mut rings: Vec<Ring> = Vec::new();
+                for (index, quad) in quads.iter().enumerate() {
+                    let w = quad.border_widths;
+                    let [left, top, right, bottom] =
+                        [w.left, w.top, w.right, w.bottom].map(|w| w.as_f32());
+                    let outer = device(quad.bounds);
+                    if !quad.background.is_transparent()
+                        || quad.border_color != color
+                        || [left, top, right, bottom].iter().all(|w| *w == 0.)
+                        || !outer.contains(&element.center())
+                        || rings.iter().any(|(ring, _)| *ring == outer)
+                    {
+                        continue;
+                    }
+                    let inner = Bounds::from_corners(
+                        point(outer.left() + left, outer.top() + top),
+                        point(outer.right() - right, outer.bottom() - bottom),
+                    );
+                    let covered = quads[index..]
+                        .iter()
+                        .filter(|quad| !quad.background.is_transparent())
+                        .map(|quad| device(quad.bounds))
+                        .filter(|drawn| {
+                            let reaches = drawn.left() < outer.right()
+                                && drawn.right() > outer.left()
+                                && drawn.top() < outer.bottom()
+                                && drawn.bottom() > outer.top();
+                            let inside = drawn.left() >= inner.left()
+                                && drawn.right() <= inner.right()
+                                && drawn.top() >= inner.top()
+                                && drawn.bottom() <= inner.bottom();
+                            reaches && !inside
+                        })
+                        .collect();
+                    rings.push((outer, covered));
+                }
+                rings
+            })
+        }
+
+        /// Draws the window as client-decorated, with its controls, while
+        /// it lives, and as GPUI's test window once it is dropped.
+        struct Decorated;
+        impl Drop for Decorated {
+            fn drop(&mut self) {
+                crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(false));
+            }
+        }
+        crate::window_chrome::CLIENT_DECORATED.with(|decorated| decorated.set(true));
+        let _decorated = Decorated;
+
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(paths[1].clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+
+        let mut failures = Vec::new();
+        for (width, height) in [(1480., 800.), (461., 490.)] {
+            for scale in [1.25, 1.5, 1.75, 2.] {
+                for interface in [11, 13, 18] {
+                    // A resize puts the test window back at scale 2.
+                    resize_strip(cx, &app, (interface, width, height)).await;
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        window.blur(cx);
+                    });
+                    settle_tab_test(&app, cx).await;
+                    draw(cx);
+                    assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+                    assert_eq!(
+                        cx.update(|_, cx| app.read(cx).repository_tabs.active),
+                        Some(0),
+                        "the first tab is selected"
+                    );
+                    // Each control and the one beside it, on its right or
+                    // its left: the first tab's frame is selected, so its
+                    // fill is painted after Menu's ring.
+                    for (control, beside, right) in [
+                        ("main-menu", "repository-tab-frame-0", true),
+                        ("repository-tab-0", "main-menu", false),
+                        ("new-repository-tab", "repository-workspaces", true),
+                        ("repository-workspaces", "new-repository-tab", false),
+                        ("minimize-window", "maximize-window", true),
+                        ("maximize-window", "minimize-window", false),
+                        ("maximize-window", "close-window", true),
+                        ("close-window", "maximize-window", false),
+                    ] {
+                        let at = format!(
+                            "{control} at scale {scale}, {interface} pt, {width} x {height}"
+                        );
+                        tab_onto(cx, control);
+                        let to_device = |b: Bounds<Pixels>| {
+                            Bounds::from_corners(
+                                point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
+                                point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
+                            )
+                        };
+                        let element = to_device(rendered(cx, control));
+                        let rings = rings_around(cx, element);
+                        let [(ring, covered)] = rings.as_slice() else {
+                            failures.push(format!("{at}: one ring, not {rings:?}"));
+                            continue;
+                        };
+                        let neighbour = to_device(rendered(cx, beside));
+                        let slack = 0.01;
+                        let reaches = if right {
+                            ring.right() > neighbour.left() + slack
+                        } else {
+                            ring.left() < neighbour.right() - slack
+                        };
+                        if reaches {
+                            failures.push(format!(
+                                "{at}: its ring {ring:?} reaches into {beside} {neighbour:?}"
+                            ));
+                        }
+                        if !covered.is_empty() {
+                            failures.push(format!(
+                                "{at}: its ring {ring:?} is painted over by {covered:?}"
+                            ));
                         }
                     }
                     cx.update(|window, cx| window.blur(cx));
