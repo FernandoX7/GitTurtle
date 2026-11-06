@@ -752,18 +752,15 @@ cover current upstream x86-64 Omarchy.
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
-       - (A, in flight from `cf08ff43` as FU19-A2/A3; items 1-3, 5a and CR1's first two edge cases done, CR1's third in A3) Focus return, M: closing a dialog, the kit gives focus back at 250 ms and the
-         app's recheck moves it at 300 ms, overriding a click (FU13-A 2-3; kit `dialog.rs`,
-         `main.rs`); a dialog opened while another closes loses its restore target (FU13-A 4,
-         `main.rs`); `open()` clears `page_return_focus` while Ctrl+1/2 from Settings leave it
-         set (FU13-A 5, `repository_tabs.rs:1595`/`:1916`); File history behind Settings
-         focuses off-page and `restore_inspection_context` can focus behind a dialog (FU10-D,
-         verify, `repository_tabs.rs`); CR1's edge cases: the fallback without `Pane::Files`,
-         a dialog between Back and its frame, `restore_tab_file` with a dialog open (verify,
-         `main.rs`, `repository_tabs.rs`); Ctrl+F in a loading tab opens Projects (decide:
-         Find waits for the tab, verify, `main.rs`); `modal_return_focus` untested
-         (`page_navigation.rs:392`); a live preparation still dims Projects while its
-         shortcut cancels it (PG5, verify, `main.rs`).
+       - (A) Focus return: FU19-A, A2, A3 and A4 landed 2026-11-05 night (a closing dialog's
+         focus returned once, never over a later click; a dialog opened as another closes keeps
+         its return; Back's return forgotten on every way out of Settings; a dialog opened before
+         Back's frame keeps focus; History's search held for a loading tab and run or dropped as
+         its restore ends). Left as FU19-A5 (briefed): the held search lost at
+         `restore_tab_selection`'s `selected.is_none()`; a read the person starts during a
+         restore drops it (decided); Back's control inside a first dialog as a return target;
+         restores stuck by `history_paging.rs`'s early returns. Still to verify: a live
+         preparation dimming Projects while its shortcut cancels it (PG5, `main.rs`).
        - (C2, in flight from `0824b23e` as FU19-C3/C4: item 1 done, its review fixups and the hover tokens in C4) Editor highlights' palette rules (decided 2026-11-05
          afternoon): under More contrast the word tint beyond its line from the canvas, Find's other
          matches in their own fitted colour, the selection and current match apart, each with a
@@ -807,12 +804,7 @@ cover current upstream x86-64 Omarchy.
          above the message panel's border at 18 pt, 461 × 490 (verify, `commit_message.rs`,
          FU20-A2); the branch picker's disabled items without a reason (verify, FU20-A3); the
          profiles menu's disabled items without a reason (verify, with FU19-F's `profiles.rs`).
-       - (History, remaining; FU20-H in flight from `f569ce8f` with all but the tracking-branch feedback) S: other generation bumps can strand the partial subscription
-         (FU13-C 2, `history_updates.rs`, `history_search.rs`); Reflog and Tags rows keep index
-         keys for their focus handles (no row menu or kept selection; FU19-G2, low); tracking-branch
-         creation gives no feedback (brief 9 task C, verify, `branch_actions.rs:1347`);
-         `labelled_scope_toolbar_width` reads the line key itself (`views.rs:6594`; verify it runs
-         each frame); a stash click during a list read drops Refresh's answer (`recovery.rs`, FU19-G review).
+       - (History, remaining; FU20-H landed 2026-11-05 night: Refresh's stash list past a stash chosen meanwhile, Reflog and Tags focus by row identity, the partial subscription item dropped (does not reproduce since `8408dec4`); the tracking-branch feedback is FU20-A3, in flight; left: `FocusReveal`'s handle per distinct row (prune in `focus_reveal.rs`), a cleared stash snapshot leaving focus on an undrawn control) S: `labelled_scope_toolbar_width`'s per-frame count string (FU20-P, in review).
        - (C) Text cuts: deferred to upstream (decided 2026-11-05 evening). GPUI's own `.truncate()`
           (`LineWrapper::truncate_line` in the unvendored core `gpui-pre` 0.3.4, `ceil_char_boundary`)
           cuts between characters for every overflow ellipsis (subjects, branches, tabs, paths); vendoring
