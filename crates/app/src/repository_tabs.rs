@@ -2781,7 +2781,7 @@ impl GitTurtle {
                         .min_w_0()
                         .flex()
                         .items_center()
-                        .gap_1()
+                        .gap(tab_gap(window))
                         .p(ring_room)
                         .m(-ring_room)
                         .overflow_x_scroll()
@@ -2997,11 +2997,11 @@ impl GitTurtle {
     }
 
     /// The width the tab list takes with every tab whole
-    /// (`tab_whole_width_each`) beside its 28 px close button, `gap_1`
+    /// (`tab_whole_width_each`) beside its 28 px close button, [`tab_gap`]
     /// apart: what the strip's labelled actions give way to
     /// (`GitTurtle::tab_strip_labels`).
     pub(super) fn tabs_whole_width(&self, window: &Window) -> Pixels {
-        let gap = window.pixel_snap(window.rem_size() * 0.25);
+        let gap = tab_gap(window);
         let close = window.pixel_snap(appearance::ui_size(28.));
         let mut total = px(0.);
         let mut tabs = 0;
@@ -3023,6 +3023,25 @@ impl GitTurtle {
 pub(super) fn tab_list_ring_room(window: &Window, cx: &App) -> Pixels {
     let scale = window.scale_factor();
     px((f32::from(appearance::button_ring_room(cx)) * scale).ceil() / scale)
+}
+
+/// The gap between repository tabs: the list's 0.25 rem, snapped to the
+/// device pixel as layout snaps it, and never less than the room the app's
+/// Button ring (`appearance::BUTTON_FOCUS_RING`, which the theme installs)
+/// takes outside a focused tab or close button, its gap plus its width
+/// snapped by `Window::pixel_snap`: to the nearest device pixel, ties toward
+/// zero, which is how layout rounds the ring's absolute offset, so the gap is
+/// never under the ring's drawn outset. Below 12 pt the 0.25 rem is narrower
+/// than the ring's 3 px, so at 11
+/// pt and scale factor 1.25 or 2 a focused close button's ring reached a
+/// device pixel into the next tab, whose selected fill, painted after it,
+/// covered that pixel, and a focused tab's ring reached over the tab before
+/// it. From 12 pt up the 0.25 rem holds the ring, so nothing moves there.
+pub(super) fn tab_gap(window: &Window) -> Pixels {
+    let ring = appearance::BUTTON_FOCUS_RING;
+    window
+        .pixel_snap(window.rem_size() * 0.25)
+        .max(window.pixel_snap(ring.gap + ring.width))
 }
 
 /// A tab's label insets, the `button` helper's `LABEL_INSET` beside its
@@ -5118,6 +5137,258 @@ mod tests {
         assert_strip_fits_ring(cx, at);
         install_ring(cx, &app, installed);
         settle_tab_test(&app, cx).await;
+    }
+
+    /// A tab or close button focused from the keyboard draws its ring whole:
+    /// one ring, its four sides on whole device pixels, as wide on every side
+    /// and as far from its control on every side, inside the strip above its
+    /// rule and inside the content mask it paints in, covered by nothing
+    /// painted after it and clear of the tab beside it ([`tab_gap`]); and the
+    /// focus moves nothing in the strip. Checked for the first tab, its close
+    /// button and the selected second tab at scale factors 1.25, 1.5, 1.75
+    /// and 2, at 11, 13 and 18 pt, in a 1480 × 800 and a 461 × 490 window,
+    /// with the palette applied. At 11 pt and scale factor 1.25 or 2 the
+    /// tabs' 0.25 rem gap once left the close button's ring reaching a device
+    /// pixel into the selected tab, whose fill covered it.
+    #[gpui::test]
+    async fn a_keyboard_focused_tab_draws_its_ring_whole_on_device_pixels(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, rendered};
+        use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+        /// What the strip lays out, which focus must not move.
+        const LAYOUT: [&str; 9] = [
+            "repository-tab-strip",
+            "repository-tabs",
+            "repository-tab-frame-0",
+            "repository-tab-frame-1",
+            "repository-tab-0",
+            "repository-tab-1",
+            "repository-tab-close-0",
+            "repository-tab-close-1",
+            "repository-header",
+        ];
+        fn layout(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+            LAYOUT
+                .into_iter()
+                .map(|selector| rendered(cx, selector))
+                .collect()
+        }
+        /// Focuses the window's first control, then presses Tab until
+        /// `selector` draws a ring: with nothing focused a key reaches no
+        /// control's context, so Tab alone would focus nothing.
+        fn tab_onto(cx: &mut VisualTestContext, selector: &'static str) {
+            cx.update(|window, cx| {
+                window.blur(cx);
+                window.focus_next(cx);
+            });
+            draw(cx);
+            for _ in 0..64 {
+                let element = rendered(cx, selector);
+                if !appearance::painted_button(cx, element).1.is_empty() {
+                    return;
+                }
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+            }
+            panic!("Tab never reaches {selector}");
+        }
+        /// A ring the last frame painted, in device pixels.
+        #[derive(Debug)]
+        struct Ring {
+            bounds: Bounds<f32>,
+            /// Left, top, right and bottom.
+            widths: [f32; 4],
+            /// The union of the masks its sides are painted in: GPUI paints a
+            /// border-only quad once per side.
+            mask: Bounds<f32>,
+            /// Every filled quad painted after it that reaches into its band.
+            covered_by: Vec<Bounds<f32>>,
+        }
+        fn rings(cx: &mut VisualTestContext) -> Vec<Ring> {
+            cx.update(|window, cx| {
+                let installed = cx.theme().button_focus_ring;
+                let color = cx.theme().ring.alpha(installed.opacity);
+                let device = |b: Bounds<ScaledPixels>| {
+                    Bounds::from_corners(
+                        point(b.left().as_f32(), b.top().as_f32()),
+                        point(b.right().as_f32(), b.bottom().as_f32()),
+                    )
+                };
+                let quads = window.painted_quads();
+                let mut rings: Vec<(usize, Ring)> = Vec::new();
+                for (index, quad) in quads.iter().enumerate() {
+                    let w = quad.border_widths;
+                    let widths = [w.left, w.top, w.right, w.bottom].map(|w| w.as_f32());
+                    if !quad.background.is_transparent()
+                        || quad.border_color != color
+                        || widths.iter().all(|w| *w == 0.)
+                    {
+                        continue;
+                    }
+                    let (bounds, mask) = (device(quad.bounds), device(quad.content_mask.bounds));
+                    match rings.iter_mut().find(|(_, ring)| ring.bounds == bounds) {
+                        Some((_, ring)) => ring.mask = ring.mask.union(&mask),
+                        None => rings.push((
+                            index,
+                            Ring {
+                                bounds,
+                                widths,
+                                mask,
+                                covered_by: Vec::new(),
+                            },
+                        )),
+                    }
+                }
+                for (first, ring) in &mut rings {
+                    let (outer, [left, top, right, bottom]) = (ring.bounds, ring.widths);
+                    let inner = Bounds::from_corners(
+                        point(outer.left() + left, outer.top() + top),
+                        point(outer.right() - right, outer.bottom() - bottom),
+                    );
+                    for quad in &quads[*first..] {
+                        let drawn = device(quad.bounds);
+                        let reaches = drawn.left() < outer.right()
+                            && drawn.right() > outer.left()
+                            && drawn.top() < outer.bottom()
+                            && drawn.bottom() > outer.top();
+                        let inside = drawn.left() >= inner.left()
+                            && drawn.right() <= inner.right()
+                            && drawn.top() >= inner.top()
+                            && drawn.bottom() <= inner.bottom();
+                        if !quad.background.is_transparent() && reaches && !inside {
+                            ring.covered_by.push(drawn);
+                        }
+                    }
+                }
+                rings.into_iter().map(|(_, ring)| ring).collect()
+            })
+        }
+
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(paths[1].clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+
+        let mut failures = Vec::new();
+        for (width, height) in [(1480., 800.), (461., 490.)] {
+            for scale in [1.25, 1.5, 1.75, 2.] {
+                for interface in [11, 13, 18] {
+                    // A resize puts the test window back at scale 2.
+                    resize_strip(cx, &app, (interface, width, height)).await;
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        window.blur(cx);
+                    });
+                    settle_tab_test(&app, cx).await;
+                    draw(cx);
+                    assert_eq!(cx.update(|window, _| window.scale_factor()), scale);
+                    let resting = layout(cx);
+                    let strip = rendered(cx, "repository-tab-strip");
+                    // The second tab is selected: the first close button's
+                    // ring meets its frame's fill on the right, the second
+                    // tab's meets the first tab's frame on the left.
+                    for (control, beside) in [
+                        ("repository-tab-0", None),
+                        (
+                            "repository-tab-close-0",
+                            Some(("repository-tab-frame-1", true)),
+                        ),
+                        ("repository-tab-1", Some(("repository-tab-frame-0", false))),
+                    ] {
+                        let at = format!(
+                            "{control} at scale {scale}, {interface} pt, {width} x {height}"
+                        );
+                        tab_onto(cx, control);
+                        if layout(cx) != resting {
+                            failures.push(format!(
+                                "{at}: focus moved the strip from {resting:?} to {:?}",
+                                layout(cx)
+                            ));
+                        }
+                        let to_device = |b: Bounds<Pixels>| {
+                            Bounds::from_corners(
+                                point(f32::from(b.left()) * scale, f32::from(b.top()) * scale),
+                                point(f32::from(b.right()) * scale, f32::from(b.bottom()) * scale),
+                            )
+                        };
+                        let element = to_device(rendered(cx, control));
+                        // The ring around the control; others in the ring's
+                        // colour (a list's accent rule) lie elsewhere.
+                        let rings = rings(cx)
+                            .into_iter()
+                            .filter(|ring| ring.bounds.contains(&element.center()))
+                            .collect::<Vec<_>>();
+                        let [ring] = rings.as_slice() else {
+                            failures.push(format!("{at}: one ring, not {rings:?}"));
+                            continue;
+                        };
+                        let (bounds, widths) = (ring.bounds, ring.widths);
+                        let strip = to_device(strip);
+                        let edges = [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()];
+                        let whole = |v: f32| (v - v.round()).abs() < 0.01;
+                        let gaps = [
+                            element.left() - bounds.left() - widths[0],
+                            element.top() - bounds.top() - widths[1],
+                            bounds.right() - widths[2] - element.right(),
+                            bounds.bottom() - widths[3] - element.bottom(),
+                        ];
+                        let slack = 0.01;
+                        let report = format!(
+                            "{ring:?} with gaps {gaps:?} around {element:?} in strip {strip:?}"
+                        );
+                        if !edges.into_iter().chain(widths).all(whole) {
+                            failures.push(format!("{at}: off the device pixel: {report}"));
+                        }
+                        if widths.iter().any(|w| (w - widths[0]).abs() > slack)
+                            || gaps.iter().any(|g| (g - gaps[0]).abs() > slack)
+                            || gaps[0] < 1. - slack
+                        {
+                            failures.push(format!("{at}: uneven ring: {report}"));
+                        }
+                        // The strip's 1 px rule, as layout rounds a stroke.
+                        let rule = (scale - 0.5_f32).ceil().max(1.);
+                        if bounds.top() < strip.top() - slack
+                            || bounds.bottom() > strip.bottom() - rule + slack
+                        {
+                            failures.push(format!("{at}: outside the strip: {report}"));
+                        }
+                        let mask = ring.mask;
+                        if mask.left() > bounds.left() + slack
+                            || mask.top() > bounds.top() + slack
+                            || mask.right() + slack < bounds.right()
+                            || mask.bottom() + slack < bounds.bottom()
+                        {
+                            failures.push(format!("{at}: clipped: {report}"));
+                        }
+                        if !ring.covered_by.is_empty() {
+                            failures.push(format!("{at}: painted over: {report}"));
+                        }
+                        if let Some((neighbour, right)) = beside {
+                            let neighbour = to_device(rendered(cx, neighbour));
+                            let reaches = if right {
+                                bounds.right() > neighbour.left() + slack
+                            } else {
+                                bounds.left() < neighbour.right() - slack
+                            };
+                            if reaches {
+                                failures.push(format!(
+                                    "{at}: into the tab beside it, {neighbour:?}: {report}"
+                                ));
+                            }
+                        }
+                    }
+                    cx.update(|window, cx| window.blur(cx));
+                    draw(cx);
+                }
+            }
+        }
+        cx.update(|window, _| window.set_scale_factor(2.));
+        reset_strip_text(cx, &app);
+        settle_tab_test(&app, cx).await;
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// The text sizes and windows the narrow tab strip tests lay out.
