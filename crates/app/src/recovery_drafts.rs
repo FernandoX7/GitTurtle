@@ -665,15 +665,14 @@ impl Render for RecoveryList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preferences::test_directories::TestDirectory;
     use core::prelude::v1::test;
-    fn fixture(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "gitturtle-recovery-{}-{name}-{}",
-            std::process::id(),
-            now()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path.join("drafts.json")
+    /// A store path in a new test directory, which goes when the directory
+    /// drops, a failed assertion's unwinding included.
+    fn fixture(name: &str) -> (TestDirectory, PathBuf) {
+        let directory = TestDirectory::new(&format!("recovery-{name}"));
+        let path = directory.path().join("drafts.json");
+        (directory, path)
     }
     fn key(source: char) -> Key {
         Key::conflict(
@@ -691,7 +690,7 @@ mod tests {
     }
     #[test]
     fn restart_preserves_exact_bytes_and_refuses_stale_identity() {
-        let path = fixture("restart");
+        let (_directory, path) = fixture("restart");
         let key = key('a');
         let text = " Résolution 🐢\r\n\r\n# retain whitespace  \nno trailing newline";
         save_at(
@@ -729,7 +728,6 @@ mod tests {
             "A saved conflict must not confirm an untouched rebase message"
         );
         assert!(state.status().contains("saved locally"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -758,7 +756,7 @@ mod tests {
     }
     #[test]
     fn failed_store_is_preserved_and_other_worktrees_survive_updates() {
-        let path = fixture("merge");
+        let (_directory, path) = fixture("merge");
         let first = key('a');
         let second = Key {
             worktree: path_bytes(Path::new("/other/worktree")),
@@ -785,7 +783,6 @@ mod tests {
             std::fs::read(&path).unwrap(),
             b"corrupt but recoverable storage"
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[cfg(unix)]
     #[test]
@@ -823,7 +820,7 @@ mod tests {
 
     #[test]
     fn forced_termination_after_saved_keeps_exact_recoverable_text() {
-        let path = fixture("forced-termination");
+        let (directory, path) = fixture("forced-termination");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -831,6 +828,9 @@ mod tests {
                 "--nocapture",
             ])
             .env("GITTURTLE_RECOVERY_CRASH_FIXTURE", &path)
+            // The child's own test directories, which its killed process
+            // cannot remove at exit, go with this fixture.
+            .env("TMPDIR", directory.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -852,7 +852,6 @@ mod tests {
             read(&path).unwrap().get(&key('a')).unwrap().text.as_bytes(),
             "Forced termination 🐢\r\n  exact text\n".as_bytes()
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[gpui::test]

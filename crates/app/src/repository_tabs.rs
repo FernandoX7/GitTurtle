@@ -6806,9 +6806,11 @@ mod tests {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let settings = preferences::settings_path().unwrap();
+        // In a directory of this test process's root, never the user's settings.
         assert!(
             settings
                 .parent()
+                .and_then(Path::parent)
                 .unwrap()
                 .file_name()
                 .unwrap()

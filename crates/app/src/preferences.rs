@@ -1044,22 +1044,17 @@ pub(super) fn settings_path() -> Result<PathBuf> {
 // concurrent fixtures cannot overwrite each other's read/merge/write stores.
 #[cfg(test)]
 thread_local! {
-    static TEST_SETTINGS_DIRECTORY: std::cell::RefCell<Option<std::sync::Arc<tempfile::TempDir>>> =
+    static TEST_SETTINGS_DIRECTORY: std::cell::RefCell<Option<std::sync::Arc<test_directories::TestDirectory>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(super) fn test_settings_directory() -> std::sync::Arc<tempfile::TempDir> {
+pub(super) fn test_settings_directory() -> std::sync::Arc<test_directories::TestDirectory> {
     TEST_SETTINGS_DIRECTORY.with(|directory| {
         directory
             .borrow_mut()
             .get_or_insert_with(|| {
-                std::sync::Arc::new(
-                    tempfile::Builder::new()
-                        .prefix("gitturtle-app-tests-")
-                        .tempdir()
-                        .expect("create isolated test preferences"),
-                )
+                std::sync::Arc::new(test_directories::TestDirectory::new("settings"))
             })
             .clone()
     })
@@ -1075,8 +1070,331 @@ pub(super) fn fresh_test_settings_directory() {
 }
 
 #[cfg(test)]
-pub(super) fn inherit_test_settings_directory(directory: std::sync::Arc<tempfile::TempDir>) {
+pub(super) fn inherit_test_settings_directory(
+    directory: std::sync::Arc<test_directories::TestDirectory>,
+) {
     TEST_SETTINGS_DIRECTORY.with(|current| *current.borrow_mut() = Some(directory));
+}
+
+/// Temporary directories for app tests, every one inside a single root per
+/// test process, which goes when the process exits.
+///
+/// A test's directory can outlive the test: its serial executors inherit it,
+/// and a test app's executors can wait for work that never comes until the
+/// process ends. A process exits without dropping what its other threads hold
+/// (thread-local destructors run only on threads that finish), so a directory
+/// that only its last owner's drop removes stayed behind, one or more for
+/// every run. Each process therefore keeps one root,
+/// `gitturtle-app-tests-<pid>-<suffix>` in the system's temporary directory,
+/// and names each directory in it by a process-wide sequence, never by pid and
+/// time alone. A directory still goes when its last holder drops it; the root
+/// goes in an `atexit` hook, which runs on Linux and macOS whenever the process
+/// exits through `exit`, as libtest does when it returns from `main` or calls
+/// `process::exit` after a failure, whatever its other threads still hold.
+///
+/// A process killed by a signal or a runner's timeout runs no hook, so the
+/// first directory of every later process removes the roots no live process
+/// owns ([`remove_abandoned`]). Each root holds a lock file its process keeps
+/// locked until it ends, and the kernel releases that lock however it ends: a
+/// root whose lock can be taken is abandoned. Unlike the pid in the name, the
+/// lock holds across reused pids and across pid namespaces that share the
+/// temporary directory, and a root is staged under a name the sweep skips and
+/// renamed into place only once locked.
+#[cfg(test)]
+pub(crate) mod test_directories {
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+        sync::{
+            OnceLock,
+            atomic::{AtomicU64, Ordering},
+        },
+    };
+
+    const PREFIX: &str = "gitturtle-app-tests-";
+    const STAGING: &str = ".gitturtle-app-tests-staging-";
+    const LOCK: &str = ".lock";
+
+    struct Root {
+        path: PathBuf,
+        /// Locked for the life of the process, never dropped.
+        _lock: fs::File,
+    }
+
+    static ROOT: OnceLock<Root> = OnceLock::new();
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A directory for one test in this process's root, removed when it drops
+    /// and, if something still holds it, with the root when the process exits.
+    #[derive(Debug)]
+    pub(crate) struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        /// A new, empty directory named `<sequence>-<label>`.
+        pub(crate) fn new(label: &str) -> Self {
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = root().join(format!("{sequence}-{label}"));
+            fs::create_dir(&path).expect("create a test directory");
+            Self(path)
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            remove_tree(&self.0);
+        }
+    }
+
+    fn root() -> &'static Path {
+        &ROOT
+            .get_or_init(|| {
+                let temporary = std::env::temp_dir();
+                remove_abandoned(&temporary);
+                let root = create_root(&temporary);
+                // SAFETY: `remove_root` takes nothing and cannot unwind; a panic in
+                // an `extern "C"` function aborts instead.
+                let registered = unsafe { libc::atexit(remove_root) };
+                assert_eq!(registered, 0, "register the test root's removal at exit");
+                root
+            })
+            .path
+    }
+
+    fn create_root(temporary: &Path) -> Root {
+        let staged = tempfile::Builder::new()
+            .prefix(STAGING)
+            .tempdir_in(temporary)
+            .expect("stage the test root");
+        let lock = fs::File::create(staged.path().join(LOCK)).expect("create the root's lock");
+        lock.try_lock().expect("lock the test root");
+        let suffix = staged
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(STAGING))
+            .expect("a staged root name")
+            .to_owned();
+        let path = temporary.join(format!("{PREFIX}{}-{suffix}", std::process::id()));
+        fs::rename(staged.path(), &path).expect("place the test root");
+        let _ = staged.keep();
+        Root { path, _lock: lock }
+    }
+
+    extern "C" fn remove_root() {
+        if let Some(root) = ROOT.get() {
+            // A worker still saving can recreate a folder while the tree goes.
+            for _ in 0..3 {
+                remove_tree(&root.path);
+                if fs::symlink_metadata(&root.path).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Removes the roots in `temporary` that no live process owns: those whose
+    /// lock this process can take, and those without one, which a worker still
+    /// saving made again while its exiting process removed its root. It skips
+    /// links, other users' entries and names without a pid, which older builds
+    /// used and which no rule tells dead from live.
+    fn remove_abandoned(temporary: &Path) {
+        let Ok(entries) = fs::read_dir(temporary) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some((pid, _)) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(PREFIX))
+                .and_then(|rest| rest.split_once('-'))
+            else {
+                continue;
+            };
+            if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            // Not followed: a link's metadata is the link's.
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_dir() || !owned(&metadata) {
+                continue;
+            }
+            let path = entry.path();
+            match fs::File::open(path.join(LOCK)) {
+                Ok(lock) => {
+                    if lock.try_lock().is_ok() {
+                        remove_tree(&path);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => remove_tree(&path),
+                Err(_) => {}
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn owned(metadata: &fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: `getuid` has no preconditions and cannot fail.
+        metadata.uid() == unsafe { libc::getuid() }
+    }
+
+    #[cfg(not(unix))]
+    fn owned(_: &fs::Metadata) -> bool {
+        true
+    }
+
+    /// Removes `path`, making its folders writable first if a test left one
+    /// read-only, as captured copies are.
+    fn remove_tree(path: &Path) {
+        if fs::remove_dir_all(path).is_ok() || fs::symlink_metadata(path).is_err() {
+            return;
+        }
+        make_writable(path);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn make_writable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+                return;
+            }
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    make_writable(&entry.path());
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use core::prelude::v1::test;
+        use std::{
+            io::{BufRead, BufReader, Read},
+            process::{Command, Stdio},
+        };
+
+        /// Names the part a child process of this test binary plays.
+        const CHILD: &str = "GITTURTLE_TEST_DIRECTORIES_CHILD";
+        const HOLD: &str = "hold";
+        const WAIT: &str = "wait";
+
+        /// This test binary running only [`child`], with `temporary` as its system
+        /// temporary directory.
+        fn child_process(temporary: &Path, part: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args([
+                    "--exact",
+                    "preferences::test_directories::tests::child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("TMPDIR", temporary)
+                .env(CHILD, part)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped());
+            command
+        }
+
+        fn names(directory: &Path) -> Vec<String> {
+            let mut names: Vec<_> = fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        /// Runs only in a child process of the tests below. Holding its settings
+        /// directory in an executor that never finishes, as a test app's do, it
+        /// writes a preference and returns; waiting, it reports its root and waits
+        /// until its parent closes its input or kills it. What it reports lands on
+        /// the line where libtest named the test, so the parent finds its marker
+        /// anywhere in a line.
+        #[test]
+        fn child() {
+            let Some(part) = std::env::var_os(CHILD) else {
+                return;
+            };
+            let directory = crate::preferences::test_settings_directory();
+            if part == HOLD {
+                let executor = crate::operations::SerialExecutor::new("test-directories-hold");
+                crate::preferences::atomic_write(
+                    &crate::preferences::settings_path().unwrap(),
+                    b"{}",
+                )
+                .unwrap();
+                std::mem::forget(executor);
+                println!("HELD {}", directory.path().display());
+            } else {
+                println!("WAITING {}", directory.path().parent().unwrap().display());
+                let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            }
+        }
+
+        #[test]
+        fn a_process_leaves_no_directory_behind_whatever_its_executors_still_hold() {
+            let temporary = TestDirectory::new("temporary");
+            let output = child_process(temporary.path(), HOLD).output().unwrap();
+            let output = String::from_utf8(output.stdout).unwrap();
+            assert!(output.contains("test result: ok. 1 passed"), "{output}");
+            let held = output
+                .lines()
+                .find_map(|line| line.split_once("HELD ").map(|(_, held)| held))
+                .expect("the child's settings directory");
+            assert!(Path::new(held).starts_with(temporary.path()), "{held}");
+            assert!(held.ends_with("-settings"), "{held}");
+            assert_eq!(names(temporary.path()), Vec::<String>::new());
+        }
+
+        #[test]
+        fn a_killed_process_root_goes_with_the_next_sweep_and_a_live_one_stays() {
+            let temporary = TestDirectory::new("temporary");
+            let mut waiting = child_process(temporary.path(), WAIT)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let root = BufReader::new(waiting.stdout.take().unwrap())
+                .lines()
+                .map_while(Result::ok)
+                .find_map(|line| {
+                    line.split_once("WAITING ")
+                        .map(|(_, root)| PathBuf::from(root))
+                })
+                .expect("the waiting child's root");
+            let name = root.file_name().unwrap().to_str().unwrap().to_owned();
+            let pid = waiting.id().to_string();
+            assert!(name.starts_with(&format!("{PREFIX}{pid}-")), "{name}");
+            // Left by a worker that saved while its process removed its root.
+            let unlocked = format!("{PREFIX}1-unlocked");
+            fs::create_dir(temporary.path().join(&unlocked)).unwrap();
+            // An older build's, without a pid.
+            let older = format!("{PREFIX}AbC123");
+            fs::create_dir(temporary.path().join(&older)).unwrap();
+
+            remove_abandoned(temporary.path());
+            assert_eq!(names(temporary.path()), vec![name.clone(), older.clone()]);
+
+            waiting.kill().unwrap();
+            waiting.wait().unwrap();
+            assert!(root.is_dir(), "a killed process runs no exit hook");
+            remove_abandoned(temporary.path());
+            assert_eq!(names(temporary.path()), vec![older]);
+        }
+    }
 }
 
 #[cfg(test)]
