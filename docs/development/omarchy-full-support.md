@@ -766,6 +766,8 @@ cover current upstream x86-64 Omarchy.
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
        The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
        untested (low).
+       A field's caret may keep blinking unfocused when its context menu closes with focus elsewhere
+       (`on_blur` returns early while the menu is open, `vendor/gpui-base/src/input/base/state.rs:2569`; FU26-D re-check, low).
        The GitHub connection pane's "Local worktree: <path>" line wraps with the path (6 lines at
        ~120 characters, 17 pt, 440 × 490), and then no Tab stop shows its help's first line whole (every
        control stays whole; FU26-A's review, `github_view.rs:11683`): the long path line against the
@@ -774,6 +776,11 @@ cover current upstream x86-64 Omarchy.
        `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
        repository in the home directory) the tab silently shows, and later writes would target, that repository.
        Decided: a passive reopen that resolves to another root shows the tab unavailable, never switches.
+       Left after FU26-E (its review): the hardening round FU26-E2 (every command of an opened repository
+       with `GIT_CEILING_DIRECTORIES` at the captured root's parent, closing the old handle's reads between
+       `.git` vanishing and the mark: Blame, Quick Open's working scope, profile and remotes reads, the
+       watcher's setup; decided 2026-11-06, brief `FU26-E2.md`); an old session's subfolder-path tab reads
+       "is gone" for good (message); a deleted folder's quiet read gives an I/O error, no mark (low).
      - **Tests that fail under a long `TMPDIR` (found by FU25-C, 2026-11-06; possible macOS reds, as FU24-B's):**
        `a_test_build_reaches_a_real_keyring_only_on_a_private_test_bus`, `the_connection_walk_shows_every_help_line_whole`
        and the two `a_quiet_read_*` tab-mark tests failed under FU25-C's private long `TMPDIR` on its base (as
@@ -842,10 +849,10 @@ cover current upstream x86-64 Omarchy.
           the 78,000-line core for a rare visual cut is not worth its upkeep and review surface. Revisit if
           `gpui-pre` is vendored for another reason or upstream cuts at clusters. The app's own cuts follow
           grapheme clusters (FU19-D5, landed).
-        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale; FU22-C landed 2026-11-06: tabs keep a ring's room apart at 11 pt (the 1.5 padding was the shared outset rounding), a preview chosen again during its in-process decode takes it over (every other phase still stops on supersede, Back and close), popover reduce motion did not reproduce (guard test); `tab_whole_widths` is test-only): the caret drawn late after focus (kit blink, verify; FU23-B in flight);
+        - (D) Small visible polish, S (FU20-D landed 2026-11-05 night: Settings' text fields named by their drawn labels; `LineKey` against a scale change did not reproduce: its widths are logical and snapped per frame at the current scale; FU22-C landed 2026-11-06: tabs keep a ring's room apart at 11 pt (the 1.5 padding was the shared outset rounding), a preview chosen again during its in-process decode takes it over (every other phase still stops on supersede, Back and close), popover reduce motion did not reproduce (guard test); `tab_whole_widths` is test-only): FU26-D landed 2026-11-06 (the caret already showed on focus; it is now held a whole blink phase after every key, edit, bound action, selection and composition; the GitHub destination field's ring was whole, now guarded);
          the 2026-10-28 taste items decided then (profile tile, review row
          pitch, PR rows' resting surface, the travelling row's edge, a centred "Fetched";
-         verify each); the GitHub destination field's ring (verify, after FU18-D); the README's
+         verify each); the README's
          `settings-themes.png` retaken (with a native round).
      - **Later rounds (accessibility):** (FU19-E+H in flight with FU19-H2) AT-SPI's cache
        signals fixed at their root (AccessKit #819 backported) and the removed row kept until it
