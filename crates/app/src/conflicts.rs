@@ -760,7 +760,7 @@ impl Render for ConflictView {
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
                 .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(resolution_textarea(editor, cx))))
+                    .child(div().debug_selector(|| "conflict-result-draft".into()).child(resolution_textarea(editor, cx)))))
                 .children(self.draft_error.map(|issue| div().id("conflict-draft-error").alert(issue.explanation()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
@@ -773,11 +773,31 @@ impl Render for ConflictView {
     }
 }
 
-/// The manual result draft's editable text, drawn in the code font.
+/// The whole lines the manual result draft shows at every code size: as
+/// many as its fixed 160 px box held whole at the default code size, where
+/// the field's 16 px pitch, taken from the interface size, left a ninth line
+/// cut at its foot.
+const DRAFT_LINES: f32 = 8.;
+
+/// The code editor's line height, a multiple of the code text (the kit's
+/// `EDITOR_LINE_HEIGHT`): the pitch the read-only versions above the draft
+/// draw their lines at.
+const CODE_LINE_HEIGHT: f32 = 1.5;
+
+/// The manual result draft's editable text, drawn in the code font at the
+/// code size's own line height, [`DRAFT_LINES`] whole lines tall inside the
+/// field's padding and border, so it grows with the code size and its lines
+/// neither crowd nor overlap: a fixed 160 px box with the interface size's
+/// pitch drew 18 pt code at a 16 px pitch. A longer draft scrolls inside it.
 fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
+    let line = (crate::appearance::code_text() * CODE_LINE_HEIGHT).round();
+    // The multi-line field's padding above and below its lines, the kit's
+    // medium `input_py` at every size, and its 1 px border.
+    let inset = gpui_kit::component::Size::default().input_py() + px(1.);
     Textarea::new(editor)
-        .h(px(160.))
+        .h(line * DRAFT_LINES + inset * 2.)
         .text_size(crate::appearance::code_text())
+        .line_height(line)
         .code_font(cx)
         .aria_label("Manual conflict resolution result")
 }
@@ -935,6 +955,125 @@ mod tests {
         let features = text.font_features.expect("code features");
         assert_eq!(features.is_calt_enabled(), Some(false));
         assert!(features.tag_value_list().contains(&("liga".into(), 0)));
+    }
+
+    /// A conflict view over the working file `text`, alone in its window,
+    /// with its result draft open.
+    fn conflict_window(
+        cx: &mut TestAppContext,
+        text: String,
+    ) -> (Entity<ConflictView>, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let mut snapshot = snapshot();
+            snapshot.working.as_mut().unwrap().bytes = text.into_bytes();
+            let presentation = Arc::new(Presentation::prepare(snapshot));
+            let key = recovery_drafts::Key::conflict(
+                std::path::Path::new("isolated-conflict-fixture"),
+                &presentation.snapshot.path,
+                presentation.identity.durable.clone(),
+            );
+            let view =
+                cx.new(|cx| ConflictView::new(presentation, key, None, MAX_DIFF_BYTES, window, cx));
+            *captured.borrow_mut() = Some(view.clone());
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        let view = observed.borrow_mut().take().unwrap();
+        (view, cx)
+    }
+
+    fn draw(cx: &mut VisualTestContext) {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    }
+
+    /// The manual result draft shows eight whole lines of code at every
+    /// code size, at the code size's own line height, the pitch of the
+    /// versions above it: 18 px at the default 12 px, 20 px at 13 and 27 px
+    /// at 18, whatever the interface size. Its fixed 160 px box drew them
+    /// at the interface size's 16 px pitch (23 px at 18 pt), so 18 pt code
+    /// crowded its lines into each other, and held eight whole lines and a
+    /// cut ninth. The box grows with its lines, and a draft longer than
+    /// eight lines scrolls inside it.
+    #[gpui::test]
+    fn the_result_draft_shows_whole_code_lines_at_the_code_size(cx: &mut TestAppContext) {
+        let mut text =
+            String::from("<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n");
+        for line in 0..40 {
+            text.push_str(&format!("line {line}\n"));
+        }
+        let second_line = text.find('\n').unwrap() + 1;
+        let (view, cx) = conflict_window(cx, text);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft opens"));
+        let caret_at = |offset: usize, cx: &mut VisualTestContext| {
+            editor.update(cx, |editor, cx| {
+                editor.set_selected_range(offset..offset, cx)
+            });
+            draw(cx);
+            cx.read(|cx| editor.read(cx).cursor_layout().expect("a caret").0)
+        };
+        for (interface, code, pitch) in [
+            (13, 12, px(18.)),
+            (13, 13, px(20.)),
+            (13, 18, px(27.)),
+            (18, 12, px(18.)),
+            (18, 18, px(27.)),
+        ] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                editor.update(cx, |editor, cx| {
+                    editor.set_scroll_offset(Point::default(), cx)
+                });
+            });
+            draw(cx);
+            let first = caret_at(0, cx);
+            let second = caret_at(second_line, cx);
+            assert_eq!(
+                second.top() - first.top(),
+                pitch,
+                "{at}: the drawn rows' pitch"
+            );
+            assert_eq!(
+                cx.read(|cx| editor.read(cx).line_height()),
+                Some(pitch),
+                "{at}"
+            );
+            let lines = cx.read(|cx| editor.read(cx).input_bounds());
+            assert_eq!(
+                lines.size.height,
+                pitch * 8.,
+                "{at}: eight whole lines, none cut"
+            );
+            let draft = cx.debug_bounds("conflict-result-draft").unwrap();
+            assert_eq!(
+                draft.size.height,
+                pitch * 8. + px(18.),
+                "{at}: the lines inside the field's padding and border"
+            );
+
+            cx.update(|_, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.set_scroll_offset(point(px(0.), px(-100_000.)), cx)
+                })
+            });
+            draw(cx);
+            let scrolled = cx.read(|cx| editor.read(cx).scroll_offset().y);
+            assert!(
+                scrolled < -pitch * 30. && scrolled > px(-100_000.),
+                "{at}: the 45-line draft scrolls inside its box, to {scrolled:?}"
+            );
+            assert_eq!(
+                cx.debug_bounds("conflict-result-draft"),
+                Some(draft),
+                "{at}"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     fn snapshot() -> ConflictPreview {
