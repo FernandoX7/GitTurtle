@@ -639,12 +639,36 @@ mod helper {
         }
     }
 
-    /// `/proc/<pid>/status` once the helper has installed its own filter,
-    /// the last step before it reads, on top of the `inherited` filters it
-    /// started under.
+    /// The first `/proc/<pid>/status` for which `ready` holds among reads
+    /// that begin once the helper was seen to install its own filter on top
+    /// of the `inherited` filters it started under, or `None` once the
+    /// process is gone.
+    ///
+    /// The read that first shows the filter cannot be the one checked: the
+    /// kernel formats the file field by field (`proc_pid_status`: `Name`
+    /// first, `Seccomp` near the end) with no lock across them, so a reader
+    /// preempted in between pairs the filter with fields from before the
+    /// helper's earlier steps, such as its exec name from before
+    /// `PR_SET_NAME`. The filter is the helper's last step before it reads
+    /// its input, so every field of a read begun later shows every step.
+    fn status_once_confined(
+        pid: u32,
+        inherited: u32,
+        what: &str,
+        ready: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        awaited_status(pid, "confined itself", |status| confined(status, inherited))?;
+        awaited_status(pid, what, ready)
+    }
+
+    /// `/proc/<pid>/status` read once the helper has installed its own
+    /// filter on top of the `inherited` ones, with every confinement step
+    /// in place.
     fn confined_status(pid: u32, inherited: u32) -> String {
-        awaited_status(pid, "confined itself", |status| confined(status, inherited))
-            .expect("the helper exited and was reaped before it was seen confined")
+        status_once_confined(pid, inherited, "stayed confined", |status| {
+            confined(status, inherited)
+        })
+        .expect("the helper exited and was reaped before a status read after its confinement")
     }
 
     /// Whether `pid` runs: neither reaped nor a zombie.
@@ -754,8 +778,8 @@ mod helper {
 
     /// Starts the helper with every signal blocked and SIGALRM and SIGXCPU
     /// ignored, after `outer`, which adds `outer_filters` seccomp filters,
-    /// has run in the child; checks each confinement step once its own
-    /// filter is in place, then renders a page through it.
+    /// has run in the child; checks each confinement step in a status read
+    /// once its own filter is in place, then renders a page through it.
     fn round_trip_a_page(outer: fn() -> io::Result<()>, outer_filters: u32) {
         let inherited = own_filters() + outer_filters;
         let mut command = helper(&own_pid());
@@ -934,11 +958,10 @@ mod helper {
             .unwrap();
         let helper: u32 = line.trim().parse().unwrap();
         // The helper keeps waiting on this input, open and unwritten: only
-        // its parent's death can end it. Confined, it sleeps in that read.
-        let inherited = own_filters();
-        let waiting =
-            |status: &str| confined(status, inherited) && field(status, "State").starts_with('S');
-        if awaited_status(helper, "waited, confined, on its input", waiting).is_none() {
+        // its parent's death can end it. Once confined, it sleeps only in
+        // that read.
+        let waiting = |status: &str| field(status, "State").starts_with('S');
+        if status_once_confined(helper, own_filters(), "waited on its input", waiting).is_none() {
             let output = io::read_to_string(shell.stderr.take().unwrap()).unwrap();
             let code = output.lines().last().unwrap_or_default();
             // 0 and `exit::REPLY` come only after the read.
