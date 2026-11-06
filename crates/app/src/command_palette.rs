@@ -788,7 +788,9 @@ thread_local! {
 /// name keeps the reading it had until the context rests
 /// ([`shortcuts::COUNT_REST`]) and then takes the one the changes end on, one
 /// rename, and the status announces nothing at a rest that renames it, unless
-/// the query changed in the same rest ([`Palette::queried`]): Orca drops a
+/// the query changed in the same rest ([`Palette::queried`]), or the selection
+/// rests there on a command Orca may not have spoken ([`Palette::unheard`]),
+/// whose rename it does not speak while it presents another row: Orca drops a
 /// burst of the list's changes of selection as the person types, and ignores
 /// a rename of a row that is not its locus of focus, so a query typed as a
 /// Fetch ended, whose rest renamed the row it selected, was heard as nothing
@@ -807,9 +809,16 @@ thread_local! {
 /// whole reading there, it had Orca 51.1 speak "Go to History" and then
 /// "Go to History · 1 of 1" (QA-105). A reading that no change of selection
 /// led to stays whole: "No matching commands", a query that leaves the
-/// command selected at another place, and a rest of the context. On macOS
-/// the status announces the whole reading of every change, a move's at once
-/// (not yet checked natively).
+/// command selected at another place, and a rest of the context. When the
+/// selection rests, a move's rest included ([`Palette::list_moved`]), the
+/// person has heard the command it rests on once: where the status is not
+/// sure Orca spoke the list's last change of selection, the rest says the
+/// whole reading, once, even where the status took it already, as after
+/// Down and Up 50 ms apart, which left Orca's last word Down's command, or
+/// Down held at 33 ms a repeat, which left the command it ended on unheard
+/// ([`Palette::settle`]); where it is sure, nothing more. On macOS the status
+/// announces the whole reading of every change, a move's at once (not yet
+/// checked natively).
 const ROW_CARRIES_CONTEXT: bool = shortcuts::LIST_SPEAKS_SELECTION;
 
 /// A row's accessible name: its command and, where the context cannot run
@@ -875,6 +884,21 @@ struct Palette {
     /// ([`Self::settle`]): replaced by each change to either, so only the
     /// last one runs, and dropped as the palette closes.
     settling: Option<Task<()>>,
+    /// Whether the rest pending ([`Self::settling`]) waits for a reading of
+    /// the query or the context, rather than only for the selection to rest
+    /// after a move ([`Self::list_moved`]).
+    rest_reads: bool,
+    /// Whether the selection changed since the person last surely heard the
+    /// command it rests on, from the list or the status: where the list
+    /// speaks its selection ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux),
+    /// the rest that follows says the whole reading again unless Orca surely
+    /// spoke the last change ([`Self::settle`]).
+    unheard: bool,
+    /// How many times the status's node was replaced to announce again the
+    /// reading its name already says ([`Self::settle`]): AccessKit's
+    /// adapters announce a live node only as it is added or its name
+    /// changes.
+    status_node: usize,
     scroll: UniformListScrollHandle,
     error: Option<String>,
     _subscription: Subscription,
@@ -904,7 +928,7 @@ impl Palette {
                     }
                     this.error = None;
                     this.queried = true;
-                    this.settle(cx);
+                    this.settle(true, cx);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.activate(window, cx),
@@ -941,7 +965,7 @@ impl Palette {
                         {
                             this.held = Some((command, previous.availability));
                         }
-                        this.settle(cx);
+                        this.settle(true, cx);
                     }
                     cx.notify();
                 }
@@ -964,6 +988,9 @@ impl Palette {
             held: None,
             queried: false,
             settling: None,
+            rest_reads: false,
+            unheard: false,
+            status_node: 0,
             scroll: UniformListScrollHandle::new(),
             error: None,
             _subscription: subscription,
@@ -1021,6 +1048,7 @@ impl Palette {
     /// begins follows it ([`Listed::changed`]).
     fn selection_moved(&mut self) {
         self.listed.changed();
+        self.unheard = true;
         self.reached();
     }
     /// The selection changed other than by the query, by a key, a click or
@@ -1031,17 +1059,32 @@ impl Palette {
     /// selection led to, read whole: counted toward that later rest, a click
     /// on a command the context cannot run and, 5 s on, a query that kept it
     /// selected at another place rested on "1 of 1" alone.
-    fn list_moved(&mut self) {
-        self.listed.moved(self.settling.is_some());
+    ///
+    /// Where the list speaks its selection ([`shortcuts::LIST_SPEAKS_SELECTION`],
+    /// Linux), the move begins the selection's rest, which each change
+    /// replaces ([`Self::settle`]), so the person hears the command the
+    /// selection rests on once: Orca drops a change of selection less than
+    /// 100 ms after the one before, so Down and Up within that window left
+    /// Orca's last word Down's command, and Down held at 33 ms a repeat the
+    /// first command alone, the one the selection rested on unheard. A rest
+    /// begun by moves alone is none pending for the move after
+    /// ([`Self::rest_reads`]).
+    fn list_moved(&mut self, cx: &mut Context<Self>) {
+        self.listed
+            .moved(self.settling.is_some() && self.rest_reads);
+        self.unheard = true;
         self.reached();
+        if shortcuts::LIST_SPEAKS_SELECTION {
+            self.settle(false, cx);
+        }
     }
     /// A key or a click moved the selection ([`Self::list_moved`]): the
     /// status takes the move's whole reading at once, quietly where the list
     /// speaks the move ([`shortcuts::LIST_SPEAKS_SELECTION`]). A click on a
     /// command the context cannot run, which leaves the palette open on it
     /// with why, once left the status on the reading before.
-    fn take_move(&mut self) {
-        self.list_moved();
+    fn take_move(&mut self, cx: &mut Context<Self>) {
+        self.list_moved(cx);
         self.status = self.reading();
         self.status_name = self.status.clone();
         self.quiet = shortcuts::LIST_SPEAKS_SELECTION;
@@ -1072,7 +1115,7 @@ impl Palette {
     /// next.
     fn note_selected_row(&mut self, drawn: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.listed.laid_out(self.selected_command(), drawn) {
-            self.list_moved();
+            self.list_moved(cx);
             self.listed.time(window, cx, |this| &mut this.listed);
         }
     }
@@ -1112,12 +1155,28 @@ impl Palette {
     /// command's place ([`Self::status_name`]): the row Orca spoke says the
     /// command and any reason it waits, and the whole reading said them again
     /// (QA-105).
-    fn settle(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// The selection's rest, which a move begins where the list speaks its
+    /// selection ([`Self::list_moved`]), is this same rest: there the person
+    /// has heard the command the selection rests on once. Where Orca surely
+    /// spoke the last change of selection, nothing more is said; otherwise
+    /// the status says the whole reading, once, even where the reading is
+    /// what it last took, as at Down and Up 50 ms apart, after which Orca
+    /// had last said Down's command, or where the rest renames the selected
+    /// row, whose rename Orca does not speak while it presents another row
+    /// (QA-97). A wrong guess says the command twice, never leaves it
+    /// unheard. A reading the status's name already says is announced by a
+    /// fresh node ([`Self::status_node`]). `reads` says whether a change of
+    /// the query or the context asks for this rest, rather than a move
+    /// ([`Self::rest_reads`]).
+    fn settle(&mut self, reads: bool, cx: &mut Context<Self>) {
+        self.rest_reads |= reads;
         let rest = cx.background_executor().timer(shortcuts::COUNT_REST);
         self.settling = Some(cx.spawn(async move |this, cx| {
             rest.await;
             let _ = this.update(cx, |this, cx| {
                 this.settling = None;
+                this.rest_reads = false;
                 let queried = std::mem::take(&mut this.queried);
                 let held = this.held.take();
                 let renames_row = held.as_ref().is_some_and(|(command, held)| {
@@ -1127,19 +1186,27 @@ impl Palette {
                 });
                 let reading = this.reading();
                 let listed = this.listed.take_unread();
+                // Orca surely spoke the list's last change of selection.
+                let spoken = shortcuts::LIST_SPEAKS_SELECTION && this.listed.spoken();
+                // The selection rests on a command the person may not have
+                // heard.
+                let unheard = std::mem::take(&mut this.unheard)
+                    && shortcuts::LIST_SPEAKS_SELECTION
+                    && !spoken;
                 if reading != this.status {
                     this.status_name = match this.place() {
-                        Some(place)
-                            if shortcuts::LIST_SPEAKS_SELECTION
-                                && listed
-                                && this.listed.spoken() =>
-                        {
-                            place.into()
-                        }
+                        Some(place) if listed && spoken => place.into(),
                         _ => reading.clone(),
                     };
                     this.status = reading;
-                    this.quiet = renames_row && !queried;
+                    this.quiet = renames_row && !queried && !unheard;
+                    cx.notify();
+                } else if unheard {
+                    if this.status_name == reading {
+                        this.status_node += 1;
+                    }
+                    this.status_name = reading;
+                    this.quiet = false;
                     cx.notify();
                 } else if held.is_some() {
                     cx.notify();
@@ -1369,7 +1436,7 @@ impl Render for Palette {
                                 let moved = this.selection.index != index;
                                 this.selection.index = index;
                                 if moved {
-                                    this.take_move();
+                                    this.take_move(cx);
                                 }
                                 this.activate(window, cx);
                             }));
@@ -1438,7 +1505,7 @@ impl Render for Palette {
                 let was = this.selection.index;
                 this.selection.move_by(delta, this.results.len());
                 if this.selection.index != was {
-                    this.take_move();
+                    this.take_move(cx);
                 }
                 this.scroll
                     .scroll_to_item(this.selection.index, ScrollStrategy::Center);
@@ -1466,7 +1533,7 @@ impl Render for Palette {
                 let reading = self.status_name.clone();
                 native_accessibility::static_text(
                     div()
-                        .id("command-palette-current-result")
+                        .id(("command-palette-current-result", self.status_node))
                         .role(Role::Status)
                         .live_region(
                             if self.quiet {
@@ -3204,6 +3271,9 @@ mod render_tests {
     /// (`atspi_state_tests::Bus::heard_by_orca`).
     struct Heard {
         named: Option<String>,
+        /// The status's node, by element ID: a fresh one announces its name
+        /// as it is added, the name before included.
+        status: Option<String>,
         heard: Vec<String>,
         /// The list's selected row as the window's tree last held it, by
         /// element ID, with its name.
@@ -3240,6 +3310,7 @@ mod render_tests {
             );
             let mut heard = Self {
                 named: None,
+                status: None,
                 heard: Vec::new(),
                 row: None,
                 renamed: Vec::new(),
@@ -3283,26 +3354,35 @@ mod render_tests {
             // and carries its reading as its name, which AT-SPI announces,
             // and its value, which macOS's adapter announces.
             let mut polite = true;
-            let name = written::get(Self::STATUS).and_then(|status| {
-                let live = written::announced(Self::STATUS).map(|live| live.live);
-                polite = live == Some(gpui::accesskit::Live::Polite);
+            let status = written::announced_from(Self::STATUS);
+            assert!(status.len() <= 1, "the palette has one status: {status:?}");
+            let status = status.into_iter().next().map(|(id, live)| {
+                polite = live.live == gpui::accesskit::Live::Polite;
                 assert!(
-                    polite || live == Some(gpui::accesskit::Live::Off),
-                    "the palette's status is polite, or quiet: {live:?}"
+                    polite || live.live == gpui::accesskit::Live::Off,
+                    "the palette's status is polite, or quiet: {:?}",
+                    live.live
                 );
-                assert_eq!(
-                    status.node.value(),
-                    status.node.label(),
-                    "the status's value is its name"
-                );
-                status.node.label().map(str::to_owned)
+                let name = written::get(&id).and_then(|status| {
+                    assert_eq!(
+                        status.node.value(),
+                        status.node.label(),
+                        "the status's value is its name"
+                    );
+                    status.node.label().map(str::to_owned)
+                });
+                (id, name)
             });
-            if name != self.named {
+            let (id, name) = status.unzip();
+            let name = name.flatten();
+            let fresh = id.is_some() && id != self.status;
+            if name != self.named || fresh {
                 if polite {
                     self.heard.extend(name.clone());
                 }
                 self.named = name;
             }
+            self.status = id;
             let row = written::inside("command-palette-results")
                 .into_iter()
                 .find_map(|id| {
@@ -3382,6 +3462,15 @@ mod render_tests {
             cx.executor()
                 .advance_clock(std::time::Duration::from_millis(millis));
             cx.run_until_parked();
+            self.frame(cx);
+        }
+
+        /// Moves the selection by `key` 200 ms after the frame before, so
+        /// that Orca surely spoke the list's change ([`Listed::spoken()`]),
+        /// and draws.
+        fn step(&mut self, cx: &mut VisualTestContext, key: &str) {
+            self.wait(cx, 200);
+            cx.simulate_keystrokes(key);
             self.frame(cx);
         }
 
@@ -3535,7 +3624,19 @@ mod render_tests {
         moved(cx, &mut heard, "down", "go", first + 1);
         moved(cx, &mut heard, "up", "go", first);
         heard.wait(cx, 2000);
-        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+        // Down and Up in one instant, where Orca drops Up's change as one of
+        // a burst: where the list speaks the moves, the rest says the command
+        // Up reached, whole.
+        let again = if shortcuts::LIST_SPEAKS_SELECTION {
+            vec![reading_and_row("go", first, &availability).0]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            heard.take(),
+            again,
+            "and after them only the command Up reached, where Orca may have missed it"
+        );
     }
 
     /// QA-105: a change of selection is heard once, made by Down or by a
@@ -4013,6 +4114,232 @@ mod render_tests {
         assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
     }
 
+    /// Down and Up 50 ms apart leave Orca's last word Down's command, since
+    /// it drops Up's change as one of a burst, though the selection rests on
+    /// the command Up came back to, the reading the status took before:
+    /// where the list speaks its selection (Linux), the rest says that
+    /// command's whole reading, once, from a fresh node of the status, whose
+    /// name already says it. 200 ms apart, Orca surely spoke both, and the
+    /// rest says nothing. A key that selects another command and Backspace
+    /// 60 ms later end on the reading they started from the same way. The
+    /// rest said nothing, and Orca's last word was a command no longer
+    /// selected. On macOS the status announces each move at once, and the
+    /// rests nothing.
+    #[gpui::test]
+    fn a_burst_that_comes_back_to_its_reading_is_heard_once(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        let first = reading_and_row("", 0, &availability).0;
+        let second = reading_and_row("", 1, &availability).0;
+        // The rows Orca speaks, where the list speaks its selection.
+        #[cfg(target_os = "linux")]
+        let (first_row, second_row) = (
+            reading_and_row("", 0, &availability).1,
+            reading_and_row("", 1, &availability).1,
+        );
+        let again = |missed: bool| {
+            if shortcuts::LIST_SPEAKS_SELECTION && missed {
+                vec![first.clone()]
+            } else {
+                Vec::new()
+            }
+        };
+        for (apart, missed) in [(50, true), (200, false)] {
+            cx.simulate_keystrokes("down");
+            heard.frame(cx);
+            heard.wait(cx, apart);
+            cx.simulate_keystrokes("up");
+            heard.frame(cx);
+            let own = if shortcuts::LIST_SPEAKS_SELECTION {
+                Vec::new()
+            } else {
+                vec![second.clone(), first.clone()]
+            };
+            assert_eq!(
+                heard.take(),
+                own,
+                "Down and Up {apart} ms apart are the list's where it speaks them"
+            );
+            heard.wait(cx, 2000);
+            assert_eq!(
+                heard.take(),
+                again(missed),
+                "Down and Up {apart} ms apart: the rest says the command Up came back to only \
+                 where Orca may have missed it"
+            );
+            assert_eq!(heard.named.as_deref(), Some(first.as_str()));
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                heard.take_orca(),
+                if missed {
+                    vec![second_row.clone(), first.clone()]
+                } else {
+                    vec![second_row.clone(), first_row.clone()]
+                },
+                "Down and Up {apart} ms apart: what Orca says"
+            );
+            heard.wait(cx, 1000);
+        }
+
+        // A key that selects another command, and Backspace 60 ms later.
+        let key = ('a'..='z')
+            .map(String::from)
+            .find(|key| {
+                let found = matches(key);
+                found.get(first_available(&found, &availability)) != Some(&matches("")[0])
+            })
+            .expect("a key that selects another command");
+        cx.simulate_input(&key);
+        heard.frame(cx);
+        heard.wait(cx, 60);
+        cx.simulate_keystrokes("backspace");
+        heard.frame(cx);
+        heard.wait(cx, 2000);
+        assert_eq!(
+            heard.take(),
+            again(true),
+            "{key:?} and Backspace 60 ms later: the rest says the command they came back to \
+             where Orca may have missed it"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            let found = matches(&key);
+            let typed =
+                reading_and_row(&key, first_available(&found, &availability), &availability).1;
+            assert_eq!(
+                heard.take_orca(),
+                [typed, first],
+                "Orca speaks {key:?}'s command, drops Backspace's change, and speaks the status"
+            );
+        }
+    }
+
+    /// Down held at 33 ms a repeat makes changes of selection Orca drops,
+    /// each less than 100 ms after the one before: where the list speaks
+    /// its selection (Linux), Orca says the first command Down reached and
+    /// none after it, and the rest says the whole reading of the command the
+    /// repeats end on, once, which went unheard (QA-94's quiet moves). A
+    /// write that starts as the repeats end, which the rest renames that
+    /// command's row for, is said there too: Orca does not speak the rename
+    /// of a row it does not present, so the status, which says nothing at a
+    /// rest that renames a row Orca surely spoke, says the whole reading
+    /// beside it. On macOS the status announces each move at once, and the
+    /// write's reading at the rest.
+    #[gpui::test]
+    fn held_down_is_heard_as_the_command_it_ends_on(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        let mut heard = Heard::new(cx);
+        let availability = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).palette_availability(window, cx))
+        };
+        let idle = availability(cx);
+        heard.wait(cx, 1000);
+        heard.take();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+        // Each key 33 ms after the one before.
+        let held = |cx: &mut VisualTestContext, heard: &mut Heard, keys: &[&str]| {
+            for (at, key) in keys.iter().enumerate() {
+                if at > 0 {
+                    heard.wait(cx, 33);
+                }
+                cx.simulate_keystrokes(key);
+                heard.frame(cx);
+            }
+        };
+        held(cx, &mut heard, &["down"; 5]);
+        let moved: Vec<String> = (1..=5).map(|at| reading_and_row("", at, &idle).0).collect();
+        let own = if shortcuts::LIST_SPEAKS_SELECTION {
+            Vec::new()
+        } else {
+            moved.clone()
+        };
+        assert_eq!(
+            heard.take(),
+            own,
+            "the moves are the list's where it speaks them"
+        );
+        heard.wait(cx, 2000);
+        let rested = if shortcuts::LIST_SPEAKS_SELECTION {
+            vec![moved[4].clone()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            heard.take(),
+            rested,
+            "the rest says the command the repeats end on where the list speaks the moves"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca(),
+            [reading_and_row("", 1, &idle).1, moved[4].clone()],
+            "Orca speaks the first command Down reached, drops the rest, and speaks the status"
+        );
+        held(cx, &mut heard, &["up"; 5]);
+        heard.wait(cx, 2000);
+        heard.take();
+        heard.take_renamed();
+        #[cfg(target_os = "linux")]
+        {
+            heard.take_listed();
+            heard.take_orca();
+        }
+
+        // Down held past a command a write makes wait, and Up back onto it,
+        // as the write starts.
+        let at = row_a_write(true, &idle);
+        let mut keys = vec!["down"; at + 1];
+        keys.push("up");
+        held(cx, &mut heard, &keys);
+        app.update(cx, |app, cx| {
+            app.operation_busy = Some("Fetching…");
+            cx.notify();
+        });
+        heard.frame(cx);
+        heard.take();
+        heard.take_renamed();
+        heard.wait(cx, 499);
+        assert_eq!(
+            heard.take(),
+            Vec::<String>::new(),
+            "nothing before the rest"
+        );
+        heard.wait(cx, 1);
+        let (waiting, waiting_row) = reading_and_row("", at, &availability(cx));
+        assert_eq!(
+            heard.take(),
+            std::slice::from_ref(&waiting),
+            "the rest says the command the repeats end on, waiting for the write, once"
+        );
+        if ROW_CARRIES_CONTEXT {
+            assert_eq!(
+                heard.take_renamed(),
+                [waiting_row],
+                "beside the row's one rename"
+            );
+        }
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            heard.take_orca().last(),
+            Some(&waiting),
+            "Orca speaks the status's reading last"
+        );
+        heard.wait(cx, 2000);
+        assert_eq!(heard.take(), Vec::<String>::new(), "and nothing after it");
+    }
+
     /// A move inside the query's rest is the change of selection that rest
     /// follows: a key, Down 200 ms later and, 200 ms after that, a key that
     /// keeps Down's command selected at another place. Where the list speaks
@@ -4376,8 +4703,7 @@ mod render_tests {
             })
             .expect("a running write makes a command wait");
         for _ in 0..at {
-            cx.simulate_keystrokes("down");
-            heard.frame(cx);
+            heard.step(cx, "down");
         }
         let (quiet, quiet_row) = reading_and_row("", at, &idle);
         #[cfg(target_os = "linux")]
@@ -4551,8 +4877,7 @@ mod render_tests {
             .expect("the open palette");
         let selected = cx.update(|_, cx| palette.read(cx).selection.index);
         for _ in selected..at {
-            cx.simulate_keystrokes("down");
-            heard.frame(cx);
+            heard.step(cx, "down");
         }
         assert_eq!(
             cx.update(|_, cx| palette.read(cx).selection.index),
@@ -5045,8 +5370,7 @@ mod render_tests {
         };
         let unchanged = row_a_write(false, &idle);
         for _ in 0..unchanged {
-            cx.simulate_keystrokes("down");
-            heard.frame(cx);
+            heard.step(cx, "down");
         }
         let named = reading_and_row("", unchanged, &idle);
         assert_eq!(heard.named.as_deref(), Some(named.0.as_str()));
@@ -5092,8 +5416,7 @@ mod render_tests {
         let changed = row_a_write(true, &idle);
         let key = if changed > unchanged { "down" } else { "up" };
         for _ in 0..changed.abs_diff(unchanged) {
-            cx.simulate_keystrokes(key);
-            heard.frame(cx);
+            heard.step(cx, key);
         }
         let named = reading_and_row("", changed, &idle);
         assert_eq!(heard.named.as_deref(), Some(named.0.as_str()));
@@ -5165,8 +5488,7 @@ mod render_tests {
         let results = matches("");
         let at = row_a_write(true, &idle);
         for _ in 0..at {
-            cx.simulate_keystrokes("down");
-            heard.frame(cx);
+            heard.step(cx, "down");
         }
         let left = format!("palette-command-{}", results[at]);
         let row_named = |id: &str| {
@@ -5190,7 +5512,7 @@ mod render_tests {
             cx.notify();
         });
         heard.frame(cx);
-        heard.wait(cx, 100);
+        heard.wait(cx, 200);
         let busy = availability(cx);
         if ROW_CARRIES_CONTEXT {
             assert_eq!(
@@ -5400,10 +5722,18 @@ mod render_tests {
         );
         heard.wait(cx, 2000);
         assert_eq!(heard.row_name(), Some(back_row.as_str()));
+        // Up came 50 ms after Down, a change Orca drops as one of a burst:
+        // where the list speaks the moves, the rest says the command Up
+        // reached, whole.
+        let again = if shortcuts::LIST_SPEAKS_SELECTION {
+            vec![back.clone()]
+        } else {
+            Vec::new()
+        };
         assert_eq!(
             heard.take(),
-            Vec::<String>::new(),
-            "the rest announces nothing"
+            again,
+            "the rest announces only the command Up reached, where Orca may have missed it"
         );
         assert_eq!(
             heard.take_renamed(),
@@ -5429,8 +5759,8 @@ mod render_tests {
             );
             assert_eq!(
                 heard.take_orca(),
-                Vec::<String>::new(),
-                "and Orca hears nothing more"
+                again,
+                "and Orca hears the status say it, and nothing more"
             );
         }
     }
