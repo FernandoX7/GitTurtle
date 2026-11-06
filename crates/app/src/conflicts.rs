@@ -328,6 +328,9 @@ pub struct ConflictView {
     block_generation: u64,
     block_task: Option<Task<()>>,
     block_executor: SerialExecutor,
+    /// The review's body, which scrolls as one where the window is too
+    /// short for it, and reveals the control the keyboard moves onto.
+    body: crate::focus_reveal::FocusReveal,
 }
 
 impl EventEmitter<ConflictEvent> for ConflictView {}
@@ -354,6 +357,7 @@ impl ConflictView {
             block_generation: 0,
             block_task: None,
             block_executor: SerialExecutor::new("conflict-block-review"),
+            body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -396,9 +400,15 @@ impl ConflictView {
         self.focus_resolution(window, cx);
     }
 
-    /// Focuses the result draft, if it is open.
+    /// Focuses the result draft, if it is open, and has the review's body
+    /// show it whole in the next frame, as the person's action that moved
+    /// focus there asked: Next or Previous, Edit result, Restore saved draft
+    /// and opening the file by its row, by a click or a key alike. Revealed
+    /// only for the keyboard, a click on Next in a 461 × 490 window left the
+    /// draft focused below the body's fold, about 15 px of it in view.
     fn focus_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = &self.resolution {
+            self.body.reveal_next_focus();
             window.focus(&editor.focus_handle(cx), cx);
         }
         cx.notify();
@@ -644,7 +654,7 @@ impl ConflictView {
         }
     }
 
-    fn render_side(&self, side: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_side(&self, side: usize, room: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let versions = [
             &self.presentation.snapshot.base,
@@ -679,7 +689,7 @@ impl ConflictView {
             .child(div().px_3().py_2().flex().flex_col().gap_1().bg(rgb(p.panel))
                 .child(div().truncate().text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM).child(self.presentation.label(side)))
                 .child(div().truncate().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(description)))
-            .child(div().flex_1().min_h_0().children(self.readers[side].as_ref().filter(|_| !self.block_mode || !self.block_pending).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
+            .child(div().flex_1().min_h_0().when_some(self.readers[side].as_ref().map(|reader| reader.focus_handle(cx)), |pane, focus| pane.on_children_prepainted(self.body.control(focus, room))).children(self.readers[side].as_ref().filter(|_| !self.block_mode || !self.block_pending).map(|reader| crate::editor_find::Editor::new(reader).readonly(true).bordered(false).h(relative(1.)).text_size(crate::appearance::code_text()).aria_label(format!("Conflict version: {}", self.presentation.label(side))))))
             .when(self.block_mode && self.block_pending, |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).child("Updating conflict blocks…")))
             .when(self.readers[side].is_none(), |el| el.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.block_mode && self.blocks.is_empty() { "No unresolved blocks remain. Review the result, then explicitly save or stage it." } else if self.block_mode && side == 0 { "This marker style does not include a base block. Choose Whole file to inspect the full common ancestor." } else if versions[side].is_none() { "File absent in this version" } else { "Binary or large content · choose a complete version or use an external editor." })))
             .into_any_element()
@@ -687,7 +697,7 @@ impl ConflictView {
 }
 
 impl Render for ConflictView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let current = self.presentation.label(1);
         let incoming = self.presentation.label(2);
@@ -710,31 +720,92 @@ impl Render for ConflictView {
                 self.blocks[self.block_selected].first_line
             )
         };
-        div().id("conflict-review").size_full().flex().flex_col()
+        // Where the window is too short for the review, its body scrolls as
+        // one, and a control the keyboard moves onto, a Button, a version's
+        // text or the result draft, scrolls into view whole with its ring's
+        // room in the frame that first draws the focus. Each control reports
+        // where it lies to the body.
+        let room = crate::appearance::button_ring_room(cx);
+        self.body.reveal(window, cx);
+        let [drafts, branches, base, block_mode, whole_mode, external] = [
+            "saved-conflict-drafts",
+            "conflict-branches",
+            "conflict-base",
+            "conflict-block-mode",
+            "conflict-whole-mode",
+            "external-conflict-editor",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [previous, next, accept_current, accept_incoming, accept_both] = [
+            "previous-conflict-block",
+            "next-conflict-block",
+            "accept-current-block",
+            "accept-incoming-block",
+            "accept-both-block",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [
+            copy_saved,
+            restore_saved,
+            use_current,
+            use_incoming,
+            edit_result,
+        ] = [
+            "copy-saved-conflict",
+            "restore-saved-conflict",
+            "resolve-current",
+            "resolve-incoming",
+            "manual-resolution",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let [stage_working, save_draft, save_result] = [
+            "mark-conflict-resolved",
+            "save-conflict-draft",
+            "save-conflict-resolution",
+        ]
+        .map(|id| self.body.focus(id, cx));
+        let draft_focus = self
+            .resolution
+            .as_ref()
+            .map(|editor| editor.focus_handle(cx));
+        let sides = if self.base {
+            vec![self.render_side(0, room, cx)]
+        } else {
+            vec![self.render_side(1, room, cx), self.render_side(2, room, cx)]
+        };
+        // Its scrollbar, while it overflows, runs in a gutter at the body's
+        // right, clear of the controls and their rings; along a track too
+        // short for a thumb, the body's edges fade instead (`ScrollCue`).
+        let cue = crate::tags::ScrollCue::revealing(&self.body, Pixels::ZERO);
+        let body = div().on_children_prepainted(cue.observe(self.body.observe())).id("conflict-review").debug_selector(|| "conflict-review".into()).flex().flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if let Some(previous) = block_step(&event.keystroke) {
                     this.select_block(previous, window, cx); cx.stop_propagation();
                 }
             }))
             .child(div().px_3().py_2().flex().flex_wrap().items_center().gap_2().border_b_1().border_color(rgb(p.border))
-                .child(button("saved-conflict-drafts", "Saved drafts…", "", false).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::RecoveryDrafts))))
-                .child(button("conflict-branches", "Both sides", "", !self.base).toggled(!self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-base", "Base", "", self.base).toggled(self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-block-mode", "Selected block", "", self.block_mode).toggled(self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
-                .child(button("conflict-whole-mode", "Whole file", "", !self.block_mode).toggled(!self.block_mode).on_click(cx.listener(|this, _, window, cx| { this.block_mode = false; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
+                .on_children_prepainted(self.body.controls(vec![Some(drafts.clone()), Some(branches.clone()), Some(base.clone()), Some(block_mode.clone()), Some(whole_mode.clone()), None, Some(external.clone())], room))
+                .child(button("saved-conflict-drafts", "Saved drafts…", "", false).track_focus(&drafts).debug_selector(|| "saved-conflict-drafts".into()).on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::RecoveryDrafts))))
+                .child(button("conflict-branches", "Both sides", "", !self.base).track_focus(&branches).debug_selector(|| "conflict-branches".into()).toggled(!self.base).on_click(cx.listener(|this, _, window, cx| { this.base = false; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-base", "Base", "", self.base).track_focus(&base).debug_selector(|| "conflict-base".into()).toggled(self.base).on_click(cx.listener(|this, _, window, cx| { this.base = true; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-block-mode", "Selected block", "", self.block_mode).track_focus(&block_mode).debug_selector(|| "conflict-block-mode".into()).toggled(self.block_mode).disabled(self.blocks.is_empty()).on_click(cx.listener(|this, _, window, cx| { this.block_mode = true; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
+                .child(button("conflict-whole-mode", "Whole file", "", !self.block_mode).track_focus(&whole_mode).debug_selector(|| "conflict-whole-mode".into()).toggled(!self.block_mode).on_click(cx.listener(|this, _, window, cx| { this.block_mode = false; this.readers = [None, None, None]; this.prepare_readers(window, cx); cx.notify(); })))
                 .child(div().flex_1())
-                .child(button("external-conflict-editor", "Open in editor", "", false).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
+                .child(button("external-conflict-editor", "Open in editor", "", false).track_focus(&external).debug_selector(|| "external-conflict-editor".into()).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::OpenEditor)))))
             .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
                 .child(div().id("conflict-block-status").role(Role::Status).polite().aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
                 .child(div().flex().flex_wrap().gap_2().items_center()
-                    .child(button("previous-conflict-block", "Previous", "", false).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
-                    .child(button("next-conflict-block", "Next", "", false).accessibility_label("Next conflict block").tooltip(format!("Next conflict · {}", shortcuts::key_label(NEXT_BLOCK))).disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
-                    .child(button("accept-current-block", "Accept current", "", false).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
-                    .child(button("accept-incoming-block", "Accept incoming", "", false).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
-                    .child(button("accept-both-block", "Accept both", "", false).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
+                    .on_children_prepainted(self.body.controls(vec![Some(previous.clone()), Some(next.clone()), Some(accept_current.clone()), Some(accept_incoming.clone()), Some(accept_both.clone())], room))
+                    .child(button("previous-conflict-block", "Previous", "", false).track_focus(&previous).debug_selector(|| "previous-conflict-block".into()).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
+                    .child(button("next-conflict-block", "Next", "", false).track_focus(&next).debug_selector(|| "next-conflict-block".into()).accessibility_label("Next conflict block").tooltip(format!("Next conflict · {}", shortcuts::key_label(NEXT_BLOCK))).disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
+                    .child(button("accept-current-block", "Accept current", "", false).track_focus(&accept_current).debug_selector(|| "accept-current-block".into()).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
+                    .child(button("accept-incoming-block", "Accept incoming", "", false).track_focus(&accept_incoming).debug_selector(|| "accept-incoming-block".into()).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
+                    .child(button("accept-both-block", "Accept both", "", false).track_focus(&accept_both).debug_selector(|| "accept-both-block".into()).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
                 .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").alert(issue.clone()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
-            .child(div().flex_1().min_h(px(100.)).flex().children(if self.base { vec![self.render_side(0, cx)] } else { vec![self.render_side(1, cx), self.render_side(2, cx)] }))
+            // The versions keep their 100 px however short the window: the
+            // body scrolls instead.
+            .child(div().flex_1().min_h(px(100.)).flex().debug_selector(|| "conflict-versions".into()).children(sides))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                 .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).polite().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
@@ -743,33 +814,46 @@ impl Render for ConflictView {
                     let mark = copy_feedback::Mark::new("copy-saved-conflict", &self.durable_key);
                     let copy_mark = mark.clone();
                     element.child(div().flex().flex_wrap().items_center().gap_2()
+                        .on_children_prepainted(self.body.controls(vec![None, Some(copy_saved.clone()), Some(restore_saved.clone())], room))
                         .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
-                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved text", copy.clone())))
-                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
+                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).track_focus(&copy_saved).debug_selector(|| "copy-saved-conflict".into()).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved text", copy.clone())))
+                        .child(button("restore-saved-conflict", "Restore saved draft", "", false).track_focus(&restore_saved).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
                             this.restore_saved_draft(window, cx);
                         }))))
                 })
                 .child(div().flex().flex_wrap().items_center().gap_2()
+                    .on_children_prepainted(self.body.controls(vec![None, Some(use_current.clone()), Some(use_incoming.clone()), None, Some(edit_result.clone())], room))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Whole-file actions:"))
-                    .child(button("resolve-current", "Use current file…", "", false).accessibility_label(format!("Use current whole file from {current}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {current}"))
+                    .child(button("resolve-current", "Use current file…", "", false).track_focus(&use_current).debug_selector(|| "resolve-current".into()).accessibility_label(format!("Use current whole file from {current}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {current}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Current)))))
-                    .child(button("resolve-incoming", "Use incoming file…", "", false).accessibility_label(format!("Use incoming whole file from {incoming}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {incoming}"))
+                    .child(button("resolve-incoming", "Use incoming file…", "", false).track_focus(&use_incoming).debug_selector(|| "resolve-incoming".into()).accessibility_label(format!("Use incoming whole file from {incoming}, then review before replacing and staging")).tooltip(format!("Replace and stage the entire file with {incoming}"))
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::Incoming)))))
                     .child(div().flex_1())
-                    .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).disabled(self.presentation.result.is_none())
+                    .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).track_focus(&edit_result).debug_selector(|| "manual-resolution".into()).disabled(self.presentation.result.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
-                .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
+                .children(self.resolution.as_ref().zip(draft_focus).map(|(editor, focus)| div().capture_action(cx.listener(Self::check_paste))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(div().debug_selector(|| "conflict-result-draft".into()).child(resolution_textarea(editor, cx)))))
+                    .child(div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room)).child(resolution_textarea(editor, cx)))))
                 .children(self.draft_error.map(|issue| div().id("conflict-draft-error").alert(issue.explanation()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
-                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).on_click(cx.listener(|this, _, _, cx| {
+                    .on_children_prepainted(self.body.controls(vec![Some(stage_working.clone()), self.resolution.as_ref().map(|_| save_draft.clone()), self.resolution.as_ref().map(|_| save_result.clone())], room))
+                    .child(button("mark-conflict-resolved", "Stage edited file…", "", false).track_focus(&stage_working).debug_selector(|| "mark-conflict-resolved".into()).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).track_focus(&save_draft).debug_selector(|| "save-conflict-draft".into()).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Save { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))
-                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
+                    .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).track_focus(&save_result).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
-                    }))))))
+                    }))))));
+        // The body is the column itself, so where everything fits the
+        // versions take the room the rest leaves, as they did before it
+        // scrolled, and where it does not they keep their 100 px and the rest
+        // its own height, and the column scrolls.
+        let body = body
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(self.body.scroll());
+        cue.list(body, "conflict-review-scrollbar").size_full()
     }
 }
 
@@ -934,8 +1018,10 @@ impl GitTurtle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::tests::{draw as settle, painted_fades, painted_thumb, rendered};
     use core::prelude::v1::test;
     use gitturtle_core::ConflictSide;
+    use gpui_kit::component::scroll::Scrollbar;
     use std::{cell::RefCell, rc::Rc};
 
     /// The manual result draft is code: it draws in the code family with its
@@ -988,6 +1074,507 @@ mod tests {
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
+    }
+
+    /// A review of a two-block conflict with its result draft open and a
+    /// matching saved draft offered, so every one of its controls is drawn.
+    fn review_window(cx: &mut TestAppContext) -> (Entity<ConflictView>, &mut VisualTestContext) {
+        let mut text = String::new();
+        for _ in 0..2 {
+            text.push_str("<<<<<<< current\ncurrent\n=======\nincoming\n>>>>>>> incoming\n");
+            for line in 0..20 {
+                text.push_str(&format!("line {line}\n"));
+            }
+        }
+        let (view, cx) = conflict_window(cx, text);
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            view.update(cx, |view, cx| {
+                view.durable_saved = Some((true, "saved\n".into()));
+                cx.notify();
+            })
+        });
+        (view, cx)
+    }
+
+    /// The review's controls, by the debug selector each is drawn under,
+    /// which is also the id its Button tracks focus under.
+    const REVIEW_CONTROLS: [&str; 19] = [
+        "saved-conflict-drafts",
+        "conflict-branches",
+        "conflict-base",
+        "conflict-block-mode",
+        "conflict-whole-mode",
+        "external-conflict-editor",
+        "previous-conflict-block",
+        "next-conflict-block",
+        "accept-current-block",
+        "accept-incoming-block",
+        "accept-both-block",
+        "copy-saved-conflict",
+        "restore-saved-conflict",
+        "resolve-current",
+        "resolve-incoming",
+        "manual-resolution",
+        "mark-conflict-resolved",
+        "save-conflict-draft",
+        "save-conflict-resolution",
+    ];
+
+    /// The control of the review holding focus: a Button by its selector,
+    /// the result draft as `conflict-result-draft`, a version's text as
+    /// `base-version`, `current-version` or `incoming-version`.
+    fn focused_control(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+    ) -> Option<&'static str> {
+        cx.update(|window, cx| {
+            let view = view.read(cx);
+            if let Some(id) = view.body.focused(window) {
+                return REVIEW_CONTROLS
+                    .into_iter()
+                    .find(|control| ElementId::from(*control) == id);
+            }
+            if view.resolution_focused(window, cx) {
+                return Some("conflict-result-draft");
+            }
+            view.readers.iter().enumerate().find_map(|(side, reader)| {
+                reader
+                    .as_ref()
+                    .filter(|reader| reader.focus_handle(cx).contains_focused(window, cx))
+                    .map(|_| ["base-version", "current-version", "incoming-version"][side])
+            })
+        })
+    }
+
+    /// With the body at its top and focus on its first control, presses
+    /// `key` until focus reaches the result draft, which keeps Tab and
+    /// Shift+Tab for indenting, or comes back to a control it has visited,
+    /// and returns the controls focus lay on in order, the first control
+    /// among them for Tab. After each press the focused control, grown by its
+    /// ring's room, lies inside the review's body as drawn, and so it does in
+    /// every frame painted after the press, the first that draws the focus
+    /// included.
+    fn walk(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        key: &str,
+        at: &str,
+    ) -> Vec<&'static str> {
+        const FIRST: &str = "saved-conflict-drafts";
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        let slack = px(0.01);
+        cx.update(|window, cx| {
+            body.scroll().set_offset(Point::default());
+            body.focus(FIRST, cx).focus(window, cx);
+        });
+        settle(cx);
+        assert_eq!(focused_control(cx, view), Some(FIRST), "{at}");
+        let mut visited = Vec::new();
+        if key == "tab" {
+            visited.push(FIRST);
+        }
+        for _ in 0..REVIEW_CONTROLS.len() + 4 {
+            body.take_painted();
+            cx.simulate_keystrokes(key);
+            settle(cx);
+            let control = focused_control(cx, view)
+                .unwrap_or_else(|| panic!("{at}: {key} focuses a control of the review"));
+            if visited.contains(&control) {
+                break;
+            }
+            let review = cx.debug_bounds("conflict-review").expect("the review");
+            let drawn = match control {
+                "conflict-result-draft" => cx.debug_bounds(control),
+                control if control.ends_with("-version") => None,
+                control => cx.debug_bounds(control),
+            };
+            if let Some(drawn) = drawn {
+                let ring = drawn.dilate(room);
+                assert!(
+                    ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+                    "{at}: after {key}, {control} with its ring, {ring:?}, lies outside the \
+                     review's body, {review:?}"
+                );
+            }
+            let frames = body.take_painted();
+            assert!(
+                !frames.is_empty(),
+                "{at}: {key} onto {control} paints the body"
+            );
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {index} after {key} draws {control}"))
+                    .dilate(room);
+                assert!(
+                    ring.top() + slack >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + slack,
+                    "{at}: frame {index} after {key} paints {control} with its ring, {ring:?}, \
+                     outside the body, {:?}",
+                    frame.viewport
+                );
+            }
+            visited.push(control);
+            if control == "conflict-result-draft" {
+                break;
+            }
+        }
+        visited
+    }
+
+    /// Every control Tab or Shift+Tab reaches in a short window is drawn
+    /// whole with its ring inside the review's body, which scrolls, in every
+    /// frame after the key. In a 461 × 490 half tile, at 13 pt with 12 pt
+    /// code and at 18 pt with 18 pt code, the review is taller than the
+    /// window: laid out at the window's height, it left Save draft… at
+    /// y 643.5 and 1,008.5 and every action below the result draft under the
+    /// window's foot, out of reach, and the result draft cut by it. The body
+    /// scrolls as one, the versions keeping their 100 px and the draft its
+    /// eight whole lines, and its scrollbar runs in a gutter at its right,
+    /// clear of every control and ring. Once the draft has no unresolved
+    /// block, Shift+Tab reaches Save and stage result… whole too.
+    #[gpui::test]
+    async fn a_short_window_scrolls_the_review_and_tab_reveals_each_control(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code, pitch) in [(13, 12, px(18.)), (18, 18, px(27.))] {
+            let at = format!("{interface} pt, code {code} pt, two blocks unresolved");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                body.scroll().set_offset(Point::default());
+            });
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > px(0.),
+                "{at}: the review is taller than its body"
+            );
+            assert_eq!(
+                rendered(cx, "conflict-versions").size.height,
+                px(100.),
+                "{at}: the versions keep their 100 px"
+            );
+            assert_eq!(
+                rendered(cx, "conflict-result-draft").size.height,
+                pitch * 8. + px(18.),
+                "{at}: the draft keeps its eight whole lines"
+            );
+
+            // The scrollbar runs the body's height in its gutter, at its
+            // right, and the controls and their rings end before it.
+            let review = rendered(cx, "conflict-review");
+            assert!(
+                cx.debug_bounds("conflict-review-scrollbar").is_some(),
+                "{at}: the body draws its scrollbar"
+            );
+            let track = Bounds::from_corners(
+                point(review.right() - Scrollbar::width(), review.top()),
+                review.bottom_right(),
+            );
+            assert!(
+                painted_thumb(cx, track).is_some(),
+                "{at}: the scrollbar paints its thumb at the body's right, in {track:?}"
+            );
+            for control in REVIEW_CONTROLS
+                .into_iter()
+                .chain(["conflict-result-draft", "conflict-versions"])
+            {
+                let ring = rendered(cx, control).dilate(room);
+                assert!(
+                    ring.right() <= track.left() + px(0.01),
+                    "{at}: {control} with its ring, {ring:?}, reaches the scrollbar, {track:?}"
+                );
+            }
+
+            let forward = walk(cx, &view, "tab", &at);
+            assert_eq!(
+                forward,
+                [
+                    "saved-conflict-drafts",
+                    "conflict-branches",
+                    "conflict-base",
+                    "conflict-block-mode",
+                    "conflict-whole-mode",
+                    "external-conflict-editor",
+                    "next-conflict-block",
+                    "accept-current-block",
+                    "accept-incoming-block",
+                    "accept-both-block",
+                    "current-version",
+                    "incoming-version",
+                    "copy-saved-conflict",
+                    "restore-saved-conflict",
+                    "resolve-current",
+                    "resolve-incoming",
+                    "manual-resolution",
+                    "conflict-result-draft",
+                ],
+                "{at}: Tab's stops"
+            );
+            assert!(
+                body.scroll().offset().y < px(0.),
+                "{at}: Tab scrolled the body"
+            );
+            let backward = walk(cx, &view, "shift-tab", &at);
+            assert_eq!(
+                backward,
+                ["save-conflict-draft", "conflict-result-draft"],
+                "{at}: Shift+Tab's stops"
+            );
+        }
+
+        // The saved draft, which holds no conflict, restored as Restore
+        // saved draft does: once it is parsed, Save and stage result… acts.
+        cx.update(|window, cx| view.update(cx, |view, cx| view.restore_saved_draft(window, cx)));
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("restoring parses the draft").await;
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("{interface} pt, code {code} pt, resolved");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > px(0.),
+                "{at}: the review is taller than its body"
+            );
+            assert_eq!(
+                walk(cx, &view, "tab", &at),
+                [
+                    "saved-conflict-drafts",
+                    "conflict-branches",
+                    "conflict-base",
+                    "conflict-whole-mode",
+                    "external-conflict-editor",
+                    "resolve-current",
+                    "resolve-incoming",
+                    "manual-resolution",
+                    "conflict-result-draft",
+                ],
+                "{at}: Tab's stops"
+            );
+            assert_eq!(
+                walk(cx, &view, "shift-tab", &at),
+                [
+                    "save-conflict-resolution",
+                    "save-conflict-draft",
+                    "conflict-result-draft"
+                ],
+                "{at}: Shift+Tab's stops"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A click that moves focus into the result draft, on Next or Previous or
+    /// on Edit result, has the body show the draft whole with its ring's
+    /// room in a 461 × 490 window, at 13 pt with 12 pt code and at 18 pt with
+    /// 18 pt code: the draft, 162 and 234 px tall, is shorter than the
+    /// 490 px body at both, so neither shows only its top. Revealed only for
+    /// the keyboard, a click on Next at 13 pt focused the draft at y 475–637
+    /// with the body still at its top, about 15 px of it in view.
+    #[gpui::test]
+    fn a_click_that_focuses_the_draft_shows_it_whole(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let room = cx.read(crate::appearance::button_ring_room);
+        let slack = px(0.01);
+        let assert_draft_shown = |cx: &mut VisualTestContext, after: &str| {
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("conflict-result-draft"),
+                "{after} focuses the draft"
+            );
+            let review = rendered(cx, "conflict-review");
+            let ring = rendered(cx, "conflict-result-draft").dilate(room);
+            assert!(
+                ring.top() + slack >= review.top() && ring.bottom() <= review.bottom() + slack,
+                "after {after}, the draft with its ring, {ring:?}, lies outside the body, \
+                 {review:?}, at offset {:?}",
+                body.scroll().offset().y
+            );
+        };
+        for (interface, code, step) in [
+            (13, 12, "next-conflict-block"),
+            (18, 18, "previous-conflict-block"),
+        ] {
+            let at = format!("{interface} pt, code {code} pt");
+            // Focus elsewhere and the body at its top, where the draft lies
+            // past its foot.
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+                body.scroll().set_offset(Point::default());
+            });
+            settle(cx);
+            let review = rendered(cx, "conflict-review");
+            assert!(
+                rendered(cx, "conflict-result-draft").bottom() > review.bottom(),
+                "{at}: the draft lies past the body's foot"
+            );
+            let center = rendered(cx, step).center();
+            cx.simulate_click(center, Modifiers::default());
+            settle(cx);
+            assert_draft_shown(cx, &format!("{at}: a click on {step}"));
+
+            // Edit result scrolled to the body's foot, the draft below it.
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            let offset = body.scroll().offset().y - (edit.bottom() + px(4.) - review.bottom());
+            cx.update(|window, _| {
+                body.scroll().set_offset(point(px(0.), offset.min(px(0.))));
+                window.refresh();
+            });
+            settle(cx);
+            assert!(
+                rendered(cx, "conflict-result-draft").bottom() > review.bottom(),
+                "{at}: below Edit result, the draft lies past the body's foot"
+            );
+            let center = rendered(cx, "manual-resolution").center();
+            cx.simulate_click(center, Modifiers::default());
+            settle(cx);
+            assert_draft_shown(cx, &format!("{at}: a click on Edit result"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the review fits, as in a 1,480 × 800 window at 13 pt with 12 pt
+    /// code and at 18 pt with 18 pt code, nothing scrolls, the body keeps no
+    /// gutter and draws no scrollbar, and the review and every control lie
+    /// where they did before the body scrolled, the versions taking the
+    /// room the rest leaves.
+    #[gpui::test]
+    fn a_review_that_fits_scrolls_nothing_and_moves_nothing(cx: &mut TestAppContext) {
+        /// An element's debug selector and where it was drawn: x, y, width
+        /// and height.
+        type Drawn = (&'static str, (f32, f32, f32, f32));
+        /// Where each was drawn before the body scrolled (`82f71ae1`), at
+        /// 13 pt with 12 pt code.
+        const AT_13: [Drawn; 22] = [
+            ("conflict-review", (0., 0., 1480., 800.)),
+            ("conflict-versions", (0., 110., 1480., 368.)),
+            ("saved-conflict-drafts", (9.5, 6.5, 114., 28.)),
+            ("conflict-branches", (130., 6.5, 92., 28.)),
+            ("conflict-base", (228.5, 6.5, 49., 28.)),
+            ("conflict-block-mode", (284., 6.5, 121., 28.)),
+            ("conflict-whole-mode", (411.5, 6.5, 92., 28.)),
+            ("external-conflict-editor", (1349.5, 6.5, 121., 28.)),
+            ("previous-conflict-block", (9.5, 74.5, 78., 28.)),
+            ("next-conflict-block", (94., 74.5, 49., 28.)),
+            ("accept-current-block", (149.5, 74.5, 121., 28.)),
+            ("accept-incoming-block", (277., 74.5, 128., 28.)),
+            ("accept-both-block", (411.5, 74.5, 100., 28.)),
+            ("copy-saved-conflict", (452., 510., 150., 28.)),
+            ("restore-saved-conflict", (608.5, 510., 157., 28.)),
+            ("resolve-current", (142., 544.5, 143., 28.)),
+            ("resolve-incoming", (291.5, 544.5, 150., 28.)),
+            ("manual-resolution", (1370.5, 544.5, 100., 28.)),
+            ("conflict-result-draft", (9.5, 597., 1461., 162.)),
+            ("mark-conflict-resolved", (9.5, 765.5, 150., 28.)),
+            ("save-conflict-draft", (166., 765.5, 100., 28.)),
+            ("save-conflict-resolution", (272.5, 765.5, 179., 28.)),
+        ];
+        /// The same at 18 pt with 18 pt code.
+        const AT_18: [Drawn; 22] = [
+            ("conflict-review", (0., 0., 1480., 800.)),
+            ("conflict-versions", (0., 152., 1480., 193.)),
+            ("saved-conflict-drafts", (13.5, 9., 158., 39.)),
+            ("conflict-branches", (180.5, 9., 128., 39.)),
+            ("conflict-base", (317.5, 9., 68., 39.)),
+            ("conflict-block-mode", (394.5, 9., 168., 39.)),
+            ("conflict-whole-mode", (571.5, 9., 128., 39.)),
+            ("external-conflict-editor", (1298.5, 9., 168., 39.)),
+            ("previous-conflict-block", (13.5, 103., 108., 39.)),
+            ("next-conflict-block", (130.5, 103., 68., 39.)),
+            ("accept-current-block", (207.5, 103., 168., 39.)),
+            ("accept-incoming-block", (384.5, 103., 178., 39.)),
+            ("accept-both-block", (571.5, 103., 138., 39.)),
+            ("copy-saved-conflict", (626.5, 388.5, 208.5, 39.)),
+            ("restore-saved-conflict", (844., 388.5, 218., 39.)),
+            ("resolve-current", (196.5, 436.5, 198., 39.)),
+            ("resolve-incoming", (403.5, 436.5, 208., 39.)),
+            ("manual-resolution", (1328.5, 436.5, 138., 39.)),
+            ("conflict-result-draft", (13.5, 509., 1453., 234.)),
+            ("mark-conflict-resolved", (13.5, 752., 208., 39.)),
+            ("save-conflict-draft", (230.5, 752., 138., 39.)),
+            ("save-conflict-resolution", (377.5, 752., 248., 39.)),
+        ];
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        for (interface, code, laid_out) in [(13, 12, AT_13), (18, 18, AT_18)] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            settle(cx);
+            assert_eq!(
+                body.scroll().max_offset().y,
+                px(0.),
+                "{at}: the review fits its body"
+            );
+            assert_eq!(body.scroll().offset().y, px(0.), "{at}");
+            assert!(
+                cx.debug_bounds("conflict-review-scrollbar").is_none(),
+                "{at}: a body that fits draws no scrollbar"
+            );
+            let moved: Vec<_> = laid_out
+                .into_iter()
+                .filter_map(|(selector, (x, y, width, height))| {
+                    let before = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
+                    let drawn = cx.debug_bounds(selector);
+                    (drawn != Some(before))
+                        .then(|| format!("{selector}: {drawn:?}, was {before:?}"))
+                })
+                .collect();
+            assert!(moved.is_empty(), "{at}: moved\n{}", moved.join("\n"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Along a track shorter than a scrollbar's thumb moves on, 56 px, as in
+    /// a window 50 px tall, the body draws no scrollbar and fades the edges
+    /// it continues past instead: the bottom's at its top, and the top's
+    /// alone at its end.
+    #[gpui::test]
+    fn a_body_too_short_for_a_thumb_fades_the_edges_it_continues_past(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(461.), px(50.)));
+        settle(cx);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let review = rendered(cx, "conflict-review");
+        assert!(
+            body.scroll().max_offset().y > px(0.),
+            "the review overflows"
+        );
+        assert!(
+            cx.debug_bounds("conflict-review-scrollbar").is_none(),
+            "no scrollbar along a 50 px track"
+        );
+        assert_eq!(
+            painted_fades(cx, review),
+            (None, Some(px(8.))),
+            "at its top, the bottom edge fades"
+        );
+        cx.update(|window, _| {
+            body.scroll()
+                .set_offset(point(px(0.), -body.scroll().max_offset().y));
+            window.refresh();
+        });
+        settle(cx);
+        assert_eq!(
+            painted_fades(cx, review),
+            (Some(px(8.)), None),
+            "at its end, the top edge alone fades"
+        );
     }
 
     /// The manual result draft shows eight whole lines of code at every
