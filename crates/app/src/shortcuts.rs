@@ -1357,11 +1357,8 @@ struct ShortcutHelpView {
     /// move, a rest after Down, a key and Backspace said nothing.
     announced_entry: SharedString,
     /// The list's last change of its selected entry, which on Linux tells a
-    /// rest whether Orca spoke the entry it would read ([`Listed::spoken`]).
+    /// rest whether Orca spoke the entry it would read ([`Listed::spoken()`]).
     listed: Listed,
-    /// The selected entry as the last frame laid the list out, and whether
-    /// it drew that entry's row ([`Self::note_selected_row`]).
-    row_shown: Option<(Option<usize>, bool)>,
     /// The rest the search's next count waits for ([`Self::settle_count`]):
     /// replaced by each change to the search, so only the last one runs,
     /// and dropped as the dialog closes.
@@ -1406,35 +1403,35 @@ pub(crate) const COUNT_REST: std::time::Duration = std::time::Duration::from_mil
 /// History · 2 of 3" and the list's "Go to History" (QA-94, 2026-11-04).
 pub(crate) const LIST_SPEAKS_SELECTION: bool = cfg!(target_os = "linux");
 
-/// How long after the list's previous change of selection a change must
-/// come for Keyboard Shortcuts to take it as spoken. Orca 51.1's spam filter
-/// drops an
-/// event of a type the application sent less than 100 ms before, and times
-/// each one it sees, dropped or not ("Ignoring object:selection-changed due
-/// to multiple instances in short time", QA-97), so of keys typed 60 ms
-/// apart that each select another entry it speaks the first key's and none
-/// after it (`atspi_state_tests::Bus::heard_by_orca` models that window).
-/// The AT-SPI adapter reports a change as the frame that draws it is drawn,
-/// so the dialog measures from the latest the change before can have been
-/// reported, the first frame after the one that drew it, to the earliest
-/// this one can, the render that draws it ([`Listed::stamp`]): a lower bound
-/// on the time between the two, and this leaves 50 ms beyond Orca's window.
-/// The command palette times its list by the same rule.
+/// How long after a list's previous change of selection a change must come
+/// for Keyboard Shortcuts or the command palette to take it as spoken
+/// ([`Listed`]). Orca 51.1's spam filter drops an event of a type the
+/// application sent less than 100 ms before, and times each one it sees,
+/// dropped or not ("Ignoring object:selection-changed due to multiple
+/// instances in short time", QA-97), so of keys typed 60 ms apart that each
+/// select another entry it speaks the first key's and none after it
+/// (`atspi_state_tests::Bus::heard_by_orca` models that window). The AT-SPI
+/// adapter reports a change as the frame that draws it is drawn, so the list
+/// measures from the latest the change before can have been reported, the
+/// first frame after the one that drew it, to the earliest this one can, the
+/// render that draws it ([`Listed::stamp`]): a lower bound on the time
+/// between the two, and this leaves 50 ms beyond Orca's window.
 const LIST_SPEAKS_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
-/// The list's last change of its selected entry, by a key, a click or the
+/// A list's last change of its selected item, by a key, a click or the
 /// search, which on Linux the AT-SPI adapter reports as the frame that draws
-/// it is drawn, and Orca speaks ([`LIST_SPEAKS_SELECTION`]). The status
-/// leaves the entry out of a rest's reading only where it is sure Orca spoke
-/// that change: in doubt it says the entry again, which is heard twice at
-/// worst, where the count alone could leave it unheard or follow the entry
-/// Orca spoke before.
-struct Listed {
-    /// How many changes there have been, the dialog's opening, as its first
-    /// entry entered the window's tree selected, the first: a frame times
-    /// only the last.
+/// it is drawn, and Orca speaks ([`LIST_SPEAKS_SELECTION`]): the one timing
+/// Keyboard Shortcuts' entries and the command palette's commands share. A
+/// status leaves the item out of a rest's reading only where it is sure Orca
+/// spoke that change ([`Self::spoken()`]): in doubt it says the item again,
+/// which is heard twice at worst, where the rest of the reading alone could
+/// leave it unheard or follow the item Orca spoke before.
+pub(crate) struct Listed {
+    /// How many changes there have been, the list's opening, as its first
+    /// selected item entered the window's tree selected, the first: a frame
+    /// times only the last.
     changes: u64,
-    /// The change a frame is due to time ([`ShortcutHelpView::render`]).
+    /// The change a frame is due to time ([`Self::time`]).
     asked: Option<u64>,
     /// When the first render that drew the last change ran: the adapter
     /// cannot have reported it earlier.
@@ -1447,22 +1444,24 @@ struct Listed {
     /// Whether a change came while the one before it waited for its frame,
     /// so that Orca may have spoken either.
     doubt: bool,
-    /// Whether Orca spoke the entry the last change selected: its render ran
+    /// Whether Orca spoke the item the last change selected: its render ran
     /// [`LIST_SPEAKS_AFTER`] or more after the frame that timed the change
     /// before it, and no change came between it and its frame. Of keys typed
     /// 60 ms apart Orca 51.1 drops each change of selection after the first
     /// as one of a burst (QA-97), and a frame drawn late, as on a loaded
     /// host, can send two changes handled far apart within its window.
     spoken: bool,
-    /// Whether the status has announced no reading since: the rest that
-    /// comes next ([`ShortcutHelpView::settle_count`]) follows it. A move the
-    /// list speaks leaves it set, since the status takes that entry quietly.
+    /// Whether the status has taken no reading since: the rest that comes
+    /// next follows it ([`Self::take_unread`]).
     unread: bool,
+    /// The selected item as the last frame laid the list out, and whether it
+    /// drew that item's row ([`Self::laid_out`]).
+    row_shown: Option<(Option<usize>, bool)>,
 }
 
 impl Listed {
-    /// The dialog opened: its first frame times that change.
-    fn opened() -> Self {
+    /// The list opened: its first frame times that change.
+    pub(crate) fn opened() -> Self {
         Self {
             changes: 0,
             asked: None,
@@ -1472,11 +1471,12 @@ impl Listed {
             doubt: false,
             spoken: false,
             unread: false,
+            row_shown: None,
         }
     }
 
-    /// The selected entry changed.
-    fn changed(&mut self) {
+    /// The selected item changed: the rest that comes next follows it.
+    pub(crate) fn changed(&mut self) {
         self.changes += 1;
         match self.drawn.take() {
             Some(drawn) => self.before = Some(drawn),
@@ -1485,6 +1485,61 @@ impl Listed {
         self.rendered = None;
         self.spoken = false;
         self.unread = true;
+    }
+
+    /// The selected item changed other than by the search, as by a key, a
+    /// click or its row coming back into the list ([`Self::laid_out`]): the
+    /// rest that follows it is the one `pending` then, if any, and a later
+    /// rest does not. A move with none pending is heard from the list, and a
+    /// search that keeps its item selected long after is a reading no change
+    /// of selection led to, read whole: counted toward that later rest, Down
+    /// in Keyboard Shortcuts and, 5 s on, "y", which keeps Open Repository
+    /// first, rested on "38 shortcuts" alone.
+    pub(crate) fn moved(&mut self, pending: bool) {
+        self.changed();
+        self.unread = pending;
+    }
+
+    /// Whether Orca spoke the item the last change selected.
+    pub(crate) fn spoken(&self) -> bool {
+        self.spoken
+    }
+
+    /// Whether a change of selection led to the rest that asks: the status
+    /// takes its reading now.
+    pub(crate) fn take_unread(&mut self) -> bool {
+        std::mem::take(&mut self.unread)
+    }
+
+    /// The status took the reading of the last change, as a move's at once.
+    pub(crate) fn read(&mut self) {
+        self.unread = false;
+    }
+
+    /// Times the list's last change of selection, where the list speaks it
+    /// ([`LIST_SPEAKS_SELECTION`]) and no frame has yet: the AT-SPI adapter
+    /// reports a change once the frame that draws it is drawn, no earlier
+    /// than now, and no later than the frame after it, which times it
+    /// ([`Self::stamp`]). `listed` finds this in `cx`'s view as that frame
+    /// runs. Where the list does not speak its selection (macOS), nothing
+    /// reads the times.
+    pub(crate) fn time<V: 'static>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<V>,
+        listed: fn(&mut V) -> &mut Listed,
+    ) {
+        if !LIST_SPEAKS_SELECTION || self.drawn.is_some() || self.asked == Some(self.changes) {
+            return;
+        }
+        let change = self.changes;
+        self.render(cx.background_executor().now());
+        let view = cx.weak_entity();
+        window.on_next_frame(move |_, cx| {
+            let _ = view.update(cx, |this, cx| {
+                listed(this).stamp(change, cx.background_executor().now());
+            });
+        });
     }
 
     /// A render that draws the last change ran `now`, the first frame after
@@ -1497,7 +1552,8 @@ impl Listed {
     /// A frame came `now` after the one that drew `change`. Whether Orca
     /// spoke it is judged from when its render ran, the earliest the adapter
     /// can have reported it, since this frame can come late, as behind a
-    /// long task.
+    /// long task: timed by it, a change reported 60 ms after the one before
+    /// and timed 152 ms after it was taken as spoken.
     fn stamp(&mut self, change: u64, now: std::time::Instant) {
         if change != self.changes || self.drawn.is_some() {
             return;
@@ -1511,6 +1567,27 @@ impl Listed {
                 });
         self.drawn = Some(now);
         self.doubt = false;
+    }
+
+    /// Notes whether this frame draws the row of the `selected` item, by the
+    /// identity its row's node keeps across searches, `drawn`, as the list
+    /// lays out its rows, and says whether that row came back into the list.
+    /// A selected row coming back into the list, as the wheel, a resize, a
+    /// text size, or Home, End or a page key on the item already selected can
+    /// bring it, enters the window's tree already selected, which the AT-SPI
+    /// adapter reports as a change of the list's selection
+    /// ([`LIST_SPEAKS_SELECTION`]), so it is one ([`Self::moved`]), timed by
+    /// this frame and the next ([`Self::time`]). Untimed, a key that selected
+    /// another entry 50 ms after the wheel brought the row back was taken as
+    /// spoken, though Orca dropped it as one of a burst, and Keyboard
+    /// Shortcuts' rest said the count alone.
+    pub(crate) fn laid_out(&mut self, selected: Option<usize>, drawn: bool) -> bool {
+        if !LIST_SPEAKS_SELECTION {
+            return false;
+        }
+        let back = drawn && self.row_shown == Some((selected, false));
+        self.row_shown = Some((selected, drawn));
+        back
     }
 }
 
@@ -1594,7 +1671,6 @@ impl ShortcutHelpView {
             announced_count: count,
             announced_entry: entry,
             listed: Listed::opened(),
-            row_shown: None,
             settling: None,
             rows,
             selected: 1,
@@ -1615,7 +1691,7 @@ impl ShortcutHelpView {
     ///
     /// Where the list speaks a change of its selection itself
     /// ([`LIST_SPEAKS_SELECTION`], Linux) and Orca spoke the one this rest
-    /// follows ([`Listed::spoken`]), by the search or a move inside the rest,
+    /// follows ([`Listed::spoken()`]), by the search or a move inside the rest,
     /// the status says only the count: the row Orca spoke names the entry,
     /// and the whole reading said it again, as the command palette's status
     /// said its command again (QA-105). A rest no change of selection led to
@@ -1628,9 +1704,9 @@ impl ShortcutHelpView {
                 this.settling = None;
                 let count = counted_entries(&this.rows);
                 let entry = entry_reading(&this.rows, this.selected);
-                let listed = std::mem::replace(&mut this.listed.unread, false);
+                let listed = this.listed.take_unread();
                 if count != this.announced_count || entry != this.announced_entry {
-                    this.status = if LIST_SPEAKS_SELECTION && listed && this.listed.spoken {
+                    this.status = if LIST_SPEAKS_SELECTION && listed && this.listed.spoken() {
                         count.clone()
                     } else {
                         resting_reading(&count, &entry)
@@ -1666,61 +1742,22 @@ impl ShortcutHelpView {
     }
 
     /// The list's selection changed other than by the search
-    /// ([`Listed::changed`]): the rest pending then follows it, where one is
+    /// ([`Listed::moved`]): the rest pending then follows it, where one is
     /// ([`Self::settle_count`]), and a later rest does not. A search starts
     /// the only rests, so a move with none pending is heard from the list
-    /// alone, its entry taken quietly, and a search that keeps that entry
-    /// selected long after is a reading no change of selection led to, read
-    /// whole: counted toward that later rest, Down and, 5 s on, "y", which
-    /// keeps Open Repository first, rested on "38 shortcuts" alone.
+    /// alone, its entry taken quietly.
     fn list_changed(&mut self) {
-        self.listed.changed();
-        self.listed.unread = self.settling.is_some();
-    }
-
-    /// Times the list's last change of selection, where the list speaks it
-    /// ([`LIST_SPEAKS_SELECTION`]) and no frame has yet: the AT-SPI adapter
-    /// reports a change once the frame that draws it is drawn, no earlier
-    /// than now, and no later than the frame after it, which times it
-    /// ([`Listed::stamp`]). Where the list does not speak its selection
-    /// (macOS), nothing reads the times.
-    fn time_change(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !LIST_SPEAKS_SELECTION
-            || self.listed.drawn.is_some()
-            || self.listed.asked == Some(self.listed.changes)
-        {
-            return;
-        }
-        let change = self.listed.changes;
-        self.listed.render(cx.background_executor().now());
-        let view = cx.weak_entity();
-        window.on_next_frame(move |_, cx| {
-            let _ = view.update(cx, |this, cx| {
-                this.listed.stamp(change, cx.background_executor().now());
-            });
-        });
+        self.listed.moved(self.settling.is_some());
     }
 
     /// Notes whether this frame draws the selected entry's row, `drawn`, as
-    /// the list lays out its rows. A selected row coming back into the list,
-    /// as the wheel, a resize, a text size, or Home, End or a page key on the
-    /// entry already selected can bring it, enters the window's tree already
-    /// selected, which the AT-SPI adapter reports as a change of the list's
-    /// selection ([`LIST_SPEAKS_SELECTION`]), so it is one
-    /// ([`Self::list_changed`]), timed by this frame and the next. Untimed, a
-    /// key that selected another entry 50 ms after the wheel brought the row
-    /// back was taken as spoken, though Orca dropped it as one of a burst,
-    /// and the rest said the count alone.
+    /// the list lays out its rows: a selected row coming back into the list
+    /// is a change of its selection ([`Listed::laid_out`]), timed by this
+    /// frame and the next.
     fn note_selected_row(&mut self, drawn: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !LIST_SPEAKS_SELECTION {
-            return;
-        }
-        let entry = self.selected_entry();
-        let back = drawn && self.row_shown == Some((entry, false));
-        self.row_shown = Some((entry, drawn));
-        if back {
+        if self.listed.laid_out(self.selected_entry(), drawn) {
             self.list_changed();
-            self.time_change(window, cx);
+            self.listed.time(window, cx, |this| &mut this.listed);
         }
     }
 
@@ -1841,7 +1878,7 @@ impl Render for ShortcutHelpView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder;
         // This frame draws the list's last change of selection.
-        self.time_change(window, cx);
+        self.listed.time(window, cx, |this| &mut this.listed);
         let p = palette(cx);
         let count = self
             .rows

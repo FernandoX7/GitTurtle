@@ -1,7 +1,7 @@
 //! A bounded registry of native workflows. Highlighting a command is inert;
 //! activation rechecks the current context before invoking its existing handler.
 use crate::native_accessibility::LiveRegion as _;
-use crate::shortcuts::ShortcutId;
+use crate::shortcuts::{Listed, ShortcutId};
 use crate::*;
 use gpui_kit::{
     component::{Theme, WindowExt, dialog::DialogFooter},
@@ -803,7 +803,7 @@ thread_local! {
 /// announcement at the rest of a query that changed the selection says only
 /// what the row does not, the command's place ("1 of 1", "2 of 3"), never
 /// the command or the reason again, unless it is not sure Orca spoke that
-/// change ([`Listed::spoken`]), where it says the whole reading. Announcing the
+/// change ([`Listed::spoken()`]), where it says the whole reading. Announcing the
 /// whole reading there, it had Orca 51.1 speak "Go to History" and then
 /// "Go to History · 1 of 1" (QA-105). A reading that no change of selection
 /// led to stays whole: "No matching commands", a query that leaves the
@@ -811,113 +811,6 @@ thread_local! {
 /// the status announces the whole reading of every change, a move's at once
 /// (not yet checked natively).
 const ROW_CARRIES_CONTEXT: bool = shortcuts::LIST_SPEAKS_SELECTION;
-
-/// How long after the list's change of selection before it the palette
-/// takes the next as spoken. Orca 51.1's spam filter drops an event of a
-/// type the application sent less than 100 ms before, and times each one it
-/// sees, dropped or not ("Ignoring object:selection-changed due to multiple
-/// instances in short time", QA-97), so of keys typed 60 ms apart that each
-/// select another command it speaks the first key's and none after it
-/// (`atspi_state_tests::Bus::heard_by_orca` models that window). The AT-SPI
-/// adapter reports a change as the frame that draws it is drawn, so the
-/// palette measures from the latest the change before can have been
-/// reported, the first frame after the one that drew it, to the earliest
-/// this one can, the render that draws it ([`Listed::stamp`]): a lower
-/// bound on the time between the two, and this leaves 50 ms beyond Orca's
-/// window.
-const LIST_SPEAKS_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
-
-/// The list's last change of its selected command, by a key, a click or the
-/// query, which on Linux the AT-SPI adapter reports as the frame that draws
-/// it is drawn, and Orca speaks ([`shortcuts::LIST_SPEAKS_SELECTION`]).
-/// The status leaves the command out of its reading only where it is sure
-/// Orca spoke the row: in doubt it says the command again, which is heard
-/// twice at worst, where the place alone could leave it unnamed or name the
-/// row Orca spoke before.
-struct Listed {
-    /// How many changes there have been, the palette's opening, as its
-    /// first row entered the window's tree selected, the first: a frame
-    /// times only the last.
-    changes: u64,
-    /// The change a frame is due to time ([`Palette::render`]).
-    asked: Option<u64>,
-    /// When the first render that drew the last change ran: the adapter
-    /// cannot have reported it earlier.
-    rendered: Option<std::time::Instant>,
-    /// When the first frame came after the one that drew the last change:
-    /// the adapter cannot have reported it later. None while it waits.
-    drawn: Option<std::time::Instant>,
-    /// The same for the change before it.
-    before: Option<std::time::Instant>,
-    /// Whether a change came while the one before it waited for its frame,
-    /// so that Orca may have spoken either.
-    doubt: bool,
-    /// Whether Orca spoke the row the last change selected: its render ran
-    /// [`LIST_SPEAKS_AFTER`] or more after the frame that timed the change
-    /// before it, and no change came between it and its frame. Where Orca
-    /// dropped it, the
-    /// status's next announcement keeps the command's label: of keys typed
-    /// 60 ms apart, Orca 51.1 drops each change of selection after the first
-    /// as one of a burst (QA-97), and a frame drawn late, as on a loaded
-    /// host, can send two changes handled far apart within its window, so a
-    /// reading of the place alone would leave the command the query rests
-    /// on unheard, or say its place after the row Orca spoke before.
-    spoken: bool,
-    /// Whether the status has taken no reading since: the rest that comes
-    /// next ([`Palette::settle`]) follows it.
-    unread: bool,
-}
-impl Listed {
-    /// The palette opened: its first frame times that change.
-    fn opened() -> Self {
-        Self {
-            changes: 0,
-            asked: None,
-            rendered: None,
-            drawn: None,
-            before: None,
-            doubt: false,
-            spoken: false,
-            unread: false,
-        }
-    }
-    /// The selected command changed.
-    fn changed(&mut self) {
-        self.changes += 1;
-        match self.drawn.take() {
-            Some(drawn) => self.before = Some(drawn),
-            None => self.doubt = true,
-        }
-        self.rendered = None;
-        self.spoken = false;
-        self.unread = true;
-    }
-    /// A render that draws the last change ran `now`, the first frame after
-    /// it to time it as drawn ([`Self::stamp`]).
-    fn render(&mut self, now: std::time::Instant) {
-        self.asked = Some(self.changes);
-        self.rendered.get_or_insert(now);
-    }
-    /// A frame came `now` after the one that drew `change`. Whether Orca
-    /// spoke it is judged from when its render ran, the earliest the adapter
-    /// can have reported it, since this frame can come late, as behind a
-    /// long task: timed by it, a change reported 60 ms after the one before
-    /// and timed 152 ms after it was taken as spoken.
-    fn stamp(&mut self, change: u64, now: std::time::Instant) {
-        if change != self.changes || self.drawn.is_some() {
-            return;
-        }
-        self.spoken = !self.doubt
-            && self
-                .before
-                .zip(self.rendered)
-                .is_some_and(|(before, rendered)| {
-                    rendered.saturating_duration_since(before) >= LIST_SPEAKS_AFTER
-                });
-        self.drawn = Some(now);
-        self.doubt = false;
-    }
-}
 
 /// A row's accessible name: its command and, where the context cannot run
 /// it, why ("Browse stashes…. Unavailable: Wait for the file list to
@@ -949,7 +842,7 @@ struct Palette {
     status: SharedString,
     /// What the status's node says of that reading, its accessible name and
     /// value: the whole reading, or, on Linux at the rest after a change of
-    /// selection that Orca spoke ([`Listed::spoken`]), the command's place
+    /// selection that Orca spoke ([`Listed::spoken()`]), the command's place
     /// alone ([`Self::place`]), which the row Orca spoke, naming the command
     /// and any reason it waits, does not say. Where that equals what the
     /// node said before, as
@@ -1176,7 +1069,7 @@ impl Palette {
     ///
     /// Where the list speaks a change of its selection itself
     /// ([`shortcuts::LIST_SPEAKS_SELECTION`], Linux) and Orca spoke the one
-    /// this rest follows ([`Listed::spoken`]), the status says only the
+    /// this rest follows ([`Listed::spoken()`]), the status says only the
     /// command's place ([`Self::status_name`]): the row Orca spoke says the
     /// command and any reason it waits, and the whole reading said them again
     /// (QA-105).
@@ -1194,11 +1087,13 @@ impl Palette {
                         && id.reason(held) != id.reason(&this.context.availability)
                 });
                 let reading = this.reading();
-                let listed = std::mem::replace(&mut this.listed.unread, false);
+                let listed = this.listed.take_unread();
                 if reading != this.status {
                     this.status_name = match this.place() {
                         Some(place)
-                            if shortcuts::LIST_SPEAKS_SELECTION && listed && this.listed.spoken =>
+                            if shortcuts::LIST_SPEAKS_SELECTION
+                                && listed
+                                && this.listed.spoken() =>
                         {
                             place.into()
                         }
@@ -1271,23 +1166,8 @@ impl Palette {
 impl Render for Palette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // This frame draws the list's last change of selection, which the
-        // AT-SPI adapter reports once it is drawn: no earlier than now, and
-        // no later than the frame after it, which times the change
-        // (`Listed::stamp`). Where the list does not speak its selection
-        // (macOS), nothing reads the times.
-        if shortcuts::LIST_SPEAKS_SELECTION
-            && self.listed.drawn.is_none()
-            && self.listed.asked != Some(self.listed.changes)
-        {
-            let change = self.listed.changes;
-            self.listed.render(cx.background_executor().now());
-            let view = cx.weak_entity();
-            window.on_next_frame(move |_, cx| {
-                let _ = view.update(cx, |this, cx| {
-                    this.listed.stamp(change, cx.background_executor().now());
-                });
-            });
-        }
+        // AT-SPI adapter reports once it is drawn (`Listed::time`).
+        self.listed.time(window, cx, |this| &mut this.listed);
         let p = palette(cx);
         let count = self.results.len();
         let desired_height = appearance::ui_size(if count == 0 {
@@ -1504,7 +1384,7 @@ impl Render for Palette {
                     // quietly where the list speaks the move.
                     this.status = this.reading();
                     this.status_name = this.status.clone();
-                    this.listed.unread = false;
+                    this.listed.read();
                     this.quiet = shortcuts::LIST_SPEAKS_SELECTION;
                 }
                 this.scroll
@@ -3971,7 +3851,7 @@ mod render_tests {
     /// nothing after it; on Linux Orca speaks that reading last, the command
     /// included though the list speaks its selection there: Orca drops the
     /// list's change of selection that "o" makes 60 ms after the one before
-    /// it ([`Listed::spoken`]), so a reading of the place alone would leave
+    /// it ([`Listed::spoken()`]), so a reading of the place alone would leave
     /// the command unheard. Each key's
     /// reading was announced at once, and Orca 51.1, whose spam filter drops
     /// an event of a type the application sent less than 100 ms before,
