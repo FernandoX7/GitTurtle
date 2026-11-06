@@ -328,6 +328,88 @@ pub(super) struct Blocks {
     /// ([`editor_rows`]).
     editors_drawing: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
     editors_drawn: std::rc::Rc<std::cell::RefCell<Vec<DrawnEditor>>>,
+    /// The lines of each text the body collecting them drew in the last frame, in the order
+    /// they prepainted ([`text_lines`]), which a text drawn again takes as long as nothing
+    /// they follow from has changed.
+    texts: std::rc::Rc<std::cell::RefCell<Vec<TextLines>>>,
+    /// How many times a text reported its lines to the body ([`text_lines`]), and how many
+    /// of those worked them out ([`TextLines::measure`]).
+    #[cfg(test)]
+    text_counts: std::rc::Rc<std::cell::Cell<(usize, usize)>>,
+}
+/// The lines of a text of the panel ([`text_lines`]): how far apart its lines are drawn and
+/// how many each of its children draws, with what they follow from, so a frame that draws the
+/// text unchanged takes them as the last frame left them instead of reading the window's
+/// text style again ([`drawn_line_height`]), which folds every style around the text into a
+/// new one and allocates its font features.
+///
+/// What it keeps them by assumes a line's height follows the text's font size alone, as the
+/// relative line heights of the styles around the panel's texts make it: the font size
+/// follows the interface's text scale (`appearance::ui_text`) or, for a size in rems, the
+/// window's rem size, and the height drawn snaps to the window's scale factor, which are all
+/// it records beside the text and its children's sizes ([`TextLines::scale`]). A setting that
+/// moves the line height apart from the font size, as a line spacing would, has to join them,
+/// or a text drawn after it changed would keep its old line height wherever its children kept
+/// their sizes.
+#[derive(Default)]
+struct TextLines {
+    /// The text element, as its call site names it ([`super::label`], [`super::phrases`]).
+    id: Option<ElementId>,
+    /// The interface's text scale (`appearance::ui_scale`), which sizes the panel's text, the
+    /// window's rem size, which sizes a text set in rems, and the window's scale factor, to
+    /// which each line's height snaps.
+    scale: (f32, Pixels, f32),
+    /// How far apart the text's lines are drawn.
+    line: Pixels,
+    /// The size of each of its children, which its text, its width and its font decide as
+    /// they wrap it, and how many lines that child draws.
+    children: Vec<(Size<Pixels>, f32)>,
+}
+impl TextLines {
+    /// The scales the lines of a text drawn in `window` now follow from
+    /// ([`TextLines::scale`]).
+    fn scales(window: &Window) -> (f32, Pixels, f32) {
+        (
+            crate::appearance::ui_scale(),
+            window.rem_size(),
+            window.scale_factor(),
+        )
+    }
+    /// Whether these are the lines of the text `id` drawing `children` at `scale`.
+    fn fits(&self, id: &ElementId, children: &[Bounds<Pixels>], scale: (f32, Pixels, f32)) -> bool {
+        self.id.as_ref() == Some(id)
+            && self.scale == scale
+            && self.children.len() == children.len()
+            && self
+                .children
+                .iter()
+                .zip(children)
+                .all(|((size, _), child)| *size == child.size)
+    }
+    /// Works the lines of the text `id` drawing `children` out again, in the window's text
+    /// style as it prepaints, reusing the room these took.
+    fn measure(
+        &mut self,
+        id: &ElementId,
+        children: &[Bounds<Pixels>],
+        scale: (f32, Pixels, f32),
+        window: &Window,
+    ) {
+        let line = drawn_line_height(window);
+        self.id = Some(id.clone());
+        self.scale = scale;
+        self.line = line;
+        self.children.clear();
+        self.children.extend(children.iter().map(|child| {
+            // A text with nothing in it, as an empty status, is no line.
+            let count = if line > Pixels::ZERO {
+                (child.size.height / line).round()
+            } else {
+                0.
+            };
+            (child.size, count)
+        }));
+    }
 }
 /// A multi-line editor drawn in a container collecting lines, as a reader of its layout, with
 /// the span where the container keeps a line and the editor's box, its padding inside it
@@ -349,6 +431,9 @@ struct Collecting {
     /// first ([`clipped`]), each with the blocks of a list that collects lines of its own
     /// ([`clipped_lines`]).
     lists: Vec<(Bounds<Pixels>, Option<Blocks>)>,
+    /// How many texts have reported their lines in this frame so far, the place of the next
+    /// in [`Blocks::texts`].
+    texts: usize,
 }
 impl Collecting {
     /// The span of the body's content, top to bottom, where a person can see a line drawn
@@ -381,10 +466,11 @@ impl Collecting {
     /// around it that collects lines of its own ([`clipped_lines`]), where the list's own
     /// scroll can bring it into view. For such a list, the rows it has scrolled out of itself
     /// and what lies past the body's clip are still its lines, while a list or a clip inside
-    /// it hides what it hides.
-    fn spans(&self, mask: Bounds<Pixels>) -> Vec<(&Blocks, (Pixels, Pixels))> {
+    /// it hides what it hides. Each is handed to `each` in turn, the body's first, so a frame's
+    /// texts collect their lines without gathering the containers anywhere first.
+    fn spans(&self, mask: Bounds<Pixels>, mut each: impl FnMut(&Blocks, (Pixels, Pixels))) {
         let slack = px(0.5);
-        let mut spans = vec![(&self.blocks, self.visible(mask))];
+        each(&self.blocks, self.visible(mask));
         for (index, (_, blocks)) in self.lists.iter().enumerate() {
             let Some(blocks) = blocks else {
                 continue;
@@ -408,9 +494,8 @@ impl Collecting {
                 top = top.max(inner.top());
                 bottom = bottom.min(inner.bottom());
             }
-            spans.push((blocks, (top, bottom)));
+            each(blocks, (top, bottom));
         }
-        spans
     }
 }
 /// Keeps in `blocks` the line from `top` to `bottom` where it lies whole in `span`
@@ -434,6 +519,10 @@ thread_local! {
     /// `on_children_prepainted` lies inside the body.
     static COLLECTING: std::cell::RefCell<Option<Collecting>> =
         const { std::cell::RefCell::new(None) };
+    /// The room the lists around what prepaints took in the last body that collected its
+    /// lines ([`Collecting::lists`]), empty, for the next to fill.
+    static LISTS: std::cell::RefCell<Vec<(Bounds<Pixels>, Option<Blocks>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 /// For the `on_children_prepainted` of a text element of the panel ([`super::label`],
 /// [`super::phrases`]): each of `children`, text in the element's own style, reports each of
@@ -442,27 +531,54 @@ thread_local! {
 /// style's line height snapped to a device pixel ([`drawn_line_height`]), which the element's
 /// text style gives while it prepaints. Only the lines inside what can be seen are counted, so
 /// a long text in a list, as a 65,536-character comment can be, costs the lines the list shows.
-pub(super) fn text_lines(children: Vec<Bounds<Pixels>>, window: &mut Window, _: &mut App) {
+///
+/// `id` names the text, as its call site does. Its line height and the lines each child draws
+/// are worked out once for each change of what they follow from, its text, width or font (the
+/// sizes of its children, which those decide), its size (the interface's text scale) or the
+/// window's scale, and kept for the frames that draw it unchanged ([`TextLines`]): each frame
+/// reports them again, where they lie then, but reads no text style for them.
+pub(super) fn text_lines(
+    id: &ElementId,
+    children: Vec<Bounds<Pixels>>,
+    window: &mut Window,
+    _: &mut App,
+) {
     COLLECTING.with(|collecting| {
-        let Some(collecting) = &*collecting.borrow() else {
+        let Some(collecting) = &mut *collecting.borrow_mut() else {
             return;
         };
-        let height = drawn_line_height(window);
+        let place = collecting.texts;
+        collecting.texts += 1;
+        let mut texts = collecting.blocks.texts.borrow_mut();
+        if texts.len() <= place {
+            texts.resize_with(place + 1, TextLines::default);
+        }
+        let text = &mut texts[place];
+        let scale = TextLines::scales(window);
+        let measure = !text.fits(id, &children, scale);
+        if measure {
+            text.measure(id, &children, scale, window);
+        }
+        #[cfg(test)]
+        {
+            let (drawn, measured) = collecting.blocks.text_counts.get();
+            let counts = (drawn + 1, measured + usize::from(measure));
+            collecting.blocks.text_counts.set(counts);
+        }
+        let height = text.line;
         if height <= Pixels::ZERO {
             return;
         }
-        for (blocks, span) in collecting.spans(window.content_mask().bounds) {
-            for child in &children {
-                // A text with nothing in it, as an empty status, is no line.
-                let count = (child.size.height / height).round();
-                let first = ((span.0 - child.top()) / height).floor().clamp(0., count);
-                let last = ((span.1 - child.top()) / height).ceil().clamp(0., count);
+        collecting.spans(window.content_mask().bounds, |blocks, span| {
+            for (child, (_, count)) in children.iter().zip(&text.children) {
+                let first = ((span.0 - child.top()) / height).floor().clamp(0., *count);
+                let last = ((span.1 - child.top()) / height).ceil().clamp(0., *count);
                 for index in first as usize..last as usize {
                     let top = child.top() + height * index as f32;
                     keep_line(blocks, top, top + height, span);
                 }
             }
-        }
+        });
     });
 }
 /// How far apart GPUI's text element draws the lines of a text in the window's text style: the
@@ -530,9 +646,9 @@ pub(super) fn one_line() -> impl IntoElement {
         |bounds, window, _| {
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
-                    for (blocks, span) in collecting.spans(window.content_mask().bounds) {
+                    collecting.spans(window.content_mask().bounds, |blocks, span| {
                         keep_line(blocks, bounds.top(), bounds.bottom(), span);
-                    }
+                    });
                 }
             });
         },
@@ -566,10 +682,10 @@ pub(super) fn editor_rows<M: gpui_kit::base::input::MultiLineMode>(
         move |bounds, window, _| {
             COLLECTING.with(|collecting| {
                 if let Some(collecting) = &*collecting.borrow() {
-                    for (blocks, span) in collecting.spans(window.content_mask().bounds) {
+                    collecting.spans(window.content_mask().bounds, |blocks, span| {
                         let drawn = (layout.clone(), span, bounds);
                         blocks.editors_drawing.borrow_mut().push(drawn);
-                    }
+                    });
                 }
             });
         },
@@ -645,7 +761,8 @@ impl Blocks {
             let collecting = Collecting {
                 blocks: blocks.clone(),
                 clip: window.content_mask().bounds,
-                lists: Vec::new(),
+                lists: LISTS.take(),
+                texts: 0,
             };
             COLLECTING.with(|slot| *slot.borrow_mut() = Some(collecting));
         })
@@ -673,24 +790,53 @@ impl Blocks {
             .extend(children.iter().map(|child| child.top()));
     }
     /// For the container's own `on_children_prepainted`, after everything in it has
-    /// prepainted: keeps the starts this frame reported.
+    /// prepainted: keeps the starts, lines and editors this frame reported. Each of them
+    /// trades places with the last frame's, which the next frame then refills, so a frame
+    /// that reports as many as the last takes no new room for them.
     pub(super) fn finish(&self) {
-        let drawing = std::mem::take(&mut *self.drawing.borrow_mut());
-        *self.drawn.borrow_mut() = drawing;
         // Only the container that collects ends its collection: a list inside the body, such
         // as the conversation list, finishes its own blocks while the body still collects.
+        // The texts it no longer draws leave their lines with it.
         COLLECTING.with(|collecting| {
             let mut collecting = collecting.borrow_mut();
             if collecting.as_ref().is_some_and(|collecting| {
                 std::rc::Rc::ptr_eq(&collecting.blocks.lines_drawing, &self.lines_drawing)
-            }) {
-                *collecting = None;
+            }) && let Some(ended) = collecting.take()
+            {
+                self.texts.borrow_mut().truncate(ended.texts);
+                let mut lists = ended.lists;
+                lists.clear();
+                LISTS.set(lists);
             }
         });
-        let lines = std::mem::take(&mut *self.lines_drawing.borrow_mut());
-        *self.lines_drawn.borrow_mut() = lines;
-        let editors = std::mem::take(&mut *self.editors_drawing.borrow_mut());
-        *self.editors_drawn.borrow_mut() = editors;
+        fn keep<T>(drawing: &std::cell::RefCell<Vec<T>>, drawn: &std::cell::RefCell<Vec<T>>) {
+            let (mut drawing, mut drawn) = (drawing.borrow_mut(), drawn.borrow_mut());
+            std::mem::swap(&mut *drawing, &mut *drawn);
+            drawing.clear();
+        }
+        keep(&self.drawing, &self.drawn);
+        keep(&self.lines_drawing, &self.lines_drawn);
+        keep(&self.editors_drawing, &self.editors_drawn);
+    }
+    /// How many times a text has reported its lines to the body, and how many of those
+    /// worked them out ([`text_lines`]).
+    #[cfg(test)]
+    pub(super) fn text_counts(&self) -> (usize, usize) {
+        self.text_counts.get()
+    }
+    /// Forgets the lines of every text, so the next frame works each text's out afresh.
+    #[cfg(test)]
+    pub(super) fn forget_texts(&self) {
+        self.texts.borrow_mut().clear();
+    }
+    /// Whether the record of each start, line and editor the next frame reports has the room
+    /// the last frame's took ([`Blocks::finish`]).
+    #[cfg(test)]
+    pub(super) fn keeps_its_room(&self) -> bool {
+        self.drawing.borrow().capacity() >= self.drawn.borrow().len()
+            && self.lines_drawing.borrow().capacity() >= self.lines_drawn.borrow().len()
+            && self.editors_drawing.borrow().capacity() >= self.editors_drawn.borrow().len()
+            && !self.lines_drawn.borrow().is_empty()
     }
     /// The starts of the last prepainted frame, in its coordinates with `scroll` at its
     /// offset then: the container's children and those reported from inside it.
@@ -3205,6 +3351,85 @@ mod tests {
         for code in appearance::CODE_TEXT_RANGE {
             measure(code, cx);
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A text of the panel works its lines out again when the interface's text size changes
+    /// though its children keep their sizes ([`text_lines`]): a text in a label's size whose
+    /// one child is held at 200 × 60 px draws three lines 19.5 px apart at 13 pt, and two
+    /// 27 px apart at 18 pt, the lines a frame working its out afresh reports. Taken while
+    /// only the text and its children's sizes held, its lines kept their 13 pt height at
+    /// 18 pt, three of them. The test window's scale factor stays at 2, so the interface's
+    /// text size, which moves its text scale and the window's rem size, stands for every
+    /// scale a text's lines follow from ([`TextLines::scale`]).
+    #[gpui::test]
+    fn a_text_works_its_lines_out_again_at_another_text_size(cx: &mut TestAppContext) {
+        struct Body(Blocks);
+        impl Render for Body {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let blocks = self.0.clone();
+                let lines = ElementId::from("held-text");
+                div()
+                    .w(px(300.))
+                    .on_children_prepainted(move |_, _, _| blocks.finish())
+                    .child(self.0.collect_lines())
+                    // A label sets its text's size around the element that reports its lines.
+                    .child(
+                        div().text_size(appearance::ui_text(12.)).child(
+                            div()
+                                .on_children_prepainted(move |children, window, cx| {
+                                    text_lines(&lines, children, window, cx)
+                                })
+                                .child(
+                                    div()
+                                        .debug_selector(|| "held-child".into())
+                                        .w(px(200.))
+                                        .h(px(60.))
+                                        .child("Held"),
+                                ),
+                        ),
+                    )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let blocks = Blocks::default();
+        let (_, cx) = cx.add_window_view({
+            let blocks = blocks.clone();
+            move |_, _| Body(blocks)
+        });
+        let draw = |interface: u8, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(interface, 12, window, cx);
+                window.draw(cx).clear(cx);
+                blocks.lines(cx)
+            })
+        };
+        let child = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.debug_bounds("held-child")
+                .expect("the text's child")
+                .size
+        };
+        let small = draw(13, cx);
+        let held = child(cx);
+        let (_, measured) = blocks.text_counts();
+        let large = draw(18, cx);
+        assert_eq!(child(cx), held, "the child keeps its size at 18 pt");
+        assert_eq!(
+            blocks.text_counts().1,
+            measured + 1,
+            "the text works its lines out again at 18 pt"
+        );
+        blocks.forget_texts();
+        assert_eq!(
+            draw(18, cx),
+            large,
+            "the lines it reports at 18 pt are those it works out afresh"
+        );
+        assert_eq!(
+            (small.len(), large.len()),
+            (3, 2),
+            "three lines at 13 pt, {small:?}, and two at 18 pt, {large:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

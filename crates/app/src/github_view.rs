@@ -30,10 +30,12 @@ fn label(
     text: impl Into<SharedString>,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let (id, text) = (id.into(), text.into());
-    let selector = id.clone();
+    let (selector, lines) = (id.clone(), id.clone());
     native_accessibility::static_text(
         div()
-            .on_children_prepainted(review::text_lines)
+            .on_children_prepainted(move |children, window, cx| {
+                review::text_lines(&lines, children, window, cx)
+            })
             .id(id)
             .debug_selector(move || selector.to_string())
             .child(text.clone()),
@@ -53,9 +55,12 @@ fn phrases(
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
     let parts = crate::phrase_runs(&text);
+    let lines = ElementId::from(id);
     native_accessibility::static_text(
         div()
-            .on_children_prepainted(review::text_lines)
+            .on_children_prepainted(move |children, window, cx| {
+                review::text_lines(&lines, children, window, cx)
+            })
             .id(id)
             .debug_selector(move || id.into()),
         text,
@@ -10577,6 +10582,68 @@ mod tests {
             swept.stops,
             swept.moves,
             swept.tall
+        );
+    }
+
+    /// A text of the panel works its lines out once for each change of what they follow from
+    /// (`review::text_lines`), on a PR's Overview of the offline fixture at 13 pt in a
+    /// 461 × 490 window: a frame that draws the panel unchanged reports every text's lines
+    /// again with none worked out afresh, into the room the frames before took for them; a
+    /// frame at another width works them out again, and reports the lines a frame working
+    /// every text's out afresh reports. Every text read the window's text style for its lines
+    /// in every frame, which folds the styles around it into a new one and allocates its font
+    /// features, and the body took new room for its lines in every frame.
+    #[gpui::test]
+    async fn texts_work_their_lines_out_once_for_each_width(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        show_overview(&panel, &pull, (13, 461., 490.), cx);
+        let blocks = cx.read(|cx| panel.read(cx).review.body_blocks.clone());
+        // The update's effects draw the window it dirtied, once, before it returns.
+        let redraw = |cx: &mut VisualTestContext| {
+            panel.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        };
+        redraw(cx);
+        let (drawn, measured) = blocks.text_counts();
+        let lines = cx.read(|cx| blocks.lines(cx));
+        assert!(!lines.is_empty(), "the body collects its texts' lines");
+        redraw(cx);
+        let (drawn_again, measured_again) = blocks.text_counts();
+        assert!(
+            drawn_again > drawn,
+            "the frame at rest draws the panel's texts again"
+        );
+        assert_eq!(
+            measured_again, measured,
+            "a frame at rest works out no text's lines again"
+        );
+        assert_eq!(
+            cx.read(|cx| blocks.lines(cx)),
+            lines,
+            "and reports the lines the frame before did"
+        );
+        assert!(
+            blocks.keeps_its_room(),
+            "the frame at rest records its lines in the room the frame before took"
+        );
+
+        cx.simulate_resize(size(px(441.), px(490.)));
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        let (_, resized) = blocks.text_counts();
+        assert!(
+            resized > measured,
+            "a frame at another width works the texts' lines out again"
+        );
+        let kept = cx.read(|cx| blocks.lines(cx));
+        blocks.forget_texts();
+        redraw(cx);
+        assert_eq!(
+            cx.read(|cx| blocks.lines(cx)),
+            kept,
+            "the lines a frame takes from the one before are those it works out afresh"
         );
     }
 
