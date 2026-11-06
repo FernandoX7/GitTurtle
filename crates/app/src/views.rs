@@ -15737,9 +15737,25 @@ pub(crate) mod tests {
     /// and paint, on the test platform, with no GPU, compositor or display
     /// link. `cpu_ms` is the UI thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`)
     /// and `wall_ms` the elapsed time, each for 300 frames after 30 untimed,
-    /// with each series' median, p95 and p99 (nearest rank); `frames`
-    /// counts the repository columns each timed update's draw laid out,
-    /// which the benchmark asserts is one.
+    /// with each series' median, p95 and p99 (nearest rank); `allocations`
+    /// counts the heap allocations the UI thread made across the same call
+    /// (the test binary's counting allocator, `test_support::allocations`),
+    /// which a chrome that formats nothing at rest lowers by each string it
+    /// stopped building; `frames` counts the repository columns each timed
+    /// update's draw laid out, which the benchmark asserts is one.
+    ///
+    /// Built and run from the workspace root (the app crate has no library
+    /// target, so the test binary is built alone and run by its path),
+    /// pinned to performance cores (`lscpu -e`; cores 4–11 on the Asahi M2
+    /// Pro host):
+    ///
+    /// ```text
+    /// cargo test --locked --release -p gitturtle --bin gitturtle --no-run
+    /// GITTURTLE_CHROME_REST_BENCH_OUTPUT=/absolute/path/chrome-rest.json \
+    ///     taskset -c 4-11 <the executable the build printed> \
+    ///     --ignored --exact views::tests::chrome_at_rest_release_benchmark \
+    ///     --test-threads=1
+    /// ```
     #[gpui::test]
     #[ignore = "Opt-in release benchmark: set GITTURTLE_CHROME_REST_BENCH_OUTPUT and run with --release --ignored"]
     async fn chrome_at_rest_release_benchmark(cx: &mut TestAppContext) {
@@ -15797,6 +15813,7 @@ pub(crate) mod tests {
                 );
                 let mut cpu_ms = Vec::new();
                 let mut wall_ms = Vec::new();
+                let mut allocations = Vec::new();
                 let mut frames = Vec::new();
                 for frame in 0..WARMUP + FRAMES {
                     cx.update(|window, cx| window.simulate_next_frame(cx));
@@ -15804,13 +15821,16 @@ pub(crate) mod tests {
                     repository_frames();
                     // The update's effects draw the window it dirtied, once,
                     // before it returns (the test app's `flush_effects`).
+                    let allocated = crate::test_support::allocations();
                     let (cpu, wall) = (thread_cpu_ms(), std::time::Instant::now());
                     app.update(cx, |_, cx| cx.notify());
                     let (cpu, wall) = (thread_cpu_ms() - cpu, wall.elapsed().as_secs_f64() * 1000.);
+                    let allocated = crate::test_support::allocations() - allocated;
                     cx.run_until_parked();
                     if frame >= WARMUP {
                         cpu_ms.push(cpu);
                         wall_ms.push(wall);
+                        allocations.push(allocated);
                         frames.push(repository_frames());
                     }
                 }
@@ -15824,18 +15844,22 @@ pub(crate) mod tests {
                     "window": [f32::from(window_size.width), f32::from(window_size.height)],
                     "cpu_ms_summary": summary(&cpu_ms),
                     "wall_ms_summary": summary(&wall_ms),
+                    "allocations_summary": summary(
+                        &allocations.iter().map(|&made| made as f64).collect::<Vec<_>>()
+                    ),
                     "cpu_ms": cpu_ms,
                     "wall_ms": wall_ms,
+                    "allocations": allocations,
                     "frames": frames,
                 }));
             }
         }
         crate::in_frame::probe::stop();
         let result = serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "frames": FRAMES,
             "warmup_frames": WARMUP,
-            "boundary": "One `app.update` on the UI thread that notifies the app with nothing it shows changed, from before the call to its return: the notification and the effects it flushes, which draw the window it dirtied once (the root render, the repository chrome and page, layout, prepaint and paint on the test platform; no GPU, compositor or display link), quiet reads held. `cpu_ms` is the UI thread's CPU time across the call, `wall_ms` its elapsed time; `frames` counts the repository columns that draw laid out. The frame callbacks before it and any work it leaves queued are delivered untimed.",
+            "boundary": "One `app.update` on the UI thread that notifies the app with nothing it shows changed, from before the call to its return: the notification and the effects it flushes, which draw the window it dirtied once (the root render, the repository chrome and page, layout, prepaint and paint on the test platform; no GPU, compositor or display link), quiet reads held. `cpu_ms` is the UI thread's CPU time across the call, `wall_ms` its elapsed time, `allocations` the UI thread's heap allocations across it (the test binary's counting allocator); `frames` counts the repository columns that draw laid out. The frame callbacks before it and any work it leaves queued are delivered untimed.",
             "series": series,
         });
         std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
