@@ -18,6 +18,7 @@ fn read_snapshot_release_benchmark() {
         generation: 1,
         latest: Arc::new(AtomicU64::new(1)),
         history: gitturtle_core::HistoryCancellation::default(),
+        preparation: None,
     };
     let read = |session: &mut RepositorySession| {
         let start = Instant::now();

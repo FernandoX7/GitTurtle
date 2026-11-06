@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -520,7 +520,7 @@ struct Queue {
     pending: Option<Request>,
     closed: bool,
     startup_error: Option<String>,
-    active: Option<gitturtle_core::HistoryCancellation>,
+    active: Option<Active>,
     /// Test-only: the reader thread holds a request it has not finished,
     /// answered or skipped ([`Worker::wait_idle`]).
     #[cfg(test)]
@@ -539,6 +539,144 @@ impl Queue {
         #[cfg(not(test))]
         let held = false;
         self.pending.is_none() || held
+    }
+
+    /// Supersedes the request the reader is running: its token is
+    /// cancelled, so it stops at its next check and the Git processes it runs
+    /// are terminated. A comparison preview's preparation inside a phase that
+    /// checks nothing until it ends ([`Cancellation::unobserved`]) is only
+    /// marked superseded and kept, with its token, so a request for the same
+    /// preview can take it over ([`Worker::submit`]); a request that took it
+    /// over earlier is no longer answered.
+    fn supersede_active(&mut self) {
+        match self.active.take() {
+            Some(Active::Read(history)) => history.cancel(),
+            Some(Active::Preview {
+                key,
+                preparation,
+                history,
+                ..
+            }) => {
+                if preparation.supersede() {
+                    self.active = Some(Active::Preview {
+                        key,
+                        preparation,
+                        history,
+                        adopted: None,
+                    });
+                } else {
+                    history.cancel();
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// The request the reader is running, which a newer request supersedes.
+enum Active {
+    /// Stops at its next check; the Git processes it runs are terminated.
+    Read(gitturtle_core::HistoryCancellation),
+    /// A comparison preview's preparation (`Job::Preview`), with its token.
+    /// It stays here until the reader finishes it unless a newer request
+    /// stops it, so that a request for the same preview can take it over
+    /// inside a phase that checks nothing: its reply then goes to `adopted`.
+    Preview {
+        key: Box<PreviewKey>,
+        preparation: Arc<Preparation>,
+        history: gitturtle_core::HistoryCancellation,
+        adopted: Option<oneshot::Sender<Result<Output>>>,
+    },
+}
+
+/// Where a comparison preview's preparation stands. Its work checks the
+/// request's cancellation as it goes, as any read's does, and a newer
+/// request stops it at once, its token cancelled
+/// ([`Queue::supersede_active`]), except inside a phase that checks nothing
+/// until it ends, an image decoded in this process
+/// ([`Cancellation::unobserved`]). There a newer request only marks it
+/// superseded, and a request for the same preview made before the phase
+/// ends takes it over ([`Worker::submit`]), so a file chosen again while its
+/// image is decoded, even after another file was chosen, has its bytes
+/// decoded once. A phase that ends superseded stops the preparation and
+/// cancels its token.
+#[derive(Default)]
+struct Preparation(AtomicU8);
+
+impl Preparation {
+    /// Checking as it goes: a newer request stops it.
+    const OBSERVING: u8 = 0;
+    /// Inside a phase that checks nothing until it ends.
+    const UNOBSERVED: u8 = 1;
+    /// Superseded inside such a phase.
+    const SUPERSEDED: u8 = 2;
+    const STOPPED: u8 = 3;
+
+    /// Moves to the state `next` gives for the current one, atomically, and
+    /// returns the state it left.
+    fn update(&self, next: impl Fn(u8) -> u8) -> u8 {
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            match self.0.compare_exchange_weak(
+                state,
+                next(state),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(left) => return left,
+                Err(actual) => state = actual,
+            }
+        }
+    }
+
+    /// A newer request for other work supersedes the preparation: true where
+    /// it is only marked superseded, inside a phase that checks nothing, and
+    /// false where it stops.
+    fn supersede(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::UNOBSERVED | Self::SUPERSEDED => Self::SUPERSEDED,
+            _ => Self::STOPPED,
+        });
+        matches!(left, Self::UNOBSERVED | Self::SUPERSEDED)
+    }
+
+    /// A request for the same preview takes the preparation over: true only
+    /// inside a phase that checks nothing, superseded there or not.
+    fn take_over(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::UNOBSERVED | Self::SUPERSEDED => Self::UNOBSERVED,
+            other => other,
+        });
+        matches!(left, Self::UNOBSERVED | Self::SUPERSEDED)
+    }
+
+    /// Enters a phase that checks nothing: false once stopped.
+    fn enter(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::OBSERVING => Self::UNOBSERVED,
+            other => other,
+        });
+        left != Self::STOPPED
+    }
+
+    /// Leaves that phase: false where it ends superseded, which stops the
+    /// preparation.
+    fn leave(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::OBSERVING | Self::UNOBSERVED => Self::OBSERVING,
+            _ => Self::STOPPED,
+        });
+        matches!(left, Self::OBSERVING | Self::UNOBSERVED)
+    }
+
+    /// The preparation's own check: whether it still answers a request. A
+    /// check that finds it superseded stops it.
+    fn check(&self) -> bool {
+        let left = self.update(|state| match state {
+            Self::SUPERSEDED => Self::STOPPED,
+            other => other,
+        });
+        matches!(left, Self::OBSERVING | Self::UNOBSERVED)
     }
 }
 
@@ -563,15 +701,57 @@ struct Cancellation {
     generation: u64,
     latest: Arc<AtomicU64>,
     history: gitturtle_core::HistoryCancellation,
+    /// A comparison preview's preparation, which a newer request stops
+    /// through its [`Preparation`] and its token rather than the generation,
+    /// so that a request for the same preview can take over a phase that
+    /// checks nothing ([`Self::unobserved`]).
+    preparation: Option<Arc<Preparation>>,
 }
 
 impl Cancellation {
     fn check(&self) -> Result<()> {
+        let current = match &self.preparation {
+            Some(preparation) => {
+                if !preparation.check() {
+                    self.history.cancel();
+                }
+                !self.history.is_cancelled()
+            }
+            None => {
+                self.latest.load(Ordering::Acquire) == self.generation
+                    && !self.history.is_cancelled()
+            }
+        };
         ensure!(
-            self.latest.load(Ordering::Acquire) == self.generation && !self.history.is_cancelled(),
+            current,
             "Repository request superseded by a newer selection"
         );
         Ok(())
+    }
+
+    /// Runs `work`, which checks nothing until it ends, such as an image
+    /// decoded in this process. Meanwhile a newer request only marks a
+    /// comparison preview's preparation superseded ([`Preparation`]), so a
+    /// request for the same preview can still take it over; one still
+    /// superseded as `work` ends stops then, its token cancelled, and this
+    /// answers that. Work that checks as it goes runs outside this, where a
+    /// newer request stops it at once.
+    fn unobserved<T>(&self, work: impl FnOnce() -> T) -> Result<T> {
+        let Some(preparation) = &self.preparation else {
+            return Ok(work());
+        };
+        ensure!(
+            preparation.enter(),
+            "Repository request superseded by a newer selection"
+        );
+        let done = work();
+        if !preparation.leave() {
+            self.history.cancel();
+            return Err(anyhow!(
+                "Repository request superseded by a newer selection"
+            ));
+        }
+        Ok(done)
     }
 }
 
@@ -600,6 +780,10 @@ pub struct Worker {
     /// (`Job::TrackedPreview`) ([`Self::tracked_previews`]).
     #[cfg(test)]
     tracked_previews: AtomicU64,
+    /// Test-only: the comparison previews the reader started preparing
+    /// ([`Self::preparations`]).
+    #[cfg(test)]
+    preparations: Arc<AtomicU64>,
 }
 
 impl Default for Worker {
@@ -639,12 +823,16 @@ impl Worker {
         let latest = Arc::new(AtomicU64::new(0));
         let worker_queue = Arc::clone(&queue);
         let worker_latest = Arc::clone(&latest);
+        #[cfg(test)]
+        let preparations = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let worker_preparations = Arc::clone(&preparations);
         let spawn = std::thread::Builder::new()
             .name("gitturtle-reader".into())
             .spawn(move || {
                 let mut cache = PreviewCache::default();
                 loop {
-                    let request = {
+                    let (request, preparation) = {
                         let (lock, ready) = &*worker_queue;
                         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
                         // The request taken last has answered or was skipped.
@@ -660,20 +848,41 @@ impl Worker {
                             break;
                         }
                         let request = state.pending.take().expect("pending request checked above");
-                        state.active = Some(request.cancellation.clone());
+                        if request.reply.is_canceled()
+                            && !matches!(request.job, Job::ReleaseHistory)
+                        {
+                            continue;
+                        }
+                        let preparation = match PreviewKey::of(&request.job) {
+                            Some(key) => {
+                                let preparation = Arc::new(Preparation::default());
+                                state.active = Some(Active::Preview {
+                                    key: Box::new(key),
+                                    preparation: Arc::clone(&preparation),
+                                    history: request.cancellation.clone(),
+                                    adopted: None,
+                                });
+                                #[cfg(test)]
+                                worker_preparations.fetch_add(1, Ordering::AcqRel);
+                                Some(preparation)
+                            }
+                            None => {
+                                state.active = Some(Active::Read(request.cancellation.clone()));
+                                None
+                            }
+                        };
                         #[cfg(test)]
                         {
                             state.running = true;
                         }
-                        request
+                        (request, preparation)
                     };
-                    if request.reply.is_canceled() && !matches!(request.job, Job::ReleaseHistory) {
-                        continue;
-                    }
+                    let previewed = preparation.is_some();
                     let cancellation = Cancellation {
                         generation: request.generation,
                         latest: Arc::clone(&worker_latest),
                         history: request.cancellation,
+                        preparation,
                     };
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         cancellation.check()?;
@@ -690,7 +899,24 @@ impl Worker {
                             ))
                         }
                     };
-                    let _ = request.reply.send(result);
+                    // A preview's preparation answers the request that took
+                    // it over, if one did, in place of the one that started it.
+                    let reply = if previewed {
+                        let mut state = worker_queue
+                            .0
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        match state.active.take() {
+                            Some(Active::Preview {
+                                adopted: Some(adopted),
+                                ..
+                            }) => adopted,
+                            _ => request.reply,
+                        }
+                    } else {
+                        request.reply
+                    };
+                    let _ = reply.send(result);
                 }
             });
         if let Err(error) = spawn {
@@ -709,6 +935,8 @@ impl Worker {
             previews: AtomicU64::new(0),
             #[cfg(test)]
             tracked_previews: AtomicU64::new(0),
+            #[cfg(test)]
+            preparations,
         }
     }
 
@@ -739,6 +967,14 @@ impl Worker {
     #[cfg(test)]
     pub fn tracked_previews(&self) -> u64 {
         self.tracked_previews.load(Ordering::Acquire)
+    }
+
+    /// Test-only: the comparison previews (`Job::Preview`) the reader has
+    /// started preparing so far: requests it skipped, or that took over a
+    /// preparation under way, start none.
+    #[cfg(test)]
+    pub fn preparations(&self) -> u64 {
+        self.preparations.load(Ordering::Acquire)
     }
 
     /// Test-only: keeps the reader from taking a request until the
@@ -793,9 +1029,7 @@ impl Worker {
         let (lock, _) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
-        if let Some(active) = state.active.take() {
-            active.cancel();
-        }
+        state.supersede_active();
         state.pending = None;
     }
 
@@ -836,9 +1070,26 @@ impl Worker {
         // Allocate the sequence while holding the queue lock, so concurrent
         // submitters cannot replace a newer request with an older sequence.
         let generation = self.latest.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-        if let Some(active) = state.active.take() {
-            active.cancel();
+        let queue = &mut *state;
+        // The same comparison preview, still decoding its image, whatever
+        // was asked for since: that preparation answers this request, so a
+        // file chosen again has its bytes decoded once. Nothing waits behind
+        // it any more.
+        if let Some(Active::Preview {
+            key,
+            preparation,
+            adopted,
+            ..
+        }) = &mut queue.active
+            && PreviewKey::of(&job).is_some_and(|wanted| wanted == **key)
+            && preparation.take_over()
+        {
+            *adopted = Some(reply);
+            queue.pending = None;
+            ready.notify_all();
+            return receiver;
         }
+        queue.supersede_active();
         state.pending = Some(Request {
             job,
             generation,
@@ -982,9 +1233,7 @@ impl Drop for Worker {
         let (lock, ready) = &*self.queue;
         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
         self.latest.fetch_add(1, Ordering::AcqRel);
-        if let Some(active) = state.active.take() {
-            active.cancel();
-        }
+        state.supersede_active();
         state.closed = true;
         state.pending = None;
         ready.notify_all();
@@ -1019,6 +1268,23 @@ impl PreviewKey {
             preview_edge: PREVIEW_EDGE,
             origins: Default::default(),
         }
+    }
+
+    /// The key of a comparison preview (`Job::Preview`), the whole of what
+    /// it reads, as its cache entry is keyed.
+    fn of(job: &Job) -> Option<Self> {
+        let Job::Preview {
+            repo,
+            file,
+            origins,
+        } = job
+        else {
+            return None;
+        };
+        Some(Self {
+            origins: origins.clone(),
+            ..Self::new(repo.path(), file)
+        })
     }
 }
 
@@ -2278,9 +2544,16 @@ fn working_image_side(
         }
         // AVIF and JPEG 2000 decode in the confined helper on Linux, which
         // the reader's check kills as soon as a newer request supersedes
-        // this one.
-        let decoded =
-            crate::image_helper::decode(&bytes, name, PREVIEW_EDGE, &|| cancellation.check())?;
+        // this one. An image decoded in this process checks nothing until it
+        // ends, so the same preview asked for again meanwhile takes the
+        // decode over (`Cancellation::unobserved`).
+        let decode =
+            || crate::image_helper::decode(&bytes, name, PREVIEW_EDGE, &|| cancellation.check());
+        let decoded = if decoded_in_process(&bytes) {
+            cancellation.unobserved(decode)??
+        } else {
+            decode()?
+        };
         cancellation.check()?;
         let render = render_image(&decoded)?;
         Ok((decoded, render, bytes.len()))
@@ -2319,6 +2592,27 @@ fn working_image_side(
             bytes: 0,
             lfs_pointer: missing_pointer,
         },
+    }
+}
+
+/// Whether [`crate::image_helper::decode`] decodes `bytes` in this process,
+/// where it checks nothing until it ends, rather than in the confined helper,
+/// which runs the reader's check at least every 25 ms.
+fn decoded_in_process(bytes: &[u8]) -> bool {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        gitturtle_preview::confined_image_format(bytes).is_none()
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    {
+        let _ = bytes;
+        true
     }
 }
 
@@ -2673,6 +2967,7 @@ mod tests {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
             history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
         }
     }
 
@@ -2926,6 +3221,7 @@ mod image_tests {
             generation: 1,
             latest: Arc::new(AtomicU64::new(1)),
             history: gitturtle_core::HistoryCancellation::default(),
+            preparation: None,
         }
     }
 
@@ -3512,6 +3808,210 @@ mod image_tests {
             .into(),
         };
         assert_eq!(content.bytes(), expected_bytes);
+    }
+
+    /// A comparison preview chosen again while its image is still decoded
+    /// in this process, a phase that checks nothing until it ends, is
+    /// answered by that preparation, even after another file was chosen in
+    /// between and superseded it: the reader prepares it once and never
+    /// prepares the file chosen in between. A preparation whose decode ended
+    /// superseded has stopped, so choosing its file again prepares it anew.
+    /// Chosen again, a preview was prepared from the start each time: an
+    /// image's bytes read and decoded twice.
+    #[test]
+    fn a_preview_chosen_again_while_it_is_prepared_is_prepared_once() {
+        use futures::executor::block_on;
+        use std::sync::{atomic::AtomicBool, mpsc};
+
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let preview = |name: &str| Job::Preview {
+            repo: repo.clone(),
+            file: FileChange {
+                old_path: None,
+                new_path: Some(name.into()),
+                old_oid: None,
+                new_oid: Some("2".repeat(40)),
+                status: gitturtle_core::ChangeStatus::Added,
+                old_mode: "000000".into(),
+                new_mode: "100644".into(),
+            },
+            origins: Default::default(),
+        };
+        let shown = |output: Output| match output {
+            Output::Preview(content, _) => match &*content {
+                Content::Notice(name) => name.clone(),
+                _ => panic!("expected the test's notice"),
+            },
+            _ => panic!("expected a preview"),
+        };
+        let (started_tx, started) = mpsc::channel();
+        let (checked_tx, checked) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        // Holds the next preparation of "slow.png" in a phase that checks
+        // nothing until it ends, as an image decoded in this process does,
+        // until released; with `pause` set it then reports whether that
+        // phase ended answering and waits once more before it ends.
+        let hold = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+        let (held, paused) = (Arc::clone(&hold), Arc::clone(&pause));
+        let worker = Worker::with_executor(move |job, _, cancellation| {
+            let Job::Preview { file, .. } = job else {
+                unreachable!("the test asks for previews only")
+            };
+            let name = file.path().to_string_lossy().into_owned();
+            if name == "slow.png" && held.swap(false, Ordering::AcqRel) {
+                let decoded = cancellation.unobserved(|| {
+                    let _ = started_tx.send(name.clone());
+                    released.recv_timeout(Duration::from_secs(10))
+                });
+                if paused.swap(false, Ordering::AcqRel) {
+                    checked_tx.send(decoded.is_ok())?;
+                    released.recv_timeout(Duration::from_secs(10))?;
+                }
+                decoded??;
+            } else {
+                started_tx.send(name.clone())?;
+            }
+            cancellation.check()?;
+            Ok(Output::Preview(
+                Arc::new(Content::Notice(name)),
+                Duration::ZERO,
+            ))
+        });
+        let next_started = || started.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        // Chosen, another chosen, then chosen again while it is prepared.
+        hold.store(true, Ordering::Release);
+        let first = worker.submit(preview("slow.png"));
+        assert_eq!(next_started(), "slow.png");
+        let mut between = worker.submit(preview("other.png"));
+        let again = worker.submit(preview("slow.png"));
+        assert!(
+            between.try_recv().is_err(),
+            "the file chosen in between is never read"
+        );
+        release.send(()).unwrap();
+        assert_eq!(shown(block_on(again).unwrap().unwrap()), "slow.png");
+        worker.wait_idle();
+        assert_eq!(
+            started.try_iter().collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "slow.png is prepared once, other.png never"
+        );
+        assert!(
+            !matches!(block_on(first), Ok(Ok(_))),
+            "the request the preparation began for is answered no more"
+        );
+        assert_eq!(worker.preparations(), 1);
+
+        // Stopped as its decode ends superseded, a preparation is not taken
+        // over.
+        hold.store(true, Ordering::Release);
+        pause.store(true, Ordering::Release);
+        let first = worker.submit(preview("slow.png"));
+        assert_eq!(next_started(), "slow.png");
+        let _between = worker.submit(preview("other.png"));
+        release.send(()).unwrap();
+        assert!(
+            !checked.recv_timeout(Duration::from_secs(10)).unwrap(),
+            "its decode ends superseded"
+        );
+        let again = worker.submit(preview("slow.png"));
+        release.send(()).unwrap();
+        assert!(
+            block_on(first).unwrap().is_err(),
+            "the stopped preparation ends superseded"
+        );
+        assert_eq!(
+            next_started(),
+            "slow.png",
+            "chosen again, it is prepared anew"
+        );
+        assert_eq!(shown(block_on(again).unwrap().unwrap()), "slow.png");
+        worker.wait_idle();
+        assert_eq!(worker.preparations(), 3);
+    }
+
+    /// A comparison preview's work that watches the request's cancellation
+    /// token, as a Markdown document's local images do as they are captured
+    /// (`markdown_view::capture_assets`: its Git reads, which the token's
+    /// cancellation terminates, and each image's check), stops as soon as
+    /// another file is chosen, as Back cancels the read, and as the window's
+    /// worker goes with its tab: the token is cancelled then, as any read's
+    /// is. Such work is never taken over: choosing its file again prepares it
+    /// anew. Kept as a preparation another request could take over, the
+    /// preview once left the token alone, so the capture ran to its end and
+    /// the next file's preview waited behind it.
+    #[test]
+    fn superseding_back_and_closing_stop_a_previews_token_watching_work() {
+        use futures::executor::block_on;
+        use std::sync::mpsc;
+
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let preview = |name: &str| Job::Preview {
+            repo: repo.clone(),
+            file: FileChange {
+                old_path: None,
+                new_path: Some(name.into()),
+                old_oid: None,
+                new_oid: Some("2".repeat(40)),
+                status: gitturtle_core::ChangeStatus::Added,
+                old_mode: "000000".into(),
+                new_mode: "100644".into(),
+            },
+            origins: Default::default(),
+        };
+        // "capture.md" stands for a document whose images are captured: it
+        // watches only the token, for up to ten seconds, and reports whether
+        // the token was cancelled.
+        let (started_tx, started) = mpsc::channel();
+        let (stopped_tx, stopped) = mpsc::channel();
+        let worker = Worker::with_executor(move |job, _, cancellation| {
+            let Job::Preview { file, .. } = job else {
+                unreachable!("the test asks for previews only")
+            };
+            let name = file.path().to_string_lossy().into_owned();
+            started_tx.send(name.clone())?;
+            if name == "capture.md" {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !cancellation.history.is_cancelled() && Instant::now() < deadline {
+                    std::thread::yield_now();
+                }
+                stopped_tx.send(cancellation.history.is_cancelled())?;
+            }
+            cancellation.check()?;
+            Ok(Output::Preview(
+                Arc::new(Content::Notice(name)),
+                Duration::ZERO,
+            ))
+        });
+        fn next<T>(receiver: &mpsc::Receiver<T>) -> T {
+            receiver.recv_timeout(Duration::from_secs(20)).unwrap()
+        }
+
+        // Another file chosen, then the first again: the capture stops at
+        // once and its file is prepared anew.
+        let first = worker.submit(preview("capture.md"));
+        assert_eq!(next(&started), "capture.md");
+        let _other = worker.submit(preview("other.md"));
+        assert!(next(&stopped), "choosing another file stops the capture");
+        let again = worker.submit(preview("capture.md"));
+        assert!(block_on(first).unwrap().is_err());
+        assert_eq!(next(&started), "capture.md", "chosen again, prepared anew");
+        // Back cancels the read.
+        worker.cancel();
+        assert!(next(&stopped), "Back stops the capture");
+        assert!(block_on(again).unwrap().is_err());
+        worker.wait_idle();
+        assert_eq!(worker.preparations(), 2);
+
+        // The tab closes, and its worker goes.
+        let _closing = worker.submit(preview("capture.md"));
+        assert_eq!(next(&started), "capture.md");
+        drop(worker);
+        assert!(next(&stopped), "closing the tab stops the capture");
     }
 
     fn added_file(fixture: &Fixture, name: &str, bytes: &[u8]) -> FileChange {
