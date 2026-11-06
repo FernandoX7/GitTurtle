@@ -1136,11 +1136,16 @@ impl GitTurtle {
     /// get, the tab was left cold and dropped what the person did in it,
     /// such as a Quick Open source, and a reply in place of the restore's,
     /// such as another commit's changed files, took the saved selection.
+    /// History's search asked for while the snapshot was read goes with it:
+    /// the read is the person's later action, which wins (decision
+    /// 2026-11-05). Held, the search waited for a Compare the restore no
+    /// longer reached.
     pub(super) fn end_replaced_restore(&mut self) {
         if self.repository_tabs.restoring.is_some()
             && (self.task.is_some() || self.history_search_pending())
         {
             self.repository_tabs.restoring = None;
+            self.repository_tabs.drop_pending_search();
         }
     }
     fn restore_warm_tab(&mut self, warm: WarmTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -8493,6 +8498,67 @@ mod tests {
             });
             assert_eq!(drawn_focus(&app, cx), Some(search.clone()), "{when}");
         }
+    }
+
+    /// A read the person starts while a cold tab's restore bound for
+    /// Compare still reads, Down in History's list, ends the restore and
+    /// drops History's search asked for while the snapshot was read
+    /// (`end_replaced_restore`): the later action wins, and focus stays on
+    /// the list, on the commit Down chose. Held, the search waited for a
+    /// Compare the restore no longer reached, to open over the person's
+    /// choice at some later landing.
+    #[gpui::test]
+    async fn a_read_the_person_starts_during_a_restore_drops_the_held_search(
+        cx: &mut TestAppContext,
+    ) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        let _repo = open_compared_tab(&app, root.path(), cx).await;
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        let find = if cfg!(target_os = "macos") {
+            "cmd-f"
+        } else {
+            "ctrl-f"
+        };
+        leave_tab_cold_on(&app, 0, "notes.txt", true, cx).await;
+        app.update(cx, |app, _| {
+            let saved = &mut app.repository_tabs.tabs[1].saved;
+            saved.comparison = None;
+            assert!(saved.compare, "a bookmark in Compare");
+        });
+        let held = hold_reads(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw_tab_frames(cx);
+        cx.simulate_keystrokes(find);
+        draw_tab_frames(cx);
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "kept");
+        drop(held);
+        // The snapshot lands, and the saved commit's changed files are read
+        // while the reader is held.
+        let held = hold_reads(&app, cx);
+        cx.executor().run_until_parked();
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.loading, Some("Reading changed files…"));
+            assert!(app.repository_tabs.restore_lands_in_compare(), "restoring");
+            assert!(app.repository_tabs.pending_search.is_some(), "held");
+            assert_eq!(app.selected_commit, Some(0), "the saved commit");
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list.clone()), "on the list");
+        cx.simulate_keystrokes("down");
+        app.read_with(cx, |app, _| {
+            assert!(app.repository_tabs.restoring.is_none(), "Down ends it");
+            assert!(app.repository_tabs.pending_search.is_none(), "and drops it");
+        });
+        drop(held);
+        settle_tab_test(&app, cx).await;
+        draw_tab_frames(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.selected_commit, Some(1), "the commit Down chose");
+            assert!(app.page == AppPage::Repository && app.mode == WorkspaceMode::History);
+        });
+        assert_eq!(drawn_focus(&app, cx), Some(list), "focus stays on the list");
     }
 
     /// Another warm tab shown from Settings forgets the control Back would
