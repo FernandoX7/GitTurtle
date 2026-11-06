@@ -4020,7 +4020,14 @@ mod image_tests {
         assert!(next(&stopped), "Back stops the capture");
         assert!(block_on(again).unwrap().is_err());
         worker.wait_idle();
-        assert_eq!(worker.preparations(), 2 + u64::from(between_started));
+        // The reader counts a preparation as it takes the request and checks
+        // the request before the work starts, so the file chosen in between
+        // may be counted, stopped before it reports starting.
+        let preparations = worker.preparations();
+        assert!(
+            (2 + u64::from(between_started)..=3).contains(&preparations),
+            "{preparations} preparations, the file chosen in between started: {between_started}"
+        );
 
         // The tab closes, and its worker goes.
         let _closing = worker.submit(preview("capture.md"));
