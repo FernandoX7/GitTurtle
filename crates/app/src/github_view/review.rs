@@ -272,7 +272,14 @@ thread_local! {
 /// tells from a key context on its focus path. Focus that frame did not draw stays unrecorded,
 /// so the next frame, whose parts find it on their focus path, reveals it: reopening the panel
 /// restores focus to a pane no frame had drawn, and recording it then left the pane where the
-/// body last scrolled, its ring's top edge above the clip.
+/// body last scrolled, its ring's top edge above the clip. Once focus has moved to a control
+/// outside the box, the box forgets the focus it recorded, so a control focus comes back to is
+/// revealed again
+/// wherever the box has scrolled since (coordinator's decision, 2026-11-05): Shift+Tab from
+/// the conversations' pager back onto a conversation's last action, after the list had
+/// scrolled back to its top, and from Back to repository back onto the body's last control,
+/// after the body had scrolled away from it, left the control out of view and its ring
+/// undrawn.
 pub(super) fn record_shown(
     revealed: &std::cell::RefCell<FocusObservation>,
     scroll: &ScrollHandle,
@@ -286,25 +293,15 @@ pub(super) fn record_shown(
             viewport: scroll.bounds(),
             rem_size: window.rem_size(),
         };
-    }
-}
-/// [`record_shown`] for the conversation list, which also forgets the focus it recorded while
-/// focus lies outside it, so focus coming back to that control reveals it again wherever the
-/// list has scrolled since: Shift+Tab from the conversations' pager back onto a conversation's
-/// last action, after the list had scrolled back to its top, left the action out of view and
-/// its ring undrawn. The body keeps its record, which the panel resets where it shows a
-/// section from its top ([`Panel::focus_visible_section`]).
-pub(super) fn record_list_shown(
-    revealed: &std::cell::RefCell<FocusObservation>,
-    scroll: &ScrollHandle,
-    inside: impl Fn(&KeyContext) -> bool,
-    window: &Window,
-    cx: &App,
-) {
-    if window.context_stack().iter().any(&inside) {
-        record_shown(revealed, scroll, inside, window, cx);
-    } else if revealed.borrow().focus.is_some() {
-        revealed.borrow_mut().focus = None;
+    } else {
+        // Focus the box recorded, which no frame has drawn yet, is not focus elsewhere: the PR
+        // opening records the section it focuses before any frame draws it there, so it is not
+        // revealed ([`Panel::reveal_opened`]).
+        let focused = window.focused(cx);
+        let mut revealed = revealed.borrow_mut();
+        if revealed.focus.is_some() && revealed.focus != focused {
+            revealed.focus = None;
+        }
     }
 }
 

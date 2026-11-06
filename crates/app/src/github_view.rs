@@ -9670,6 +9670,103 @@ mod tests {
         );
     }
 
+    /// Shift+Tab from Back to repository, below the body, back onto the body's last control
+    /// reveals it again with its ring, at 13 pt in a 470 × 490 window, after the wheel scrolled
+    /// the body back to its top: the body kept the control as the focus it had shown, so the
+    /// reveal saw no change of focus, and the control stayed below the body's foot with its
+    /// ring undrawn (coordinator's decision, 2026-11-05: a control focus returns to is revealed
+    /// again wherever its list has scrolled since).
+    #[gpui::test]
+    async fn the_bodys_last_control_focused_again_is_revealed_again(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        show_overview(&panel, &pull, (13, 470., 490.), cx);
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let stop = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let inside = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains(review::BODY));
+                (window.focused(cx), inside)
+            })
+        };
+        // The Button rings the last frame drew whole inside the body.
+        let rings = |cx: &mut VisualTestContext| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let (ring, color, scale) = cx.update(|window, cx| {
+                let theme = gpui_kit::component::Theme::global(cx);
+                let ring = theme.button_focus_ring;
+                (ring, theme.ring.alpha(ring.opacity), window.scale_factor())
+            });
+            quads(cx)
+                .into_iter()
+                .filter(|(bounds, quad)| {
+                    quad.background.is_transparent()
+                        && quad.border_color == color
+                        && quad.border_widths.top.as_f32() == ring.width.as_f32() * scale
+                        && bounds.top() >= body.top()
+                        && bounds.bottom() <= body.bottom()
+                })
+                .map(|(bounds, _)| bounds)
+                .collect::<Vec<_>>()
+        };
+        let mut last = None;
+        for _ in 0..30 {
+            cx.simulate_keystrokes("tab");
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let (focused, inside) = stop(cx);
+            if !inside && last.is_some() {
+                break;
+            }
+            last = inside.then(|| (focused, scroll.offset().y, rings(cx)));
+        }
+        let Some((control, shown, ringed)) = last else {
+            panic!("Tab reached a control in the body before one below it");
+        };
+        assert!(
+            shown < px(0.) && !ringed.is_empty(),
+            "Tab scrolled the body {shown:?} onto its last control, its ring drawn {ringed:?}"
+        );
+        assert!(
+            rings(cx).is_empty(),
+            "Tab moved on to Back to repository, below the body"
+        );
+        // The wheel, over the body's top corner, clear of the conversation list, takes the body
+        // back to its top, the control out of view.
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        cx.simulate_event(ScrollWheelEvent {
+            position: body.origin + point(px(2.), px(2.)),
+            delta: ScrollDelta::Pixels(point(px(0.), -shown + px(100.))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        assert_eq!(
+            scroll.offset().y,
+            px(0.),
+            "the wheel scrolls the body to its top"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        assert!(
+            stop(cx) == (control, true),
+            "Shift+Tab returns to the control"
+        );
+        let again = rings(cx);
+        assert!(
+            scroll.offset().y < px(0.) && !again.is_empty(),
+            "the body {:?} shows the control again with its ring {again:?}",
+            scroll.offset().y
+        );
+    }
+
     /// What Files' lists and clips hide is no line of the body, at 13 and 18 pt in a 461 × 490
     /// window: the changed-file list, holding twelve files, scrolled half a row inside itself
     /// and standing past the body's top edge, and Source's text, standing past the body's

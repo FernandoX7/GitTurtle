@@ -637,7 +637,7 @@ impl Panel {
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(super::review::clipped_lines(crate::native_accessibility::clips_children(div()
                 .on_children_prepainted(move |_, window, cx| {
-                    super::review::record_list_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
+                    super::review::record_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
                     list_blocks.finish();
                 })
                 .id("github-threads").debug_selector(||"github-threads".into())
