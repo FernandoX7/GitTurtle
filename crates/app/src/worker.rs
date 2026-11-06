@@ -3992,20 +3992,35 @@ mod image_tests {
         }
 
         // Another file chosen, then the first again: the capture stops at
-        // once and its file is prepared anew.
+        // once and its file is prepared anew. Once the capture has stopped
+        // the reader may start the file chosen in between before the first is
+        // chosen again, as it does whenever the test is slow to choose it;
+        // that file is then superseded in turn, and answers, if at all, only
+        // for itself.
         let first = worker.submit(preview("capture.md"));
         assert_eq!(next(&started), "capture.md");
-        let _other = worker.submit(preview("other.md"));
+        let between = worker.submit(preview("other.md"));
         assert!(next(&stopped), "choosing another file stops the capture");
         let again = worker.submit(preview("capture.md"));
         assert!(block_on(first).unwrap().is_err());
-        assert_eq!(next(&started), "capture.md", "chosen again, prepared anew");
+        let mut restarted = next(&started);
+        let between_started = restarted == "other.md";
+        if between_started {
+            restarted = next(&started);
+        }
+        assert_eq!(restarted, "capture.md", "chosen again, prepared anew");
+        if let Ok(Ok(Output::Preview(content, _))) = block_on(between) {
+            assert!(
+                matches!(&*content, Content::Notice(name) if name == "other.md"),
+                "the file chosen in between answers only for itself"
+            );
+        }
         // Back cancels the read.
         worker.cancel();
         assert!(next(&stopped), "Back stops the capture");
         assert!(block_on(again).unwrap().is_err());
         worker.wait_idle();
-        assert_eq!(worker.preparations(), 2);
+        assert_eq!(worker.preparations(), 2 + u64::from(between_started));
 
         // The tab closes, and its worker goes.
         let _closing = worker.submit(preview("capture.md"));
