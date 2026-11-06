@@ -9712,6 +9712,190 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Opens Files on the fixture's first page at 13 pt in a 1,480 × 800 window, its first file
+    /// selected and prepared.
+    async fn show_first_file(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        pull: &PullRequest,
+        cx: &mut VisualTestContext,
+    ) {
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        crate::focus_ring::sweep::interface_size(cx, 13);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull.clone());
+                panel.review.show_list = false;
+                panel.review.section = Section::Files;
+                panel.review.files = files;
+                panel.review.selected_file = None;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        settle_panel(app, cx).await;
+    }
+
+    /// Whether the last frame stood the file beside the changed-file list rather than below it.
+    fn files_beside(cx: &mut VisualTestContext) -> bool {
+        let list = cx.debug_bounds("github-file-focus").expect("the file list");
+        let column = cx.debug_bounds("github-file-column").expect("the file");
+        column.left() > list.right()
+    }
+
+    /// The narrowest window 800 px tall, to `step`, in which Files stands the file beside the
+    /// list, between 400 px, where it stands below, and 1,480 px.
+    fn narrowest_beside(cx: &mut VisualTestContext, step: f32) -> f32 {
+        let beside_at = |cx: &mut VisualTestContext, width: f32| {
+            cx.simulate_resize(size(px(width), px(800.)));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            files_beside(cx)
+        };
+        let (mut below, mut beside) = (400., 1480.);
+        assert!(
+            !beside_at(cx, below) && beside_at(cx, beside),
+            "the file stands below the list in a 400 px window and beside it in a 1,480 px one"
+        );
+        while beside - below > step {
+            let middle = below + ((beside - below) / step / 2.).floor() * step;
+            if beside_at(cx, middle) {
+                beside = middle;
+            } else {
+                below = middle;
+            }
+        }
+        beside
+    }
+
+    /// Where the last frame stood the file beside the list, its mode row, Changes, Source,
+    /// Threads and the comment Button, lies on one line inside the file's column.
+    fn assert_mode_row_on_one_line(cx: &mut VisualTestContext, at: &str) {
+        if !files_beside(cx) {
+            return;
+        }
+        let column = cx.debug_bounds("github-file-column").expect("the file");
+        let first = cx.debug_bounds("github-file-mode-0").expect("Changes");
+        let last = cx
+            .debug_bounds("github-inline-start")
+            .expect("the comment Button");
+        assert!(
+            (last.top() - first.top()).abs() <= px(0.5) && last.right() <= column.right() + px(0.5),
+            "{at}: beside the list, the mode row from {first:?} to {last:?} keeps one line in \
+             the file's column {column:?}"
+        );
+    }
+
+    /// Files stands the file beside the list where its mode row fits there on one line with
+    /// the label its last Button reads now, at 13 pt (`review::mode_row_width`): in the window
+    /// a pixel too narrow for Comment on selection beside the list, an open comment, whose
+    /// Button reads the narrower Continue comment, stands the file beside the list, its row on
+    /// one line, and as the comment closes the file stands below the list again, each in the
+    /// frames the change draws. The row's width measured with one label and kept for the other
+    /// would keep the other's layout.
+    #[gpui::test]
+    async fn files_mode_row_follows_its_last_label(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        show_first_file(&app, &panel, &pull, cx).await;
+        let beside = narrowest_beside(cx, 1.);
+        let wide = cx
+            .debug_bounds("github-inline-start")
+            .expect("Comment on selection");
+        let width = beside - 1.;
+        cx.simulate_resize(size(px(width), px(800.)));
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        assert!(!files_beside(cx), "the file below the list at {width} px");
+        let comment = cx.read(|cx| {
+            let file = &panel.read(cx).review.files[0];
+            let row = file
+                .rows
+                .iter()
+                .position(|row| row.kind == b'+')
+                .expect("an added line");
+            file.selection(row, row).expect("an inline position")
+        });
+        for open in [true, false, true, false] {
+            let label = if open {
+                "Continue comment"
+            } else {
+                "Comment on selection"
+            };
+            let at = format!("{label} in a {width} px window");
+            let comment = comment.clone();
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.review.composing = open.then_some(comment);
+                    cx.notify();
+                })
+            });
+            assert_eq!(
+                files_beside(cx),
+                open,
+                "{at}: the file beside the list only with the narrower label"
+            );
+            for _ in 0..2 {
+                crate::width_walk::frame(cx);
+            }
+            assert_eq!(files_beside(cx), open, "{at}, two frames on");
+            assert_mode_row_on_one_line(cx, &at);
+            let button = cx.debug_bounds("github-inline-start").expect(label);
+            assert!(
+                !open || button.size.width < wide.size.width - px(1.),
+                "{at}: the Button {button:?} is narrower than Comment on selection {wide:?} by \
+                 more than the pixel"
+            );
+        }
+    }
+
+    /// Files measures its mode row again as the display's scale changes between frames, at
+    /// 13 pt (`review::mode_row_width`): in the narrowest window at 2x in which the file stands
+    /// beside the list, to an eighth of a pixel, a scale at which the row's Buttons, each laid
+    /// out on whole device pixels, take more room than the file's column leaves stands the
+    /// file below the list, wherever the file stands beside the list its row keeps one line in
+    /// the column, and back at 2x it stands beside the list again. The row's width measured at
+    /// another scale and kept stood the file beside the list with its row wrapped.
+    #[gpui::test]
+    async fn files_mode_row_follows_the_display_scale(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        show_first_file(&app, &panel, &pull, cx).await;
+        let width = narrowest_beside(cx, 0.125);
+        cx.simulate_resize(size(px(width), px(800.)));
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+        let mut below = Vec::new();
+        for scale in [1., 1.25, 1.5, 1.75] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            assert_mode_row_on_one_line(cx, &format!("at {scale}x in a {width} px window"));
+            if !files_beside(cx) {
+                below.push(scale);
+            }
+            cx.update(|window, _| window.set_scale_factor(2.));
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            let at = format!("back at 2x from {scale}x in a {width} px window");
+            assert!(files_beside(cx), "{at}: the file beside the list");
+            assert_mode_row_on_one_line(cx, &at);
+        }
+        assert!(
+            !below.is_empty(),
+            "a scale's device pixels widen the row past the column at {width} px"
+        );
+    }
+
     /// Shift+Tab back onto a conversation's last action reveals it again in the conversation
     /// list, at 13 pt in a 470 × 490 window, after Tab took focus on to the conversations'
     /// pager and the list scrolled back to its top: the list kept the action as the focus it

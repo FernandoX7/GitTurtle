@@ -2618,7 +2618,10 @@ impl Panel {
 /// its five children, the spacer before the last among them. Measured again only when the font,
 /// the sizes, the display's scale or the last Button's label change: the key they are read by
 /// is read once a render (a view's render builds the font's default features at each read, an
-/// allocation), where each of the four labels read it.
+/// allocation), where each of the four labels read it. A key without the label kept the other
+/// label's layout (`github_view::tests::files_mode_row_follows_its_last_label`), and one
+/// without the scale stood the file beside the list with its row wrapped where another scale's
+/// device pixels widen it (`github_view::tests::files_mode_row_follows_the_display_scale`).
 fn mode_row_width(composing: bool, window: &Window) -> Pixels {
     /// The font and sizes, the display's scale and whether a comment is open.
     type RowKey = (crate::views::LineKey, f32, bool);
