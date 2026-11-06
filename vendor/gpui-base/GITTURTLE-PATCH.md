@@ -1054,10 +1054,12 @@ the press ends once the application next runs a task (`end_released`),
 unless an Enter goes down first, and a dialog opened in between waits too
 (`dialog_opened`). That task runs in the event loop's next idle pass, not
 within the batch of input events the key-up came in: on Linux the spawn
-wakes the main-thread channel, a ping source read in the loop's next
-iteration, whose runnable runs as an idle callback at the end of that
-iteration (`vendor/gpui-pre-linux/src/linux/dispatcher.rs`,
-`wayland/client.rs`). A person who releases Enter and presses it again
+wakes the main-thread channel, a ping source read in the loop's current
+iteration if its ping is already pending, or else in the next, and its
+runnable runs as an idle callback at the end of that iteration, after every
+input source of the key-up's batch
+(`vendor/gpui-pre-linux/src/linux/dispatcher.rs`, `wayland/client.rs`). A
+person who releases Enter and presses it again
 within that window, as within one slow frame, loses that press, as a press
 whose key-up never arrives does (below), which fails safe. The pairing
 assumes the compositor delivers an input method's release and press

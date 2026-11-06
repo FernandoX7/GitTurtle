@@ -243,9 +243,11 @@ struct EnterPress {
     /// window or, for a key-up in another window, in any window, as the
     /// press of an input method's repeat follows its release together. That
     /// task runs in the event loop's next idle pass: on Linux the spawn
-    /// wakes the main-thread channel, read in the loop's next iteration,
-    /// whose runnable runs as an idle at that iteration's end
-    /// (`gpui-pre-linux`'s `dispatcher.rs` and `wayland/client.rs`). A
+    /// wakes the main-thread channel, read in the loop's current iteration
+    /// if its ping is already pending, or else in the next, and its runnable
+    /// runs as an idle at the end of that iteration, after every input
+    /// source of the key-up's batch (`gpui-pre-linux`'s `dispatcher.rs` and
+    /// `wayland/client.rs`). A
     /// person who releases Enter and presses it again within that window,
     /// as within one slow frame, loses that press, as a press whose key-up
     /// never arrives does, which fails safe.
