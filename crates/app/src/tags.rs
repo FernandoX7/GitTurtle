@@ -428,8 +428,10 @@ pub(crate) const SHORTEST_SCROLL_TRACK: Pixels = px(48. + 4. * 2.);
 /// fade over a control at the edge softens its ring and frame and leaves
 /// its label clear. It scales with the interface text size, as the rows it
 /// lies over do, and takes at most a quarter of the list, so at either size
-/// the list's middle half reads unfaded.
-const EDGE_FADE: f32 = 8.;
+/// the list's middle half reads unfaded. Shared by every scrolling list's
+/// cue ([`ScrollCue`]) and by the inspector's commit message viewport
+/// (`commit_message::message_fades`), so their fades read as one.
+pub(crate) const EDGE_FADE: f32 = 8.;
 
 impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its

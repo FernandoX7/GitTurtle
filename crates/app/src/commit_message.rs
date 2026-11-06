@@ -590,11 +590,6 @@ fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) ->
     .child(selection.piece(piece))
 }
 
-/// How tall the message's edge fades are at the default interface size,
-/// as a scrolling list's are (`tags`' `EDGE_FADE`): they scale with the
-/// interface text and take at most a quarter of the viewport.
-const MESSAGE_FADE: f32 = 8.;
-
 /// The message viewport's overflow cue, built as the frame paints, after
 /// the list has laid out in it (`in_frame`), as a scrolling list's is
 /// (`tags::ScrollCue::list`): along a track a thumb moves on
@@ -636,7 +631,8 @@ fn message_cue(scroll: ListState, cx: &App) -> impl IntoElement {
 
 /// The fades over a message viewport too short for a thumb that moves
 /// ([`message_cue`]): at each edge the message continues past, a band as
-/// wide as the viewport and [`MESSAGE_FADE`] tall, at most a quarter of it,
+/// wide as the viewport and as tall as a scrolling list's fade
+/// ([`crate::tags::EDGE_FADE`]), at most a quarter of the viewport,
 /// opaque at the edge in the inspector's panel colour and clear inward, so
 /// the cut lines dissolve into the surface; none at an end the message is
 /// scrolled to, none where it fits, and none in a viewport shorter than
@@ -650,7 +646,7 @@ fn message_fades(scroll: ListState, surface: Hsla) -> impl IntoElement {
         |_, _, _| (),
         move |_, _, window, _| {
             let list = scroll.viewport_bounds();
-            let full = appearance::ui_size(MESSAGE_FADE);
+            let full = appearance::ui_size(crate::tags::EDGE_FADE);
             if list.size.height < full {
                 return;
             }
@@ -2121,7 +2117,7 @@ pub(crate) mod tests {
                 "{at}: {track:?} runs inside {viewport:?}"
             );
         }
-        let fade = appearance::ui_size(MESSAGE_FADE);
+        let fade = appearance::ui_size(crate::tags::EDGE_FADE);
         let cue = if !tracks.is_empty() {
             assert_eq!(fades, (None, None), "{at}: no fade beside the bar");
             Cue::Bar
