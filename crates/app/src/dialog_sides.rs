@@ -103,15 +103,40 @@ impl Site {
                 .await
             }
             // Through Git profiles' New profile…, which closes it and opens
-            // the form in its place.
+            // the form in its place. A person scrolls the dialog's body to it
+            // first where it lies past the fold: the target's path wraps
+            // onto as many lines as its length takes, and the fixture's in a
+            // macOS temporary directory, as Git names it
+            // (`/private/var/folders/…/T/…`), took three at 18 pt in the half
+            // tile, where the body scrolls and the button lay wholly below
+            // it, so a click at its centre missed it.
             Site::ProfileForm => {
                 open_dialog(app, cx, &name, |app, window, cx| {
                     app.open_profiles(window, cx)
                 })
                 .await;
+                let body = cx
+                    .debug_bounds("profile-manager-content")
+                    .expect("Git profiles' body");
                 let new = cx
                     .debug_bounds("new-git-profile")
                     .expect("Git profiles' New profile…");
+                if new.bottom() > body.bottom() {
+                    cx.simulate_event(ScrollWheelEvent {
+                        position: body.center(),
+                        delta: ScrollDelta::Pixels(point(px(0.), body.bottom() - new.bottom())),
+                        modifiers: Modifiers::default(),
+                        touch_phase: TouchPhase::Moved,
+                    });
+                    width_walk::frame(cx);
+                }
+                let new = cx
+                    .debug_bounds("new-git-profile")
+                    .expect("Git profiles' New profile…");
+                assert!(
+                    body.contains(&new.center()),
+                    "New profile… at {new:?} lies in Git profiles' body, {body:?}"
+                );
                 cx.simulate_click(new.center(), Modifiers::none());
                 app.read_with(cx, |app, _| app.operations.drain());
                 views::tests::settle(app, cx).await;
