@@ -799,7 +799,9 @@ cover current upstream x86-64 Omarchy.
        (S) Changes: an explicit Refresh with a working row selected re-selects it and moves focus to the list
        (`workspace.rs` `select_working_row`), even from the commit title (FU29-A2b, pre-existing, 2026-11-07);
        at scale 1.2 the composer's 16 px padding is not device-aligned, so a one-line description snaps up to
-       0.17 px short (pre-existing).
+       0.17 px short (pre-existing). (S) With the project pane open in a 461 x 490 window the repository
+       page is laid out at its 520 px floor (`views.rs:8661` `repository_width`), so a merge banner's actions
+       run to x 559-690, past the window's edge (FU30-A2, 2026-11-07): lay the page out in the width it has.
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
