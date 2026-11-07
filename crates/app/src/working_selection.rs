@@ -1149,26 +1149,13 @@ mod tests {
         use crate::{path_filter, workspace::WorkingRow};
         use gitturtle_core::GitRepository;
         use std::{fs, path::PathBuf, process::Command, sync::atomic::AtomicU64};
-        struct Fixture(PathBuf);
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let fixture = Fixture(std::env::temp_dir().join(format!(
-                "gitturtle-working-filter-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            )));
-        fs::create_dir(&fixture.0).unwrap();
+        // In this process's test root, named by its process-wide sequence.
+        let fixture = crate::preferences::test_directories::TestDirectory::new("working-filter");
         let git = |args: &[&str]| {
             let mut command = Command::new("git");
             command
                 .arg("-C")
-                .arg(&fixture.0)
+                .arg(fixture.path())
                 .args([
                     "-c",
                     "user.name=Filter Fixture",
@@ -1202,18 +1189,22 @@ mod tests {
             );
         };
         git(&["init", "--quiet"]);
-        fs::create_dir(fixture.0.join("old")).unwrap();
-        fs::create_dir(fixture.0.join("new")).unwrap();
-        fs::write(fixture.0.join("old/École.rs"), "one\ntwo\nthree\n").unwrap();
+        fs::create_dir(fixture.path().join("old")).unwrap();
+        fs::create_dir(fixture.path().join("new")).unwrap();
+        fs::write(fixture.path().join("old/École.rs"), "one\ntwo\nthree\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "--quiet", "-m", "baseline"]);
-        fs::rename(fixture.0.join("old/École.rs"), fixture.0.join("new/🐢.rs")).unwrap();
+        fs::rename(
+            fixture.path().join("old/École.rs"),
+            fixture.path().join("new/🐢.rs"),
+        )
+        .unwrap();
         git(&["add", "."]);
-        fs::write(fixture.0.join("new/🐢.rs"), "one\ntwo\nthree\nextra\n").unwrap();
-        fs::write(fixture.0.join("unrelated.txt"), "preserved\n").unwrap();
-        let repo = GitRepository::open(&fixture.0).unwrap();
+        fs::write(fixture.path().join("new/🐢.rs"), "one\ntwo\nthree\nextra\n").unwrap();
+        fs::write(fixture.path().join("unrelated.txt"), "preserved\n").unwrap();
+        let repo = GitRepository::open(fixture.path()).unwrap();
         let status = repo.status().unwrap();
-        let index_before = fs::read(fixture.0.join(".git/index")).unwrap();
+        let index_before = fs::read(fixture.path().join(".git/index")).unwrap();
         let cancellation = AtomicU64::new(3);
         let index = path_filter::prepare_paths(
             status
@@ -1255,11 +1246,11 @@ mod tests {
         );
         assert!(super::rows(&status, &matched, true, &cancellation, 2).is_err());
         assert_eq!(
-            fs::read(fixture.0.join(".git/index")).unwrap(),
+            fs::read(fixture.path().join(".git/index")).unwrap(),
             index_before
         );
         assert_eq!(
-            fs::read_to_string(fixture.0.join("unrelated.txt")).unwrap(),
+            fs::read_to_string(fixture.path().join("unrelated.txt")).unwrap(),
             "preserved\n"
         );
         assert_eq!(repo.status().unwrap(), status);

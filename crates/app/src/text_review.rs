@@ -1019,26 +1019,13 @@ mod tests {
     fn review_removes_actionable_partial_ids_and_reset_retains_the_exact_snapshot() {
         use gitturtle_core::{ChangeArea, GitRepository, TextPreview};
         use std::{fs, process::Command};
-        struct Fixture(std::path::PathBuf);
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let fixture = Fixture(std::env::temp_dir().join(format!(
-                "gitturtle-text-review-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            )));
-        fs::create_dir(&fixture.0).unwrap();
+        // In this process's test root, named by its process-wide sequence.
+        let fixture = crate::preferences::test_directories::TestDirectory::new("text-review");
         let git = |args: &[&str]| {
             let mut command = Command::new("git");
             command
                 .arg("-C")
-                .arg(&fixture.0)
+                .arg(fixture.path())
                 .args([
                     "-c",
                     "user.name=Review Fixture",
@@ -1073,11 +1060,11 @@ mod tests {
             output.stdout
         };
         git(&["init", "--quiet"]);
-        fs::write(fixture.0.join("file.txt"), "a = 1\nold\n").unwrap();
+        fs::write(fixture.path().join("file.txt"), "a = 1\nold\n").unwrap();
         git(&["add", "--", "file.txt"]);
         git(&["commit", "--quiet", "-m", "baseline"]);
-        fs::write(fixture.0.join("file.txt"), "a=1\nnew\n").unwrap();
-        let repo = GitRepository::open(&fixture.0).unwrap();
+        fs::write(fixture.path().join("file.txt"), "a=1\nnew\n").unwrap();
+        let repo = GitRepository::open(fixture.path()).unwrap();
         let status = repo.status().unwrap();
         let preview = repo
             .worktree_preview(&status.entries[0], ChangeArea::Unstaged)
@@ -1104,7 +1091,7 @@ mod tests {
             partial: Some(partial),
             partial_unavailable: None,
         });
-        let before_index = fs::read(fixture.0.join(".git/index")).unwrap();
+        let before_index = fs::read(fixture.path().join(".git/index")).unwrap();
         for options in [
             Options {
                 hide_whitespace: true,
@@ -1131,11 +1118,11 @@ mod tests {
         };
         assert!(Arc::ptr_eq(&partial.diff, &diff));
         assert_eq!(
-            fs::read(fixture.0.join(".git/index")).unwrap(),
+            fs::read(fixture.path().join(".git/index")).unwrap(),
             before_index
         );
         assert_eq!(
-            fs::read_to_string(fixture.0.join("file.txt")).unwrap(),
+            fs::read_to_string(fixture.path().join("file.txt")).unwrap(),
             "a=1\nnew\n"
         );
     }
