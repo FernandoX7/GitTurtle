@@ -65,10 +65,13 @@ pub(super) struct ReviewState {
     pub section: Section,
     pub body_scroll: ScrollHandle,
     pub revealed_focus: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
-    /// Where Overview's captured identities lay in the last frame that drew them, with the
-    /// body's scroll at zero, for the last section tab, which owns them ([`Owned`]); none
-    /// where no frame draws them.
+    /// Where Overview's captured identities and the last section tab, which owns them, lie
+    /// in the frame being drawn, and whether they fit the body together ([`Owned`]).
     pub identities: Owned,
+    /// Overview's captured identities as a group stop of their own, revealed from their top,
+    /// where they cannot fit the body with the last section tab that owns them
+    /// ([`Owned::apart`]): its ring on their edge, as the connection pane's is.
+    pub identities_focus: FocusHandle,
     /// Where the body's blocks start, for its reveals.
     pub body_blocks: Blocks,
     /// A PR has just opened: the next frame shows it from its title ([`Panel::reveal_opened`]).
@@ -198,6 +201,7 @@ impl ReviewState {
             mode: 0,
             file_focus: cx.focus_handle().tab_stop(true),
             line_focus: cx.focus_handle().tab_stop(true),
+            identities_focus: cx.focus_handle(),
             section_focus: cx.focus_handle().tab_stop(true),
             connection_focus: cx.focus_handle().tab_stop(true),
             account_focus: cx.focus_handle().tab_stop(true),
@@ -1167,24 +1171,9 @@ fn reveal(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let observed = FocusObservation {
-        focus: window.focused(cx),
-        viewport: scroll.bounds(),
-        rem_size: window.rem_size(),
+    let Some((ringed, focus)) = to_reveal(scroll, revealed, edge, window, cx) else {
+        return;
     };
-    {
-        let previous_focus = revealed.borrow();
-        // Dialog entrance animation can move the whole viewport without
-        // changing what fits inside it. It must not undo manual scrolling.
-        if previous_focus.focus == observed.focus
-            && previous_focus.viewport.size == observed.viewport.size
-            && previous_focus.rem_size == observed.rem_size
-        {
-            return;
-        }
-    }
-    let ringed = edge.is_some_and(|edge| edge.is_focused(window));
-    let focus = observed.focus;
     show(
         scroll,
         blocks,
@@ -1195,6 +1184,36 @@ fn reveal(
         window,
         cx,
     );
+}
+
+/// Whether [`reveal`] reveals in `scroll` now, where only a change of focus since the frame
+/// `revealed` records reveals, and if it does, whether the part draws focus as a ring on its
+/// own edge (`edge`) and the focus it reveals.
+fn to_reveal(
+    scroll: &ScrollHandle,
+    revealed: &std::cell::RefCell<FocusObservation>,
+    edge: Option<&FocusHandle>,
+    window: &Window,
+    cx: &App,
+) -> Option<(bool, Option<FocusHandle>)> {
+    let observed = FocusObservation {
+        focus: window.focused(cx),
+        viewport: scroll.bounds(),
+        rem_size: window.rem_size(),
+    };
+    let previous_focus = revealed.borrow();
+    // Dialog entrance animation can move the whole viewport without
+    // changing what fits inside it. It must not undo manual scrolling.
+    if previous_focus.focus == observed.focus
+        && previous_focus.viewport.size == observed.viewport.size
+        && previous_focus.rem_size == observed.rem_size
+    {
+        return None;
+    }
+    Some((
+        edge.is_some_and(|edge| edge.is_focused(window)),
+        observed.focus,
+    ))
 }
 
 /// Scrolls `scroll` to show `bounds`, `inset` clear of its edges, landing its top edge at the
@@ -1289,16 +1308,19 @@ fn revealing(
         .key_context(context)
         // Where tests find the part (`github_view::tests::sweep_reveals`).
         .debug_selector(move || format!("github-part-{part}"))
-        .on_children_prepainted(move |mut bounds, window, cx| {
+        .on_children_prepainted(move |bounds, window, cx| {
             let innermost = window
                 .context_stack()
                 .iter()
                 .rev()
                 .find_map(|context| context.get(key).cloned());
-            if window.last_input_was_keyboard() && innermost.as_ref() == Some(&name) {
-                if let Some(owned) = &owned {
-                    own(&mut bounds, owned, &scroll, inset);
-                }
+            if let Some(owned) = &owned {
+                owned.lay_out_part(&bounds, &scroll);
+            }
+            if !window.last_input_was_keyboard() || innermost.as_ref() != Some(&name) {
+                return;
+            }
+            let Some(owned) = owned.clone() else {
                 reveal(
                     &scroll,
                     &revealed,
@@ -1309,32 +1331,136 @@ fn revealing(
                     window,
                     cx,
                 );
-            }
+                return;
+            };
+            // What the part owns lies after it, so it is laid out in this frame only once the
+            // part has prepainted: the reveal takes both from this frame, once it has. Taken from
+            // the frame before, the content's place, which a resize or a text size moves,
+            // combined with this frame's part, could show the part with content no longer
+            // there.
+            let Some((ringed, focus)) = to_reveal(&scroll, &revealed, edge.as_ref(), window, cx)
+            else {
+                return;
+            };
+            let (scroll, blocks) = (scroll.clone(), blocks.clone());
+            window.defer(cx, move |window, cx| {
+                let mut bounds = bounds;
+                own(&mut bounds, &owned, &scroll, inset);
+                show(
+                    &scroll,
+                    &blocks,
+                    bounds,
+                    inset,
+                    ringed,
+                    move |window, cx| window.focused(cx) == focus,
+                    window,
+                    cx,
+                );
+            });
         })
 }
 
-/// Where content that no control holds lay in the last frame that drew it, top and bottom with
-/// its container's scroll at zero, for the part before it that owns it ([`own`]): the stops
-/// on either side of it cannot always show it whole with every line whole, as Overview's
-/// captured identities, six lines at 17 pt in a 440 × 490 window, lay between the last
-/// section tab's reveal and the Conversations pane's, which no stop showed.
-pub(super) type Owned = std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>;
+/// Content that no control holds, which the part before it owns ([`own`]): the stops on
+/// either side of it cannot always show it whole with every line whole, as Overview's captured
+/// identities, six lines at 17 pt in a 440 × 490 window, lay between the last section tab's
+/// reveal and the Conversations pane's, which no stop showed. Where the part and the content
+/// fit their container's view together, Tab onto the part shows both; where they cannot, as
+/// the identities cannot below about 430 px tall at 17 pt, the content is a group stop of its
+/// own, revealed from its top ([`Owned::apart`]). Each place is the frame being drawn's, top
+/// and bottom with the container's scroll at zero.
+#[derive(Clone, Default)]
+pub(super) struct Owned {
+    /// Where the content lies, none where the frame draws none of it.
+    content: std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>,
+    /// Where the part that owns it lies.
+    part: std::rc::Rc<std::cell::Cell<Option<(Pixels, Pixels)>>>,
+    /// Whether the content cannot fit the view with the part, as the last frame that drew
+    /// them laid them out.
+    apart: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl Owned {
+    /// Where the content lies in the frame being drawn, or none where it draws none.
+    pub(super) fn content(&self) -> Option<(Pixels, Pixels)> {
+        self.content.get()
+    }
+    /// Whether the content is a group stop of its own, which the frame being rendered makes
+    /// it: it cannot fit the view with the part that owns it, as the last frame that drew
+    /// them laid them out ([`Owned::lay_out_content`]).
+    pub(super) fn apart(&self) -> bool {
+        self.apart.get()
+    }
+    /// Forgets the content, which the frame being rendered does not draw.
+    pub(super) fn forget(&self) {
+        self.content.set(None);
+    }
+    /// Records where the part that owns the content lies, its children `bounds` in `scroll`'s
+    /// container as the frame prepaints them, before the content.
+    fn lay_out_part(&self, bounds: &[Bounds<Pixels>], scroll: &ScrollHandle) {
+        let offset = scroll.offset().y;
+        let part = bounds.iter().copied().reduce(|a, b| a.union(&b));
+        self.part
+            .set(part.map(|part| (part.top() - offset, part.bottom() - offset)));
+    }
+    /// For the `on_children_prepainted` of the element holding the content, which prepaints
+    /// after the part: records where its first child lies in `scroll`'s container and
+    /// whether it fits the view with the part and `inset`, the ring's room, above and below.
+    /// Where that differs from what the frame was rendered with, the window renders again, so
+    /// the content is a stop of its own exactly where it cannot fit.
+    pub(super) fn lay_out_content(
+        &self,
+        scroll: ScrollHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let owned = self.clone();
+        move |children, window, cx| {
+            let offset = scroll.offset().y;
+            let content = children
+                .first()
+                .map(|drawn| (drawn.top() - offset, drawn.bottom() - offset));
+            owned.content.set(content);
+            let (Some(content), Some(part)) = (content, owned.part.get()) else {
+                return;
+            };
+            let inset = crate::appearance::button_ring_room(cx);
+            let apart = !fits_together(part, content, inset, scroll.bounds().size.height);
+            if owned.apart.replace(apart) != apart {
+                window.defer(cx, |window, _| window.refresh());
+            }
+        }
+    }
+}
+
+/// Whether `part` and `content`, each a top and bottom, fit a view `height` tall together with
+/// `inset` above and below.
+fn fits_together(
+    part: (Pixels, Pixels),
+    content: (Pixels, Pixels),
+    inset: Pixels,
+    height: Pixels,
+) -> bool {
+    part.1.max(content.1) - part.0.min(content.0) + inset * 2. <= height
+}
 
 /// Adds to `bounds`, the children of a part focus has moved into, the content it owns below
 /// it (`owned`), where the part and that content fit `scroll`'s view together with `inset`,
 /// the ring's room, above and below: the reveal then shows them both, and the content is
 /// whole at the part's stop. Where they do not fit, the part is revealed alone, so its stop
-/// still shows it whole.
+/// still shows it whole, and the content is a stop of its own ([`Owned::apart`]). Both places
+/// are this frame's, read once the frame has prepainted the content.
 fn own(bounds: &mut Vec<Bounds<Pixels>>, owned: &Owned, scroll: &ScrollHandle, inset: Pixels) {
-    let (Some((top, bottom)), Some(part)) = (
-        owned.get(),
+    let (Some(content), Some(part)) = (
+        owned.content(),
         bounds.iter().copied().reduce(|a, b| a.union(&b)),
     ) else {
         return;
     };
     let offset = scroll.offset().y;
-    let (top, bottom) = (top + offset, bottom + offset);
-    if bottom.max(part.bottom()) - top.min(part.top()) + inset * 2. <= scroll.bounds().size.height {
+    let (top, bottom) = (content.0 + offset, content.1 + offset);
+    if fits_together(
+        (part.top(), part.bottom()),
+        (top, bottom),
+        inset,
+        scroll.bounds().size.height,
+    ) {
         bounds.push(Bounds::from_corners(
             point(part.left(), top),
             point(part.right(), bottom),

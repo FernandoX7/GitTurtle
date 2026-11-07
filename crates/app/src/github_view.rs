@@ -2458,7 +2458,7 @@ impl Render for Panel {
         // Overview's captured identities, which the last section tab owns, are drawn only on
         // a PR's Overview: elsewhere the tab owns nothing.
         if self.pull.is_none() || self.review.section != Section::Overview {
-            self.review.identities.set(None);
+            self.review.identities.forget();
         }
         // A line the last frame stood above the body moves back among the content as the
         // conversation closes, and an element before the body moves the body's scroll by the
@@ -2615,11 +2615,16 @@ impl Render for Panel {
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx)))
                 .when(self.review.section==Section::Overview,|element|element
-                    .child(div().on_children_prepainted({let (identities,scroll)=(self.review.identities.clone(),self.review.body_scroll.clone());move|children,_,_|{
-                        // Where they lie with the body at its top, for the last section tab,
-                        // which owns them (`review::Owned`).
-                        let offset=scroll.offset().y;identities.set(children.first().map(|drawn|(drawn.top()-offset,drawn.bottom()-offset)));}})
-                        .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted))))
+                    // The last section tab owns the PR's captured identities, and Tab onto it shows
+                    // them with it where both fit the body; where they cannot, they are a group stop
+                    // of their own, revealed from their top, their ring on their edge
+                    // (`review::Owned`). Their edge is always drawn, clear at rest, and with their
+                    // side padding makes the panel's text inset, so their text keeps the panel's
+                    // text edge and becoming a stop moves nothing.
+                    .child(div().on_children_prepainted(self.review.identities.lay_out_content(self.review.body_scroll.clone()))
+                        .child(self.ringed_part("identities",div(),&self.review.identities_focus,cx)
+                            .child(div().id("github-identities").role(Role::Group).aria_label("Captured identities: the base and head commits this review is pinned to").track_focus(&self.review.identities_focus.clone().tab_stop(self.review.identities.apart())).border_1().border_color(if self.ringed(&self.review.identities_focus,cx){rgb(p.accent).into()}else{gpui_kit::transparent_black()}).rounded(px(6.)).px(text_inset()-px(1.))
+                                .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).text_color(rgb(p.muted))))))
                     .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).relative().h(px(120.)).flex_shrink_0()
                         // Each row of the description its viewport shows is a line of the body.
                         .child(review::editor_rows(description))
@@ -9238,9 +9243,17 @@ mod tests {
         let grouped = part
             .as_ref()
             .and_then(|part| cx.debug_bounds(part_selector(part)));
-        let bound = grouped
-            .map_or(ring, |element| element.union(&ring))
-            .dilate(room);
+        let mut bound = grouped.map_or(ring, |element| element.union(&ring));
+        if part.as_deref() == Some("section-2")
+            && let Some((first, last)) = cx.read(|cx| panel.read(cx).review.identities.content())
+        {
+            let offset = scroll.offset().y;
+            bound = bound.union(&Bounds::from_corners(
+                point(bound.left(), first + offset),
+                point(bound.right(), last + offset),
+            ));
+        }
+        let bound = bound.dilate(room);
         let slack = px(0.5);
         (top < bound.top() - slack || bottom > bound.bottom() + slack).then(|| {
             format!(
@@ -11791,7 +11804,12 @@ mod tests {
     /// 440 × 490 window and at 18 pt in a 480 × 490 one, where the PR's captured identities,
     /// six lines between the section tabs and the Conversations pane, lay below the last
     /// tab's reveal and above the pane's, and no stop showed most of them, or any at 18 pt:
-    /// the last tab owns them now (`review::Owned`), and Tab onto it shows them with it.
+    /// the last tab owns them now (`review::Owned`), and Tab onto it shows them with it. So is
+    /// Overview at 17 pt in a 461 × 490 window, where FU28-A's probe found the same, and in a
+    /// 440 × 400 one, where the body is shorter than the tab and the identities together, so
+    /// the last tab's reveal cannot show them and they are a group stop of their own, revealed
+    /// from their top (`review::Owned::apart`); held to the tab's reveal alone, no stop showed
+    /// them below about 430 px tall.
     mod the_reveal_sweep_finds_nothing_where_it_found_reveals_to_trace {
         use super::*;
 
@@ -11810,7 +11828,9 @@ mod tests {
 
         found_walks! {
             overview_at_13_pt: Overview at (13, 461., 490.), by BOTH_WAYS;
+            overview_at_17_pt: Overview at (17, 461., 490.), by BOTH_WAYS;
             overview_at_17_pt_in_a_440_px_window: Overview at (17, 440., 490.), by BOTH_WAYS;
+            overview_at_17_pt_in_a_440_by_400_window: Overview at (17, 440., 400.), by BOTH_WAYS;
             overview_at_18_pt_in_a_480_px_window: Overview at (18, 480., 490.), by BOTH_WAYS;
             source_at_13_pt: Source at (13, 461., 490.), by BOTH_WAYS;
             connection_at_18_pt: Connection at (18, 461., 490.), by BOTH_WAYS;
@@ -11824,6 +11844,53 @@ mod tests {
             threads_at_13_pt_in_a_wide_window_by_tab: Threads at (13, 1480., 800.), by ["tab"];
             threads_at_13_pt_in_a_wide_window_by_shift_tab:
                 Threads at (13, 1480., 800.), by ["shift-tab"];
+        }
+    }
+
+    /// Overview's captured identities are a stop of their own exactly where they cannot fit the
+    /// body with the last section tab, which owns them (`review::Owned::apart`): not at 13 pt in
+    /// a 1,480 × 800 window, where Tab onto the tab shows them with it, but at 17 pt in a
+    /// 440 × 400 one, where it cannot, so Tab reaches them there (the always-on walk at that
+    /// size holds their ring and their lines whole, `overview_at_17_pt_in_a_440_by_400_window`);
+    /// a resize back gives the stop up again.
+    #[gpui::test]
+    async fn the_identities_are_a_stop_only_where_they_cannot_fit_with_the_last_tab(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let (identities, focus) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            (review.identities.clone(), review.identities_focus.clone())
+        });
+        for (size, apart) in [
+            ((13, 1480., 800.), false),
+            ((17, 440., 400.), true),
+            ((13, 1480., 800.), false),
+        ] {
+            show_surface((&app, &panel, &pull, &[]), Surface::Overview, size, cx).await;
+            assert_eq!(
+                identities.apart(),
+                apart,
+                "{size:?}: the identities cannot fit the body with the last tab"
+            );
+            // Every stop of the window's Tab order, from the Conversations pane round to it.
+            let reached = cx.update(|window, cx| {
+                let start = window.focused(cx);
+                let mut reached = false;
+                for _ in 0..200 {
+                    window.focus_next(cx);
+                    reached |= focus.is_focused(window);
+                    if window.focused(cx) == start {
+                        break;
+                    }
+                }
+                reached
+            });
+            assert_eq!(
+                reached, apart,
+                "{size:?}: the identities a stop of their own"
+            );
         }
     }
 
