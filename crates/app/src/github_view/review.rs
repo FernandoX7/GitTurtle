@@ -327,6 +327,15 @@ pub(super) const BODY: &str = "GitTurtleGithubBody";
 
 #[cfg(test)]
 thread_local! {
+    /// The revealing parts the last frame drew, each with the focus it rings on its own edge,
+    /// if any: the reveal sweep bounds a part that holds others by the focused control alone
+    /// (`github_view::tests::over_wide`). The panel's render starts it afresh.
+    pub(super) static PARTS_DRAWN: std::cell::RefCell<Vec<(SharedString, Option<FocusHandle>)>> =
+        Default::default();
+}
+
+#[cfg(test)]
+thread_local! {
     /// The text the draft status's tooltip last showed, for a test to read back
     /// ([`Panel::render_save_status`]).
     pub(super) static SAVE_STATUS_TOOLTIP: std::cell::RefCell<Option<SharedString>> =
@@ -1376,6 +1385,8 @@ fn revealing(
         // Where tests find the part (`github_view::tests::sweep_reveals`).
         .debug_selector(move || format!("github-part-{part}"))
         .on_children_prepainted(move |bounds, window, cx| {
+            #[cfg(test)]
+            PARTS_DRAWN.with(|parts| parts.borrow_mut().push((name.clone(), edge.clone())));
             let innermost = window
                 .context_stack()
                 .iter()
@@ -1709,6 +1720,8 @@ impl Panel {
             // Where tests find the part (`github_view::tests::over_wide`).
             .debug_selector(move || format!("github-part-{part}"))
             .on_children_prepainted(move |bounds, window, cx| {
+                #[cfg(test)]
+                PARTS_DRAWN.with(|parts| parts.borrow_mut().push((name.clone(), None)));
                 let innermost = window
                     .context_stack()
                     .iter()
@@ -2534,161 +2547,181 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2()
-            .child(crate::native_accessibility::clips_children(
-                div()
-                    .id("github-file-focus")
-                    .debug_selector(|| "github-file-focus".into())
-                    .key_context("GitTurtleGithubFiles")
-                    .on_action(cx.listener(|this, _: &ReviewUp, window, cx| {
-                        this.review_key("up", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewDown, window, cx| {
-                        this.review_key("down", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewHome, window, cx| {
-                        this.review_key("home", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewEnd, window, cx| {
-                        this.review_key("end", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewPageUp, window, cx| {
-                        this.review_key("pageup", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewPageDown, window, cx| {
-                        this.review_key("pagedown", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewExtendUp, window, cx| {
-                        this.review_key("up", true, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewExtendDown, window, cx| {
-                        this.review_key("down", true, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .on_action(cx.listener(|this, _: &ReviewAccept, window, cx| {
-                        this.review_key("enter", false, window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .h(fit.list)
-                    .border_1()
-                    .border_color(rgb(if self.ringed(&self.review.file_focus, cx) {
-                        p.accent
-                    } else {
-                        p.border
-                    }))
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .track_focus(&self.review.file_focus)
-                    .role(Role::ListBox)
-                    .aria_label("Pull request changed files")
-                    .aria_description(format!(
-                        "Up and Down select a file. {} moves to its patch.",
-                        shortcuts::ENTER
-                    ))
-                    // Its rows are lines of the body where the list shows them, the part it
-                    // shows of one its edge cuts: the rows it has scrolled out of itself are
-                    // none ([`clipped`], [`keep_line`]).
-                    .child(
-                        clipped(
-                            uniform_list(
-                                "github-file-list",
-                                self.review.files.len(),
-                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                    range
-                                        .map(|index| {
-                                            let file = &this.review.files[index];
-                                            let selected = this.review.selected_file == Some(index);
-                                            let path = file.filename.clone();
-                                            let hover = palette(cx).row_hover(selected);
-                                            div()
-                                                .id(("github-file", index))
-                                                .debug_selector(move || {
-                                                    format!("github-file-row-{index}")
-                                                })
-                                                .w_full()
-                                                .h(appearance::ui_size(54.))
-                                                .px_3()
-                                                .flex()
-                                                .flex_col()
-                                                .justify_center()
-                                                .gap_1()
-                                                .border_l_2()
-                                                .border_color(rgb(if selected {
-                                                    palette(cx).accent
-                                                } else {
-                                                    palette(cx).panel
-                                                }))
-                                                .bg(rgb(if selected {
-                                                    palette(cx).selected
-                                                } else {
-                                                    palette(cx).panel
-                                                }))
-                                                .hover(move |style| style.bg(rgb(hover)))
-                                                .role(Role::ListBoxOption)
-                                                .aria_label(format!(
-                                                    "{} · {} · {}, {}",
-                                                    file.filename,
-                                                    file.status,
-                                                    crate::counted(
-                                                        file.additions,
-                                                        "addition",
-                                                        "additions"
-                                                    ),
-                                                    crate::counted(
-                                                        file.deletions,
-                                                        "deletion",
-                                                        "deletions"
-                                                    )
-                                                ))
-                                                .aria_selected(selected)
-                                                .cursor_pointer()
-                                                // The row is one line of the body: its two
-                                                // lines of text stand on its own surface.
-                                                .child(one_line())
-                                                .child(
-                                                    div()
-                                                        .text_size(appearance::ui_text(12.))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .truncate()
-                                                        .child(path.clone()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(appearance::ui_text(10.))
-                                                        .text_color(rgb(palette(cx).muted))
-                                                        .child(format!(
-                                                            "{} · +{} −{}",
-                                                            file.status,
-                                                            file.additions,
-                                                            file.deletions
-                                                        )),
-                                                )
-                                                .tooltip(move |window, cx| {
-                                                    Tooltip::new(path.clone()).build(window, cx)
-                                                })
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.select_review_file(index, window, cx)
-                                                    },
-                                                ))
-                                                .into_any_element()
-                                        })
-                                        .collect::<Vec<_>>()
-                                }),
-                            )
-                            .size_full()
-                            .track_scroll(&self.review.file_scroll),
-                        )
-                        .debug_selector(|| "github-file-rows".into())
-                        .size_full(),
+            // The list's box is a part of its own, so Tab onto the list shows the box with its
+            // ring's room and leaves its pager, a stop of its own, to its own reveal.
+            .child(
+                self.part("file-rows", div(), cx).flex().flex_col().child(
+                    crate::native_accessibility::clips_children(
+                        div()
+                            .id("github-file-focus")
+                            .debug_selector(|| "github-file-focus".into())
+                            .key_context("GitTurtleGithubFiles")
+                            .on_action(cx.listener(|this, _: &ReviewUp, window, cx| {
+                                this.review_key("up", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewDown, window, cx| {
+                                this.review_key("down", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewHome, window, cx| {
+                                this.review_key("home", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewEnd, window, cx| {
+                                this.review_key("end", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewPageUp, window, cx| {
+                                this.review_key("pageup", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewPageDown, window, cx| {
+                                this.review_key("pagedown", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewExtendUp, window, cx| {
+                                this.review_key("up", true, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewExtendDown, window, cx| {
+                                this.review_key("down", true, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .on_action(cx.listener(|this, _: &ReviewAccept, window, cx| {
+                                this.review_key("enter", false, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .h(fit.list)
+                            .border_1()
+                            .border_color(rgb(if self.ringed(&self.review.file_focus, cx) {
+                                p.accent
+                            } else {
+                                p.border
+                            }))
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .track_focus(&self.review.file_focus)
+                            .role(Role::ListBox)
+                            .aria_label("Pull request changed files")
+                            .aria_description(format!(
+                                "Up and Down select a file. {} moves to its patch.",
+                                shortcuts::ENTER
+                            ))
+                            // Its rows are lines of the body where the list shows them, the part it
+                            // shows of one its edge cuts: the rows it has scrolled out of itself are
+                            // none ([`clipped`], [`keep_line`]).
+                            .child(
+                                clipped(
+                                    uniform_list(
+                                        "github-file-list",
+                                        self.review.files.len(),
+                                        cx.processor(
+                                            |this, range: std::ops::Range<usize>, _, cx| {
+                                                range
+                                                    .map(|index| {
+                                                        let file = &this.review.files[index];
+                                                        let selected = this.review.selected_file
+                                                            == Some(index);
+                                                        let path = file.filename.clone();
+                                                        let hover = palette(cx).row_hover(selected);
+                                                        div()
+                                                            .id(("github-file", index))
+                                                            .debug_selector(move || {
+                                                                format!("github-file-row-{index}")
+                                                            })
+                                                            .w_full()
+                                                            .h(appearance::ui_size(54.))
+                                                            .px_3()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .justify_center()
+                                                            .gap_1()
+                                                            .border_l_2()
+                                                            .border_color(rgb(if selected {
+                                                                palette(cx).accent
+                                                            } else {
+                                                                palette(cx).panel
+                                                            }))
+                                                            .bg(rgb(if selected {
+                                                                palette(cx).selected
+                                                            } else {
+                                                                palette(cx).panel
+                                                            }))
+                                                            .hover(move |style| {
+                                                                style.bg(rgb(hover))
+                                                            })
+                                                            .role(Role::ListBoxOption)
+                                                            .aria_label(format!(
+                                                                "{} · {} · {}, {}",
+                                                                file.filename,
+                                                                file.status,
+                                                                crate::counted(
+                                                                    file.additions,
+                                                                    "addition",
+                                                                    "additions"
+                                                                ),
+                                                                crate::counted(
+                                                                    file.deletions,
+                                                                    "deletion",
+                                                                    "deletions"
+                                                                )
+                                                            ))
+                                                            .aria_selected(selected)
+                                                            .cursor_pointer()
+                                                            // The row is one line of the body: its two
+                                                            // lines of text stand on its own surface.
+                                                            .child(one_line())
+                                                            .child(
+                                                                div()
+                                                                    .text_size(appearance::ui_text(
+                                                                        12.,
+                                                                    ))
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .truncate()
+                                                                    .child(path.clone()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(appearance::ui_text(
+                                                                        10.,
+                                                                    ))
+                                                                    .text_color(rgb(
+                                                                        palette(cx).muted
+                                                                    ))
+                                                                    .child(format!(
+                                                                        "{} · +{} −{}",
+                                                                        file.status,
+                                                                        file.additions,
+                                                                        file.deletions
+                                                                    )),
+                                                            )
+                                                            .tooltip(move |window, cx| {
+                                                                Tooltip::new(path.clone())
+                                                                    .build(window, cx)
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.select_review_file(
+                                                                        index, window, cx,
+                                                                    )
+                                                                },
+                                                            ))
+                                                            .into_any_element()
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            },
+                                        ),
+                                    )
+                                    .size_full()
+                                    .track_scroll(&self.review.file_scroll),
+                                )
+                                .debug_selector(|| "github-file-rows".into())
+                                .size_full(),
+                            ),
                     ),
-            ))
+                ),
+            )
             .child(
                 self.part("file-pager", div(), cx)
                     .min_h(appearance::ui_size(PAGER_ROW))

@@ -2358,6 +2358,8 @@ impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.announce(window, cx);
         self.name_row_parts();
+        #[cfg(test)]
+        review::PARTS_DRAWN.with(|parts| parts.borrow_mut().clear());
         // The controls this frame draws enabled that can take a pane away ([`Panel::closing`]),
         // and the one pressed since the last frame, which this frame alone may hand focus to.
         self.review.closers_drawn.get_mut().clear();
@@ -8862,6 +8864,16 @@ mod tests {
 
     /// The selector of the part of the body named `part` (`review::revealing`), made once for
     /// the whole test run.
+    /// The selector of the element of the part `part` ([`part_selector`]), or of the one part
+    /// whose element carries a selector of its own instead, the destination field's, which
+    /// tests find as the field.
+    fn part_element(part: &str) -> &'static str {
+        match part {
+            "destination" => "github-destination",
+            part => part_selector(part),
+        }
+    }
+
     fn part_selector(part: &str) -> &'static str {
         thread_local! {
             static MADE: RefCell<std::collections::HashMap<String, &'static str>> =
@@ -9221,8 +9233,12 @@ mod tests {
     /// (`review::Blocks::kept`) lies inside the focused part, the part's element as its debug
     /// selector finds it ([`part_selector`]) with the focused control's ring and the content the
     /// part owns (`review::Owned`), all with the ring's room, or the finding names both. A part
-    /// whose element the sweep cannot find groups nothing it can see with the control, and the
-    /// control with its ring's room bounds it. A row of the PR list, which scrolls its rows
+    /// whose element the sweep cannot find fails the sweep ([`part_element`]): bounded by the
+    /// control alone, the check rested on a selector that happened to be missing, and the PR
+    /// list's own selector once stood in for its part's. A part that holds other parts, as a
+    /// list holds its rows, groups none of them with the control, and the control with its
+    /// ring's room bounds it, unless the part rings itself on its edge, as the connection pane
+    /// does (`review::PARTS_DRAWN`). A row of the PR list, which scrolls its rows
     /// itself, is bounded by name, whatever parts and selectors lie around it: its title with
     /// its ring's room, which is all the body may show for it (`review::Panel::pull_part`).
     /// [`needless_cut`] holds a stop to what its reveal kept, so it could not
@@ -9256,11 +9272,35 @@ mod tests {
                 .iter()
                 .any(|context| context.contains(review::PULL))
         });
-        let grouped = part
-            .as_ref()
-            .filter(|_| !row)
-            .and_then(|part| cx.debug_bounds(part_selector(part)));
-        let mut bound = grouped.map_or(ring, |element| element.union(&ring));
+        let grouped = part.as_ref().filter(|_| !row).map(|part| {
+            cx.debug_bounds(part_element(part)).unwrap_or_else(|| {
+                panic!(
+                    "{stop}: the sweep finds no element for the focused part {part:?}; \
+                     a debug selector of the element's own replaced its part's"
+                )
+            })
+        });
+        let focused = cx.update(|window, cx| window.focused(cx));
+        let drawn = review::PARTS_DRAWN.with(|parts| parts.borrow().clone());
+        let mut holds_parts = |element: &Bounds<Pixels>, part: &str| {
+            let rings_itself = drawn
+                .iter()
+                .any(|(name, edge)| name.as_ref() == part && edge.is_some() && *edge == focused);
+            !rings_itself
+                && drawn.iter().any(|(other, _)| {
+                    other.as_ref() != part
+                        && cx.debug_bounds(part_selector(other)).is_some_and(|inner| {
+                            inner.top() >= element.top()
+                                && inner.bottom() <= element.bottom()
+                                && inner.left() >= element.left()
+                                && inner.right() <= element.right()
+                        })
+                })
+        };
+        let mut bound = match (grouped, part.as_deref()) {
+            (Some(element), Some(part)) if !holds_parts(&element, part) => element.union(&ring),
+            _ => ring,
+        };
         if part.as_deref() == Some("section-2")
             && let Some((first, last)) = cx.read(|cx| panel.read(cx).review.identities.content())
         {
