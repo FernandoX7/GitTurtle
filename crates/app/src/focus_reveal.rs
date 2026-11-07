@@ -9,7 +9,9 @@
 //! the nearest edge showed its foot first and then its top, a swing between
 //! edges. Only a change of focus reveals, or a page that opens with focus on a
 //! control ([`FocusReveal::reveal_next_focus`]), or a resize or text-size
-//! change that cuts the focused control the last frame showed whole. That
+//! change that cuts the focused control the last frame showed whole, or a
+//! change of what the container holds that moves or resizes it
+//! ([`FocusReveal::content`]). That
 //! last reveal follows how focus was placed, not the last input: focus the
 //! keyboard placed stays in view when the window is then resized by
 //! dragging its edge, which moves the pointer, as the app's own focus ring
@@ -88,6 +90,8 @@ struct Observation {
     focus: Option<FocusHandle>,
     size: Size<Pixels>,
     rem_size: Pixels,
+    /// What the view says the container holds ([`FocusReveal::content`]).
+    content: u64,
 }
 
 /// A control a frame drew: its focus handle, where it lay with the container
@@ -187,6 +191,11 @@ pub(crate) struct FocusReveal {
     /// resize revealed nothing and the control stayed cut for the rest of
     /// the drag.
     pending: Rc<Cell<Option<Pixels>>>,
+    /// What the container holds in the frame being rendered, as far as it
+    /// places its controls, and how far the control holding focus has moved
+    /// since the last frame drew it, as the view knows before layout
+    /// ([`Self::content`]).
+    content: Rc<Cell<(u64, Pixels)>>,
     /// The focus handles [`Self::focus`] has handed out, by control id:
     /// those of the controls the last frame drew, of the one holding focus
     /// wherever it is, as one a person has scrolled out of a list that
@@ -212,6 +221,7 @@ impl FocusReveal {
             placed: Rc::default(),
             shown: Rc::default(),
             pending: Rc::default(),
+            content: Rc::default(),
             controls: Rc::default(),
             drawing: Rc::default(),
             drawn: Rc::default(),
@@ -297,6 +307,23 @@ impl FocusReveal {
         self.next_focus.set(true);
     }
 
+    /// For the render of the view that builds the container, before
+    /// [`Self::reveal`], in every frame: what the container holds, as far as
+    /// it places its controls (`key`), and how far that has moved the control
+    /// holding focus since the last frame drew it (`moved`), where the view
+    /// knows it before layout, as the Working body knows that its list's
+    /// floor has given up a row above the composer. A change of `key` under
+    /// unchanged focus reveals the control as a resize does where the last
+    /// frame showed it so, whoever placed the focus, since the change is
+    /// no one's input: by the least scroll, from where `moved` puts it, so
+    /// the frame that first draws it moved shows it whole, and never where
+    /// the person has scrolled it out of view. Only a resize revealed, so a
+    /// refresh that staged a file moved the focused commit title a row up
+    /// and cut its label at the body's top.
+    pub(crate) fn content(&self, key: u64, moved: Pixels) {
+        self.content.set((key, moved));
+    }
+
     /// Whether focus lies on one of the controls the container last drew,
     /// or inside one, as on a list's row or an editor's text: a view that
     /// scrolls the container for another reason leaves it where it is
@@ -344,7 +371,9 @@ impl FocusReveal {
             inner.reveal(window, cx);
         }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
-            let at = bounds + point(px(0.), self.scroll.offset().y);
+            // Where the content has moved it since the last frame drew it.
+            let moved = self.content.get().1;
+            let at = bounds + point(px(0.), self.scroll.offset().y + moved);
             if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due) {
                 self.scroll.set_offset(offset);
             }
@@ -525,6 +554,7 @@ impl FocusReveal {
             focus: window.focused(cx),
             size: self.scroll.bounds().size,
             rem_size: window.rem_size(),
+            content: self.content.get().0,
         }
     }
 
@@ -535,14 +565,16 @@ impl FocusReveal {
     /// size or the text size has changed since a frame that showed the
     /// control whole, or a control taller than the view by its leading edge
     /// (`shown`), focus having been placed there in a way the trigger
-    /// reveals, so the change is what cuts it.
+    /// reveals, so the change is what cuts it; or what the container holds
+    /// has changed ([`Self::content`]) since such a frame, however focus was
+    /// placed.
     fn due(&self, observed: &Observation, window: &Window) -> Option<Due> {
         let last = self.observed.borrow();
         if self.next_focus.get() {
             Some(Due::Focus)
         } else if last.focus != observed.focus {
             self.revealing(window).then_some(Due::Focus)
-        } else if *last != *observed && self.placed.get() {
+        } else if *last != *observed && (self.placed.get() || last.content != observed.content) {
             self.shown.get().map(Due::Resize)
         } else {
             None
@@ -626,6 +658,8 @@ impl FocusReveal {
             }));
         *self.observed.borrow_mut() = observed;
         self.next_focus.set(false);
+        // The move is the one since the last frame, which this frame now is.
+        self.content.set((self.content.get().0, px(0.)));
         #[cfg(test)]
         self.painted.borrow_mut().push(tests::Painted {
             focus: window.focused(cx),

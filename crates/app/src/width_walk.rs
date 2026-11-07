@@ -1395,7 +1395,9 @@ async fn the_github_panel_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext)
 /// tests' text system, was drawn whole in its 99 px box and cut by half a
 /// pixel, since GPUI ends a line in an ellipsis only once its width, rounded
 /// down, exceeds the room. The window is the first from 515 px whose room
-/// leaves the name less than a pixel too wide, as the row's padding sets it.
+/// leaves the name less than a pixel too wide, as the row's padding sets it,
+/// and 1,500 px tall, so the list shows the row beside the composer's
+/// Description section, which no longer leaves for room.
 #[gpui::test]
 async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = open(Page::Working, cx).await;
@@ -1410,7 +1412,7 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
     });
     let mut found = None;
     for width in (515..535).map(|width| width as f32 * 0.5 + 257.5) {
-        cx.simulate_resize(size(px(width), px(980.)));
+        cx.simulate_resize(size(px(width), px(1500.)));
         frame(cx);
         app.update(cx, |_, cx| cx.notify());
         frame(cx);

@@ -526,6 +526,11 @@ struct GitTurtle {
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
     working_scroll: UniformListScrollHandle,
+    /// The Working inspector's list and composer as one scrolling area,
+    /// where the body cannot hold the list's floor and the composer with its
+    /// Description section: Tab and Shift+Tab reveal each composer stop whole
+    /// (`GitTurtle::render_working_body`).
+    working_body: focus_reveal::FocusReveal,
     /// A row moving between Staged and Unstaged after its Stage or Unstage.
     working_travel: motion::RowTravel,
     /// The pointer where a row's Stage or Unstage was pressed, until it moves.
@@ -924,6 +929,7 @@ impl GitTurtle {
             working_rows: Vec::new(),
             working_selected: None,
             working_scroll: UniformListScrollHandle::new(),
+            working_body: focus_reveal::FocusReveal::new(focus_reveal::Trigger::Keyboard),
             working_travel: motion::RowTravel::Idle,
             still_pointer: None,
             page: if initial.is_some() {

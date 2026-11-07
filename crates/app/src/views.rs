@@ -25815,7 +25815,9 @@ pub(crate) mod tests {
             };
             // The composer below the list: its heading whole or absent, then
             // the title's label and field a scaled 4 px apart, whole above the
-            // commit action and the status bar.
+            // commit action, in a body that ends above the status bar and
+            // scrolls the list and the composer together where it must.
+            let body = bounds(cx, "working-body");
             let composer = bounds(cx, "commit-composer");
             let label = bounds(cx, "commit-title-label");
             let title = bounds(cx, "commit-title");
@@ -25832,8 +25834,9 @@ pub(crate) mod tests {
                     && title.top() - label.bottom() >= gap - px(0.01)
                     && commit.top() - title.bottom() >= gap - px(0.01)
                     && title.size.height >= field
-                    && commit.bottom() <= px(height) - status,
-                "{at}: {composer:?}, title {label:?} {title:?}, commit {commit:?}"
+                    && commit.bottom() <= composer.bottom()
+                    && body.bottom() <= px(height) - status + px(0.01),
+                "{at}: {composer:?}, title {label:?} {title:?}, commit {commit:?} in {body:?}"
             );
             // One leading inset for every row.
             let leading = inspector.left() + inset;
@@ -26964,12 +26967,11 @@ pub(crate) mod tests {
                     ),
                 ]
             });
-            let description = cx.debug_bounds("commit-description").is_some();
-            assert_eq!(description, height > 490., "{at}: the description");
+            assert!(
+                cx.debug_bounds("commit-description").is_some(),
+                "{at}: the description"
+            );
             for (whole, field, shown) in placeholders {
-                if whole == DESCRIPTION_PLACEHOLDER && !description {
-                    continue;
-                }
                 let field = field.unwrap_or_else(|| panic!("{at}: {whole:?} unpainted"));
                 assert!(
                     width_of(cx, &shown, appearance::ui_text(12.)) <= field.size.width,
@@ -30376,8 +30378,9 @@ pub(crate) mod tests {
     }
 
     /// With two staged files in a 461 × 490 window, the composer's heading
-    /// is drawn whole or not at all, above the commit action and the status
-    /// bar: whole at the default size, and at 18 pt, where the inspector
+    /// is drawn whole or not at all, above the commit action, in a body that
+    /// ends above the status bar and scrolls the list and the composer
+    /// together: whole at the default size, and at 18 pt, where the inspector
     /// cannot keep it beside the list's heading and first file and the
     /// title's field, it leaves and the title's label leads the composer.
     #[gpui::test]
@@ -30407,9 +30410,12 @@ pub(crate) mod tests {
             let composer = cx.debug_bounds("commit-composer").unwrap();
             let label = cx.debug_bounds("commit-title-label").unwrap();
             let commit = cx.debug_bounds("commit-staged").unwrap();
+            let body = cx.debug_bounds("working-body").unwrap();
             assert!(
-                commit.bottom() <= px(490.) - status && label.top() >= composer.top(),
-                "{text} pt: {composer:?}, {label:?}, {commit:?}"
+                body.bottom() <= px(490.) - status + px(0.01)
+                    && commit.bottom() <= composer.bottom()
+                    && label.top() >= composer.top(),
+                "{text} pt: {composer:?}, {label:?}, {commit:?} in {body:?}"
             );
             let heading = cx.debug_bounds("commit-composer-heading");
             if text == 13 {
@@ -30430,13 +30436,14 @@ pub(crate) mod tests {
 
     /// With a Git identity, as the native review's fixture has, a short
     /// composer keeps its scaled 4 px between the title's label and field
-    /// and between its last row (the title's field, or the description's
-    /// hint where the section shows) and the commit action, in a 461 × 490
-    /// window at the default size and at 18 pt and in a 640 × 680 one at
-    /// both: the height its share leaves over once gathered between the
-    /// field and the action (10 px at the default size and 16.5 px at 18 pt
-    /// in 640 × 680). Below the action is only the composer's padding, and
-    /// the composer ends at the body's foot above the status bar; the rest,
+    /// and between its last row (the description's hint) and the commit
+    /// action, in a 461 × 490 window at the default size and at 18 pt and in
+    /// a 640 × 680 one at both: the height its share leaves over once
+    /// gathered between the field and the action (10 px at the default size
+    /// and 16.5 px at 18 pt in 640 × 680). Below the action is only the
+    /// composer's padding, and the composer ends at the body's foot above
+    /// the status bar, or, where the list and the composer scroll together,
+    /// directly below the list's floor in a body that ends there; the rest,
     /// less than a row, lies between the list's last whole row and the
     /// composer, where it once lay below the action.
     #[gpui::test]
@@ -30448,11 +30455,11 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
         settle(&app, cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for (text, width, height, description) in [
-            (13, 461., 490., false),
-            (18, 461., 490., false),
-            (13, 640., 680., true),
-            (18, 640., 680., false),
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 640., 680.),
+            (18, 640., 680.),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
@@ -30475,9 +30482,7 @@ pub(crate) mod tests {
             let label = bounds(cx, "commit-title-label");
             let title = bounds(cx, "commit-title");
             let commit = bounds(cx, "commit-staged");
-            let hint = cx.debug_bounds("commit-description-hint");
-            assert_eq!(hint.is_some(), description, "{at}: the description");
-            let last = hint.unwrap_or(title);
+            let last = bounds(cx, "commit-description-hint");
             let slack = px(0.5);
             assert!(
                 (title.top() - label.bottom() - gap).abs() <= slack,
@@ -30502,10 +30507,15 @@ pub(crate) mod tests {
                 list.bottom() <= composer.top() + slack && composer.top() - list.bottom() < row,
                 "{at}: the list {list:?} above {composer:?}"
             );
+            let scrolls = composer.bottom() > body.bottom() + slack;
             assert!(
-                (body.bottom() - composer.bottom()).abs() <= slack
+                (scrolls || (body.bottom() - composer.bottom()).abs() <= slack)
                     && (px(height) - status - body.bottom()).abs() <= slack,
                 "{at}: {composer:?} ends at the body's foot {body:?}, above the status bar"
+            );
+            assert!(
+                !scrolls || (composer.top() - list.bottom()).abs() <= slack,
+                "{at}: scrolling, {composer:?} follows the list's floor {list:?}"
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -30677,21 +30687,18 @@ pub(crate) mod tests {
     }
 
     /// The composer's Description section (its label, field and hint) is
-    /// drawn whole inside the scrolling fields, above the commit action, or
-    /// not at all, with and without a Git identity (whose absence adds the
-    /// "Set your commit identity" guidance below it). In a 461 × 490 window
-    /// the composer is too short for it, so no part of "Description ·
-    /// optional" shows below the title, and Tab from the title passes no
-    /// undrawn field; in a 640 × 680 window with an identity it keeps a
-    /// one-line field; in a 1480 × 980 window it shows at the default size
-    /// and at 18 pt, and in a 461 × 1400 one at 18 pt, where its label drops
-    /// "· optional". Every text and field the composer draws lies inside its
-    /// fields' box and the window, at the default size and at 18 pt, in
-    /// 461 × 490, 640 × 680, 461 × 980, 461 × 1400 and 1480 × 980 windows,
-    /// and its label keeps one line. A focused description that leaves hands
-    /// focus to the title.
+    /// always drawn whole, above the commit action, with and without a Git
+    /// identity (whose absence adds the "Set your commit identity" guidance
+    /// below it), at the default size and at 18 pt, in 461 × 490, 640 × 680,
+    /// 461 × 980, 461 × 1400 and 1480 × 980 windows: inside the composer's
+    /// fields and the window where the body holds the list and the
+    /// composer, and otherwise inside the composer as the two scroll
+    /// together, where Tab from the title reaches the description. Its
+    /// label keeps one line and drops "· optional" where the two do not
+    /// share it, as in a 461 × 1400 window at 18 pt. In a 461 × 490 window
+    /// the section once left, its field out of the Tab order.
     #[gpui::test]
-    async fn composer_description_is_whole_or_absent(cx: &mut TestAppContext) {
+    async fn composer_description_is_whole_and_revealed_on_focus(cx: &mut TestAppContext) {
         let (fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
         const SECTION: [&str; 3] = [
@@ -30699,17 +30706,15 @@ pub(crate) mod tests {
             "commit-description",
             "commit-description-hint",
         ];
-        // Each size, and whether the section shows there without and with
-        // an identity (`None` where either is whole).
         let sizes = [
-            (13, 461., 490., Some((false, false))),
-            (18, 461., 490., Some((false, false))),
-            (13, 640., 680., Some((false, true))),
-            (18, 640., 680., None),
-            (18, 461., 980., None),
-            (18, 461., 1400., Some((true, true))),
-            (13, 1480., 980., Some((true, true))),
-            (18, 1480., 980., Some((true, true))),
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 640., 680.),
+            (18, 640., 680.),
+            (18, 461., 980.),
+            (18, 461., 1400.),
+            (13, 1480., 980.),
+            (18, 1480., 980.),
         ];
         for identity in [false, true] {
             // The repository's own identity, which the app reads back. The app
@@ -30733,7 +30738,7 @@ pub(crate) mod tests {
                 Some((name.to_owned(), email.to_owned())),
                 "the fixture's identity"
             );
-            for (text, width, height, expected) in sizes {
+            for (text, width, height) in sizes {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 cx.simulate_resize(size(px(width), px(height)));
                 draw(cx);
@@ -30754,23 +30759,21 @@ pub(crate) mod tests {
                 let composer = cx.debug_bounds("commit-composer").unwrap();
                 let fields = cx.debug_bounds("commit-composer-fields").unwrap();
                 let commit = cx.debug_bounds("commit-staged").unwrap();
+                let body = cx.debug_bounds("working-body").unwrap();
+                let slack = px(0.5);
+                // The composer scrolls with the list where the body cannot
+                // hold both; otherwise it ends inside the window.
+                let scrolls = composer.bottom() > body.bottom() + slack;
                 assert!(
-                    composer.bottom() <= px(height) && commit.bottom() <= composer.bottom(),
+                    (scrolls || composer.bottom() <= px(height))
+                        && commit.bottom() <= composer.bottom(),
                     "{at}: {commit:?} in {composer:?}"
                 );
-                // The whole section, or none of it.
+                // The whole section, always.
                 let section = SECTION.map(|selector| cx.debug_bounds(selector));
-                let shown = section[0].is_some();
-                assert!(
-                    section.iter().all(|part| part.is_some() == shown),
-                    "{at}: {section:?}"
-                );
-                if let Some((without, with)) = expected {
-                    assert_eq!(shown, if identity { with } else { without }, "{at}");
-                }
-                // Every text and field inside the scrolling fields is whole
+                assert!(section.iter().all(Option::is_some), "{at}: {section:?}");
+                // Every text and field inside the composer's fields is whole
                 // in their box, which ends above the commit action.
-                let slack = px(0.5);
                 for selector in ["commit-title-label", "commit-title"]
                     .into_iter()
                     .chain(SECTION)
@@ -30832,40 +30835,452 @@ pub(crate) mod tests {
             }
         }
 
-        // Tab from the title in the short window passes no undrawn field.
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(461.), px(490.)));
-        draw(cx);
+        // Tab from the title in the short window reaches the description.
         let (title, description) = app.read_with(cx, |app, cx| {
             (
                 app.commit_title.read(cx).focus_handle(cx),
                 app.commit_message.read(cx).focus_handle(cx),
             )
         });
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            cx.update(|window, cx| window.focus(&title, cx));
+            draw(cx);
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| description.is_focused(window)),
+                "{text} pt: Tab from the title reaches the description"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the Working inspector's body cannot hold the file list's floor
+    /// and the composer with its Description section, as at 18 pt in a
+    /// 461 × 490 window, the list and the composer scroll together as one
+    /// area, and Tab from the commit title reaches the description, then,
+    /// with a file staged, Commit, each revealed whole inside the body: the
+    /// title's label and field, the Description section's label, field and
+    /// hint, and Commit, a gap clear of the body's edges; Shift+Tab walks
+    /// back the same way. With nothing staged Commit is disabled and out of
+    /// the Tab order, and the hint revealed with the description says why.
+    /// It once dropped the description from the Tab order there and drew
+    /// Commit below the window, so Tab went from the title to Main Menu
+    /// (QA-106). At 13 pt in a 1480 × 973 window nothing scrolls.
+    #[gpui::test]
+    async fn a_short_working_body_scrolls_and_reveals_each_composer_stop(cx: &mut TestAppContext) {
+        const TITLE: [&str; 2] = ["commit-title-label", "commit-title"];
+        const DESCRIPTION: [&str; 3] = [
+            "commit-description-label",
+            "commit-description",
+            "commit-description-hint",
+        ];
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let root = fixture.path().join("narrow");
+        let (title, description) = app.read_with(cx, |app, cx| {
+            (
+                app.commit_title.read(cx).focus_handle(cx),
+                app.commit_message.read(cx).focus_handle(cx),
+            )
+        });
+        // Each part of a stop lies whole inside the body's view.
+        let assert_whole = |cx: &mut VisualTestContext, parts: &[&'static str], at: &str| {
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let slack = px(0.5);
+            for selector in parts {
+                let part = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector} drawn"));
+                assert!(
+                    part.top() + slack >= body.top() && part.bottom() <= body.bottom() + slack,
+                    "{at}: {selector} {part:?} whole in the body {body:?}"
+                );
+            }
+        };
+        // Each count is read by the status the test asks for; no quiet read
+        // replaces it.
+        hold_quiet_reads_for_test(&app, cx);
+        // With a title, Commit waits only for a staged file.
         cx.update(|window, cx| window.focus(&title, cx));
+        cx.simulate_input("Title line");
+        draw(cx);
+        for staged in [true, false] {
+            fixture_git(&root, &["reset", "--quiet"]);
+            if staged {
+                fixture_git(&root, &["add", "alpha.txt"]);
+            }
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            draw(cx);
+            let at = format!("18 pt in 461 × 490, staged {staged}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_paths.staged_count),
+                usize::from(staged),
+                "{at}"
+            );
+            let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
+            assert!(max > px(0.), "{at}: the body scrolls");
+            // From the title, by the keyboard.
+            cx.update(|window, cx| window.focus(&title, cx));
+            draw(cx);
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| description.is_focused(window)),
+                "{at}: Tab from the title reaches the description"
+            );
+            assert_whole(cx, &DESCRIPTION, &format!("{at}, the description"));
+            let commit = app.read_with(cx, |app, cx| app.working_body.focus("commit-staged", cx));
+            if staged {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                assert!(
+                    cx.update(|window, _| commit.is_focused(window)),
+                    "{at}: Tab from the description reaches Commit"
+                );
+                assert_whole(cx, &["commit-staged"], &format!("{at}, Commit"));
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+                assert!(
+                    cx.update(|window, _| description.is_focused(window)),
+                    "{at}: Shift+Tab from Commit returns to the description"
+                );
+                assert_whole(cx, &DESCRIPTION, &format!("{at}, back on the description"));
+            } else {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                assert!(
+                    !cx.update(|window, _| commit.is_focused(window)),
+                    "{at}: Commit disabled is no stop"
+                );
+                cx.simulate_keystrokes("shift-tab");
+                draw(cx);
+            }
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            assert!(
+                cx.update(|window, _| title.is_focused(window)),
+                "{at}: Shift+Tab from the description returns to the title"
+            );
+            assert_whole(cx, &TITLE, &format!("{at}, back on the title"));
+        }
+        // The guard: at 13 pt in 1480 × 973 nothing scrolls and the
+        // inspector is laid out as before the body could scroll, the
+        // composer ending at the body's foot.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        draw(cx);
+        let laid_out = |x: f32, y: f32, width: f32, height: f32| {
+            Some(Bounds::new(
+                point(px(x), px(y)),
+                size(px(width), px(height)),
+            ))
+        };
+        for (selector, before) in [
+            ("working-body", laid_out(1200., 300., 280., 647.)),
+            ("working-pane", laid_out(1201., 300., 279., 275.)),
+            ("commit-composer", laid_out(1200., 575., 280., 372.)),
+            ("commit-composer-fields", laid_out(1200., 606.5, 280., 295.)),
+            ("commit-title", laid_out(1209.5, 662., 261., 26.)),
+            ("commit-description", laid_out(1209.5, 719., 261., 153.5)),
+            ("commit-description-hint", laid_out(1209.5, 879., 261., 16.)),
+            ("commit-staged", laid_out(1209.5, 901.5, 261., 36.)),
+        ] {
+            assert_eq!(
+                cx.debug_bounds(selector),
+                before,
+                "13 pt in 1480 × 973: {selector}"
+            );
+        }
+    }
+
+    /// Reads the working state again as the watcher asks after a change
+    /// made outside the app, a quiet read that moves no focus, and draws
+    /// once its rows have landed.
+    fn watcher_reload(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        crate::path_filter::filters_land(app, cx);
+        draw(cx);
+        draw(cx);
+    }
+
+    /// Where the list and the composer scroll together, at 18 pt in a
+    /// 461 × 490 window, a watcher's refresh that changes the list's rows in number
+    /// returns the scrolled body to its top, showing the list and its
+    /// selected file, only while focus is in the list. With focus on the
+    /// commit title, in the filter or on nothing, the body keeps its offset:
+    /// a redraw without a focus change scrolls nothing, where a watcher's
+    /// refresh once moved Commit from under a pointer that had scrolled to it.
+    #[gpui::test]
+    async fn a_short_working_body_returns_to_its_top_only_while_the_list_holds_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let root = fixture.path().join("narrow");
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        draw(cx);
+        let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
+        assert!(max > px(0.), "the body scrolls");
+        let (list, title, filter) = app.read_with(cx, |app, cx| {
+            (
+                app.file_focus.clone(),
+                app.commit_title.read(cx).focus_handle(cx),
+                app.working_filter.read(cx).focus_handle(cx),
+            )
+        });
+        let untracked = root.join("zeta.txt");
+        for (focus, at_top) in [
+            (Some(list), true),
+            (Some(title), false),
+            (Some(filter), false),
+            (None, false),
+        ] {
+            let at = match focus {
+                Some(_) if at_top => "focus in the list",
+                Some(_) => "focus outside the list",
+                None => "no focus",
+            };
+            cx.update(|window, cx| match &focus {
+                Some(focus) => window.focus(focus, cx),
+                None => window.blur(cx),
+            });
+            draw(cx);
+            if at_top {
+                // The list's first file selected.
+                let first = app.read_with(cx, |app, _| {
+                    app.working_rows.iter().find_map(|row| match row {
+                        workspace::WorkingRow::File(index, area) => Some((*index, *area)),
+                        _ => None,
+                    })
+                });
+                let (index, area) = first.expect("a file row");
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_working(index, area, window, cx))
+                });
+                settle(&app, cx).await;
+                assert!(app.read_with(cx, |app, _| app.working_selected.is_some()));
+            }
+            // Scrolled to the body's foot, where Commit is.
+            app.read_with(cx, |app, _| {
+                app.working_body.scroll().set_offset(point(px(0.), -max))
+            });
+            draw(cx);
+            let rows = app.read_with(cx, |app, _| app.working_rows.len());
+            // A file comes or goes in Unstaged: the rows change in number,
+            // the list's floor, the Staged heading and its first file, does
+            // not.
+            if untracked.exists() {
+                std::fs::remove_file(&untracked).unwrap();
+            } else {
+                std::fs::write(&untracked, "zeta\n").unwrap();
+            }
+            watcher_reload(&app, cx);
+            assert_ne!(
+                app.read_with(cx, |app, _| app.working_rows.len()),
+                rows,
+                "{at}: the rows change in number"
+            );
+            let offset = app.read_with(cx, |app, _| app.working_body.scroll().offset().y);
+            let expected = if at_top { px(0.) } else { -max };
+            assert!(
+                (offset - expected).abs() < px(0.01),
+                "{at}: the body at {offset:?}, expected {expected:?}"
+            );
+            if at_top {
+                // The list and its selected file, whole in the body's view.
+                let body = cx.debug_bounds("working-body").expect("the body");
+                let pane = cx.debug_bounds("working-pane").expect("the list");
+                assert!(
+                    pane.top() >= body.top() - px(0.01) && pane.bottom() <= body.bottom(),
+                    "{at}: the list {pane:?} in the body {body:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A composer stop holding focus stays whole as the content around it
+    /// moves, where the list and the composer scroll together at 18 pt in a
+    /// 461 × 490 window. With nothing staged, the list's floor is three rows
+    /// (Staged, Unstaged and the first file); the commit title, revealed by
+    /// Shift+Tab at the body's top, stays whole, a gap inside the body, in
+    /// every frame drawn as a watcher's refresh stages a file and the floor gives up a
+    /// row, where it once kept its offset and cut the title's label at the
+    /// body's top. Commit, revealed at the body's foot, is revealed again
+    /// once the draft-save note and its Retry come above it.
+    #[gpui::test]
+    async fn a_focused_composer_stop_stays_whole_as_the_content_around_it_moves(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--quiet"]);
+        watcher_reload(&app, cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| matches!(
+            app.working_rows[..3],
+            [
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::File(..)
+            ]
+        )));
+        let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
+        assert!(max > px(0.), "the body scrolls");
+        let (title, description) = app.read_with(cx, |app, cx| {
+            (
+                app.commit_title.read(cx).focus_handle(cx),
+                app.commit_message.read(cx).focus_handle(cx),
+            )
+        });
+        let (gap, padding) = cx.update(|window, _| {
+            (
+                window.pixel_snap(appearance::ui_size(4.)),
+                window.pixel_snap(window.rem_size() * 0.5),
+            )
+        });
+        let slack = px(0.01);
+        // Each part lies whole in the body's view, `margin` inside it.
+        let assert_inside =
+            |cx: &mut VisualTestContext, parts: &[&'static str], margin: Pixels, at: &str| {
+                let body = cx.debug_bounds("working-body").expect("the body");
+                for selector in parts {
+                    let part = cx
+                        .debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector} drawn"));
+                    assert!(
+                        part.top() + slack >= body.top() + margin
+                            && part.bottom() <= body.bottom() - margin + slack,
+                        "{at}: {selector} {part:?} {margin:?} inside the body {body:?}"
+                    );
+                }
+            };
+        // The title, revealed at the body's top from its foot.
+        app.read_with(cx, |app, _| {
+            app.working_body.scroll().set_offset(point(px(0.), -max))
+        });
+        draw(cx);
+        cx.update(|window, cx| window.focus(&description, cx));
+        draw(cx);
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(cx.update(|window, _| title.is_focused(window)));
+        let label = cx.debug_bounds("commit-title-label").expect("the label");
+        let body = cx.debug_bounds("working-body").expect("the body");
+        assert!(
+            (label.top() - gap - body.top()).abs() < px(0.5),
+            "the title's label {label:?} at the body's top {body:?}"
+        );
+        // A refresh stages a file: the floor gives up the Unstaged heading.
+        let reveal = app.read_with(cx, |app, _| app.working_body.clone());
+        reveal.take_painted();
+        fixture_git(&root, &["add", "alpha.txt"]);
+        watcher_reload(&app, cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            1
+        );
+        assert!(app.read_with(cx, |app, _| matches!(
+            app.working_rows[..2],
+            [
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::File(..)
+            ]
+        )));
+        assert!(cx.update(|window, _| title.is_focused(window)));
+        assert_inside(
+            cx,
+            &["commit-title-label", "commit-title"],
+            gap,
+            "the floor changed",
+        );
+        let frames = reveal.take_painted();
+        assert!(!frames.is_empty(), "the refresh draws the body");
+        for (index, frame) in frames.iter().enumerate() {
+            let control = frame
+                .control
+                .unwrap_or_else(|| panic!("frame {index} draws the title"));
+            assert!(
+                control.top() + slack >= frame.viewport.top() + gap
+                    && control.bottom() <= frame.viewport.bottom() - gap + slack,
+                "frame {index} of {} draws the title {control:?} cut in {:?}",
+                frames.len(),
+                frame.viewport
+            );
+        }
+        // Commit, enabled by a title, revealed at the body's foot.
+        cx.simulate_input("Title line");
         draw(cx);
         cx.simulate_keystrokes("tab");
         draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let commit = app.read_with(cx, |app, cx| app.working_body.focus("commit-staged", cx));
+        assert!(cx.update(|window, _| commit.is_focused(window)));
+        assert_inside(cx, &["commit-staged"], padding, "Commit");
+        let composer = cx.debug_bounds("commit-composer").expect("the composer");
+        // The draft-save note and its Retry come above it.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.draft_save_error = Some("The disk is full".into());
+                cx.notify();
+            })
+        });
+        draw(cx);
         assert!(
-            !cx.update(|window, _| description.is_focused(window)),
-            "Tab from the title reaches the undrawn description"
+            cx.debug_bounds("commit-composer")
+                .expect("the composer")
+                .size
+                .height
+                > composer.size.height,
+            "the note and Retry come into the composer"
         );
-
-        // A focused description that leaves gives its focus to the title.
-        cx.simulate_resize(size(px(1480.), px(980.)));
-        draw(cx);
-        assert!(cx.debug_bounds("commit-description").is_some());
-        cx.update(|window, cx| window.focus(&description, cx));
-        cx.simulate_input("Why this change");
-        draw(cx);
-        assert!(cx.update(|window, _| description.is_focused(window)));
-        cx.simulate_resize(size(px(461.), px(490.)));
-        draw(cx);
-        assert!(cx.debug_bounds("commit-description").is_none());
-        assert!(
-            cx.update(|window, _| title.is_focused(window)),
-            "the title takes the leaving description's focus"
-        );
+        assert!(cx.update(|window, _| commit.is_focused(window)));
+        assert_inside(cx, &["commit-staged"], padding, "the note came");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -33269,23 +33684,30 @@ pub(crate) mod tests {
 
     /// The Working inspector's file list, its composer's scrolling fields
     /// and, where it shows, its scrolling selection row are nodes that clip
-    /// what they hold, at the part of themselves the window draws: a control
+    /// what they hold, at the part of themselves the window draws, inside
+    /// the body where the list and the composer scroll together: a control
     /// one of them scrolls out of view is not reported where it is not
     /// drawn. The list keeps its role; the others are scroll views. A region
-    /// the inspector leaves out writes no node.
+    /// the inspector leaves out writes no node. Where the list and the
+    /// composer scroll together, at the default size and at 18 pt in a
+    /// 461 × 490 window, the body is the scroll view, at the part the window
+    /// draws, and the composer's fields, which scroll nothing there, report
+    /// none: they once reported a second scroll view around the composer's
+    /// stops.
     #[gpui::test]
     async fn working_regions_report_the_part_the_window_draws(cx: &mut TestAppContext) {
-        let (_fixture, _app, cx) = working_window(cx).await;
+        let (_fixture, app, cx) = working_window(cx).await;
         let regions = [
             ("working-pane", Role::ListBox),
             ("commit-composer-fields", Role::ScrollView),
             ("working-selection", Role::ScrollView),
         ];
-        for (text, width, height) in [
-            (13, 461., 490.),
-            (18, 461., 490.),
-            (13, 640., 680.),
-            (13, 1480., 980.),
+        // Each size, and whether the list and the composer scroll together.
+        for (text, width, height, scrolling) in [
+            (13, 461., 490., true),
+            (18, 461., 490., true),
+            (13, 640., 680., false),
+            (13, 1480., 980., false),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
@@ -33296,9 +33718,42 @@ pub(crate) mod tests {
             draw(cx);
             let at = format!("{text} pt at {width} × {height}");
             let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+            let body = cx.debug_bounds("working-body").expect("the body");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                scrolling,
+                "{at}: the body scrolls"
+            );
+            if scrolling {
+                assert_clipping(
+                    cx,
+                    "working-body",
+                    Role::ScrollView,
+                    body.intersect(&window),
+                    &at,
+                );
+                assert!(
+                    crate::native_accessibility::clipping_node("commit-composer-fields").is_none(),
+                    "{at}: the composer's fields, which scroll nothing, are no scroll view"
+                );
+            } else {
+                assert!(
+                    crate::native_accessibility::clipping_node("working-body").is_none(),
+                    "{at}: the body, which scrolls nothing, is no scroll view"
+                );
+            }
             for (id, role) in regions {
+                if scrolling && id == "commit-composer-fields" {
+                    continue;
+                }
+                // The list and the composer lie in the body, which clips them.
+                let drawn = if id == "working-selection" {
+                    window
+                } else {
+                    window.intersect(&body)
+                };
                 match cx.debug_bounds(id) {
-                    Some(bounds) => assert_clipping(cx, id, role, bounds.intersect(&window), &at),
+                    Some(bounds) => assert_clipping(cx, id, role, bounds.intersect(&drawn), &at),
                     None => assert!(
                         crate::native_accessibility::clipping_node(id).is_none(),
                         "{at}: {id} is not drawn, and writes no node"

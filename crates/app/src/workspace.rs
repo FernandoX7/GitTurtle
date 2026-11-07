@@ -29,6 +29,10 @@ pub(crate) struct WorkingInspectorLayout {
     /// The whole inspector's height as last laid out, which no form of its
     /// rows changes, so it can choose the form (`WorkingFit`).
     inspector: Pixels,
+    /// The file list's floor in the last frame where the list and the
+    /// composer scrolled together, the height above the composer's stops
+    /// (`GitTurtle::render_working_body`).
+    scrolled_floor: Option<f32>,
 }
 
 /// Whether the list/composer body, `height` tall, takes the short form, with
@@ -448,9 +452,11 @@ impl ComposerMetrics {
     /// The description's field in a composer `height` tall whose fields'
     /// other rows take `rows` (`GitTurtle::composer_rows`): `preferred`
     /// where it fits, else the whole lines that fit, so its Description
-    /// section is whole. `None` where not even one line fits, so the section
-    /// leaves whole, out of the Tab order and the accessibility tree, rather
-    /// than show its label cut at the commit action or a field drawn past it.
+    /// section is whole. `None` where not even one line fits: the section
+    /// never leaves for room, so the list gives up rows down to its floor,
+    /// and where that is not enough the list and the composer scroll
+    /// together (`GitTurtle::render_working_body`), rather than show the
+    /// section's label cut at the commit action or a field drawn past it.
     fn description_field(
         &self,
         height: Pixels,
@@ -462,7 +468,11 @@ impl ComposerMetrics {
         if room >= px(preferred) {
             return Some(preferred);
         }
-        let lines = ((room - px(16.)) / self.text).floor();
+        // The room is a sum of device-pixel lengths, which at a fractional
+        // scale such as 1.2 can come to a hair less than the whole lines it
+        // holds: counted with no slack, a composer exactly its least height
+        // kept no line (`least`), and the body scrolled where one line fit.
+        let lines = ((room - px(16.) + px(0.01)) / self.text).floor();
         let field = px(16.) + self.text * lines;
         (lines >= 1.).then(|| f32::from(window.pixel_snap(field).min(room)))
     }
@@ -477,6 +487,20 @@ fn working_floor_rows(rows: &[WorkingRow]) -> usize {
         .take(4)
         .position(|row| matches!(row, WorkingRow::File(..)))
         .map_or(1, |index| index + 1)
+}
+
+/// The composer's fields: a scroll view that reports to assistive
+/// technology only what it shows, where they scroll on their own. Where the
+/// list and the composer scroll together (`scrolls`), they scroll nothing,
+/// and the body is the scroll view that reports what it shows
+/// (`GitTurtle::render_working_body`): reported there too, the fields were
+/// a second scroll view around the composer's stops.
+fn composer_fields(scrolls: bool, fields: impl IntoElement) -> AnyElement {
+    if scrolls {
+        fields.into_any_element()
+    } else {
+        native_accessibility::clips_children(fields).into_any_element()
+    }
 }
 
 /// The file list's least height: `rows` whole rows inside its border.
@@ -3346,6 +3370,7 @@ impl GitTurtle {
                 width,
                 list_size: previous_list.map(|size| size.item),
                 inspector: (viewport - px(200.)).max(px(160.)),
+                scrolled_floor: None,
             })
         });
         self.working_layout.set(Some(layout.clone()));
@@ -3433,6 +3458,18 @@ impl GitTurtle {
             } else if let Some(selected) = selected_row {
                 self.working_scroll
                     .scroll_to_item(selected, ScrollStrategy::Nearest);
+            }
+            // Where the list scrolls with the composer, it comes back into
+            // view with its selected file, at the body's top, only while
+            // focus is in the list. Anywhere else, a composer stop, the
+            // filter, another control or nothing, the body keeps its
+            // offset, since a redraw without a focus change scrolls nothing:
+            // returned to its top, a watcher's refresh moved Commit from
+            // under a pointer that had scrolled to it. The list's own scroll
+            // keeps the selected file among its rows, and a composer stop
+            // the change moves is revealed again (`render_working_body`).
+            if selected_row.is_some() && self.file_focus.contains_focused(window, cx) {
+                self.working_body.scroll().set_offset(Point::default());
             }
         }
         let staged = self.working_paths.staged_count;
@@ -3889,7 +3926,12 @@ impl GitTurtle {
             })
             .child(WorkingBody {
                 app: cx.entity(),
-                min: px(floor + if composer { minimum } else { 0. }),
+                // Where the controls share one row, nothing above the body
+                // gives way any further: a body shorter than the list's floor
+                // and the composer's minimum scrolls them together
+                // (`render_working_body`) rather than draw the commit action
+                // below the window.
+                min: px(floor + if composer && !fit.tight { minimum } else { 0. }),
                 parts: Some(WorkingBodyParts {
                     layout,
                     pane,
@@ -4000,14 +4042,38 @@ impl GitTurtle {
         };
         let remainder = leftover(available - if composer { composer_height } else { 0. } - border);
         let composer_height = composer_height + if composer { remainder } else { 0. };
-        // The Description section, whole or absent: where the composer is too
-        // short for it, it leaves rather than show its label cut at the
-        // commit action, and its field leaves the Tab order with it.
-        let description = composer
-            .then(|| {
-                metrics.description_field(px(composer_height), rows, description_height, window)
-            })
-            .flatten();
+        // The Description section is drawn whole and never leaves for room.
+        // Where the composer's share is too short for one line of its field,
+        // the list gives up the rows that line takes, down to its floor, and
+        // where even that leaves too little, the list and the composer scroll
+        // together as one area (`scrolls`), the field keeping its preference,
+        // and Tab and Shift+Tab reveal each of the composer's stops whole
+        // (`working_body`).
+        let fitted =
+            |height: f32| metrics.description_field(px(height), rows, description_height, window);
+        let (composer_height, description) = match composer.then(|| fitted(composer_height)) {
+            Some(None) => {
+                let line = f32::from(metrics.content(
+                    rows,
+                    section,
+                    Some(f32::from(metrics.description_least())),
+                ));
+                let height = line.min(available - floor);
+                // What the list's whole rows leave below them, as above.
+                let height = height + leftover(available - height - border);
+                match fitted(height) {
+                    Some(field) => (height, Some(field)),
+                    None => (composer_height, None),
+                }
+            }
+            fitted => (composer_height, fitted.flatten()),
+        };
+        let scrolls = composer && description.is_none();
+        let description = if scrolls {
+            Some(description_height)
+        } else {
+            description
+        };
         // Its rows keep their rhythm down to the commit action, a scaled 4 px
         // in a short composer and 0.5 rem in a taller one, rather than the
         // height the composer's share leaves over gathering between the last
@@ -4021,6 +4087,8 @@ impl GitTurtle {
         // the composer.
         let content = f32::from(metrics.content(rows, section, description));
         let (drawn, description) = match description {
+            // Laid out at its rows' own height in the scrolling body.
+            _ if scrolls => (content, description),
             Some(field) if composer && !short => (
                 composer_height,
                 Some(field + (composer_height - content).max(0.)),
@@ -4028,29 +4096,56 @@ impl GitTurtle {
             _ if composer => (composer_height.min(content), description),
             _ => (composer_height, description),
         };
-        let below = if !composer {
+        let below = if scrolls {
+            0.
+        } else if !composer {
             remainder
         } else if drawn < composer_height {
             leftover(available - drawn - border)
         } else {
             0.
         };
-        // A focused description that leaves hands its focus to the title, so
-        // focus never rests on a field that is not drawn.
-        if description.is_none()
-            && self
-                .commit_message
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        {
-            let title = self.commit_title.read(cx).focus_handle(cx);
-            window.defer(cx, move |window, cx| window.focus(&title, cx));
+        // The scrolling body reveals the stop focus moves onto, whole, in
+        // the frame that first draws the focus. Not scrolling, it starts at
+        // its top the next time it does, revealing the control focus rests
+        // on then, as when the window shrinks under the title.
+        let reveal = &self.working_body;
+        if scrolls {
+            // A composer stop holding focus stays whole as the content
+            // around it moves: the list's floor giving up a row as a file is
+            // staged, the rows changing in number, or the composer's own
+            // rows, as the draft-save note and its Retry come or the long
+            // title's note grows. Its stops lie below the list, which a
+            // change of its floor moves them by, known before layout.
+            let rows = self.working_rows.len();
+            let composer_focused =
+                !self.file_focus.contains_focused(window, cx) && reveal.holds_focus(window, cx);
+            let moved = layout.update(cx, |layout, _| {
+                let last = layout.scrolled_floor.replace(floor);
+                last.filter(|_| composer_focused)
+                    .map_or(0., |last| floor - last)
+            });
+            let key = {
+                use std::hash::{Hash as _, Hasher as _};
+                let mut key = std::collections::hash_map::DefaultHasher::new();
+                (floor.to_bits(), rows, content.to_bits()).hash(&mut key);
+                key.finish()
+            };
+            reveal.content(key, px(moved));
+            reveal.reveal(window, cx);
+        } else {
+            layout.update(cx, |layout, _| layout.scrolled_floor = None);
+            reveal.reveal_next_focus();
+            if reveal.scroll().offset() != Point::default() {
+                reveal.scroll().set_offset(Point::default());
+            }
         }
-        // A description the composer cannot show still goes into the commit,
-        // so the commit action says so.
-        let hidden_description =
-            description.is_none() && !self.commit_message.read(cx).value().trim().is_empty();
+        let (gap, padding) = (metrics.gap, metrics.padding);
+        let title_focus = self.commit_title.read(cx).focus_handle(cx);
+        let description_focus = self.commit_message.read(cx).focus_handle(cx);
+        let commit_focus = reveal.focus("commit-staged", cx);
+        let identity_focus = reveal.focus("configure-identity", cx);
+        let retry_focus = reveal.focus("retry-commit-draft", cx);
         let branch = self
             .work_status
             .as_ref()
@@ -4061,16 +4156,42 @@ impl GitTurtle {
         let composer_probe = self.working_probe.recorder(true);
         #[cfg(not(test))]
         let composer_probe = None::<Empty>;
-        let pane = pane.when(below > 0., |el| {
-            el.max_h(px(available - if composer { drawn } else { 0. } - below))
-        });
-        div()
+        let pane = pane
+            .when(below > 0., |el| {
+                el.max_h(px(available - if composer { drawn } else { 0. } - below))
+            })
+            // Scrolling with the composer, the list keeps its floor: whole rows
+            // through its first file, its own scroll keeping the selected file
+            // in them.
+            .when(scrolls, |el| el.flex_none().h(px(floor)));
+        let body = div()
+            .when(scrolls, |el| el.on_children_prepainted(reveal.observe()))
+            .id("working-body")
             .debug_selector(|| "working-body".into())
             .w(size.width)
             .h(size.height)
             .flex()
             .flex_col()
-            .child(native_accessibility::clips_children(pane))
+            .when(scrolls, |el| {
+                el.overflow_y_scroll().track_scroll(reveal.scroll())
+            })
+            .map(|el| {
+                let pane = native_accessibility::clips_children(pane);
+                if scrolls {
+                    // Focus moving into the list, onto it or a row's control,
+                    // shows the list whole.
+                    el.child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .on_children_prepainted(reveal.control(self.file_focus.clone(), gap))
+                            .child(pane),
+                    )
+                } else {
+                    el.child(pane)
+                }
+            })
             .when(composer, |el| {
                 el.child(
                     div()
@@ -4078,7 +4199,7 @@ impl GitTurtle {
                         .relative()
                         .flex_shrink_0()
                         .min_h_0()
-                        .h(px(drawn))
+                        .when(!scrolls, |el| el.h(px(drawn)))
                         .flex()
                         .flex_col()
                         // It ends at the body's foot, above the status bar: what
@@ -4164,13 +4285,14 @@ impl GitTurtle {
                                     }),
                             )
                         })
-                        .child(native_accessibility::clips_children(
+                        .child(composer_fields(
+                            scrolls,
                             div()
                                 .id("commit-composer-fields")
                                 .debug_selector(|| "commit-composer-fields".into())
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scroll()
+                                // In the scrolling body they scroll with it, at
+                                // their own height.
+                                .when(!scrolls, |el| el.flex_1().min_h_0().overflow_y_scroll())
                                 // The gap that followed the heading leads the fields;
                                 // without the heading, the composer's own padding does.
                                 // The fields end a gap above the commit action, as they
@@ -4206,95 +4328,147 @@ impl GitTurtle {
                                                     ),
                                             )
                                         })
+                                        // The title's label, field and any note,
+                                        // revealed together when focus moves onto
+                                        // the field in the scrolling body.
                                         .child(
                                             div()
-                                                .debug_selector(|| "commit-title-label".into())
                                                 .flex()
-                                                .items_center()
+                                                .flex_col()
                                                 .gap_2()
-                                                .text_size(crate::appearance::ui_text(11.))
+                                                .when(short, |el| {
+                                                    el.gap(crate::appearance::ui_size(4.))
+                                                })
+                                                .when(scrolls, |el| {
+                                                    el.on_children_prepainted(
+                                                        reveal.control(title_focus.clone(), gap),
+                                                    )
+                                                })
                                                 .child(
                                                     div()
                                                         .debug_selector(|| {
-                                                            "commit-title-name".into()
+                                                            "commit-title-label".into()
                                                         })
-                                                        .flex_1()
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .child("Title"),
-                                                )
-                                                .child({
-                                                    let counter = div()
-                                                        .id("commit-title-counter")
-                                                        .debug_selector(|| {
-                                                            "commit-title-counter".into()
-                                                        })
-                                                        .text_color(rgb(if summary_length > 72 {
-                                                            p.warning
-                                                        } else {
-                                                            p.muted
-                                                        }));
-                                                    let whole = SharedString::from(title_counter(
-                                                        summary_length,
-                                                    ));
-                                                    if forms.counter_word {
-                                                        counter.child(whole).into_any_element()
-                                                    } else {
-                                                        // Without "suggested" the counter is read by its whole text.
-                                                        crate::views::note_compact_label(
-                                                            "commit-title-counter",
-                                                            &whole,
-                                                        );
-                                                        native_accessibility::static_text(
-                                                            counter,
-                                                            whole.clone(),
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .text_size(crate::appearance::ui_text(11.))
+                                                        .child(
+                                                            div()
+                                                                .debug_selector(|| {
+                                                                    "commit-title-name".into()
+                                                                })
+                                                                .flex_1()
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .child("Title"),
                                                         )
-                                                        .tooltip(move |window, cx| {
-                                                            Tooltip::new(whole.clone())
-                                                                .build(window, cx)
-                                                        })
-                                                        .child(format!("{summary_length}/72"))
-                                                        .into_any_element()
-                                                    }
+                                                        .child({
+                                                            let counter = div()
+                                                                .id("commit-title-counter")
+                                                                .debug_selector(|| {
+                                                                    "commit-title-counter".into()
+                                                                })
+                                                                .text_color(rgb(
+                                                                    if summary_length > 72 {
+                                                                        p.warning
+                                                                    } else {
+                                                                        p.muted
+                                                                    },
+                                                                ));
+                                                            let whole = SharedString::from(
+                                                                title_counter(summary_length),
+                                                            );
+                                                            if forms.counter_word {
+                                                                counter
+                                                                    .child(whole)
+                                                                    .into_any_element()
+                                                            } else {
+                                                                // Without "suggested" the counter is read by its whole text.
+                                                                crate::views::note_compact_label(
+                                                                    "commit-title-counter",
+                                                                    &whole,
+                                                                );
+                                                                native_accessibility::static_text(
+                                                                    counter,
+                                                                    whole.clone(),
+                                                                )
+                                                                .tooltip(move |window, cx| {
+                                                                    Tooltip::new(whole.clone())
+                                                                        .build(window, cx)
+                                                                })
+                                                                .child(format!(
+                                                                    "{summary_length}/72"
+                                                                ))
+                                                                .into_any_element()
+                                                            }
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .debug_selector(|| "commit-title".into())
+                                                        .child(
+                                                            Input::new(&self.commit_title)
+                                                                .readonly(busy)
+                                                                .aria_label("Commit title")
+                                                                .text_size(
+                                                                    crate::appearance::ui_text(12.),
+                                                                ),
+                                                        ),
+                                                )
+                                                .when(summary_length > 72, |el| {
+                                                    el.child(
+                                                        div()
+                                                            .text_size(crate::appearance::ui_text(
+                                                                10.,
+                                                            ))
+                                                            .text_color(rgb(p.muted))
+                                                            .child(LONG_TITLE_NOTE),
+                                                    )
                                                 }),
                                         )
-                                        .child(
-                                            div().debug_selector(|| "commit-title".into()).child(
-                                                Input::new(&self.commit_title)
-                                                    .readonly(busy)
-                                                    .aria_label("Commit title")
-                                                    .text_size(crate::appearance::ui_text(12.)),
-                                            ),
-                                        )
-                                        .when(summary_length > 72, |el| {
-                                            el.child(
-                                                div()
-                                                    .text_size(crate::appearance::ui_text(10.))
-                                                    .text_color(rgb(p.muted))
-                                                    .child(LONG_TITLE_NOTE),
-                                            )
-                                        })
-                                        // Its label, field and hint, whole or not at all
-                                        // (`ComposerMetrics::description_field`).
+                                        // Its label, field and hint, always whole
+                                        // (`ComposerMetrics::description_field`) and
+                                        // revealed together when focus moves onto the
+                                        // field in the scrolling body. With nothing
+                                        // staged, the hint says why Commit, out of the
+                                        // Tab order, is unavailable.
                                         .when_some(description, |el, field| {
                                             el.child(
                                                 div()
-                                                    .debug_selector(|| {
-                                                        "commit-description-label".into()
-                                                    })
                                                     .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .text_size(crate::appearance::ui_text(11.))
+                                                    .flex_col()
+                                                    .gap_2()
+                                                    .when(short, |el| {
+                                                        el.gap(crate::appearance::ui_size(4.))
+                                                    })
+                                                    .when(scrolls, |el| {
+                                                        el.on_children_prepainted(reveal.control(
+                                                            description_focus.clone(),
+                                                            gap,
+                                                        ))
+                                                    })
                                                     .child(
                                                         div()
                                                             .debug_selector(|| {
-                                                                "commit-description-name".into()
+                                                                "commit-description-label".into()
                                                             })
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .child("Description"),
-                                                    )
-                                                    .when(forms.description_note, |el| {
-                                                        el.child(
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_1()
+                                                            .text_size(crate::appearance::ui_text(
+                                                                11.,
+                                                            ))
+                                                            .child(
+                                                                div()
+                                                                    .debug_selector(|| {
+                                                                        "commit-description-name"
+                                                                            .into()
+                                                                    })
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .child("Description"),
+                                                            )
+                                                            .when(forms.description_note, |el| {
+                                                                el.child(
                                                             div()
                                                                 .debug_selector(|| {
                                                                     "commit-description-optional"
@@ -4303,39 +4477,48 @@ impl GitTurtle {
                                                                 .text_color(rgb(p.muted))
                                                                 .child("· optional"),
                                                         )
-                                                    }),
-                                            )
-                                            // Tab and Shift-Tab move focus on and back, as on every
-                                            // other stop, rather than indenting.
-                                            .child(
-                                                shortcuts::tab_leaves(
-                                                    Textarea::new(&self.commit_message)
-                                                        .readonly(busy)
-                                                        .aria_label("Commit description, optional")
-                                                        .h(px(field))
-                                                        .text_size(crate::appearance::ui_text(12.)),
-                                                )
-                                                .debug_selector(|| "commit-description".into()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .debug_selector(|| {
-                                                        "commit-description-hint".into()
-                                                    })
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_2()
-                                                    .text_size(crate::appearance::ui_text(10.))
-                                                    .text_color(rgb(p.muted))
-                                                    // Shrinking below its one line, it wraps as `description_section`
-                                                    // predicts rather than running past the column at 18 pt.
-                                                    .child(div().flex_1().min_w_0().child(
-                                                        if staged == 0 {
-                                                            UNSTAGED_HINT
-                                                        } else {
-                                                            STAGED_HINT
-                                                        },
-                                                    )),
+                                                            }),
+                                                    )
+                                                    // Tab and Shift-Tab move focus on and back, as on every
+                                                    // other stop, rather than indenting.
+                                                    .child(
+                                                        shortcuts::tab_leaves(
+                                                            Textarea::new(&self.commit_message)
+                                                                .readonly(busy)
+                                                                .aria_label(
+                                                                    "Commit description, optional",
+                                                                )
+                                                                .h(px(field))
+                                                                .text_size(
+                                                                    crate::appearance::ui_text(12.),
+                                                                ),
+                                                        )
+                                                        .debug_selector(|| {
+                                                            "commit-description".into()
+                                                        }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                "commit-description-hint".into()
+                                                            })
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .text_size(crate::appearance::ui_text(
+                                                                10.,
+                                                            ))
+                                                            .text_color(rgb(p.muted))
+                                                            // Shrinking below its one line, it wraps as `description_section`
+                                                            // predicts rather than running past the column at 18 pt.
+                                                            .child(div().flex_1().min_w_0().child(
+                                                                if staged == 0 {
+                                                                    UNSTAGED_HINT
+                                                                } else {
+                                                                    STAGED_HINT
+                                                                },
+                                                            )),
+                                                    ),
                                             )
                                         })
                                         .when_some(self.draft_save_error.as_ref(), |el, error| {
@@ -4347,6 +4530,12 @@ impl GitTurtle {
                                                     .text_size(crate::appearance::ui_text(10.))
                                                     .text_color(rgb(p.warning))
                                                     .child(DRAFT_SAVE_NOTE)
+                                                    .when(scrolls, |el| {
+                                                        el.on_children_prepainted(
+                                                            reveal
+                                                                .control(retry_focus.clone(), gap),
+                                                        )
+                                                    })
                                                     .child(
                                                         button(
                                                             "retry-commit-draft",
@@ -4354,6 +4543,7 @@ impl GitTurtle {
                                                             "refresh",
                                                             false,
                                                         )
+                                                        .track_focus(&retry_focus)
                                                         .tooltip(error.clone())
                                                         .on_click(cx.listener(
                                                             |this, _, window, cx| {
@@ -4367,15 +4557,31 @@ impl GitTurtle {
                                         })
                                         .when(!identity_ready && shown, |el| {
                                             el.child(
-                                                button(
-                                                    "configure-identity",
-                                                    "Set your commit identity",
-                                                    "",
-                                                    false,
-                                                )
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.show_settings(window, cx)
-                                                })),
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .when(scrolls, |el| {
+                                                        el.on_children_prepainted(
+                                                            reveal.control(
+                                                                identity_focus.clone(),
+                                                                gap,
+                                                            ),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        button(
+                                                            "configure-identity",
+                                                            "Set your commit identity",
+                                                            "",
+                                                            false,
+                                                        )
+                                                        .track_focus(&identity_focus)
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.show_settings(window, cx)
+                                                            },
+                                                        )),
+                                                    ),
                                             )
                                         })
                                         .when(conflicted, |el| {
@@ -4408,12 +4614,20 @@ impl GitTurtle {
                                 .px_3()
                                 .pb_3()
                                 .when(short, |el| el.pb_2())
+                                // Enabled, it is the composer's last stop, revealed
+                                // down to the composer's foot in the scrolling body.
+                                .when(scrolls, |el| {
+                                    el.on_children_prepainted(
+                                        reveal.control(commit_focus.clone(), padding),
+                                    )
+                                })
                                 .child({
                                     use crate::native_accessibility::DrawnButton as _;
                                     // Disabled, it rests on the composer's own `subtle` and
                                     // keeps its shape with the toolkit's disabled edge; it is
                                     // as wide as the composer.
                                     let commit = Button::new("commit-staged")
+                                        .track_focus(&commit_focus)
                                         .debug_selector(|| "commit-staged".into())
                                         .primary()
                                         .w_full()
@@ -4422,14 +4636,7 @@ impl GitTurtle {
                                             Icon::default().path("icons/commit.svg").size(px(16.)),
                                         );
                                     let label = self.commit_action_label(cx);
-                                    let detail = format!(
-                                        "Commit staged changes to {branch}{}",
-                                        if hidden_description {
-                                            " · Includes the description, shown in a larger window"
-                                        } else {
-                                            ""
-                                        }
-                                    );
+                                    let detail = format!("Commit staged changes to {branch}");
                                     // While only the rows being prepared refuse it,
                                     // its name and tooltip say why once it dims
                                     // (`rows_wait`); a label that says why it
@@ -4502,8 +4709,13 @@ impl GitTurtle {
                             12.,
                         )),
                 )
-            })
-            .into_any_element()
+            });
+        // Scrolling, it reports to assistive technology only what it shows.
+        if scrolls {
+            native_accessibility::clips_children(body).into_any_element()
+        } else {
+            body.into_any_element()
+        }
     }
 
     fn render_working_row(
@@ -6701,6 +6913,66 @@ mod targets_focus_tests {
 }
 
 #[cfg(test)]
+mod composer_metrics_tests {
+    use super::ComposerMetrics;
+    use crate::views::tests::history_window;
+    use crate::*;
+    use core::prelude::v1::test;
+
+    /// A composer exactly its least height keeps one line of its
+    /// description at every scale, the default size and 18 pt, short or
+    /// taller, with its heading or without: its rows are sums of
+    /// device-pixel lengths, which at a fractional scale such as 1.2 come
+    /// to a hair less than the line they hold, and counted with no slack the
+    /// line rounded down to none, so the body scrolled where one line fit.
+    #[gpui::test]
+    async fn a_composer_its_least_height_keeps_one_line_at_every_scale(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = history_window(cx).await;
+        let default_scale = cx.update(|window, _| window.scale_factor());
+        let mut misses = Vec::new();
+        for scale in [1., 1.2, 1.25, 1.5, 1.75, 2.] {
+            cx.update(|window, _| window.set_scale_factor(scale));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.update(|window, _| {
+                    for (short, heading) in
+                        [(true, true), (true, false), (false, true), (false, false)]
+                    {
+                        let metrics = ComposerMetrics::new(short, heading, window);
+                        let preferred = f32::from(metrics.description_least()) + 100.;
+                        // The fields' other rows and the Description
+                        // section's, each a whole number of device pixels.
+                        for other in 0..200 {
+                            for section in 20..60 {
+                                let section = metrics.label + px(section as f32 / scale);
+                                let rows =
+                                    metrics.title_rows() + px(other as f32 / scale) + section;
+                                let least = metrics.least(rows, section);
+                                let field =
+                                    metrics.description_field(least, rows, preferred, window);
+                                if field.is_none() {
+                                    misses.push((scale, text, short, heading, rows));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_scale_factor(default_scale);
+            appearance::apply_text_sizes(13, 12, window, cx)
+        });
+        assert!(
+            misses.is_empty(),
+            "{} of the least heights keep no line, the first {:?}",
+            misses.len(),
+            misses.first()
+        );
+    }
+}
+
+#[cfg(test)]
 mod background_clone_tests {
     use crate::views::tests::{draw, history_window, settle};
     use crate::*;
@@ -6878,6 +7150,13 @@ mod filled_action_tests {
                     if edges != [gpui_kit::Hsla::from(rgb(palette.dialog_edge()))] {
                         failures.push(format!("{at}: Working's Push edges {edges:?}"));
                     }
+                    // A 400 px window scrolls the list and the composer
+                    // together: Commit is painted where the body shows it.
+                    cx.update(|_, cx| {
+                        let scroll = app.read(cx).working_body.scroll().clone();
+                        scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+                    });
+                    draw(cx);
                     if !painted_fills(cx, "commit-staged").contains(&accent) {
                         failures.push(format!("{at}: Commit is not filled"));
                     }
