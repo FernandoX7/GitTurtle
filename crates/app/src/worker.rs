@@ -403,6 +403,12 @@ pub enum Job {
         /// for an explicit open, which may land on the work tree enclosing
         /// `path` (`RepositorySession::open`).
         root: Option<PathBuf>,
+        /// The Git directories the tab captured at `root` when the person
+        /// opened it, which a passive reopen must find there again: a `.git`
+        /// swapped for another repository's gitfile, or a `commondir`
+        /// re-pointed, is another repository. `None` for an explicit open
+        /// and a worktree's row.
+        git_dir: Option<GitDirectories>,
     },
     Changes {
         repo: GitRepository,
@@ -458,13 +464,30 @@ pub struct WorkingState {
 impl WorkingState {
     /// The working state of the shown tab's repository, read on the
     /// operation thread, as Changes' Refresh and a write's reload read it.
-    /// A repository Git no longer finds at its path fails with
-    /// [`RepositoryGone`]: read there, the status would be the enclosing
-    /// work tree's. The reader's quiet read asks its session instead
-    /// (`Job::QuietRefresh`).
+    /// A repository no longer at its path fails with [`RepositoryGone`]:
+    /// checked from the filesystem before the read, starting no process
+    /// (`GitRepository::verify_at_path`), and again from the read's own
+    /// failure, since every command is confined to the repository and, its
+    /// `.git` gone, fails as "not a git repository" instead of reading the
+    /// work tree enclosing it.
     pub fn read(repo: &GitRepository) -> Result<Self> {
         ensure_found_at_path(repo)?;
-        Self::read_with_checkpoint(repo, || Ok(()))
+        let state = Self::read_with_checkpoint(repo, || Ok(()))
+            .map_err(|error| confined_failure(repo, error))?;
+        state.confirmed(repo)
+    }
+
+    /// This state, unless a part of it failed because its repository went
+    /// away while it was read: its `.git` gone after the status, a later
+    /// part fails as "not a git repository", and the repository gone is the
+    /// answer ([`RepositoryGone`]), not an "Operation state: …" banner
+    /// beside the tab's mark. Checked from the filesystem, and only when a
+    /// part failed.
+    fn confirmed(self, repo: &GitRepository) -> Result<Self> {
+        if self.operation.is_err() || self.profile.is_err() || self.remotes.is_err() {
+            ensure_found_at_path(repo)?;
+        }
+        Ok(self)
     }
 
     fn read_with_checkpoint(
@@ -1152,10 +1175,48 @@ impl std::fmt::Display for RepositoryGone {
 
 impl std::error::Error for RepositoryGone {}
 
-/// Fails with [`RepositoryGone`] where Git no longer finds `repo` at its
-/// path: a read run there would read the repository enclosing it.
+/// The Git directories a tab captured at its root as its snapshot was
+/// accepted, which a passive reopen of that root must find there again
+/// ([`RepositorySession::open`]): the Git directory Git reported and its
+/// common directory ([`GitRepository::git_dir`],
+/// [`GitRepository::common_dir`]). A `.git` swapped for another
+/// repository's gitfile changes the first; a linked worktree's `commondir`
+/// re-pointed at another repository keeps the root and the first, yet its
+/// refs and objects, and every write's, are that other repository's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitDirectories {
+    pub git_dir: PathBuf,
+    pub common: PathBuf,
+}
+
+impl GitDirectories {
+    pub fn of(repository: &GitRepository) -> Self {
+        Self {
+            git_dir: repository.git_dir().to_owned(),
+            common: repository.common_dir().to_owned(),
+        }
+    }
+
+    /// The directory of `repository` that differs from these, the Git
+    /// directory before the common one; `None` where both match.
+    fn mismatch(&self, repository: &GitRepository) -> Option<PathBuf> {
+        if repository.git_dir() != self.git_dir {
+            Some(repository.git_dir().to_owned())
+        } else if repository.common_dir() != self.common {
+            Some(repository.common_dir().to_owned())
+        } else {
+            None
+        }
+    }
+}
+
+/// Fails with [`RepositoryGone`] where `repo` is no longer the repository
+/// at its path: its `.git` gone, swapped for another repository's, or its
+/// root turned into a link to another folder. From the filesystem alone
+/// while it holds; Git is asked only once it does not, to name what it
+/// finds, or for a repository whose commands cannot be confined.
 fn ensure_found_at_path(repo: &GitRepository) -> Result<()> {
-    let found = match repo.found_at_path()? {
+    let found = match repo.verify_at_path()? {
         gitturtle_core::FoundAtPath::Same => return Ok(()),
         gitturtle_core::FoundAtPath::Other(found) => Some(found),
         gitturtle_core::FoundAtPath::None => None,
@@ -1167,12 +1228,66 @@ fn ensure_found_at_path(repo: &GitRepository) -> Result<()> {
     .into())
 }
 
+/// A read of `repo` that failed as "not a git repository", as
+/// [`RepositoryGone`]: its commands are confined to it, so that is how a
+/// read fails once its `.git` went away, and the diagnosis names what Git
+/// finds there now. Any other failure stays its own, with no process.
+pub(crate) fn confined_failure(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() || !gitturtle_core::finds_no_repository(&error) {
+        return error;
+    }
+    let found = match repo.found_at_path() {
+        Ok(gitturtle_core::FoundAtPath::Other(found)) => Some(found),
+        Ok(gitturtle_core::FoundAtPath::None) => None,
+        Ok(gitturtle_core::FoundAtPath::Same) | Err(_) => return error,
+    };
+    RepositoryGone {
+        path: repo.path().to_owned(),
+        found,
+    }
+    .into()
+}
+
+/// Any failure of a read of `repo` as [`RepositoryGone`] where `repo` is
+/// gone or no longer the repository at its path, for reads whose steps can
+/// fail in other words as its `.git` moves while they run, as the watcher's
+/// setup resolving the directories Git reported. A "not a git repository"
+/// failure is Git's to decide ([`confined_failure`]): a `.git` half removed
+/// (its HEAD deleted, the folder and `config` left) still holds for the
+/// filesystem check, which kept the failure its own and the tab unmarked.
+/// Any other failure is checked from the filesystem first
+/// ([`GitRepository::verify_at_path`]). A repository still there keeps the
+/// failure its own. Unlike [`confined_failure`], it checks whatever the
+/// failure, so it is for reads that rarely fail, never a hot path.
+pub(crate) fn gone_unless_found(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() {
+        return error;
+    }
+    if gitturtle_core::finds_no_repository(&error) {
+        return confined_failure(repo, error);
+    }
+    let found = match repo.verify_at_path() {
+        Ok(gitturtle_core::FoundAtPath::Other(found)) => Some(found),
+        Ok(gitturtle_core::FoundAtPath::None) => None,
+        Ok(gitturtle_core::FoundAtPath::Same) | Err(_) => return error,
+    };
+    RepositoryGone {
+        path: repo.path().to_owned(),
+        found,
+    }
+    .into()
+}
+
 /// A quiet read's failed reopen of `repo`, as [`RepositoryGone`] with
 /// nothing found where Git now finds no repository at its path, so the tab
 /// is read as Refresh reads it, whose Open says why
 /// (`repository_access::explain`). Any other failure, as a deadline or an
-/// access error, stays its own. Git is asked only once the reopen failed.
+/// access error, stays its own. Git is asked only once the reopen failed,
+/// and not at all when the reopen already says the repository is gone.
 fn nothing_found_is_gone(repo: &GitRepository, error: anyhow::Error) -> anyhow::Error {
+    if error.is::<RepositoryGone>() {
+        return error;
+    }
     match repo.found_at_path() {
         Ok(gitturtle_core::FoundAtPath::None) => RepositoryGone {
             path: repo.path().to_owned(),
@@ -1181,6 +1296,23 @@ fn nothing_found_is_gone(repo: &GitRepository, error: anyhow::Error) -> anyhow::
         .into(),
         _ => error,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs at each checkpoint of a quiet read's working read on this
+    /// thread: a test moves a repository's `.git` part way through.
+    static QUIET_CHECKPOINT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn quiet_checkpoint() {
+    QUIET_CHECKPOINT.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
 }
 
 struct RetainedRepository {
@@ -1214,13 +1346,25 @@ impl RepositorySession {
     /// work tree enclosing it, the open fails with [`RepositoryGone`] rather
     /// than move the tab to another repository; where it finds none, it
     /// fails as any open of a folder that is not a repository does.
-    fn open(&mut self, requested: &Path, captured: Option<&Path>) -> Result<GitRepository> {
+    ///
+    /// The captured root is compared as it was captured, never resolved
+    /// again: a root since turned into a link to another repository resolves
+    /// elsewhere and is that other repository, gone from the tab. At the
+    /// same root, the Git directories found must be `git_dir`, the ones the
+    /// tab captured there, where it names them: not another repository's
+    /// that a swapped `.git` leads to, nor another repository's refs and
+    /// objects that a linked worktree's re-pointed `commondir` leads to. The
+    /// retained repository answers only where its own directories are the
+    /// captured ones; otherwise Git is asked again, and a mismatch found
+    /// fails as `RepositoryGone`, naming the directory that differs.
+    fn open(
+        &mut self,
+        requested: &Path,
+        captured: Option<&Path>,
+        git_dir: Option<&GitDirectories>,
+    ) -> Result<GitRepository> {
         let canonical = requested.canonicalize()?;
-        let captured = match captured {
-            Some(root) if root == requested => Some(canonical.clone()),
-            Some(root) => Some(root.canonicalize()?),
-            None => None,
-        };
+        let captured = captured.map(Path::to_path_buf);
         if self
             .current
             .as_ref()
@@ -1232,6 +1376,7 @@ impl RepositorySession {
         if let Some(current) = &self.current
             && current.canonical_root == canonical
             && captured.as_ref().is_none_or(|root| *root == canonical)
+            && git_dir.is_none_or(|git_dir| git_dir.mismatch(&current.repository).is_none())
         {
             return Ok(current.repository.as_ref().clone());
         }
@@ -1239,8 +1384,18 @@ impl RepositorySession {
         // existing root, in which case keep the original persistent reader.
         // Git finding no repository there fails as it always has, with the
         // reasons `repository_access::explain` gives a folder that is not
-        // one; only another repository found is `RepositoryGone`.
-        let discovered = GitRepository::open(&canonical)?;
+        // one; only another repository found is `RepositoryGone`, as is a
+        // repository that changed while it was opened, its open refused.
+        let discovered = GitRepository::open(&canonical).map_err(|error| {
+            match error.downcast::<gitturtle_core::ChangedWhileOpening>() {
+                Ok(changed) => RepositoryGone {
+                    path: requested.to_owned(),
+                    found: changed.found,
+                }
+                .into(),
+                Err(error) => error,
+            }
+        })?;
         let canonical_root = discovered.path().canonicalize()?;
         if captured
             .as_ref()
@@ -1252,8 +1407,18 @@ impl RepositorySession {
             }
             .into());
         }
+        if let Some(found) = git_dir.and_then(|git_dir| git_dir.mismatch(&discovered)) {
+            return Err(RepositoryGone {
+                path: requested.to_owned(),
+                found: Some(found),
+            }
+            .into());
+        }
         if let Some(current) = &self.current
             && current.canonical_root == canonical_root
+            && GitDirectories::of(&discovered)
+                .mismatch(&current.repository)
+                .is_none()
         {
             return Ok(current.repository.as_ref().clone());
         }
@@ -1681,15 +1846,28 @@ fn execute(
             // gets; it once said Git's own "not a git repository" as a local
             // refresh error and left the tab unmarked.
             let root = Some(repo.path());
+            let captured = GitDirectories::of(&repo);
+            // The handle's own check, before the session's reopen: the
+            // session answers from its directories' and links' identities,
+            // which a `core.worktree` re-pointed in the repository's
+            // configuration leaves as they were while it moves the work
+            // tree; the handle's check compares those configuration files
+            // and asks Git once one changed (`GitRepository::verify_at_path`).
+            ensure_found_at_path(&repo)?;
             session
-                .open(repo.path(), root)
+                .open(repo.path(), root, Some(&captured))
                 .map_err(|error| nothing_found_is_gone(&repo, error))?;
-            let working = WorkingState::read_with_checkpoint(&repo, || cancellation.check())?;
+            let working = WorkingState::read_with_checkpoint(&repo, || {
+                #[cfg(test)]
+                quiet_checkpoint();
+                cancellation.check()
+            })
+            .map_err(|error| confined_failure(&repo, error))?;
             cancellation.check()?;
             let snapshot = history.then(|| {
                 match read_snapshot(
                     repo.path().to_owned(),
-                    root,
+                    (root, Some(&captured)),
                     scope.as_ref(),
                     MissingScope::Fail,
                     limit,
@@ -1703,7 +1881,7 @@ fn execute(
                         // metadata without loading a replacement history page.
                         let metadata = read_snapshot(
                             repo.path().to_owned(),
-                            root,
+                            (root, Some(&captured)),
                             None,
                             MissingScope::Fail,
                             0,
@@ -1769,6 +1947,22 @@ fn execute(
                 },
             );
             cancellation.check()?;
+            // A read already running when the repository's `.git` went away
+            // fails part way, its commands confined to it: its operation
+            // state, its History or its comparison fails as "not a git
+            // repository", which once showed as an "Operation state: …" or
+            // "History scope changed: …" banner beside the tab's mark. Any
+            // part failed, the repository is checked again (from the
+            // filesystem while it holds), and a repository gone is the whole
+            // read's answer, so the tab is marked and says only that.
+            let working = if matches!(snapshot, Some(Err(_) | Ok(QuietHistory::Retained { .. })))
+                || matches!(preview, Some(Err(_)))
+            {
+                ensure_found_at_path(&repo)?;
+                working
+            } else {
+                working.confirmed(&repo)?
+            };
             Ok(Output::QuietRefresh(Box::new(QuietRefresh {
                 working,
                 snapshot,
@@ -1873,6 +2067,7 @@ fn execute(
             scope,
             limit,
             root,
+            git_dir,
         } => {
             // An explicit Open (Refresh, Show latest, a restored tab) resolves
             // the scope again; a vanished one opens All history, never an
@@ -1880,7 +2075,7 @@ fn execute(
             // says so in its own words.
             let mut snapshot = read_snapshot(
                 path.clone(),
-                root.as_deref(),
+                (root.as_deref(), git_dir.as_ref()),
                 scope.as_ref(),
                 MissingScope::AllHistory,
                 limit,
@@ -1951,7 +2146,7 @@ fn commit_metadata_bytes(commit: &Commit) -> usize {
 /// ([`RepositorySession::open`]).
 fn read_snapshot(
     path: PathBuf,
-    root: Option<&Path>,
+    (root, git_dir): (Option<&Path>, Option<&GitDirectories>),
     scope: Option<&Scope>,
     missing: MissingScope,
     limit: usize,
@@ -1960,7 +2155,7 @@ fn read_snapshot(
 ) -> Result<Snapshot> {
     let start = Instant::now();
     cancellation.check()?;
-    let repository = session.open(&path, root)?;
+    let repository = session.open(&path, root, git_dir)?;
     cancellation.check()?;
     let branches = repository.branches()?;
     cancellation.check()?;
@@ -2785,6 +2980,7 @@ mod tests {
             scope: None,
             limit: 10,
             root: None,
+            git_dir: None,
         }
     }
 
@@ -3241,6 +3437,7 @@ mod image_tests {
                 scope: None,
                 limit: 500,
                 root: None,
+                git_dir: None,
             },
             &mut cache,
             &active(),
@@ -5223,7 +5420,7 @@ mod image_tests {
         fixture.git(&["tag", "-a", "-m", "Tree", "tree", &tree], &[]);
         let snapshot = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             None,
             MissingScope::Fail,
             10,
@@ -5255,7 +5452,7 @@ mod image_tests {
         fixture.git(&["update-ref", "-d", "refs/heads/side"], &[]);
         let snapshot = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             None,
             MissingScope::Fail,
             10,
@@ -5290,7 +5487,7 @@ mod image_tests {
         assert!(repository.tags().is_err(), "Git cannot give this tag list");
         let snapshot = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             None,
             MissingScope::Fail,
             10,
@@ -5327,7 +5524,7 @@ mod image_tests {
         let mut session = RepositorySession::default();
         let before = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             Some(&scope),
             MissingScope::Fail,
             10,
@@ -5344,7 +5541,7 @@ mod image_tests {
         for scope in [&scope, &worktree_scope] {
             let refreshed = read_snapshot(
                 fixture.0.clone(),
-                None,
+                (None, None),
                 Some(scope),
                 MissingScope::Fail,
                 10,
@@ -5359,7 +5556,7 @@ mod image_tests {
         fixture.git(&["update-ref", "-d", "refs/heads/main"], &[]);
         let error = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             Some(&scope),
             MissingScope::Fail,
             10,
@@ -5397,6 +5594,7 @@ mod image_tests {
                     scope: Some(scope),
                     limit: 10,
                     root: None,
+                    git_dir: None,
                 },
                 &mut PreviewCache::default(),
                 &active(),
@@ -5456,7 +5654,7 @@ mod image_tests {
         // Quiet refresh keeps failing so the displayed history is retained.
         let error = read_snapshot(
             fixture.0.clone(),
-            None,
+            (None, None),
             Some(&Scope::Branch {
                 name: "departing".into(),
                 remote: false,
@@ -5481,7 +5679,7 @@ mod image_tests {
             let mut session = RepositorySession::default();
             assert_eq!(
                 session
-                    .open(&fixture.0, None)
+                    .open(&fixture.0, None, None)
                     .unwrap()
                     .blob(&old_blob)
                     .unwrap(),
@@ -5496,7 +5694,7 @@ mod image_tests {
             };
             fs::rename(&original, preserved.path().join("original")).unwrap();
             fs::rename(&incoming, &original).unwrap();
-            let reopened = session.open(&fixture.0, None).unwrap();
+            let reopened = session.open(&fixture.0, None, None).unwrap();
             assert_eq!(
                 reopened.blob(&new_blob).unwrap(),
                 b"replacement repository object\n"
@@ -5529,7 +5727,7 @@ mod image_tests {
         let mut session = RepositorySession::default();
         assert_eq!(
             session
-                .open(&fixture.0, None)
+                .open(&fixture.0, None, None)
                 .unwrap()
                 .blob(&old_blob)
                 .unwrap(),
@@ -5548,7 +5746,7 @@ mod image_tests {
         assert!(original.is_dir() && incoming.is_dir());
         assert_eq!(
             session
-                .open(&fixture.0, None)
+                .open(&fixture.0, None, None)
                 .unwrap()
                 .blob(&new_blob)
                 .unwrap(),
@@ -5565,7 +5763,7 @@ mod image_tests {
         fixture.git(&["update-ref", "refs/heads/main", &oid], &[]);
         let blob = fixture.blob(b"retained object reader\n");
         let mut session = RepositorySession::default();
-        let ui_repository = session.open(&fixture.0, None).unwrap();
+        let ui_repository = session.open(&fixture.0, None, None).unwrap();
         assert_eq!(
             ui_repository.blob(&blob).unwrap(),
             b"retained object reader\n"
@@ -5580,7 +5778,7 @@ mod image_tests {
         let nested = fixture.0.join("nested/directory");
         fs::create_dir_all(&nested).unwrap();
         for path in [&fixture.0, &nested] {
-            let reopened = session.open(path, None).unwrap();
+            let reopened = session.open(path, None, None).unwrap();
             assert!(Arc::ptr_eq(
                 &retained.upgrade().unwrap(),
                 &session.current.as_ref().unwrap().repository,
@@ -5600,7 +5798,7 @@ mod image_tests {
             ],
             &[],
         );
-        let linked_repo = session.open(&linked, None).unwrap();
+        let linked_repo = session.open(&linked, None, None).unwrap();
         assert!(
             retained.upgrade().is_none(),
             "old retained owner is released on session replacement"
@@ -5616,7 +5814,7 @@ mod image_tests {
                 .name,
             "feature"
         );
-        let main_repo = session.open(&fixture.0, None).unwrap();
+        let main_repo = session.open(&fixture.0, None, None).unwrap();
         assert_eq!(
             main_repo
                 .branches()
@@ -5647,9 +5845,9 @@ mod image_tests {
             .unwrap();
         assert!(init.status.success());
         let mut session = RepositorySession::default();
-        let opened = session.open(&inner, None).unwrap();
+        let opened = session.open(&inner, None, None).unwrap();
         let root = opened.path().to_owned();
-        assert_eq!(session.open(&root, Some(&root)).unwrap().path(), root);
+        assert_eq!(session.open(&root, Some(&root), None).unwrap().path(), root);
         assert!(WorkingState::read(&opened).is_ok());
 
         fs::rename(inner.join(".git"), outer.0.join("inner-git-away")).unwrap();
@@ -5686,13 +5884,14 @@ mod image_tests {
             Ok(_) => panic!("Changes read the enclosing repository"),
             Err(error) => gone(error),
         }
-        gone(session.open(&root, Some(&root)).unwrap_err());
+        gone(session.open(&root, Some(&root), None).unwrap_err());
         let error = execute(
             Job::Open {
                 path: root.clone(),
                 scope: None,
                 limit: 10,
                 root: Some(root.clone()),
+                git_dir: None,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -5709,7 +5908,7 @@ mod image_tests {
         );
         assert_eq!(
             session
-                .open(&root, None)
+                .open(&root, None, None)
                 .unwrap()
                 .path()
                 .canonicalize()
@@ -5730,6 +5929,7 @@ mod image_tests {
                 scope: None,
                 limit: 10,
                 root: Some(root.clone()),
+                git_dir: None,
             },
             &mut PreviewCache::default(),
             &active(),
@@ -5754,6 +5954,455 @@ mod image_tests {
                 }
             ),
         }
+    }
+
+    /// A tab's repository is its root and the Git directory Git reported
+    /// when it opened, compared as captured: with its `.git` swapped for
+    /// another repository's gitfile, or its root turned into a link to
+    /// another repository, Changes' working read, a quiet read and a
+    /// reopen by the captured root each fail as `RepositoryGone`, naming
+    /// what Git finds, and read nothing of the other repository; the
+    /// session never adopts it. Restored, the tab reads again.
+    #[cfg(unix)]
+    #[test]
+    fn a_reopen_never_takes_a_swapped_git_entry_or_a_linked_root() {
+        let fixture = Fixture::new();
+        let other = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let other_repository = GitRepository::open(&other.0).unwrap();
+        let gone = |error: anyhow::Error, found: &Path| {
+            let gone = error
+                .downcast::<RepositoryGone>()
+                .expect("the repository is gone");
+            assert_eq!(gone.path, root);
+            assert_eq!(
+                gone.found.map(|found| found.canonicalize().unwrap()),
+                Some(found.to_owned()),
+                "it names what Git finds there"
+            );
+        };
+        let quiet = |session: &mut RepositorySession| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history: false,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+            .err()
+            .expect("a quiet read reads nothing")
+        };
+
+        let away = fixture.0.with_extension("git-away");
+        fs::rename(fixture.0.join(".git"), &away).unwrap();
+        fs::write(
+            fixture.0.join(".git"),
+            format!("gitdir: {}\n", other_repository.git_dir().display()),
+        )
+        .unwrap();
+        let other_git = other_repository.git_dir();
+        let captured = GitDirectories::of(&opened);
+        gone(WorkingState::read(&opened).err().expect("gone"), other_git);
+        gone(quiet(&mut session), other_git);
+        // A reopen by the tab's captured root and Git directory, warm, and
+        // cold after the session opened another repository: the session
+        // keeps no memory of the tab, which names its own Git directory.
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+            other_git,
+        );
+        let third = Fixture::new();
+        session.open(&third.0, None, None).unwrap();
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+            other_git,
+        );
+        fs::remove_file(fixture.0.join(".git")).unwrap();
+        fs::rename(&away, fixture.0.join(".git")).unwrap();
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+        assert!(WorkingState::read(&opened).is_ok());
+
+        let moved = fixture.0.with_extension("moved");
+        fs::rename(&fixture.0, &moved).unwrap();
+        std::os::unix::fs::symlink(&other.0, &fixture.0).unwrap();
+        let other_root = other_repository.path().canonicalize().unwrap();
+        gone(
+            WorkingState::read(&opened).err().expect("gone"),
+            &other_root,
+        );
+        gone(quiet(&mut session), &other_root);
+        gone(
+            session.open(&root, Some(&root), None).unwrap_err(),
+            &other_root,
+        );
+        fs::remove_file(&fixture.0).unwrap();
+        fs::rename(&moved, &fixture.0).unwrap();
+    }
+
+    /// A linked worktree's `commondir` re-pointed at another repository
+    /// keeps its root and its own Git directory, yet its refs and objects,
+    /// and every write's, are that other repository's: a reopen by the
+    /// tab's captured identity, warm or cold, finds the repository gone,
+    /// naming that repository's Git directory, and with `commondir` back it
+    /// opens again. It once compared the root and Git directory alone, so
+    /// the tab took a handle bound to the other repository, and its next
+    /// Stage all and Commit wrote that repository's objects and branch.
+    #[test]
+    fn a_reopen_never_takes_a_re_pointed_commondir() {
+        let fixture = Fixture::new();
+        fixture.git(&["commit", "--quiet", "--allow-empty", "-m", "main"], &[]);
+        let linked = fixture.0.join("linked");
+        fixture.git(
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                linked.to_str().unwrap(),
+            ],
+            &[],
+        );
+        let mut session = RepositorySession::default();
+        let opened = session.open(&linked, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        assert_ne!(captured.git_dir, captured.common, "a linked worktree");
+        let other = Fixture::new();
+        let other_git = GitRepository::open(&other.0).unwrap().git_dir().to_owned();
+        let commondir = opened.git_dir().join("commondir");
+        let kept = fs::read(&commondir).unwrap();
+        fs::write(&commondir, format!("{}\n", other_git.display())).unwrap();
+        let gone = |error: anyhow::Error| {
+            let gone = error.downcast::<RepositoryGone>().expect("gone");
+            assert_eq!(gone.path, root);
+            assert_eq!(gone.found.as_deref(), Some(other_git.as_path()));
+        };
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+        );
+        let third = Fixture::new();
+        session.open(&third.0, None, None).unwrap();
+        gone(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap_err(),
+        );
+        fs::write(&commondir, kept).unwrap();
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// The retained repository answers a reopen only where its own Git
+    /// directories are the ones the tab names: named with another common
+    /// directory, the reopen asks Git, which finds the repository's own,
+    /// and fails as gone rather than hand the retained repository over.
+    #[test]
+    fn a_retained_repository_answers_only_the_directories_it_has() {
+        let fixture = Fixture::new();
+        let mut session = RepositorySession::default();
+        let opened = session.open(&fixture.0, None, None).unwrap();
+        let root = opened.path().to_owned();
+        let captured = GitDirectories::of(&opened);
+        let named = GitDirectories {
+            git_dir: captured.git_dir.clone(),
+            common: fixture.0.join("elsewhere"),
+        };
+        let gone = session
+            .open(&root, Some(&root), Some(&named))
+            .unwrap_err()
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.found.as_deref(), Some(captured.common.as_path()));
+        assert_eq!(
+            session
+                .open(&root, Some(&root), Some(&captured))
+                .unwrap()
+                .path(),
+            root
+        );
+    }
+
+    /// A quiet read with the `.git` swapped for another repository's
+    /// gitfile reads nothing of that repository. And a quiet read already
+    /// running when the `.git`
+    /// moves away (the watcher's setup rescan racing the move) fails part
+    /// way, its working read after the status and its History, confined to
+    /// the repository: the whole read is the repository gone, which marks
+    /// the tab, never an "Operation state: …" or "History scope changed: …"
+    /// banner beside the mark.
+    #[test]
+    fn a_quiet_read_whose_git_moves_part_way_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=GitTurtle Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "inner",
+            ],
+        ] {
+            let output = Fixture::command(&inner).args(args).output().unwrap();
+            assert!(output.status.success());
+        }
+        let mut session = RepositorySession::default();
+        let opened = session.open(&inner, None, None).unwrap();
+        let quiet = |session: &mut RepositorySession, history: bool| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+        };
+        let gone = |result: Result<Output>| match result {
+            Ok(_) => panic!("the read answered with another repository or a banner"),
+            Err(error) => {
+                let gone = error.downcast::<RepositoryGone>().expect("gone");
+                assert_eq!(gone.path, opened.path());
+            }
+        };
+
+        let other = Fixture::new();
+        let other_git = GitRepository::open(&other.0).unwrap().git_dir().to_owned();
+        let away = outer.0.join("inner-git-away");
+        fs::rename(inner.join(".git"), &away).unwrap();
+        fs::write(
+            inner.join(".git"),
+            format!("gitdir: {}\n", other_git.display()),
+        )
+        .unwrap();
+        gone(quiet(&mut session, false));
+        fs::remove_file(inner.join(".git")).unwrap();
+        fs::rename(&away, inner.join(".git")).unwrap();
+        assert!(quiet(&mut session, true).is_ok());
+
+        let checkpoints = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (git, moved) = (inner.join(".git"), away.clone());
+        let counted = std::rc::Rc::clone(&checkpoints);
+        QUIET_CHECKPOINT.with_borrow_mut(|hook| {
+            *hook = Some(Box::new(move || {
+                counted.set(counted.get() + 1);
+                // After the status, before the rest and History.
+                if counted.get() == 2 {
+                    fs::rename(&git, &moved).unwrap();
+                }
+            }))
+        });
+        let result = quiet(&mut session, true);
+        QUIET_CHECKPOINT.with_borrow_mut(|hook| *hook = None);
+        assert!(checkpoints.get() >= 2, "the move ran part way");
+        gone(result);
+    }
+
+    /// A quiet read checks its own handle before the session's reopen:
+    /// with `core.worktree` re-pointed in the repository's configuration
+    /// after a quiet read, which changes no `.git` entry or directory the
+    /// session's identity holds while the work tree moves elsewhere, the
+    /// next quiet read is the repository gone, never the other folder's
+    /// status. The session alone answered with the moved work tree.
+    #[test]
+    fn a_quiet_read_after_core_worktree_is_re_pointed_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        let elsewhere = outer.0.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::write(elsewhere.join("stray.txt"), "stray\n").unwrap();
+        for args in [
+            &["init", "--quiet"][..],
+            &[
+                "-c",
+                "user.name=GitTurtle Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "inner",
+            ],
+        ] {
+            let output = Fixture::command(&inner).args(args).output().unwrap();
+            assert!(output.status.success());
+        }
+        let mut session = RepositorySession::default();
+        let opened = session.open(&inner, None, None).unwrap();
+        let quiet = |session: &mut RepositorySession| {
+            execute(
+                Job::QuietRefresh {
+                    repo: opened.clone(),
+                    scope: None,
+                    limit: 10,
+                    history: true,
+                    selected: None,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+        };
+        assert!(quiet(&mut session).is_ok());
+        let output = Fixture::command(&inner)
+            .args(["config", "core.worktree", elsewhere.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let error = quiet(&mut session)
+            .err()
+            .expect("the quiet read answered with the moved work tree");
+        let gone = error
+            .downcast::<RepositoryGone>()
+            .unwrap_or_else(|error| panic!("not gone: {error:#}"));
+        assert_eq!(gone.path, opened.path());
+    }
+
+    /// A working read already running when the repository's `.git` moves
+    /// away: its status read, the parts after it fail as "not a git
+    /// repository", its commands confined to the repository. The read is
+    /// then the repository gone, which marks the tab, never an "Operation
+    /// state: …" banner beside the mark.
+    #[test]
+    fn a_working_read_whose_git_moves_part_way_is_the_repository_gone() {
+        let outer = Fixture::new();
+        let inner = outer.0.join("inner");
+        fs::create_dir(&inner).unwrap();
+        let init = Fixture::command(&inner)
+            .args(["init", "--quiet"])
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let opened = GitRepository::open(&inner).unwrap();
+        let checkpoints = std::cell::Cell::new(0);
+        let state = WorkingState::read_with_checkpoint(&opened, || {
+            checkpoints.set(checkpoints.get() + 1);
+            // After the status, before the rest.
+            if checkpoints.get() == 2 {
+                fs::rename(inner.join(".git"), outer.0.join("inner-git-away")).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+        let operation = format!("{:#}", state.operation.as_ref().expect_err("failed"));
+        assert!(operation.contains("not a git repository"), "{operation}");
+        let gone = state
+            .confirmed(&opened)
+            .err()
+            .expect("the repository is gone")
+            .downcast::<RepositoryGone>()
+            .expect("gone");
+        assert_eq!(gone.path, opened.path());
+        assert_eq!(
+            gone.found.map(|found| found.canonicalize().unwrap()),
+            Some(outer.0.canonicalize().unwrap())
+        );
+    }
+
+    /// The watcher's setup failure is the repository gone whenever the
+    /// repository is gone or no longer one at its path, whatever the words:
+    /// a resolution failing as its `.git` moves is checked from the
+    /// filesystem, and kept its own while the repository is still there; a
+    /// confined "not a git repository" is Git's to decide, so a `.git` half
+    /// removed (HEAD deleted, the folder and `config` left), which the
+    /// filesystem check still takes for the same repository, is gone too.
+    /// That check once kept it the watcher's warning, the tab unmarked.
+    #[test]
+    fn a_watch_setup_failure_is_the_repository_gone_unless_it_is_still_there() {
+        let outer = Fixture::new();
+        let outer_root = outer.0.canonicalize().unwrap();
+        let repository = |name: &str| {
+            let root = outer.0.join(name);
+            fs::create_dir(&root).unwrap();
+            let init = Fixture::command(&root)
+                .args(["init", "--quiet"])
+                .output()
+                .unwrap();
+            assert!(init.status.success());
+            GitRepository::open(&root).unwrap()
+        };
+        let gone = |repo: &GitRepository, error: anyhow::Error, after: &str| {
+            let gone = gone_unless_found(repo, error)
+                .downcast::<RepositoryGone>()
+                .unwrap_or_else(|error| panic!("{after}: not gone: {error:#}"));
+            assert_eq!(gone.path, repo.path(), "{after}");
+            assert_eq!(
+                gone.found.map(|found| found.canonicalize().unwrap()),
+                Some(outer_root.clone()),
+                "{after}: it names the repository Git finds there"
+            );
+        };
+        // As `git_directories` fails resolving a directory moved away.
+        let resolution = || {
+            use anyhow::Context as _;
+            outer
+                .0
+                .join("nowhere")
+                .canonicalize()
+                .context("Resolve Git administration directory")
+                .expect_err("nothing there")
+        };
+
+        let moved = repository("moved");
+        let kept = gone_unless_found(&moved, resolution());
+        assert!(!kept.is::<RepositoryGone>(), "still there: {kept:#}");
+        assert_eq!(format!("{kept:#}"), format!("{:#}", resolution()));
+        fs::rename(moved.path().join(".git"), outer.0.join("moved-git-away")).unwrap();
+        gone(&moved, resolution(), "its .git moved away");
+
+        let half = repository("half");
+        fs::remove_file(half.git_dir().join("HEAD")).unwrap();
+        assert!(half.git_dir().join("config").is_file());
+        let confined = half
+            .git_directories()
+            .expect_err("Git finds no repository there");
+        assert!(
+            gitturtle_core::finds_no_repository(&confined),
+            "{confined:#}"
+        );
+        assert_eq!(
+            half.verify_at_path().unwrap(),
+            gitturtle_core::FoundAtPath::Same,
+            "the filesystem check still holds"
+        );
+        gone(&half, confined, "its HEAD deleted");
     }
 }
 

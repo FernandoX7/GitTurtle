@@ -35,6 +35,13 @@ fn classify(error: &anyhow::Error) -> Failure {
     }
 }
 
+/// Whether an open failed because Git finds no repository at the folder, or
+/// the folder is missing: what a tab's passive reopen finds once its
+/// repository is gone, which marks the tab as Refresh marks it.
+pub(super) fn finds_no_repository(error: &anyhow::Error) -> bool {
+    matches!(classify(error), Failure::NotRepository | Failure::Missing)
+}
+
 /// Runs on the repository worker; no filesystem probe belongs in UI error handling.
 pub(super) fn explain(path: &Path, error: anyhow::Error) -> anyhow::Error {
     let failure = classify(&error);

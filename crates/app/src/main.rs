@@ -1424,21 +1424,31 @@ impl GitTurtle {
         self.graph.clear();
         self.graph_notice = None;
         // A tab opened before finds its own repository again or none; only a
-        // new tab's explicit open may land on the work tree enclosing `path`.
-        let root = self
-            .repository_tabs
-            .reopen_root(&path, self.scope.as_ref().map(|s| &s.1));
+        // new tab's explicit open, or one of a marked tab's folder, may land
+        // on the work tree enclosing `path`.
+        let afresh = self.repository_tabs.recapture_asked(&path);
+        let (root, git_dir) = if afresh {
+            None
+        } else {
+            self.repository_tabs
+                .reopen_root(&path, self.scope.as_ref().map(|s| &s.1))
+        }
+        .unzip();
         self.request(
             Job::Open {
                 path,
                 scope: self.scope.as_ref().map(|s| s.1.clone()),
                 limit: self.limit,
                 root,
+                git_dir: git_dir.flatten(),
             },
             "Reading local history…",
             window,
             cx,
         );
+        if afresh {
+            self.repository_tabs.recapture_reading(self.generation);
+        }
     }
 
     fn clear_preview(&mut self) {

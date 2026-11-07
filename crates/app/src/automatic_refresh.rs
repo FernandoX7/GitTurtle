@@ -149,18 +149,29 @@ impl GitTurtle {
         };
         let backend = self.automatic.backend;
         let response = self.operations.submit_read(move || {
-            let (private_git, common_git) = repo.git_directories()?;
-            let roots = WatchRoots {
-                worktree: repo.path().to_owned(),
-                private_git,
-                common_git,
+            // A setup that fails because the repository went away while it
+            // ran is the repository gone, whatever step it failed in: Git
+            // says "not a git repository" once the `.git` is gone or half
+            // removed, which Git then decides, but a `.git` moved between
+            // Git's report of the administration directories and their
+            // resolution fails that resolution, and their watch can fail
+            // too. Only a repository still at its path gets the watcher's
+            // warning; that warning once won the race.
+            let setup = || {
+                let (private_git, common_git) = repo.git_directories()?;
+                let roots = WatchRoots {
+                    worktree: repo.path().to_owned(),
+                    private_git,
+                    common_git,
+                };
+                let subscription = if previous.as_ref() == Some(&roots) {
+                    None
+                } else {
+                    Some(local_refresh::subscribe(backend, roots.clone())?)
+                };
+                anyhow::Ok((roots, subscription))
             };
-            let subscription = if previous.as_ref() == Some(&roots) {
-                None
-            } else {
-                Some(local_refresh::subscribe(backend, roots.clone())?)
-            };
-            Ok((roots, subscription))
+            setup().map_err(|error| worker::gone_unless_found(&repo, error))
         });
         self.automatic.watch_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Local watcher setup stopped")));
@@ -181,6 +192,14 @@ impl GitTurtle {
                             this.queue_automatic_refresh(LocalChange { rescan: true, ..Default::default() }, window, cx);
                         }
                     },
+                    // Gone from its root, the repository is read as Refresh
+                    // reads it, which marks the tab and says why; it once
+                    // said "Automatic refresh could not start … not a git
+                    // repository" and, with no watcher, nothing marked it.
+                    Err(error) if error.is::<worker::RepositoryGone>() => {
+                        this.automatic.watch_failed = true;
+                        this.tab_repository_gone(window, cx);
+                    }
                     Err(error) => {
                         this.automatic.watch_failed = true;
                         this.automatic.watch_warning = Some(format!("Automatic refresh could not start.\n\n{error:#}\n\nRefresh reads current local state and retries the watcher."));

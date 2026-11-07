@@ -223,6 +223,39 @@ pub struct SavedTab {
     /// open resolved, which a restore must find again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unresolved: bool,
+    /// The Git directories the tab captured at its root (`Tab::git_dir`),
+    /// which its first reopen after a restart names: a `.git` swapped for
+    /// another repository's gitfile, or a `commondir` re-pointed, while the
+    /// app was closed marks the tab. Written only once captured; a tab
+    /// saved without them, as every older session's, captures them at its
+    /// first reopen. A malformed value is none captured
+    /// ([`lenient_git_directories`]).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_git_directories"
+    )]
+    pub git_directories: Option<SavedGitDirectories>,
+}
+/// [`SavedTab::git_directories`] as saved, or none where it is malformed: it
+/// degrades alone, so the tab captures them at its first reopen. Failing the
+/// whole session, it dropped every tab, the library and its groups.
+fn lenient_git_directories<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<SavedGitDirectories>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok()))
+}
+/// [`worker::GitDirectories`] as a session saves them, byte-safe as a tab's
+/// path is.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedGitDirectories {
+    pub git_dir: SavedPath,
+    pub common: SavedPath,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryEntry {
@@ -365,6 +398,12 @@ pub struct Tab {
     /// ([`GitTurtle::tab_snapshot_accepted`]), when it may still land on
     /// the work tree enclosing that folder.
     resolved: bool,
+    /// The Git directories Git reported at the tab's root when its snapshot
+    /// was last accepted, which a passive reopen of that root must find
+    /// there again ([`State::reopen_root`]); `None` until then. Saved with
+    /// the session, so a restored tab names them at its first reopen; an
+    /// older session's tab, saved without them, captures them then.
+    git_dir: Option<worker::GitDirectories>,
     saved: Bookmark,
     warm: Option<WarmTab>,
     pub error: Option<String>,
@@ -428,8 +467,33 @@ pub struct State {
     /// The strip's refusals so far, which gives each its own line node, so
     /// the same refusal asked for again is announced again.
     refusals: usize,
+    /// The explicit Open of a marked tab's folder under way, which reads it
+    /// afresh ([`GitTurtle::open_repository_tab`]).
+    recapture: Option<Recapture>,
     #[cfg(test)]
     save_path: Option<PathBuf>,
+}
+/// An explicit Open of a marked tab's folder (Open…, the projects list, a
+/// library group): its read names no root or Git directory, so it may find
+/// another repository there, the work tree enclosing the folder among them.
+/// The tab keeps the root, Git directory and mark it had until that read's
+/// snapshot is accepted, which replaces them
+/// ([`GitTurtle::tab_snapshot_accepted`]); a failed read leaves them as they
+/// were ([`GitTurtle::tab_opening_failed`]). Cleared as the Open was asked,
+/// a failed one once left the tab with nothing captured, saved as
+/// unresolved, and its next Refresh, an explicit open too, could open the
+/// enclosing repository in the tab, writes following it.
+enum Recapture {
+    /// Asked for, until the Open's read is: an Open of this folder then is
+    /// that read ([`State::recapture_asked`]).
+    Asked(PathBuf),
+    /// That read, by its generation (`GitTurtle::generation`).
+    Reading(u64),
+    /// That read failed, for the tab at `path`, with what the window and the
+    /// Projects page say for it in place of the mark's own reason: it goes
+    /// with that tab's mark, never another's
+    /// ([`GitTurtle::tab_found_readable`]).
+    Failed { path: PathBuf, error: String },
 }
 /// The tab strip's refusal of a ninth tab, in the same words wherever the
 /// person asked for it: the strip's own line or the Projects page's.
@@ -439,6 +503,17 @@ const LIBRARY_FULL_REFUSAL: &str =
     "Local library holds up to 128 repositories. Remove an entry before adding another.";
 pub(super) const TAB_LIMIT_REFUSAL: &str = "Eight repository tabs are open. Close a tab before opening another; its commit drafts remain saved.";
 impl State {
+    /// Whether an Open of `path` is the read an explicit Open of its marked
+    /// tab's folder asked for ([`Recapture`]), naming no root or Git
+    /// directory.
+    pub(super) fn recapture_asked(&self, path: &Path) -> bool {
+        matches!(&self.recapture, Some(Recapture::Asked(asked)) if asked == path)
+    }
+    /// Notes the read [`Self::recapture_asked`] said an Open was, by the
+    /// generation that Open's read has.
+    pub(super) fn recapture_reading(&mut self, generation: u64) {
+        self.recapture = Some(Recapture::Reading(generation));
+    }
     /// Drops History's search held while a snapshot was read, as another
     /// read of a repository starts or another tab shows
     /// ([`GitTurtle::run_pending_search`]).
@@ -524,6 +599,12 @@ impl State {
                 .map(|tab| Tab {
                     path: tab.path.path(),
                     resolved: !tab.unresolved,
+                    git_dir: tab
+                        .git_directories
+                        .map(|directories| worker::GitDirectories {
+                            git_dir: directories.git_dir.path(),
+                            common: directories.common.path(),
+                        }),
                     saved: tab.bookmark,
                     warm: None,
                     error: None,
@@ -550,19 +631,25 @@ impl State {
     /// explicit open of the folder the person chose (Open…, a dropped
     /// folder, the projects list, a library group), which may land on the
     /// work tree enclosing that folder. A guess that misses fails safe: the
-    /// tab shows its repository unavailable rather than open another.
+    /// tab shows its repository unavailable rather than open another. With
+    /// the tab's own path come the Git directories it captured there
+    /// ([`Tab::git_dir`], `worker::Job::Open::git_dir`), which the reopen
+    /// must find too; a worktree's row names none.
     pub(super) fn reopen_root(
         &self,
         path: &Path,
         scope: Option<&worker::Scope>,
-    ) -> Option<PathBuf> {
-        let resolved = self
+    ) -> Option<(PathBuf, Option<worker::GitDirectories>)> {
+        if let Some(tab) = self
             .active
             .and_then(|index| self.tabs.get(index))
-            .is_some_and(|tab| tab.resolved && tab.path == path);
+            .filter(|tab| tab.resolved && tab.path == path)
+        {
+            return Some((path.to_owned(), tab.git_dir.clone()));
+        }
         let worktree =
             matches!(scope, Some(worker::Scope::Worktree { path: tree }) if tree == path);
-        (resolved || worktree).then(|| path.to_owned())
+        worktree.then(|| (path.to_owned(), None))
     }
     fn saved(&self) -> Session {
         Session {
@@ -574,6 +661,10 @@ impl State {
                     path: SavedPath::new(&tab.path),
                     bookmark: tab.saved.clone(),
                     unresolved: !tab.resolved,
+                    git_directories: tab.git_dir.as_ref().map(|directories| SavedGitDirectories {
+                        git_dir: SavedPath::new(&directories.git_dir),
+                        common: SavedPath::new(&directories.common),
+                    }),
                 })
                 .collect(),
             active: self.active.unwrap_or(0),
@@ -1017,6 +1108,7 @@ impl GitTurtle {
             self.repository_tabs.tabs.push(Tab {
                 path: repo.path().to_owned(),
                 resolved: true,
+                git_dir: Some(worker::GitDirectories::of(&repo)),
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
@@ -1414,10 +1506,51 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if let Some(index) = self.repository_tabs.find(&path) {
-            self.switch_repository_tab(index, window, cx);
+            if self.repository_tabs.tabs[index].error.is_some() {
+                self.recapture_marked_tab(index, path, window, cx);
+            } else {
+                self.switch_repository_tab(index, window, cx);
+            }
         } else {
             self.limit = 500;
             self.open(path, None, window, cx);
+        }
+    }
+    /// An explicit Open of a marked tab's folder reads it afresh
+    /// ([`Recapture`]): once accepted the tab takes the repository found and
+    /// its mark clears. It once reopened the tab by its old identity and was
+    /// refused again, which only closing the tab recovered from. Shown
+    /// already, the tab opens in place, as switching to it opens nothing.
+    /// From another tab, what the tab retained goes, so its switch opens it
+    /// cold: restored as retained, it once opened nothing. A refused switch
+    /// leaves the tab as it was, what it retained too.
+    fn recapture_marked_tab(
+        &mut self,
+        index: usize,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.repository_tabs.recapture = Some(Recapture::Asked(path.clone()));
+        if self.repository_tabs.active == Some(index) {
+            self.limit = 500;
+            self.open(path, None, window, cx);
+        } else {
+            let warm = self.repository_tabs.tabs[index].warm.take();
+            self.switch_repository_tab(index, window, cx);
+            if self.repository_tabs.active == Some(index) {
+                // Its repository handle may hold the last reference to an
+                // object reader, which stops its process as it drops.
+                if let Some(WarmTab { repository, .. }) = warm {
+                    cx.background_spawn(async move { drop(repository) })
+                        .detach();
+                }
+            } else if let Some(tab) = self.repository_tabs.tabs.get_mut(index) {
+                tab.warm = warm;
+            }
+        }
+        if matches!(self.repository_tabs.recapture, Some(Recapture::Asked(_))) {
+            self.repository_tabs.recapture = None;
         }
     }
     pub(super) fn tab_open_requested(
@@ -1478,6 +1611,7 @@ impl GitTurtle {
         self.repository_tabs.tabs.push(Tab {
             path: path.to_owned(),
             resolved: false,
+            git_dir: None,
             saved: Bookmark::default(),
             warm: None,
             error: None,
@@ -1492,6 +1626,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // A fresh capture's snapshot replaces what the tab had captured.
+        self.repository_tabs.recapture = None;
         if let Some(existing) = self.repository_tabs.find(repo.path())
             && self.repository_tabs.active != Some(existing)
         {
@@ -1514,6 +1650,7 @@ impl GitTurtle {
             // a later passive reopen finds it again or shows it unavailable.
             tab.path = repo.path().to_owned();
             tab.resolved = true;
+            tab.git_dir = Some(worker::GitDirectories::of(repo));
             tab.error = None;
         }
         // Capture after receive installs the accepted metadata. A newly opened
@@ -1533,11 +1670,27 @@ impl GitTurtle {
     /// review past its limits left the tab "unavailable" after Reset review
     /// brought the diff back, until the repository was opened again (QA-101
     /// O1).
+    ///
+    /// A fresh capture of a marked tab's folder that fails ([`Recapture`])
+    /// leaves the tab its root, Git directory and mark as they were, the
+    /// failure said as an Open's.
     pub(super) fn tab_opening_failed(&mut self) {
+        let afresh = matches!(
+            self.repository_tabs.recapture,
+            Some(Recapture::Reading(generation)) if generation == self.generation
+        );
         if let Some(index) = self.repository_tabs.active
             && let Some(tab) = self.repository_tabs.tabs.get_mut(index)
         {
-            tab.error = self.error.clone();
+            if afresh && tab.error.is_some() {
+                self.repository_tabs.recapture =
+                    self.error.clone().map(|error| Recapture::Failed {
+                        path: tab.path.clone(),
+                        error,
+                    });
+            } else {
+                tab.error = self.error.clone();
+            }
         }
     }
     /// Refuses what the tab strip was asked, a ninth tab, a switch past the
@@ -1612,22 +1765,33 @@ impl GitTurtle {
     /// Cleared only by Refresh, a repository moved back or repaired outside
     /// the app stayed "unavailable" while the window read it.
     pub(super) fn tab_found_readable(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(error) = self
+        let Some((path, error)) = self
             .repository_tabs
             .active
             .and_then(|index| self.repository_tabs.tabs.get_mut(index))
-            .and_then(|tab| tab.error.take())
+            .and_then(|tab| Some((tab.path.clone(), tab.error.take()?)))
         else {
             return false;
         };
-        if self.error.as_ref() == Some(&error) {
-            self.error = None;
+        // A failed fresh capture of its folder said its own failure in place
+        // of the mark's reason ([`Recapture::Failed`]), which goes with it;
+        // another tab's stays for that tab.
+        let failed = match self.repository_tabs.recapture.take_if(|recapture| {
+            matches!(recapture, Recapture::Failed { path: failed, .. } if *failed == path)
+        }) {
+            Some(Recapture::Failed { error, .. }) => Some(error),
+            _ => None,
+        };
+        for error in std::iter::once(error).chain(failed) {
+            if self.error.as_ref() == Some(&error) {
+                self.error = None;
+            }
+            // The Projects page's error is the same opening error: left,
+            // closing the last tab met the person with an alert that the
+            // repository it had just read was not available.
+            self.hub
+                .update(cx, |hub, cx| hub.clear_error_matching(&error, cx));
         }
-        // The Projects page's error is the same opening error: left, closing
-        // the last tab met the person with an alert that the repository it
-        // had just read was not available.
-        self.hub
-            .update(cx, |hub, cx| hub.clear_error_matching(&error, cx));
         true
     }
     /// A read of the shown tab's repository found it gone from its root
@@ -2463,6 +2627,7 @@ impl GitTurtle {
             self.repository_tabs.tabs.push(Tab {
                 path: path.clone(),
                 resolved: true,
+                git_dir: None,
                 saved: Bookmark::default(),
                 warm: None,
                 error: None,
@@ -2628,6 +2793,7 @@ impl GitTurtle {
                 self.repository_tabs.tabs.push(Tab {
                     path: path.clone(),
                     resolved: false,
+                    git_dir: None,
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
@@ -3992,6 +4158,21 @@ mod tests {
         assert_eq!(saved.tabs[0].path.path(), root, "the saved path");
     }
 
+    /// Show latest, with the tab's `.git` gone and no repository enclosing
+    /// its folder, marks the tab as Refresh does, with the reasons any
+    /// folder that is not a repository gets. It once left the tab unmarked,
+    /// its history still shown, under "Could not read local history: …".
+    #[gpui::test]
+    async fn show_latest_with_no_repository_found_marks_the_tab(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_not_a_repository(&app, cx, &root, "Show latest");
+    }
+
     /// Refresh in Changes, with its `.git` gone and no repository enclosing
     /// its folder, marks the tab through its Open, which says the reasons
     /// any folder that is not a repository gets; Refresh again in the
@@ -4095,6 +4276,849 @@ mod tests {
         app.read_with(cx, |app, _| {
             assert_eq!(app.repository_tabs.tabs.len(), 2);
             assert_eq!(app.repository_tabs.tabs[1].path, other.path());
+        });
+    }
+
+    /// A cold tab shown again names the Git directory it captured at its
+    /// root, which the reopen must find there: with its `.git` swapped for
+    /// a third repository's gitfile while another tab was shown, the switch
+    /// once opened that third repository in it, the root being the same.
+    #[gpui::test]
+    async fn a_cold_switch_never_takes_a_swapped_git_entry(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+        let third_git = gitturtle_core::GitRepository::open(third.path())
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.path().to_owned(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        app.update(cx, |app, _| app.repository_tabs.tabs[0].warm = None);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", third_git.display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(
+            &app,
+            cx,
+            0,
+            &root,
+            &third_git,
+            "a cold switch to a swapped .git",
+        );
+    }
+
+    /// Regaining focus with the tab's `.git` gone and no repository
+    /// enclosing its folder sets up the watcher again and asks for a quiet
+    /// read: the tab is marked with the reasons any folder that is not a
+    /// repository gets, and nothing says "Some changes need Refresh" beside
+    /// them. The watcher's setup once failed as Git's own "not a git
+    /// repository" into that warning.
+    #[gpui::test]
+    async fn regained_focus_with_no_repository_found_says_only_why(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        // What the window's activation observer asks for (`main.rs`).
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.ensure_local_watcher(true, window, cx);
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        rescan: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        for _ in 0..4 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+        }
+        assert_not_a_repository(&app, cx, &root, "regained focus");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_error, None, "nothing beside the mark");
+            assert_eq!(
+                app.automatic.watch_warning(),
+                None,
+                "the watcher's setup marked the tab instead"
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("local-refresh-warning").is_none(),
+            "no \"Some changes need Refresh\" beside the mark"
+        );
+    }
+
+    /// The watcher's setup failing after Git reported the administration
+    /// directories, its watch refused as when the host's inotify instances
+    /// run out, warns only while the tab's repository is still the one at
+    /// its path. With the tab's `.git` swapped for a third repository's
+    /// gitfile, whose directories Git then reports, the tab is marked and
+    /// names that repository, with no "Some changes need Refresh" beside
+    /// the mark. The refused watch once warned there and left the tab
+    /// unmarked, and with no watcher nothing marked it later.
+    #[gpui::test]
+    async fn a_refused_watch_warns_only_while_the_repository_is_still_there(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+        let third_git = gitturtle_core::GitRepository::open(third.path())
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let refuse_watch = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.watch_through(crate::local_refresh::Backend::Unavailable, window, cx)
+                })
+            });
+        };
+
+        refuse_watch(&app, cx);
+        for _ in 0..2 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+        }
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert!(
+                !app.tab_label(shown).0.ends_with(" · unavailable"),
+                "still there: unmarked"
+            );
+            assert_eq!(app.error, None, "still there");
+            let warning = app
+                .automatic
+                .watch_warning()
+                .expect("still there: the watcher's warning");
+            assert!(
+                warning.starts_with("Automatic refresh could not start.")
+                    && warning.contains("Create native local-change watcher"),
+                "{warning}"
+            );
+        });
+        assert!(
+            cx.debug_bounds("local-refresh-warning").is_some(),
+            "still there: \"Some changes need Refresh\""
+        );
+
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", third_git.display()),
+        )
+        .unwrap();
+        refuse_watch(&app, cx);
+        for _ in 0..2 {
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+        }
+        let after = "a refused watch of a swapped .git";
+        assert_gone(&app, cx, 0, &root, &third_git, after);
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.automatic.watch_warning(),
+                None,
+                "{after}: marked instead"
+            );
+            assert_eq!(
+                app.operation_error, None,
+                "{after}: nothing beside the mark"
+            );
+        });
+        assert!(
+            cx.debug_bounds("local-refresh-warning").is_none(),
+            "{after}: no \"Some changes need Refresh\" beside the mark"
+        );
+    }
+
+    /// A tab restored at launch is reopened by its saved root as it was
+    /// saved, never resolved again: with that root turned into a link to
+    /// another repository while the app was closed, the restore marks the
+    /// tab " · unavailable" and says why, on its own path, rather than open
+    /// the other repository in it.
+    #[cfg(unix)]
+    #[gpui::test]
+    async fn a_restored_tab_whose_root_became_a_link_is_marked_not_switched(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        let root = repository.path().to_owned();
+        let saved: Session = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tabs": [{ "path": root.to_str().expect("a UTF-8 fixture path") }],
+            "active": 0,
+        }))
+        .unwrap();
+        std::fs::rename(&root, fixture.path().join("moved")).unwrap();
+        std::os::unix::fs::symlink(other.path(), &root).unwrap();
+        let destination = isolated_session("restored-linked.json");
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            root.clone(),
+            saved,
+            destination,
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        let (tabs, path, marked, error, repository, subjects) = first_tab(&app, cx);
+        assert_eq!(
+            (tabs, path, marked, repository, subjects),
+            (1, root.clone(), true, None, Vec::<String>::new()),
+            "restored marked, on its own path"
+        );
+        let error = error.expect("the window says why");
+        assert!(
+            error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                && error.contains(&other.path().display().to_string()),
+            "{error}"
+        );
+    }
+
+    /// A malformed saved `git_directories` degrades alone to none captured:
+    /// the session loads every tab and its library, a well-formed tab's
+    /// directories with them. Failing the whole file, it once dropped every
+    /// tab, the library and its groups.
+    #[test]
+    fn a_malformed_saved_git_directory_degrades_alone() {
+        let file = isolated_session("malformed-directories.json");
+        std::fs::create_dir_all(file.parent().expect("a folder")).unwrap();
+        let session = serde_json::json!({
+            "version": 1,
+            "tabs": [
+                { "path": "/a", "git_directories": 5 },
+                { "path": "/b", "git_directories": { "git_dir": "/b/.git" } },
+                { "path": "/c", "git_directories": { "git_dir": "/c/.git", "common": "/c/.git" } },
+            ],
+            "active": 1,
+            "library": [{ "path": "/b" }],
+        });
+        std::fs::write(&file, serde_json::to_vec(&session).unwrap()).unwrap();
+        let loaded = Session::load_at(&file).expect("the session loads");
+        assert_eq!(loaded.tabs.len(), 3);
+        assert_eq!(loaded.active, 1);
+        assert_eq!(loaded.library.len(), 1);
+        assert!(
+            loaded.tabs[..2]
+                .iter()
+                .all(|tab| tab.git_directories.is_none())
+        );
+        let state = State::from_session(loaded);
+        assert_eq!(
+            state.tabs[2].git_dir,
+            Some(worker::GitDirectories {
+                git_dir: "/c/.git".into(),
+                common: "/c/.git".into(),
+            })
+        );
+    }
+
+    /// A tab's captured Git directories are saved with the session and
+    /// named by its first reopen after a restart: a linked worktree's
+    /// `commondir` re-pointed at another repository, or a `.git` swapped for
+    /// a third repository's gitfile, while the app was closed marks the tab
+    /// and says what Git finds, rather than take the other repository's refs
+    /// and objects with the root unchanged. A session saved without them, as
+    /// every older one, loads as it did.
+    #[gpui::test]
+    async fn a_restored_tab_names_the_git_directories_it_saved(cx: &mut TestAppContext) {
+        use crate::views::tests::{fixture_git, fixture_repository};
+        cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
+        let fixture = tempfile::tempdir().unwrap();
+        let main = fixture_repository(fixture.path().join("main"));
+        let linked = fixture.path().join("linked");
+        fixture_git(
+            main.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "linked",
+                linked.to_str().expect("a UTF-8 fixture path"),
+            ],
+        );
+        let linked = gitturtle_core::GitRepository::open(&linked).unwrap();
+        let swapped = fixture_repository(fixture.path().join("swapped"));
+        let other = fixture_repository(fixture.path().join("other"));
+        let third = fixture_repository(fixture.path().join("third"));
+        let tab = |path: &Path| serde_json::json!({ "path": path.to_str().expect("UTF-8") });
+        let older: Session = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tabs": [tab(linked.path()), tab(swapped.path())],
+            "active": 0,
+        }))
+        .unwrap();
+        assert!(older.tabs.iter().all(|tab| tab.git_directories.is_none()));
+        let mut state = State::from_session(older);
+        assert!(
+            state
+                .tabs
+                .iter()
+                .all(|tab| tab.resolved && tab.git_dir.is_none()),
+            "an older session loads as it did"
+        );
+        state.tabs[0].git_dir = Some(worker::GitDirectories::of(&linked));
+        state.tabs[1].git_dir = Some(worker::GitDirectories::of(&swapped));
+        let file = isolated_session("saved-directories.json");
+        state.saved().save_at(&file).unwrap();
+        let saved = Session::load_at(&file).unwrap();
+        assert!(
+            saved.tabs.iter().all(|tab| tab.git_directories.is_some()),
+            "saved with each tab"
+        );
+
+        std::fs::write(
+            linked.git_dir().join("commondir"),
+            format!("{}\n", other.git_dir().display()),
+        )
+        .unwrap();
+        std::fs::rename(
+            swapped.path().join(".git"),
+            fixture.path().join("swapped-git-away"),
+        )
+        .unwrap();
+        std::fs::write(
+            swapped.path().join(".git"),
+            format!("gitdir: {}\n", third.git_dir().display()),
+        )
+        .unwrap();
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            linked.path().to_owned(),
+            saved,
+            isolated_session("saved-directories-after.json"),
+            size(px(1000.), px(680.)),
+        );
+        let cx = &mut window_cx;
+        settle_tab_test(&app, cx).await;
+        let marked = |cx: &mut VisualTestContext, index: usize, root: &Path, found: &Path| {
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.repository_tabs.active, Some(index));
+                let tab = &app.repository_tabs.tabs[index];
+                assert_eq!(tab.path, root);
+                assert!(app.tab_label(tab).0.ends_with(" · unavailable"), "marked");
+                let error = app.error.clone().expect("the window says why");
+                assert!(
+                    error.starts_with(&format!("The repository at {} is gone.", root.display()))
+                        && error.contains(&found.display().to_string()),
+                    "{error}"
+                );
+                assert!(app.commits.is_empty(), "nothing of the other repository");
+            });
+        };
+        marked(cx, 0, linked.path(), other.git_dir());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        marked(cx, 1, swapped.path(), third.git_dir());
+    }
+
+    /// An explicit Open of the folder a marked tab shows is a fresh
+    /// capture: it names no root or Git directory, and once accepted the
+    /// tab takes the repository Git finds there and its mark clears. It
+    /// once reopened the tab by its old identity and was refused again.
+    #[gpui::test]
+    async fn an_explicit_open_of_a_marked_tab_s_folder_captures_it_afresh(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            let shown = &app.repository_tabs.tabs[0];
+            assert_eq!(shown.path, root, "the same tab");
+            assert!(shown.error.is_none(), "its mark cleared");
+            assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+            assert_eq!(
+                shown.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+                Some(third_git.as_path())
+            );
+            assert_eq!(
+                app.repository
+                    .as_ref()
+                    .map(|repository| repository.git_dir()),
+                Some(third_git.as_path()),
+                "the repository found there"
+            );
+        });
+    }
+
+    /// The History fixture with its `.git` swapped for a gitfile to a third
+    /// repository's Git directory and quiet reads held, marked " ·
+    /// unavailable" by Refresh: the window, the tab's root and the third
+    /// repository's Git directory.
+    async fn marked_by_a_swapped_git(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
+        PathBuf,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let third = crate::views::tests::fixture_repository(fixture.path().join("third"));
+        let third_git = third.git_dir().to_owned();
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", third_git.display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.repository_tabs.tabs[0].error.is_some()),
+            "Refresh marks the tab"
+        );
+        (fixture, app, cx, root, third_git)
+    }
+
+    /// Opens a tab on a new repository at `path` and lands its read.
+    async fn open_another_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, path: &Path) {
+        let repository = crate::views::tests::fixture_repository(path);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(repository.path().to_owned(), window, cx)
+            })
+        });
+        settle_tab_test(app, cx).await;
+    }
+
+    /// An explicit Open of a marked tab's folder from another tab reads it
+    /// afresh too: what the tab retained goes, so its switch opens it, and
+    /// the tab takes the repository Git finds there, its mark cleared. It
+    /// once showed the tab as retained and opened nothing, its root and Git
+    /// directory already cleared, so a quiet read that found the repository
+    /// left it unmarked with nothing captured, saved as unresolved.
+    #[gpui::test]
+    async fn an_explicit_open_of_a_marked_tab_s_folder_from_another_tab_captures_it_afresh(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx, root, third_git) = marked_by_a_swapped_git(cx).await;
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        assert!(
+            app.read_with(cx, |app, _| app.repository_tabs.active == Some(1)
+                && app.repository_tabs.tabs[0].warm.is_some()),
+            "the marked tab retained, another shown"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.repository_tabs.active, Some(0), "the marked tab shown");
+            let shown = &app.repository_tabs.tabs[0];
+            assert_eq!(shown.path, root, "the same tab");
+            assert!(shown.error.is_none(), "its mark cleared");
+            assert!(!app.tab_label(shown).0.ends_with(" · unavailable"));
+            assert!(shown.resolved);
+            assert_eq!(
+                shown.git_dir.as_ref().map(|dirs| dirs.git_dir.as_path()),
+                Some(third_git.as_path())
+            );
+            assert_eq!(
+                app.repository
+                    .as_ref()
+                    .map(|repository| repository.git_dir()),
+                Some(third_git.as_path()),
+                "the repository found there"
+            );
+            assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+        });
+    }
+
+    /// A refused switch changes nothing on a marked tab: an explicit Open of
+    /// its folder from another tab, with the tabs retained past their
+    /// allowance or with a dialog open, opens nothing and leaves the tab its
+    /// root, Git directory, mark and what it retained, so shown again and
+    /// refreshed it is a passive reopen still, which never opens the work
+    /// tree enclosing it. It once cleared the root and Git directory first,
+    /// leaving the tab with nothing captured, saved as unresolved, and that
+    /// Refresh opened the enclosing repository in the tab.
+    #[gpui::test]
+    async fn a_refused_open_of_a_marked_tab_s_folder_changes_nothing_on_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+        let (git_dir, mark) = app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (tab.git_dir.clone(), tab.error.clone())
+        });
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        open_another_tab(&app, cx, &fixture.path().join("another")).await;
+        let unchanged = |cx: &mut VisualTestContext, after: &str| {
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.repository_tabs.active, Some(2), "{after}: refused");
+                let tab = &app.repository_tabs.tabs[0];
+                assert_eq!(tab.path, root, "{after}");
+                assert!(tab.resolved, "{after}: its root as captured");
+                assert_eq!(tab.git_dir, git_dir, "{after}: its Git directory");
+                assert_eq!(tab.error, mark, "{after}: its mark as it was");
+                assert!(tab.warm.is_some(), "{after}: what it retained kept");
+                assert!(!app.repository_tabs.saved().tabs[0].unresolved, "{after}");
+            });
+        };
+        let bytes = app.update(cx, |app, _| {
+            let warm = app.repository_tabs.tabs[1]
+                .warm
+                .as_mut()
+                .expect("the second tab retained");
+            std::mem::replace(&mut warm.bytes, MAX_RETAINED_BYTES + 1)
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        unchanged(cx, "past the allowance");
+        assert!(
+            app.read_with(cx, |app, _| app
+                .repository_tabs
+                .refusal
+                .as_deref()
+                .is_some_and(|refusal| refusal.contains("512 MiB"))),
+            "the tab strip says why"
+        );
+        app.update(cx, |app, _| {
+            app.repository_tabs.tabs[1]
+                .warm
+                .as_mut()
+                .expect("the second tab retained")
+                .bytes = bytes;
+        });
+
+        cx.update(|window, cx| window.open_dialog(cx, |dialog, _, _| dialog.title("Probe")));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        unchanged(cx, "a dialog open");
+        cx.update(|window, cx| window.close_dialog(cx));
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh, shown again");
+    }
+
+    /// An explicit Open of a marked tab's folder superseded before its read
+    /// lands leaves the tab as it was: Refresh pressed meanwhile is a passive
+    /// reopen still, which finds the repository gone and never opens the
+    /// work tree enclosing it. With the tab's root and Git directory cleared
+    /// as the Open was asked, that Refresh once opened the enclosing
+    /// repository in the tab.
+    #[gpui::test]
+    async fn a_superseded_open_of_a_marked_tab_s_folder_leaves_it_as_it_was(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+        let git_dir = app.read_with(cx, |app, _| app.repository_tabs.tabs[0].git_dir.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx);
+                app.refresh(&Refresh, window, cx);
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh after the Open");
+        app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            assert!(tab.resolved && tab.git_dir == git_dir, "as captured");
+            assert!(!app.repository_tabs.saved().tabs[0].unresolved);
+        });
+    }
+
+    /// The History fixture inside another work tree, marked " ·
+    /// unavailable" by Refresh with its `.git` away, and an explicit Open of
+    /// its folder that fails, the folder's `.git` a gitfile to nowhere: from
+    /// the tab itself or, `from_another`, from a second tab shown meanwhile.
+    /// The tab keeps the root, Git directory and mark it had, saved as
+    /// resolved, and the window says why the Open failed. With that gitfile
+    /// gone, Refresh, a passive reopen still, finds the repository gone, and
+    /// Show latest with a gitfile to the enclosing repository's Git
+    /// directory, the tab's captured one named, installs none of its
+    /// history; neither ever puts the enclosing repository where a write
+    /// would go. The failed Open once left the tab
+    /// with nothing captured, saved as unresolved, and its next Refresh, an
+    /// explicit open too, opened the enclosing repository in the tab.
+    async fn a_failed_open_keeps_the_marked_tab(cx: &mut TestAppContext, from_another: bool) {
+        let (fixture, app, cx, root, enclosing) = gone_inside_another(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+        let (git_dir, mark) = app.read_with(cx, |app, _| {
+            let tab = &app.repository_tabs.tabs[0];
+            (
+                tab.git_dir.clone().expect("captured as it opened"),
+                tab.error.clone().expect("marked"),
+            )
+        });
+        if from_another {
+            open_another_tab(&app, cx, &fixture.path().join("other")).await;
+            assert_eq!(
+                app.read_with(cx, |app, _| app.repository_tabs.active),
+                Some(1)
+            );
+        }
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let kept = |cx: &mut VisualTestContext, after: &str| {
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.repository_tabs.active, Some(0), "{after}: shown");
+                let tab = &app.repository_tabs.tabs[0];
+                assert_eq!(tab.path, root, "{after}: its root");
+                assert!(tab.resolved, "{after}: its root as captured");
+                assert_eq!(tab.git_dir.as_ref(), Some(&git_dir), "{after}");
+                assert!(
+                    app.tab_label(tab).0.ends_with(" · unavailable"),
+                    "{after}: marked"
+                );
+                assert!(
+                    app.repository
+                        .as_ref()
+                        .is_none_or(|repo| repo.path() == root
+                            && worker::GitDirectories::of(repo) == git_dir),
+                    "{after}: writes would go to no other repository"
+                );
+                let saved = app.repository_tabs.saved();
+                assert_eq!(saved.tabs[0].path.path(), root, "{after}");
+                assert!(!saved.tabs[0].unresolved, "{after}: saved as resolved");
+            });
+        };
+        kept(cx, "the failed Open");
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.repository_tabs.tabs[0].error.as_ref(),
+                Some(&mark),
+                "its mark as it was"
+            );
+            let error = app
+                .error
+                .clone()
+                .expect("the window says why the Open failed");
+            assert!(error != mark && !error.contains("is gone"), "{error}");
+        });
+
+        std::fs::remove_file(root.join(".git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        kept(cx, "Refresh");
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+
+        let enclosing_git = gitturtle_core::GitRepository::open(&enclosing)
+            .unwrap()
+            .git_dir()
+            .to_owned();
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", enclosing_git.display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_latest_history(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        kept(cx, "Show latest");
+        assert!(
+            app.read_with(cx, |app, _| app.commits.is_empty()),
+            "Show latest: no enclosing history"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_failed_open_of_the_shown_marked_tab_s_folder_keeps_what_it_captured(
+        cx: &mut TestAppContext,
+    ) {
+        a_failed_open_keeps_the_marked_tab(cx, false).await;
+    }
+
+    #[gpui::test]
+    async fn a_failed_open_of_a_marked_tab_s_folder_from_another_tab_keeps_what_it_captured(
+        cx: &mut TestAppContext,
+    ) {
+        a_failed_open_keeps_the_marked_tab(cx, true).await;
+    }
+
+    /// What the window says for a failed fresh capture of a marked tab's
+    /// folder goes with the mark it left in place: with the repository's
+    /// `.git` back, a quiet read that finds it readable clears both and
+    /// brings History back, where the Open's failure would have stayed
+    /// beside it, its text not the mark's.
+    #[gpui::test]
+    async fn a_failed_open_s_failure_goes_with_the_mark_it_kept(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let enclosing = enclosing_work_tree(fixture.path());
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        assert_gone(&app, cx, 0, &root, &enclosing, "Refresh");
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let error = app.read_with(cx, |app, _| app.error.clone());
+        assert!(
+            error.is_some_and(|error| !error.contains("is gone")),
+            "the Open's failure"
+        );
+        std::fs::remove_file(root.join(".git")).unwrap();
+        std::fs::rename(fixture.path().join("narrow-git-away"), root.join(".git")).unwrap();
+        work_tree_changed(&app, cx).await;
+        assert_eq!(
+            first_tab(&app, cx),
+            (
+                1,
+                root.clone(),
+                false,
+                None,
+                Some(root),
+                vec!["fixture notes".into()]
+            ),
+            "readable again"
+        );
+    }
+
+    /// Lands the quiet read a change in the shown tab's work tree asks for,
+    /// as the watcher would report it, with no watcher needed.
+    async fn work_tree_changed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let change = crate::local_refresh::LocalChange {
+                    worktree: true,
+                    ..Default::default()
+                };
+                app.queue_automatic_refresh(change, window, cx)
+            })
+        });
+        for _ in 0..16 {
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+        }
+        crate::views::tests::settle(app, cx).await;
+    }
+
+    /// A failed fresh capture's word belongs to its own tab: another marked
+    /// tab found readable clears its own mark and leaves the first tab's
+    /// failure on the Projects page, that tab still unavailable. Kept for
+    /// whichever tab was found readable next, the failure once went with
+    /// another tab's mark.
+    #[gpui::test]
+    async fn another_tab_found_readable_keeps_a_failed_open_s_failure(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        enclosing_work_tree(fixture.path());
+        open_another_tab(&app, cx, &fixture.path().join("other")).await;
+        let other = app.read_with(cx, |app, _| app.path.clone().expect("the second tab"));
+        let refresh = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)))
+        };
+        std::fs::rename(other.join(".git"), fixture.path().join("other-git-away")).unwrap();
+        refresh(cx);
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle_tab_test(&app, cx).await;
+        std::fs::rename(root.join(".git"), fixture.path().join("narrow-git-away")).unwrap();
+        refresh(cx);
+        settle_tab_test(&app, cx).await;
+        std::fs::write(
+            root.join(".git"),
+            format!("gitdir: {}\n", fixture.path().join("nowhere").display()),
+        )
+        .unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(root.clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        let failure = app.read_with(cx, |app, cx| {
+            let failure = app.error.clone().expect("the Open's failure");
+            assert_eq!(app.hub.read(cx).shown_error(), Some(failure.as_str()));
+            assert!(
+                app.repository_tabs
+                    .tabs
+                    .iter()
+                    .all(|tab| tab.error.is_some())
+            );
+            failure
+        });
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        settle_tab_test(&app, cx).await;
+        std::fs::rename(fixture.path().join("other-git-away"), other.join(".git")).unwrap();
+        work_tree_changed(&app, cx).await;
+        app.read_with(cx, |app, cx| {
+            let tabs = &app.repository_tabs.tabs;
+            assert_eq!(app.repository_tabs.active, Some(1));
+            assert!(tabs[1].error.is_none(), "the second tab readable");
+            assert!(tabs[0].error.is_some(), "the first still unavailable");
+            assert_eq!(
+                app.hub.read(cx).shown_error(),
+                Some(failure.as_str()),
+                "its failure kept"
+            );
         });
     }
 
@@ -4218,6 +5242,7 @@ mod tests {
                 app.repository_tabs.tabs.push(Tab {
                     path: fixture.path().join(format!("held-{held}")),
                     resolved: true,
+                    git_dir: None,
                     saved: Bookmark::default(),
                     warm: None,
                     error: None,
@@ -4389,6 +5414,7 @@ mod tests {
                 tabs: vec![Tab {
                     path: PathBuf::from("fixture"),
                     resolved: true,
+                    git_dir: None,
                     saved: bookmark.clone(),
                     warm: None,
                     error: None,
@@ -7247,6 +8273,7 @@ mod tests {
                 path: SavedPath::new(&first_path),
                 bookmark: Bookmark::default(),
                 unresolved: false,
+                git_directories: None,
             }],
             ..Default::default()
         };
@@ -7439,6 +8466,7 @@ mod tests {
                     ..Default::default()
                 },
                 unresolved: false,
+                git_directories: None,
             }],
             ..Default::default()
         };
@@ -7551,6 +8579,7 @@ mod tests {
                         path: SavedPath::new(path),
                         bookmark: Bookmark::default(),
                         unresolved: false,
+                        git_directories: None,
                     })
                     .collect(),
                 ..Default::default()
@@ -7767,6 +8796,7 @@ mod tests {
                     path: SavedPath::Text((*path).into()),
                     bookmark: Bookmark::default(),
                     unresolved: false,
+                    git_directories: None,
                 })
                 .collect(),
             active,
@@ -7831,6 +8861,7 @@ mod tests {
             path: SavedPath::new(&unavailable),
             bookmark: Bookmark::default(),
             unresolved: false,
+            git_directories: None,
         });
         std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let loaded = Session::load_at(&path).unwrap();
@@ -7903,6 +8934,7 @@ mod tests {
                 path: SavedPath::Text(format!("/fixture/{index}")),
                 bookmark: Bookmark::default(),
                 unresolved: false,
+                git_directories: None,
             })
             .collect();
         saved.active = 11;
@@ -8081,6 +9113,7 @@ mod tests {
                 ..Default::default()
             },
             unresolved: false,
+            git_directories: None,
         });
         let mut restored: Session =
             serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();

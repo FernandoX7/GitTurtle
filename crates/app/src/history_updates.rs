@@ -361,6 +361,10 @@ impl GitTurtle {
         self.request_history_discovery(
             Job::Open {
                 root: Some(path.clone()),
+                git_dir: self
+                    .repository_tabs
+                    .reopen_root(&path, self.scope.as_ref().map(|scope| &scope.1))
+                    .and_then(|(_, git_dir)| git_dir),
                 path,
                 scope: self.scope.as_ref().map(|scope| scope.1.clone()),
                 limit: history_paging::PAGE_SIZE,
@@ -472,7 +476,14 @@ impl GitTurtle {
                             _ => {}
                         }
                     }
-                    Ok(Err(error)) if error.is::<worker::RepositoryGone>() => {
+                    // Gone from its root, or with no repository found
+                    // there at all, the tab is read as Refresh reads it,
+                    // which marks it and says why; Show latest once left it
+                    // unmarked, saying "Could not read local history: …".
+                    Ok(Err(error))
+                        if error.is::<worker::RepositoryGone>()
+                            || crate::repository_access::finds_no_repository(&error) =>
+                    {
                         this.tab_repository_gone(window, cx);
                     }
                     Ok(Err(error)) => {
@@ -756,6 +767,7 @@ mod tests {
                 scope: None,
                 limit: history_paging::PAGE_SIZE,
                 root: None,
+                git_dir: None,
             }))
             .unwrap()
             .unwrap();
