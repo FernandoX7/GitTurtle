@@ -30940,20 +30940,26 @@ pub(crate) mod tests {
                 app.commit_message.read(cx).focus_handle(cx),
             )
         });
-        // Each part of a stop lies whole inside the body's view.
-        let assert_whole = |cx: &mut VisualTestContext, parts: &[&'static str], at: &str| {
-            let body = cx.debug_bounds("working-body").expect("the body");
-            let slack = px(0.5);
-            for selector in parts {
-                let part = cx
-                    .debug_bounds(selector)
-                    .unwrap_or_else(|| panic!("{at}: {selector} drawn"));
-                assert!(
-                    part.top() + slack >= body.top() && part.bottom() <= body.bottom() + slack,
-                    "{at}: {selector} {part:?} whole in the body {body:?}"
-                );
-            }
-        };
+        // Each part of a stop lies whole inside the body's view, at least
+        // `margin` clear of its edges: the reveal's gap around a field and
+        // its label, the focus ring's room around Commit. Allowed half a
+        // pixel, a reveal that left Commit's ring cut at the body's edge
+        // passed.
+        let assert_whole =
+            |cx: &mut VisualTestContext, parts: &[&'static str], margin: Pixels, at: &str| {
+                let body = cx.debug_bounds("working-body").expect("the body");
+                let slack = px(0.01);
+                for selector in parts {
+                    let part = cx
+                        .debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector} drawn"));
+                    assert!(
+                        part.top() + slack >= body.top() + margin
+                            && part.bottom() <= body.bottom() - margin + slack,
+                        "{at}: {selector} {part:?} {margin:?} inside the body {body:?}"
+                    );
+                }
+            };
         // Each count is read by the status the test asks for; no quiet read
         // replaces it.
         hold_quiet_reads_for_test(&app, cx);
@@ -30981,6 +30987,12 @@ pub(crate) mod tests {
             );
             let max = app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y);
             assert!(max > px(0.), "{at}: the body scrolls");
+            let (gap, ring) = cx.update(|window, cx| {
+                (
+                    window.pixel_snap(appearance::ui_size(4.)),
+                    appearance::button_ring_room(cx),
+                )
+            });
             // From the title, by the keyboard.
             cx.update(|window, cx| window.focus(&title, cx));
             draw(cx);
@@ -30990,7 +31002,7 @@ pub(crate) mod tests {
                 cx.update(|window, _| description.is_focused(window)),
                 "{at}: Tab from the title reaches the description"
             );
-            assert_whole(cx, &DESCRIPTION, &format!("{at}, the description"));
+            assert_whole(cx, &DESCRIPTION, gap, &format!("{at}, the description"));
             let commit = app.read_with(cx, |app, cx| app.working_body.focus("commit-staged", cx));
             if staged {
                 cx.simulate_keystrokes("tab");
@@ -30999,14 +31011,19 @@ pub(crate) mod tests {
                     cx.update(|window, _| commit.is_focused(window)),
                     "{at}: Tab from the description reaches Commit"
                 );
-                assert_whole(cx, &["commit-staged"], &format!("{at}, Commit"));
+                assert_whole(cx, &["commit-staged"], ring, &format!("{at}, Commit"));
                 cx.simulate_keystrokes("shift-tab");
                 draw(cx);
                 assert!(
                     cx.update(|window, _| description.is_focused(window)),
                     "{at}: Shift+Tab from Commit returns to the description"
                 );
-                assert_whole(cx, &DESCRIPTION, &format!("{at}, back on the description"));
+                assert_whole(
+                    cx,
+                    &DESCRIPTION,
+                    gap,
+                    &format!("{at}, back on the description"),
+                );
             } else {
                 cx.simulate_keystrokes("tab");
                 draw(cx);
@@ -31023,7 +31040,7 @@ pub(crate) mod tests {
                 cx.update(|window, _| title.is_focused(window)),
                 "{at}: Shift+Tab from the description returns to the title"
             );
-            assert_whole(cx, &TITLE, &format!("{at}, back on the title"));
+            assert_whole(cx, &TITLE, gap, &format!("{at}, back on the title"));
         }
         // The guard: at 13 pt in 1480 × 973 nothing scrolls and the
         // inspector is laid out as before the body could scroll, the
