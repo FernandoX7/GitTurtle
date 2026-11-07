@@ -8144,6 +8144,12 @@ thread_local! {
     /// What the status line's tooltip last showed
     /// (`GitTurtle::render_status_line`), for a test.
     static STATUS_TOOLTIP: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+    /// What the status line was last given to draw
+    /// (`GitTurtle::render_status_line`), for a test.
+    static STATUS_DRAWN: RefCell<Option<SharedString>> = const { RefCell::new(None) };
+    /// How many times the status line built its texts ([`KeptStatusText`]),
+    /// for a test.
+    static STATUS_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Widths of status line texts, by text, line key and scale factor
@@ -8243,10 +8249,98 @@ impl StatusParts {
     }
 }
 
+/// The one line of a status text the bar draws before its parts give way
+/// ([`first_status_line`]).
+#[derive(Clone, Copy)]
+struct StatusLine<'a> {
+    /// The line, a slice of the status text.
+    text: &'a str,
+    /// Where it starts in the status text, after the line breaks it begins
+    /// with.
+    start: usize,
+    /// Where the status text's parts end, where a part comes from user text
+    /// ([`StatusParts`]).
+    ends: Option<&'a [usize]>,
+    /// Whether a line break inside its part ends it, so it is drawn ending
+    /// in an ellipsis.
+    ellipsis: bool,
+    /// Whether it is the whole status text, but for the line breaks it ends
+    /// in.
+    whole: bool,
+}
+
+impl StatusLine<'_> {
+    /// Whether a part of the line ends at its byte `end`, where a separator
+    /// starts: at one of its known `ends`, else at every separator.
+    fn part_ends_at(&self, end: usize) -> bool {
+        self.ends
+            .is_none_or(|ends| ends.contains(&(self.start + end)))
+    }
+
+    /// The room the ellipsis it ends in takes beside its text, `ellipsis`
+    /// wide, or none.
+    fn ellipsis_room(&self, ellipsis: Pixels) -> Pixels {
+        if self.ellipsis { ellipsis } else { px(0.) }
+    }
+}
+
+/// The line of the status line's `text` that the bar draws before its parts
+/// give way ([`status_parts_end`]): the bar is one line high and never draws
+/// a second. Drawn whole, a read's error that names its folder on a line
+/// after its reason, as a marked tab's does (`repository_access::explain`),
+/// laid out as two lines centred in the 26 px bar, the first above the
+/// bar's top edge, where the page painted over it. Line breaks the text
+/// ends in are trimmed, so "Up to date" and a line break is drawn whole,
+/// and those it begins with are skipped, so its first line with text is
+/// drawn. A line break inside the first part ends the line there, in an
+/// ellipsis, so a path cut at its break never reads as another, whole path;
+/// where `ends` knows the text's parts ([`StatusParts`]), one inside a
+/// later part ends the line with the part before it, as that part would
+/// give way. A text whose parts are not known takes the break as falling
+/// in its first part, since a separator in it can lie inside user data. A
+/// line that is not the whole text is shortened, as one that drops a part
+/// is: its tooltip and accessible value keep the whole text
+/// (`GitTurtle::render_status_line`).
+fn first_status_line<'a>(text: &'a str, ends: Option<&'a [usize]>) -> StatusLine<'a> {
+    let trimmed = text.trim_end_matches(['\n', '\r']);
+    let rest = trimmed.trim_start_matches(['\n', '\r']);
+    let start = trimmed.len() - rest.len();
+    let line = |text, ellipsis, whole| StatusLine {
+        text,
+        start,
+        ends,
+        ellipsis,
+        whole,
+    };
+    let Some(newline) = rest.find('\n') else {
+        return line(rest, false, start == 0);
+    };
+    let head = line(&rest[..newline], false, false);
+    // Only a part whose end is known gives way at a break: a separator in a
+    // text without known ends can lie inside user data, as in a read's
+    // error naming a repository at "/srv/a · b", whose break would end the
+    // line at "/srv/a", a whole-looking path, at any width.
+    let part_before = ends.and_then(|ends| {
+        head.text
+            .match_indices(STATUS_SEPARATOR)
+            .map(|(end, _)| end)
+            .filter(|end| ends.contains(&(start + end)))
+            .last()
+    });
+    match part_before {
+        Some(end) => line(&head.text[..end], false, false),
+        None => line(
+            head.text.strip_suffix('\r').unwrap_or(head.text),
+            true,
+            false,
+        ),
+    }
+}
+
 /// How the latest frame that drew the status line laid it out
 /// (`GitTurtle::render_status_line`): the text it says, the width and text
-/// size it laid that text out at, whether its fit dropped a part, and so
-/// whether the line is shortened, decided as that frame prepainted the
+/// size it laid that text out at, whether it drops a part or a line of it,
+/// and so whether the line is shortened, decided as that frame prepainted the
 /// line, in the line's own text style, as a dialog's error line decides
 /// (`tags::error_line`). Kept together, so a hover never pairs one frame's
 /// text with another's width, and decided again only when one of them
@@ -8271,33 +8365,58 @@ impl StatusLaidOut {
     }
 }
 
-/// Where the status line's `text` ends in a box `room` wide: all of it
-/// where it fits (`None`), else after the last of its whole parts
+/// The texts the status line built for a status and its fit
+/// (`GitTurtle::render_status_line`): its whole text as its accessible value
+/// carries it, bounded (`native_accessibility::bounded_accessible_text`),
+/// and the text it draws ([`GitTurtle::status_line_drawn_text`]), the same
+/// shared text where it draws the whole. Kept for the window's status line
+/// and built again only when the status or its fit changes, decided without
+/// building them (`native_accessibility::carries_accessible_text`), as a
+/// dialog's error line keeps its text (`tags::error_line`): a status that
+/// stays, as a marked tab's reason does, copies nothing in a steady frame.
+struct KeptStatusText {
+    whole: SharedString,
+    parts: Option<usize>,
+    drawn: SharedString,
+}
+
+impl KeptStatusText {
+    /// Whether these are the texts for the status `text` drawn to `parts`.
+    fn is(&self, text: &str, parts: Option<usize>) -> bool {
+        self.parts == parts && native_accessibility::carries_accessible_text(&self.whole, text)
+    }
+}
+
+/// Where the status `line` ends in a box `room` wide: all of it where it
+/// fits (`None`), else after the last of its whole parts
 /// ([`STATUS_SEPARATOR`]) that fit with those before it, else after its
 /// first, which ends in an ellipsis. A part so reads whole or gives way
 /// whole with the parts after it: at 18 pt in a 461 px half tile, Compare's
 /// whole keyboard hints left "1 changed file · content read 12.3 ms" too
 /// little room, and the app drew its timing cut mid-number. Its parts end
-/// at each separator, or only at `ends` where a part comes from user text
-/// ([`StatusParts`]). The widths are kept for each text, from one layout
-/// of it ([`status_part_widths`]).
+/// at each separator, or only at its known ends where a part comes from
+/// user text ([`StatusLine::part_ends_at`]). Where a line break ends the
+/// line, its ellipsis, `ellipsis` wide, keeps its room after whatever is
+/// drawn, as the bar's fitting keeps it, so the line gives way before it
+/// would run into the toolkit's own truncation. The widths are kept for
+/// each text, from one layout of it ([`status_part_widths`]).
 fn status_parts_end(
-    text: &str,
-    ends: Option<&[usize]>,
+    line: StatusLine,
     room: Pixels,
+    ellipsis: Pixels,
     window: &Window,
 ) -> Option<usize> {
+    let text = line.text;
     if !text.contains(STATUS_SEPARATOR) {
         return None;
     }
+    let room = room - line.ellipsis_room(ellipsis);
     status_parts(text, window, |widths| {
         let (whole, leading) = widths.split_last()?;
         if whole.1 <= room {
             return None;
         }
-        let leading = leading
-            .iter()
-            .filter(|(end, _)| ends.is_none_or(|ends| ends.contains(end)));
+        let leading = leading.iter().filter(|(end, _)| line.part_ends_at(*end));
         let first = leading.clone().next();
         Some(
             leading
@@ -8845,6 +8964,13 @@ impl GitTurtle {
         }
     }
 
+    /// The status text's line that the status line draws before its parts
+    /// give way, the one place that decides it ([`first_status_line`]).
+    fn status_first_line(&self) -> StatusLine<'_> {
+        let text = self.status_text();
+        first_status_line(text, self.status_parts.ends_in(text))
+    }
+
     /// The keyboard hints as the status bar draws them
     /// ([`Self::fit_status_bar`]), or none where they gave way.
     #[cfg(test)]
@@ -8977,16 +9103,21 @@ impl GitTurtle {
                     hints.map_or_else(|| shortcuts::KeyHints::new(Vec::new()), HintsFor::hints);
                 self.status_widths(&hints, window)
             });
+            // What the line draws of the status text, a fresh outcome's
+            // included, before its parts give way.
+            let first = self.status_first_line();
             let line = match self.fresh_outcome() {
-                Some(outcome) => status_line_width(&STATUS_OUTCOME, outcome, window, || {
-                    #[cfg(test)]
-                    STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
-                    let weight = window.text_style().font_weight;
-                    laid_out_text_width(
-                        shaped_width(outcome, appearance::ui_text(10.), weight, window),
-                        window,
-                    )
-                }),
+                Some(_) => {
+                    status_line_width(&STATUS_OUTCOME, first.text, window, || {
+                        #[cfg(test)]
+                        STATUS_OUTCOME_MEASURED.with(|measured| measured.set(measured.get() + 1));
+                        let weight = window.text_style().font_weight;
+                        laid_out_text_width(
+                            shaped_width(first.text, appearance::ui_text(10.), weight, window),
+                            window,
+                        )
+                    }) + first.ellipsis_room(widths.ellipsis)
+                }
                 None => widths.ellipsis,
             };
             let mut details_icon = false;
@@ -9000,12 +9131,18 @@ impl GitTurtle {
                     };
             }
             // Spare hints come whole, before the others' whole form, only
-            // where the status line keeps its whole text beside them and no
-            // write's status takes its place: they give way first. A write
-            // whose status the header draws leaves the line its text, and
-            // the hints with it; they once hid through every write.
+            // where the status line keeps the whole line it draws beside
+            // them and no write's status takes its place: they give way
+            // first. A write whose status the header draws leaves the line
+            // its text, and the hints with it; they once hid through every
+            // write.
             let spare = widths.spare.as_ref().filter(|(_, width)| {
-                !carried && whole_status_width(self.status_text(), window) + gap + *width <= room
+                !carried
+                    && whole_status_width(first.text, window)
+                        + first.ellipsis_room(widths.ellipsis)
+                        + gap
+                        + *width
+                        <= room
             });
             let hints = spare.or_else(|| {
                 widths
@@ -9014,18 +9151,16 @@ impl GitTurtle {
                     .find(|(_, width)| line + gap + *width <= room)
             });
             // The status line's own text, where neither a fresh outcome nor
-            // a write's status takes its place, keeps the whole parts that
-            // fit the box the warning and the hints leave it, Cancel's room
-            // with it while no write comes there.
+            // a write's status takes its place, keeps the whole parts of the
+            // line it draws that fit the box the warning and the hints leave
+            // it, Cancel's room with it while no write comes there.
             let parts = (!carried && self.fresh_outcome().is_none())
                 .then(|| {
                     let hints = hints.map_or(px(0.), |(_, width)| {
                         // Laid out already (`status_widths`).
                         gap + *width
                     });
-                    let text = self.status_text();
-                    let ends = self.status_parts.ends_in(text);
-                    status_parts_end(text, ends, room + cancel - hints, window)
+                    status_parts_end(first, room + cancel - hints, widths.ellipsis, window)
                 })
                 .flatten();
             StatusFit {
@@ -9036,11 +9171,25 @@ impl GitTurtle {
         })
     }
 
-    /// The status line's text as the bar draws it for `fit`: its whole
-    /// parts that fit ([`status_parts_end`]), or all of it.
-    fn status_line_text(&self, fit: &StatusFit) -> &str {
-        let text = self.status_text();
-        fit.parts.map_or(text, |end| &text[..end])
+    /// The status line's text as the bar draws it for `fit`: the whole parts
+    /// of the line it draws that fit ([`status_parts_end`]), or all of that
+    /// line ([`first_status_line`]), ending in an ellipsis where a line
+    /// break inside its part ends it, the spaces and a clause's punctuation
+    /// before the ellipsis trimmed (DESIGN.md), and within the bound its
+    /// accessible value keeps (`native_accessibility::bounded_accessible_text`),
+    /// the ellipsis after it. Built only when the status or its fit changes
+    /// (`GitTurtle::render_status_line`).
+    fn status_line_drawn_text(&self, fit: &StatusFit) -> SharedString {
+        let line = self.status_first_line();
+        let shown = fit.parts.map_or(line.text, |end| &line.text[..end]);
+        let bounded = native_accessibility::bounded_accessible_text(shown);
+        // A line longer than the bound ends in the bound's ellipsis.
+        if !line.ellipsis || bounded.len() < shown.len() {
+            return bounded;
+        }
+        let kept =
+            crate::text_cut::trim_end_clusters(shown, |c| c.is_whitespace() || ".,;:".contains(c));
+        format!("{kept}…").into()
     }
 
     /// Sets the status to `parts` joined, a part of which comes from user
@@ -9053,10 +9202,12 @@ impl GitTurtle {
     }
 
     /// The status line, `line`, drawing the status text as `fit` keeps it
-    /// ([`Self::status_line_text`]), its accessible value the whole text.
-    /// Where the line drops a part or ends in an ellipsis, a hover shows the
-    /// whole text in the app's tooltip, after the shared tooltip delay; a
-    /// line drawn whole has none, as a whole label has none. The tooltip
+    /// ([`Self::status_line_drawn_text`]), never more than one line of it,
+    /// its accessible value the whole text, both kept across frames for the
+    /// status and its fit ([`KeptStatusText`]). Where the line drops a part
+    /// or a line or ends in an ellipsis, a hover shows the whole text in the
+    /// app's tooltip, after the shared tooltip delay; a line drawn whole has
+    /// none, as a whole label has none. The tooltip
     /// shows the text's first lines, within the bound a dialog's error line
     /// keeps (`tags::error_tooltip`), since a read's error can carry Git's
     /// whole report. Whether the line is shortened is decided as each frame
@@ -9077,13 +9228,40 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut App,
     ) -> native_accessibility::StaticText<Stateful<Div>> {
-        let whole = native_accessibility::bounded_accessible_text(self.status_text());
-        // The whole text is drawn where no part gives way, without a copy
-        // of its own.
-        let drawn = match fit.parts {
-            Some(_) => SharedString::from(self.status_line_text(fit).to_owned()),
-            None => whole.clone(),
+        let text = self.status_text();
+        let first = self.status_first_line();
+        // The texts built for the status and its fit, kept across frames,
+        // so a frame that draws the same status builds and copies neither.
+        let kept = window
+            .use_keyed_state(ElementId::from("status-line/text"), cx, |_, _| {
+                std::rc::Rc::new(std::cell::RefCell::new(None::<KeptStatusText>))
+            })
+            .read(cx)
+            .clone();
+        let (whole, drawn) = {
+            let mut kept = kept.borrow_mut();
+            if !kept.as_ref().is_some_and(|kept| kept.is(text, fit.parts)) {
+                #[cfg(test)]
+                STATUS_TEXT_BUILT.with(|built| built.set(built.get() + 1));
+                let whole = native_accessibility::bounded_accessible_text(text);
+                // The whole text is drawn where it is one line and no part
+                // gives way, without a copy of its own.
+                let drawn = if fit.parts.is_none() && first.text.len() == text.len() {
+                    whole.clone()
+                } else {
+                    self.status_line_drawn_text(fit)
+                };
+                *kept = Some(KeptStatusText {
+                    whole,
+                    parts: fit.parts,
+                    drawn,
+                });
+            }
+            let kept = kept.as_ref().expect("the status line's texts, kept above");
+            (kept.whole.clone(), kept.drawn.clone())
         };
+        #[cfg(test)]
+        STATUS_DRAWN.with_borrow_mut(|last| *last = Some(drawn.clone()));
         // How the line was laid out last, which its prepaint records, kept
         // across frames so the hover a frame began reads the latest.
         let laid_out = window
@@ -9093,8 +9271,10 @@ impl GitTurtle {
             .read(cx)
             .clone();
         let recorded = laid_out.clone();
-        let dropped = fit.parts.is_some();
+        // A part or a line of the text the line does not draw.
+        let dropped = fit.parts.is_some() || !first.whole;
         let text = whole.clone();
+        let measured = drawn.clone();
         native_accessibility::static_text(
             line.on_children_prepainted(move |bounds, window, _| {
                 // The size the bar draws the line at and `whole_status_width`
@@ -9113,12 +9293,9 @@ impl GitTurtle {
                     .is_some_and(|laid| laid.is(&text, width, size, dropped))
                 {
                     *laid = Some(StatusLaidOut {
-                        // A dropped part or a line after the first is never
-                        // drawn, and a text wider than its line ends in an
-                        // ellipsis.
-                        cut: dropped
-                            || text.contains('\n')
-                            || whole_status_width(&text, window) > width,
+                        // A dropped part or line is never drawn, and a text
+                        // wider than its line ends in an ellipsis.
+                        cut: dropped || whole_status_width(&measured, window) > width,
                         text: text.clone(),
                         width,
                         size,
@@ -9151,12 +9328,12 @@ impl GitTurtle {
     }
 
     /// The status line's text as the status bar draws it
-    /// ([`Self::status_line_text`]).
+    /// ([`Self::status_line_drawn_text`]).
     #[cfg(test)]
     pub(super) fn status_line_drawn(&self, window: &mut Window, cx: &mut App) -> String {
         let plan = self.frame_plan(window, cx);
         let fit = self.fit_status_bar(plan, window, cx);
-        self.status_line_text(&fit).to_owned()
+        self.status_line_drawn_text(&fit).to_string()
     }
 
     /// What [`Self::fit_status_bar`] measures for `hints`.
@@ -19959,6 +20136,199 @@ pub(crate) mod tests {
             shown.starts_with("fatal: line 1 of")
                 && shown.ends_with("line 12 of the read's report…"),
             "{shown:?}"
+        );
+    }
+
+    /// A status of more than one line draws one line of it, inside the bar,
+    /// its accessible value the whole text, and its tooltip the whole text
+    /// where the line is shortened: at 13 pt in 1,480 × 973, Git's two-line
+    /// report draws its first line in an ellipsis, a CRLF's carriage return
+    /// dropped; a read's error, whose parts are not known, naming a
+    /// repository at "/srv/a · b" draws its first line in an ellipsis, never
+    /// ending at "/srv/a"; a cloned repository's status whose path holds a
+    /// line break draws "Repository cloned" and the project's name, the path
+    /// giving way whole; "Git operation failed in" a path that holds one,
+    /// the status's first part, draws the path to its break in an ellipsis,
+    /// so it never reads as another, whole path; a status ending in a line
+    /// break draws whole, with no tooltip, and one beginning with one draws
+    /// its first line with text; and the marked tab's reason, once its
+    /// `.git` has moved away and Refresh found no repository there
+    /// (`repository_access::explain`), draws its reason in an ellipsis
+    /// without the folder on the line after it. Drawn whole, the reason laid
+    /// out as two lines centred in the 26 px bar, the first above its top
+    /// edge, where the page painted over it (native QA-106a N2). The texts
+    /// the line draws and carries are built once for a status, and a frame
+    /// that draws the same status again builds nothing.
+    #[gpui::test]
+    async fn a_status_of_more_lines_draws_only_its_first_line(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::hovered_tooltips;
+        let (fixture, app, cx) = history_window(cx).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(973.)));
+        draw(cx);
+        let check =
+            |cx: &mut VisualTestContext, case: &str, whole: &str, shown: &str, shortened: bool| {
+                STATUS_DRAWN.take();
+                written::forget();
+                draw(cx);
+                let bar = cx.debug_bounds("status-bar").expect("the status bar");
+                let line = cx.debug_bounds("status-line").expect("the status line");
+                assert!(
+                    line.top() >= bar.top() && line.bottom() <= bar.bottom(),
+                    "{case}: the line {line:?} inside the bar {bar:?}"
+                );
+                let drawn = STATUS_DRAWN.take().expect("the status line drawn");
+                assert_eq!(drawn.as_ref(), shown, "{case}: the line it draws");
+                assert!(!drawn.contains(['\n', '\r']), "{case}: no line break drawn");
+                // Drawn again, the same status draws the text built for it.
+                let built = STATUS_TEXT_BUILT.get();
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+                let again = STATUS_DRAWN.take().expect("the status line drawn again");
+                assert_eq!(
+                    (again, STATUS_TEXT_BUILT.get()),
+                    (drawn, built),
+                    "{case}: drawn again, the text kept, nothing built"
+                );
+                let value = written::get("status-line")
+                    .and_then(|line| line.node.value().map(str::to_owned));
+                assert_eq!(
+                    value.as_deref(),
+                    Some(whole),
+                    "{case}: its accessible value"
+                );
+                STATUS_TOOLTIP.take();
+                assert_eq!(
+                    hovered_tooltips(cx, "status-line"),
+                    usize::from(shortened),
+                    "{case}: a tooltip only for a shortened line"
+                );
+                assert_eq!(
+                    STATUS_TOOLTIP.take(),
+                    shortened.then(|| crate::tags::error_tooltip(whole)),
+                    "{case}: the tooltip shows the whole text"
+                );
+            };
+
+        let report = "error: could not lock config file .git/config: Permission denied\r\n\
+                      fatal: could not set upstream of HEAD to origin/main";
+        app.update(cx, |app, cx| {
+            app.error = Some(report.to_owned());
+            cx.notify();
+        });
+        check(
+            cx,
+            "Git's report",
+            report,
+            "error: could not lock config file .git/config: Permission denied…",
+            true,
+        );
+
+        // A read's error, its parts not known, naming a repository whose
+        // path holds " · ": the break falls in its first part.
+        let failed_read = "Git history read failed: fatal: '/srv/a · b' is not a working tree\n\
+                           hint: open the repository's folder";
+        app.update(cx, |app, cx| {
+            app.error = Some(failed_read.to_owned());
+            cx.notify();
+        });
+        check(
+            cx,
+            "a read's error naming a path with a separator",
+            failed_read,
+            "Git history read failed: fatal: '/srv/a · b' is not a working tree…",
+            true,
+        );
+
+        app.update(cx, |app, cx| {
+            app.error = None;
+            cx.notify();
+        });
+        let path = "/srv/clones/a\nb";
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.register_completed_repository(
+                    path.into(),
+                    "Repository cloned",
+                    "demo-project",
+                    window,
+                    cx,
+                )
+            })
+        });
+        let cloned = app.read_with(cx, |app, _| app.status.clone());
+        assert_eq!(
+            cloned,
+            format!(
+                "Repository cloned · demo-project · {path} · open its repository tab or folder"
+            )
+        );
+        check(
+            cx,
+            "a path with a line break",
+            &cloned,
+            "Repository cloned · demo-project",
+            true,
+        );
+
+        // Another tab's write, its path the status's first part
+        // (`GitTurtle::tab_operation_feedback`).
+        let failed = "Git operation failed in /srv/a\nb";
+        app.update(cx, |app, cx| {
+            app.set_status_parts(&[failed, "open that tab for details"]);
+            cx.notify();
+        });
+        check(
+            cx,
+            "a line break in the first part",
+            &format!("{failed} · open that tab for details"),
+            "Git operation failed in /srv/a…",
+            true,
+        );
+
+        for (case, status, shown, shortened) in [
+            (
+                "a status ending in a line break",
+                "Up to date\n",
+                "Up to date",
+                false,
+            ),
+            (
+                "a status beginning with a line break",
+                "\nFetched origin",
+                "Fetched origin",
+                true,
+            ),
+        ] {
+            app.update(cx, |app, cx| {
+                app.status = status.into();
+                cx.notify();
+            });
+            check(cx, case, status, shown, shortened);
+        }
+
+        std::fs::rename(root.join(".git"), fixture.path().join("moved-git")).unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        settle(&app, cx).await;
+        let reason = app.read_with(cx, |app, _| app.error.clone().expect("the window says why"));
+        let (first, folder) = reason.split_once('\n').expect("the folder on its own line");
+        let sentence = first
+            .strip_suffix('.')
+            .unwrap_or_else(|| panic!("the reason ends a sentence: {first}"));
+        assert!(
+            first.starts_with("This folder is not an available Git repository.")
+                && folder.starts_with("Folder: "),
+            "{reason}"
+        );
+        // The sentence's full stop gives way to the ellipsis.
+        check(
+            cx,
+            "the marked tab's reason",
+            &reason,
+            &format!("{sentence}…"),
+            true,
         );
     }
 
