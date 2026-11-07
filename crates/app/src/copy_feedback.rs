@@ -583,7 +583,8 @@ fn confirming_with(
                                 // In tests, the colour the text is painted in.
                                 .children(appearance::text_probe(move || probe)),
                         )
-                    }),
+                    })
+                    .map(|content| laid_out::noted(content, &id, state)),
             )
     };
     button = button.child(
@@ -708,6 +709,58 @@ pub(crate) fn alert_announcement(window: &Window, cx: &App) -> Option<Stateful<D
     #[cfg(test)]
     crate::native_accessibility::written::built(&node);
     Some(node)
+}
+
+/// What each of a feedback Button's contents takes as laid out, in tests:
+/// [`confirming`] lays out its rest and confirmed contents in one cell and
+/// draws one, so a test reading what the Button draws finds the other's
+/// width only here (`dialog_sides::content_end` reads a feedback Button's
+/// held-back state, icon included, from it).
+pub(crate) mod laid_out {
+    use super::*;
+    #[cfg(test)]
+    use std::{cell::RefCell, collections::HashMap};
+
+    #[cfg(test)]
+    thread_local! {
+        /// Each content's bounds as its last frame laid it out, by its
+        /// control's id and its state (`rest`, or its action's state).
+        static CONTENTS: RefCell<HashMap<(String, &'static str), Bounds<Pixels>>> =
+            RefCell::default();
+    }
+
+    /// `content`, the content of control `id`'s `state`; in tests, noting
+    /// its bounds as each frame lays it out, drawn or not.
+    pub(super) fn noted(content: Div, id: &ElementId, state: &'static str) -> Div {
+        #[cfg(test)]
+        {
+            use gpui_kit::base::ElementExt as _;
+            let id = id.to_string();
+            content.on_prepaint(move |bounds, _, _| {
+                CONTENTS.with(|contents| contents.borrow_mut().insert((id, state), bounds));
+            })
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (id, state);
+            content
+        }
+    }
+
+    /// The bounds of each content control `id` laid out in its last frame,
+    /// its icon included: the content it draws and the one it holds back,
+    /// each at the cell's leading edge.
+    #[cfg(test)]
+    pub(crate) fn contents(id: &str) -> Vec<Bounds<Pixels>> {
+        CONTENTS.with(|contents| {
+            contents
+                .borrow()
+                .iter()
+                .filter(|((control, _), _)| control == id)
+                .map(|(_, bounds)| *bounds)
+                .collect()
+        })
+    }
 }
 
 #[cfg(test)]

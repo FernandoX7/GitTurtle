@@ -720,6 +720,22 @@ fn runs_in(
     runs
 }
 
+/// Where `selector`'s content ends as the last frame laid it out, where it
+/// drew its label on one `line`: the label's end, or, for a feedback Button,
+/// the end of the state it holds back, icon included, where that lies
+/// further, as a copy Button lays out Copied in the cell its label is drawn
+/// in (`copy_feedback::laid_out`, which only those Buttons note), so one as
+/// wide as Copied beside a shorter label is as wide as its content; measured
+/// by its label alone, it read as stretched. Nothing else a Button lays out
+/// past its label is measured, as a trailing icon would be: none of the
+/// walked Buttons has one.
+fn content_end(selector: &str, line: Bounds<Pixels>) -> Pixels {
+    copy_feedback::laid_out::contents(selector)
+        .into_iter()
+        .map(|content| content.right())
+        .fold(line.right(), Pixels::max)
+}
+
 /// What `site`'s ghost Buttons drew in the last frame, against the dialog's
 /// `panel` and its text's `edge`, added to `failures`, and each that stands
 /// at the edge whole in view added to `measured` with `opening`, the dialog
@@ -727,10 +743,11 @@ fn runs_in(
 /// line of a row stands its frame its pull before the edge, on the device
 /// pixel, and starts its label there, or with a leading icon its icon, the
 /// icon's width and gap before its label; on one line its frame ends its
-/// inset past its label, as wide as its content rather than stretched
-/// across the column; every line of a label without an icon starts there,
-/// and together they are as wide as the label, so one wider than its room
-/// wraps rather than end in an ellipsis;
+/// inset past its label, or past a feedback Button's held-back state
+/// ([`content_end`]), as wide as its content rather than stretched across
+/// the column; every line of a
+/// label without an icon starts there, and together they are as wide as the
+/// label, so one wider than its room wraps rather than end in an ellipsis;
 /// a Button standing beside a field stays on that line, past the edge, its
 /// label whole on one line and its frame as wide as its content; and no
 /// Button runs past the dialog's text column on the right.
@@ -802,17 +819,18 @@ fn ghost_findings(
                 continue;
             }
             // As wide as its content: on one line its frame ends its inset
-            // past its label, so a Button stretched across its column, its
-            // content centred or not, fails.
-            if let [line] = runs.as_slice()
-                && frame.right() > line.right() + pull + px(1.)
-            {
-                failures.push(format!(
-                    "{at}: {selector}'s frame ends at {:?}, past its label's end {:?} and \
-                     its inset {pull:?}",
-                    frame.right(),
-                    line.right()
-                ));
+            // past its label, or a feedback Button's held-back state, so a
+            // Button stretched across its column, its content centred or
+            // not, fails.
+            if let [line] = runs.as_slice() {
+                let end = content_end(selector, *line);
+                if frame.right() > end + pull + px(1.) {
+                    failures.push(format!(
+                        "{at}: {selector}'s frame ends at {:?}, past its content's end \
+                         {end:?} and its inset {pull:?}",
+                        frame.right()
+                    ));
+                }
             }
             if row.beside {
                 // Beside the field, past the edge: on a line of its own it
@@ -1337,4 +1355,72 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
         views::tests::settle(&app, cx).await;
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A test view of two copy Buttons labelled "Copy", narrower than the
+/// Copied each lays out beside it in one cell: one as wide as its content,
+/// one stretched across its column.
+struct CopyRows;
+
+impl Render for CopyRows {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let copy = |id: &'static str, cx: &App| {
+            copy_feedback::copy_button(copy_feedback::Mark::new(id, 1), "Copy", "", cx)
+        };
+        div()
+            .size_full()
+            .bg(rgb(0x202020))
+            .text_bg(text_mark())
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_4()
+            .child(div().flex().child(copy("copy-as-wide-as-copied", cx)))
+            .child(div().flex().flex_col().child(copy("copy-stretched", cx)))
+    }
+}
+
+/// The ghost walk measures a feedback Button's held-back state, icon
+/// included, beside its label ([`content_end`]): a copy Button labelled
+/// "Copy", as wide as the
+/// Copied it holds back, ends its inset past that content, though its label
+/// alone ends more than a pixel short of it, which the walk read as
+/// stretched; the same Button stretched across its column ends past its
+/// content and its inset, and the walk fails it.
+#[gpui::test]
+fn the_ghost_walk_measures_a_buttons_widest_content(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let rows = cx.new(|_| CopyRows);
+        gpui_kit::component::Root::new(rows, window, cx)
+    });
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    cx.simulate_resize(size(px(600.), px(300.)));
+    width_walk::frame(cx);
+    width_walk::frame(cx);
+    let pull = cx.update(|window, _| crate::ghost_pull(window));
+    let read = |cx: &mut VisualTestContext, selector: &'static str| {
+        let frame = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        let runs = runs_in(cx, frame, frame);
+        let [line] = runs.as_slice() else {
+            panic!("{selector} draws {runs:?}");
+        };
+        (frame, *line, content_end(selector, *line))
+    };
+    let (frame, line, end) = read(cx, "copy-as-wide-as-copied");
+    assert!(
+        frame.right() > line.right() + pull + px(1.),
+        "its label alone ends short of its frame's inset: {frame:?}, {line:?}"
+    );
+    assert!(
+        (frame.right() - (end + pull)).abs() <= px(1.),
+        "it ends its inset past its widest content: {frame:?}, {end:?}"
+    );
+    let (frame, _, end) = read(cx, "copy-stretched");
+    assert!(
+        frame.right() > end + pull + px(1.),
+        "a stretched Button ends past its widest content and its inset: {frame:?}, {end:?}"
+    );
 }
