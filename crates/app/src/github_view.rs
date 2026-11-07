@@ -11154,11 +11154,11 @@ mod tests {
             failures,
             &[
                 (
-                    "Connection by tab at 18 pt, stop 2",
+                    "Connection by tab at 18 pt, stop 2 (",
                     "a clip cuts the right, bottom, left",
                 ),
                 (
-                    "Connection by shift-tab at 18 pt, stop 5",
+                    "Connection by shift-tab at 18 pt, stop 5 (",
                     "a clip cuts the right, bottom, left",
                 ),
             ],
@@ -11621,11 +11621,11 @@ mod tests {
             rings,
             &[
                 (
-                    "13 pt in 461 × 490 at 13 pt, stop 21",
+                    "13 pt in 461 × 490 at 13 pt, stop 21 (",
                     "a clip cuts the right, bottom, left",
                 ),
                 (
-                    "18 pt in 461 × 490 at 18 pt, stop 21",
+                    "18 pt in 461 × 490 at 18 pt, stop 21 (",
                     "a clip cuts the right, bottom, left",
                 ),
             ],
