@@ -801,11 +801,9 @@ impl HistoryStream {
                     .is_none_or(|writer| writer.is_finished())
                 && let Some(status) = self.child.try_wait()?
             {
-                ensure!(
-                    status.success(),
-                    "Git history read failed: {}",
-                    text(stderr).trim()
-                );
+                if !status.success() {
+                    return Err(history_failure(stderr));
+                }
                 ensure!(
                     self.pending.is_empty() && self.fields.is_empty(),
                     "Incomplete commit metadata from Git"
@@ -840,6 +838,18 @@ impl Drop for HistoryStream {
 /// How many messages [`stream_history`]'s pipe readers queue ahead of it.
 const READ_QUEUE: usize = 8;
 
+/// A history read Git failed, "Git history read failed: …" with Git's
+/// `stderr` as a terminal leaves it, typed where Git found no repository
+/// ([`git_failure`]): every history, search, attribution and inspection
+/// stream ends so, so a tab whose `.git` went away is told apart whatever
+/// the message keeps of Git's words.
+fn history_failure(stderr: &[u8]) -> anyhow::Error {
+    git_failure(
+        stderr,
+        format!("Git history read failed: {}", reported(stderr).trim()),
+    )
+}
+
 /// What [`stream_history`] ends with once its cancellation stopped it: [`ReadCancelled`],
 /// unless Git had already failed. A failure already queued, Git's exit with its error output
 /// or a failed pipe read, ends the read as that failure, as it would have a moment before the
@@ -864,7 +874,7 @@ fn cancelled_end(
             if stderr.len() > 128 * 1024 {
                 anyhow::anyhow!("Git history error output exceeded its limit")
             } else {
-                anyhow::anyhow!("Git history read failed: {}", text(&stderr).trim())
+                history_failure(&stderr)
             }
         }
         _ => ReadCancelled.into(),
@@ -967,11 +977,9 @@ pub(super) fn stream_history(
                     .is_none_or(|writer| writer.is_finished())
                 && let (Some(status), Some(stderr)) = (status, stderr.as_ref())
             {
-                ensure!(
-                    status.success(),
-                    "Git history read failed: {}",
-                    text(stderr).trim()
-                );
+                if !status.success() {
+                    return Err(history_failure(stderr));
+                }
                 return Ok(ReadEnd::Complete);
             }
         }
@@ -1176,6 +1184,66 @@ mod tests {
             error.to_string(),
             "Git history read failed: fatal: bad revision"
         );
+    }
+
+    /// A history read whose `.git` went away, where the path Git names holds
+    /// a carriage return: a traversal's page, a stream, and a stream whose
+    /// cancel came after Git failed each end as finding no repository, by
+    /// the type their failure carries ([`NotARepository`]), through any
+    /// context, and each shows the message it showed before the type, Git's
+    /// words as a terminal leaves them, with none of "not a git repository".
+    /// Told apart by that message, History's read of a gone tab left it
+    /// unmarked, showing "Could not read local history: … b/.git/worktrees/x".
+    #[cfg(unix)]
+    #[test]
+    fn a_history_read_finding_no_repository_is_told_apart_whatever_its_message_keeps() {
+        use std::os::unix::process::ExitStatusExt;
+        let git = || {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                r"printf 'fatal: not a git repository: /a\rb/.git/worktrees/x\n' >&2; exit 128",
+            ]);
+            command
+        };
+        let cancellation = HistoryCancellation::default();
+        let mut traversal = HistoryTraversal {
+            scope: HistoryScope::PinnedRefs(Vec::new()),
+            offset: 0,
+            stream: Some(HistoryStream::start(git(), None).unwrap()),
+            deferred: None,
+            failed: false,
+        };
+        let page = traversal.next_page(10, &cancellation).unwrap_err();
+        let stream = stream_history(git(), None, &cancellation, Duration::from_secs(20), |_| {
+            Ok(true)
+        })
+        .unwrap_err();
+        let (_send, queued) = mpsc::sync_channel(READ_QUEUE);
+        let cancelled = cancelled_end(
+            &queued,
+            Some(b"fatal: not a git repository: /a\rb/.git/worktrees/x\n".to_vec()),
+            || Ok(Some(std::process::ExitStatus::from_raw(128 << 8))),
+        );
+        let shown = "Git history read failed: b/.git/worktrees/x";
+        for error in [page, stream, cancelled] {
+            assert_eq!(error.to_string(), shown);
+            assert_eq!(format!("{error:#}"), shown);
+            assert!(error.is::<NotARepository>(), "{error:#}");
+            assert!(finds_no_repository(&error), "{error:#}");
+            let read = error.context("Read local history");
+            assert_eq!(format!("{read:#}"), format!("Read local history: {shown}"));
+            assert!(finds_no_repository(&read), "{read:#}");
+        }
+        // Git's other failures carry no type.
+        let mut other = Command::new("/bin/sh");
+        other.args(["-c", "echo 'fatal: bad revision' >&2; exit 128"]);
+        let other = stream_history(other, None, &cancellation, Duration::from_secs(20), |_| {
+            Ok(true)
+        })
+        .unwrap_err();
+        assert!(!other.is::<NotARepository>(), "{other:#}");
+        assert!(!finds_no_repository(&other), "{other:#}");
     }
 
     /// A read its cancellation stopped while Git still runs ends with [`ReadCancelled`],

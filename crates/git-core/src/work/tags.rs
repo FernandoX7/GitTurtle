@@ -264,7 +264,7 @@ impl GitRepository {
         })
     }
 
-    fn tag_signing(&self, annotated: bool) -> Result<bool> {
+    pub(super) fn tag_signing(&self, annotated: bool) -> Result<bool> {
         let mut signing = false;
         for key in ["tag.gpgSign"]
             .into_iter()
@@ -273,11 +273,15 @@ impl GitRepository {
             let mut command = normal_command(self.target());
             command.args(["config", "--bool", "--get", key]);
             let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-            ensure!(
-                output.status.success() || output.status.code() == Some(1),
-                "Unable to read tag signing configuration: {}",
-                text(&output.stderr)
-            );
+            if !(output.status.success() || output.status.code() == Some(1)) {
+                return Err(git_failure(
+                    &output.stderr,
+                    format!(
+                        "Unable to read tag signing configuration: {}",
+                        reported(&output.stderr)
+                    ),
+                ));
+            }
             signing |= trim_line(&output.stdout) == b"true";
         }
         Ok(signing)

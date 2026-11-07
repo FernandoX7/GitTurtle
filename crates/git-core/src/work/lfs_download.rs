@@ -109,11 +109,15 @@ impl GitRepository {
         let mut version = normal_command(self.target());
         version.args(["lfs", "version"]);
         let output = bounded_output(version, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again. {}",
-            redact_diagnostic(&text(&output.stderr))
-        );
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again. {}",
+                    reported_redacted(&output.stderr, redact_diagnostic)
+                ),
+            ));
+        }
         require_patched_lfs(&text(&output.stdout))?;
         // `git lfs env` creates storage directories, even though it is a config
         // query. Redirect that side effect into our private temporary directory.
@@ -126,11 +130,15 @@ impl GitRepository {
             .arg(config_path("lfs.storage", &temporary.path))
             .args(["lfs", "env"]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again. {}",
-            redact_diagnostic(&text(&output.stderr))
-        );
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Git LFS tooling is unavailable or its configuration cannot be read. Install Git LFS, then review this download again. {}",
+                    reported_redacted(&output.stderr, redact_diagnostic)
+                ),
+            ));
+        }
         let environment = text(&output.stdout);
         let endpoints = environment
             .lines()
@@ -145,15 +153,9 @@ impl GitRepository {
             !endpoints.is_empty(),
             "Git LFS did not report a download endpoint for this remote. Check its LFS URL configuration."
         );
-        let mut config = normal_command(self.target());
-        config.args(["config", "--null", "--list"]);
-        let output = bounded_output(config, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Cannot read the effective Git configuration for LFS."
-        );
+        let config = effective_lfs_config(self.target())?;
         let mut digest = Sha256::new();
-        digest.update(output.stdout);
+        digest.update(config);
         digest.update(endpoints.as_bytes());
         Ok(LfsDownloadPlan {
             target: target.clone(),
@@ -225,6 +227,23 @@ impl GitRepository {
             up_to_date: false,
         })
     }
+}
+
+/// The effective configuration a download plan's digest covers. A failure is
+/// typed as any configuration read's is ([`git_failure`]): in a linked
+/// worktree whose administration directory is gone even `git config` finds
+/// no repository.
+pub(super) fn effective_lfs_config(target: GitTarget<'_>) -> Result<Vec<u8>> {
+    let mut config = normal_command(target);
+    config.args(["config", "--null", "--list"]);
+    let output = bounded_output(config, GIT_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            "Cannot read the effective Git configuration for LFS.".into(),
+        ));
+    }
+    Ok(output.stdout)
 }
 
 pub(crate) fn lfs_storage_config(target: GitTarget<'_>) -> Result<Output> {

@@ -426,9 +426,13 @@ fn resolve_git_entry(holder: &Path) -> Option<PathBuf> {
 }
 
 /// Whether a command failed because Git found no repository: how every
-/// command of an opened repository fails once its `.git` is gone.
+/// command of an opened repository fails once its `.git` is gone. Decided by
+/// the type its failure carries ([`NotARepository`]), from Git's own words,
+/// before the message, which shows them as a terminal leaves them; the
+/// message is read only for a failure that carries none.
 pub fn finds_no_repository(error: &anyhow::Error) -> bool {
-    format!("{error:#}").contains("not a git repository")
+    error.chain().any(|cause| cause.is::<NotARepository>())
+        || format!("{error:#}").contains("not a git repository")
 }
 
 /// Where one Git process runs, and the folder Git discovery must not enter
@@ -618,21 +622,16 @@ impl GitRepository {
             args.push("--show-toplevel");
         }
         let output = run_git_output(GitTarget::unconfined(&self.path), &args)?;
-        if !output.status.success() {
-            let diagnostic = text(&output.stderr);
-            ensure!(
-                diagnostic.contains("not a git repository"),
-                "Git rev-parse failed: {}",
-                diagnostic.trim()
-            );
+        if !output.status.success() && no_repository_found(&output.stderr) {
             return Ok(FoundAtPath::None);
         }
+        let output = checked_git_output(&args, output)?;
         // The Git directory's line, its common directory's, and a work
         // tree's root. A path holding a line break splits into more lines:
         // each is then asked for alone, its whole output one path, since an
         // open confirms what it captured here and such a repository once
         // could not be opened at all.
-        let mut lines: Vec<_> = trim_line(&output.stdout)
+        let mut lines: Vec<_> = trim_line(&output)
             .split(|byte| *byte == b'\n')
             .map(path_from_bytes)
             .collect();
@@ -654,7 +653,7 @@ impl GitRepository {
         let (git_dir, common, found) = match (lines.as_slice(), self.bare) {
             ([git_dir, common, root], false) => (git_dir, common, root.clone()),
             ([git_dir, common], true) => (git_dir, common, git_dir.clone()),
-            _ => return Ok(FoundAtPath::Other(path_from_bytes(&output.stdout))),
+            _ => return Ok(FoundAtPath::Other(path_from_bytes(&output))),
         };
         let same_root = found == self.path
             || found
@@ -733,10 +732,12 @@ impl GitRepository {
     }
 
     /// A failed command's error, worded as the repository gone where Git
-    /// stopped at its confinement: "not a git repository" from a confined
-    /// command means the repository's `.git` went away while it ran or
-    /// just before, so the diagnosis ([`Self::found_at_path`]) says what Git
-    /// finds there now. The command's own error stays beneath it, uncertain
+    /// stopped at its confinement: a confined command that finds no
+    /// repository, as the type its failure carries says, or for a failure
+    /// that carries none its message ([`finds_no_repository`]), means the
+    /// repository's `.git` went away while it ran or just before, so the
+    /// diagnosis ([`Self::found_at_path`]) says what Git finds there now.
+    /// The command's own error stays beneath it, uncertain
     /// outcome included. Any other failure is returned as it is, with no
     /// process started.
     pub fn word_gone(&self, error: anyhow::Error) -> anyhow::Error {
@@ -1237,6 +1238,12 @@ impl GitRepository {
         )?;
         let common = path_from_bytes(trim_line(&common));
         let configured = work::lfs_storage_config(self.target())?;
+        Self::lfs_storage_from(common, &configured)
+    }
+
+    /// Where `lfs.storage`, as `git config` answered, puts local LFS objects.
+    /// A failure is typed as any configuration read's is ([`git_failure`]).
+    pub(crate) fn lfs_storage_from(common: PathBuf, configured: &Output) -> Result<PathBuf> {
         let storage = if configured.status.success() {
             let value = configured
                 .stdout
@@ -1255,10 +1262,13 @@ impl GitRepository {
         } else if configured.status.code() == Some(1) {
             common.join("lfs")
         } else {
-            bail!(
-                "Unable to read local LFS storage configuration: {}",
-                text(&configured.stderr).trim()
-            );
+            return Err(git_failure(
+                &configured.stderr,
+                format!(
+                    "Unable to read local LFS storage configuration: {}",
+                    reported(&configured.stderr).trim()
+                ),
+            ));
         };
         Ok(storage)
     }
@@ -1384,13 +1394,24 @@ fn git_command(target: GitTarget<'_>) -> Command {
 }
 
 fn run_git(target: GitTarget<'_>, args: &[&str]) -> Result<Vec<u8>> {
-    let output = run_git_output(target, args)?;
-    ensure!(
-        output.status.success(),
-        "Git {} failed: {}",
-        args.first().unwrap_or(&"command"),
-        text(&output.stderr).trim()
-    );
+    checked_git_output(args, run_git_output(target, args)?)
+}
+
+/// The stdout of `git <args>`, which wrote `output`, once it succeeded;
+/// otherwise its failure, "Git <command> failed: …" with Git's stderr as a
+/// terminal leaves it, typed where Git found no repository
+/// ([`git_failure`]).
+fn checked_git_output(args: &[&str], output: Output) -> Result<Vec<u8>> {
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Git {} failed: {}",
+                args.first().unwrap_or(&"command"),
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     Ok(output.stdout)
 }
 
@@ -1716,6 +1737,126 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Whether a failed command's `stderr` says no repository holds the path it
+/// ran at: one of its lines in Git's own words ([`text`], split on line
+/// feeds alone) starts with Git's `fatal: not a git repository`. Git names
+/// paths in its other failures, so the words anywhere else, a folder's name
+/// in "fatal: cannot change to '/x/not a git repository': Permission
+/// denied", are that failure. A carriage return in a path Git names, a mount
+/// point's or a linked worktree's main repository's, stays inside its line,
+/// where [`reported`] would leave only what follows it and turn a path with
+/// no repository into a failure refusing every write.
+fn no_repository_found(stderr: &[u8]) -> bool {
+    text(stderr)
+        .split('\n')
+        .any(|line| line.starts_with("fatal: not a git repository"))
+}
+
+/// A Git command failed because, in its own words, no repository holds the
+/// path it ran at (`no_repository_found`): told apart by this type rather
+/// than by its message, which shows those words as a terminal leaves them,
+/// so a carriage return in a path Git names leaves the message only what
+/// follows it. It is the failure itself, its message the command's own
+/// (`git_failure`), so what every surface shows is unchanged. The app tells
+/// a folder with no repository apart, and a tab whose repository is gone, by
+/// this type before any text, as [`finds_no_repository`] does.
+#[derive(Debug)]
+pub struct NotARepository(
+    /// The failure's message as it is shown, as "Git rev-parse failed: …".
+    pub String,
+);
+
+impl std::fmt::Display for NotARepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotARepository {}
+
+/// A failed Git command's error, `message` as it is shown: a
+/// [`NotARepository`] where Git's raw `stderr` says no repository holds the
+/// path ([`no_repository_found`]), otherwise `message` alone. [`run_git`],
+/// status and the history streams (`history_failure`) report through it,
+/// the reads whose failure says that a repository's `.git` is gone, and so
+/// does a write's command (`checked_write_output`) and every step of a
+/// write that reports Git's stderr, which [`GitRepository::word_gone`] then
+/// words as the repository gone: its configuration reads and edits too,
+/// since in a linked worktree whose administration directory is gone even
+/// `git config` fails so. Only `check-ref-format`, which needs no
+/// repository, never does.
+/// Decided 2026-11-07: telling them apart read only the message, Git's
+/// words as a terminal leaves them, so where a Git named a path holding a
+/// carriage return such a read left the tab unmarked and showed a cut
+/// message.
+fn git_failure(stderr: &[u8], message: String) -> anyhow::Error {
+    if no_repository_found(stderr) {
+        NotARepository(message).into()
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
+/// Git's captured output in `bytes` as a message shows it: [`text`] as a
+/// terminal leaves it ([`as_terminal_leaves`]). Every failure that embeds
+/// Git's stdout or stderr reads it through this, before its own words join
+/// it, so a step's progress never runs into the error after it; the
+/// diagnostics that match Git's words read the raw bytes.
+fn reported(bytes: &[u8]) -> String {
+    let text = text(bytes);
+    match as_terminal_leaves(&text) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(shown) => shown,
+    }
+}
+
+/// [`reported`] for a failure that redacts Git's output: `redact` reads
+/// Git's own text first, and only what it leaves is read as a terminal
+/// leaves it, as a write's outcome is (`GitRepository::execute`). Read the
+/// other way round, a carriage return between a redaction's marker and its
+/// secret, as in "password=\rsecret", left only the secret, which no marker
+/// then names. Decided 2026-11-07: every failure that redacts reads Git's
+/// streams through this.
+fn reported_redacted(bytes: &[u8], redact: impl FnOnce(&str) -> String) -> String {
+    as_terminal_leaves(&redact(&text(bytes))).into_owned()
+}
+
+/// `output`, Git's reported output, as a terminal leaves it: Git writes a
+/// step's progress on one line, each step ended by a carriage return so the
+/// next overwrites it, so within each line only the text after its last
+/// carriage return is kept, a trailing one (as in a `\r\n` line end)
+/// keeping the text before it, and a line that ends up blank is dropped. A
+/// line without a carriage return is kept as it is, so output without one
+/// comes back unchanged. Decided 2026-11-07: after a rebase, the status read
+/// "Rebasing (1/3)Rebasing (2/3)Rebasing (3/3)Successfully rebased and
+/// updated refs/heads/main.", the returns dropped as it was drawn, where a
+/// terminal leaves only the outcome. A write's outcome reads it so
+/// (`GitRepository::execute`), and a failure reads Git's own streams so
+/// ([`reported`]), never the text it composes around them, where our words
+/// share a line with Git's. Where a carriage return was found, the blank
+/// lines before the first kept one are dropped too, so the text never starts
+/// with a line break. Lines are cut only at the ASCII CR and LF characters,
+/// which never occur inside a multi-byte UTF-8 sequence, so every character
+/// kept is one of the decoded text's own.
+fn as_terminal_leaves(output: &str) -> std::borrow::Cow<'_, str> {
+    if !output.contains('\r') {
+        return output.into();
+    }
+    let lines: Vec<&str> = output
+        .split('\n')
+        .filter_map(|line| {
+            if !line.contains('\r') {
+                return Some(line);
+            }
+            let line = line.trim_end_matches('\r');
+            let shown = line.rsplit_once('\r').map_or(line, |(_, after)| after);
+            (!shown.trim().is_empty()).then_some(shown)
+        })
+        .skip_while(|line| line.trim().is_empty())
+        .collect();
+    lines.join("\n").into()
+}
+
 /// `count` with the noun that agrees with it ("1 byte", "2 bytes"), as the
 /// app's `counted` builds every count it shows; this crate cannot reach the
 /// app's, so every count core words is built here.
@@ -1954,6 +2095,93 @@ mod tests {
             assert!(repo.status().unwrap().entries.is_empty(), "{opened}");
             assert_eq!(repo.branches().unwrap().len(), 1, "{opened}");
         }
+    }
+
+    /// `git <args>` failing with `stderr`, as [`run_git`] reports it.
+    #[cfg(unix)]
+    fn failed(args: &[&str], stderr: &[u8]) -> anyhow::Error {
+        use std::os::unix::process::ExitStatusExt;
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(128 << 8),
+            stdout: Vec::new(),
+            stderr: stderr.to_vec(),
+        };
+        checked_git_output(args, output).expect_err("a failed command")
+    }
+
+    /// A path with no repository is told apart in Git's own words, even
+    /// where the mount point Git names holds a carriage return, which leaves
+    /// only "b)" once read as a terminal leaves it; any other failure reports
+    /// Git's output as a terminal leaves it.
+    #[cfg(unix)]
+    #[test]
+    fn no_repository_is_found_in_git_s_own_words() {
+        let boundary = b"fatal: not a git repository (or any parent up to mount point /mnt/a\rb)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n";
+        assert!(no_repository_found(boundary));
+        assert!(no_repository_found(
+            b"fatal: not a git repository: '.git'\n"
+        ));
+        let failure = failed(
+            &["rev-parse", "--absolute-git-dir"],
+            b"Checking (1/2)\rChecking (2/2)\rfatal: bad object HEAD\n",
+        );
+        assert!(!failure.is::<NotARepository>(), "{failure}");
+        assert_eq!(
+            failure.to_string(),
+            "Git rev-parse failed: fatal: bad object HEAD"
+        );
+        // As an open reports them: the folder with no repository by its type,
+        // whatever its message keeps.
+        let open = failed(&["rev-parse", "--is-bare-repository"], boundary);
+        assert!(open.is::<NotARepository>(), "{open}");
+        assert_eq!(
+            open.to_string(),
+            "Git rev-parse failed: b)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set)."
+        );
+        // Git names the path it could not enter, so a folder called "not a
+        // git repository", or one inside it, whose access was denied is that
+        // failure, never a folder with no repository.
+        for denied in [
+            b"fatal: cannot change to '/x/not a git repository': Permission denied\n".as_slice(),
+            b"fatal: cannot change to '/x/not a git repository/inner': Permission denied\n",
+        ] {
+            assert!(!no_repository_found(denied));
+            let error = failed(&["rev-parse"], denied);
+            assert!(!error.is::<NotARepository>(), "{error}");
+            assert!(error.to_string().ends_with("Permission denied"), "{error}");
+        }
+    }
+
+    /// A read whose `.git` is gone, as every command of an opened repository
+    /// fails once it is: where the path Git names holds a carriage return,
+    /// its message keeps only what follows it, as it did, with none of Git's
+    /// "not a git repository", and the read is still told apart as finding no
+    /// repository, by the type its failure carries, through any context.
+    /// Telling it apart by the message, the tab stayed unmarked.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_finding_no_repository_is_told_apart_whatever_its_message_keeps() {
+        let stderr = b"fatal: not a git repository: /a\rb/.git/worktrees/x\n";
+        let error = failed(&["rev-parse", "--absolute-git-dir"], stderr);
+        // Shown as it was before the type: Git's words as a terminal leaves
+        // them, after ours.
+        let shown = "Git rev-parse failed: b/.git/worktrees/x";
+        assert_eq!(error.to_string(), shown);
+        assert_eq!(format!("{error:#}"), shown);
+        assert!(error.is::<NotARepository>(), "{error}");
+        assert!(finds_no_repository(&error), "{error:#}");
+        let resolved = error.context("Resolve Git administration directory");
+        assert_eq!(
+            format!("{resolved:#}"),
+            format!("Resolve Git administration directory: {shown}")
+        );
+        assert!(finds_no_repository(&resolved), "{resolved:#}");
+        // Another failure carries no type, and its message alone decides.
+        let other = failed(&["status"], b"fatal: index file corrupt\n");
+        assert!(!finds_no_repository(&other), "{other:#}");
+        assert!(finds_no_repository(&anyhow::anyhow!(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        )));
     }
 
     #[cfg(unix)]

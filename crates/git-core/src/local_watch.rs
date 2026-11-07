@@ -41,7 +41,7 @@ impl GitRepository {
         ensure!(
             output.status.success(),
             "Read tracked paths for local watching: {}",
-            text(&output.stderr).trim()
+            reported(&output.stderr).trim()
         );
         ensure!(
             output.stdout.len() <= MAX_POLICY_BYTES,
@@ -102,7 +102,7 @@ impl GitRepository {
             ensure!(
                 output.status.success(),
                 "Read local watch configuration: {}",
-                text(&output.stderr).trim()
+                reported(&output.stderr).trim()
             );
             Ok(Some(path_from_bytes(
                 output.stdout.strip_suffix(&[0]).unwrap_or(&output.stdout),

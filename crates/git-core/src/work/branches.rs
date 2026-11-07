@@ -550,7 +550,11 @@ impl GitRepository {
             .collect()
     }
 
-    fn management_config_values(&self, key: &str, local_only: bool) -> Result<Vec<String>> {
+    pub(super) fn management_config_values(
+        &self,
+        key: &str,
+        local_only: bool,
+    ) -> Result<Vec<String>> {
         let mut command = normal_command(self.target());
         command.env("GIT_OPTIONAL_LOCKS", "0").arg("config");
         if local_only {
@@ -558,11 +562,15 @@ impl GitRepository {
         }
         command.args(["--null", "--get-all", key]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success() || output.status.code() == Some(1),
-            "Unable to read Git configuration: {}",
-            text(&output.stderr).trim()
-        );
+        if !(output.status.success() || output.status.code() == Some(1)) {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read Git configuration: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
         if output.stdout.is_empty() {
             return Ok(Vec::new());
         }
@@ -579,7 +587,7 @@ impl GitRepository {
         self.management_config_entries_in_scope(pattern, false)
     }
 
-    fn management_config_entries_in_scope(
+    pub(super) fn management_config_entries_in_scope(
         &self,
         pattern: &str,
         local_only: bool,
@@ -591,11 +599,15 @@ impl GitRepository {
         }
         command.args(["--null", "--get-regexp", pattern]);
         let output = bounded_write_output(command, None, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success() || output.status.code() == Some(1),
-            "Unable to inspect Git configuration: {}",
-            text(&output.stderr).trim()
-        );
+        if !(output.status.success() || output.status.code() == Some(1)) {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to inspect Git configuration: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
         if output.stdout.is_empty() {
             return Ok(Vec::new());
         }
@@ -732,11 +744,15 @@ impl GitRepository {
                 .arg(&transaction.lock)
                 .args(["--unset-all", &key]);
             let output = bounded_write_output(clear, None, WRITE_TIMEOUT)?;
-            ensure!(
-                output.status.success() || output.status.code() == Some(5),
-                "Unable to prepare remote settings: {}",
-                text(&output.stderr).trim()
-            );
+            if !(output.status.success() || output.status.code() == Some(5)) {
+                return Err(git_failure(
+                    &output.stderr,
+                    format!(
+                        "Unable to prepare remote settings: {}",
+                        reported(&output.stderr).trim()
+                    ),
+                ));
+            }
             for value in values {
                 let mut write = normal_command(self.target());
                 write

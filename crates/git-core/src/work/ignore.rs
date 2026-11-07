@@ -91,21 +91,7 @@ impl GitRepository {
             "The ignore file cannot ignore itself; choose repository-local excludes."
         );
         let snapshot = read_ignore_snapshot(&destination_path)?;
-        let mut command = git_command(self.target());
-        command
-            .args(["--literal-pathspecs", "ls-files", "-z", "--"])
-            .arg(&path);
-        let output = bounded_output(command, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Unable to inspect tracked paths: {}",
-            text(&output.stderr)
-        );
-        let tracked_paths = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .count();
+        let tracked_paths = tracked_paths_at(self.target(), &path)?;
         Ok(IgnorePlan {
             path,
             directory,
@@ -152,6 +138,30 @@ impl GitRepository {
             up_to_date: false,
         })
     }
+}
+
+/// How many tracked paths the literal `path` names, a file or a directory
+/// holding them, read passively from the index.
+pub(super) fn tracked_paths_at(target: GitTarget<'_>, path: &Path) -> Result<usize> {
+    let mut command = git_command(target);
+    command
+        .args(["--literal-pathspecs", "ls-files", "-z", "--"])
+        .arg(path);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to inspect tracked paths: {}",
+                reported(&output.stderr)
+            ),
+        ));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .count())
 }
 
 fn literal_ignore_rule(path: &Path, directory: bool) -> Result<Vec<u8>> {

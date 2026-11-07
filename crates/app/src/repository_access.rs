@@ -12,6 +12,11 @@ enum Failure {
 
 fn classify(error: &anyhow::Error) -> Failure {
     for cause in error.chain() {
+        // Decided from Git's own words, never from the message, which shows
+        // them as a terminal leaves them.
+        if cause.is::<gitturtle_core::NotARepository>() {
+            return Failure::NotRepository;
+        }
         if let Some(error) = cause.downcast_ref::<io::Error>() {
             if error.kind() == io::ErrorKind::PermissionDenied
                 || matches!(error.raw_os_error(), Some(1 | 13))
@@ -103,6 +108,67 @@ mod tests {
         let diagnostic = format!("{:#}", explain(Path::new("/example"), error));
         assert!(diagnostic.contains("Permission denied"));
         assert!(diagnostic.contains("/example"));
+    }
+
+    /// An open of a folder whose mount point holds a carriage return, as
+    /// `GitRepository::open` reports it: the message keeps only what follows
+    /// the return, "b)", and the folder is still told apart as holding no
+    /// repository, with that guidance.
+    #[test]
+    fn a_folder_with_no_repository_is_told_apart_by_its_type() {
+        let error = anyhow::Error::from(gitturtle_core::NotARepository(
+            "Git rev-parse failed: b)".into(),
+        ))
+        .context("Opening repository");
+        assert_eq!(classify(&error), Failure::NotRepository);
+        assert!(finds_no_repository(&error), "{error:#}");
+        let diagnostic = format!("{:#}", explain(Path::new("/mnt/a\rb"), error));
+        assert!(
+            diagnostic.contains("not an available Git repository"),
+            "{diagnostic}"
+        );
+    }
+
+    /// A repository's reads once its `.git` is gone, as a quiet read, Changes'
+    /// read, the watcher's setup and History's latest-history read
+    /// (`history_updates`) meet them: each failure carries the type
+    /// Git's own words decide, so a tab whose repository is gone is told apart
+    /// whatever the message keeps of those words (a path Git names holding a
+    /// carriage return leaves only what follows it), and the message is
+    /// Git's, after ours, as it was.
+    #[test]
+    fn a_read_whose_repository_is_gone_is_told_apart_by_its_type() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = gitturtle_core::GitRepository::init(&root, "main").unwrap();
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let directories = repo.git_directories().expect_err("no repository there");
+        let status = repo.status().expect_err("no repository there");
+        // History's page of a commit, as its read of a created commit asks
+        // for it: the stream is Git's first command there.
+        let cancellation = gitturtle_core::HistoryCancellation::default();
+        let history = repo
+            .history_traversal(
+                &gitturtle_core::HistoryScope::FromCommit("1".repeat(40)),
+                &cancellation,
+            )
+            .and_then(|mut traversal| traversal.next_page(1, &cancellation))
+            .map(|_| ())
+            .expect_err("no repository there");
+        for (error, ours) in [
+            (directories, "Git rev-parse failed"),
+            (status, "Unable to read working-copy status"),
+            (history, "Git history read failed"),
+        ] {
+            assert!(error.is::<gitturtle_core::NotARepository>(), "{error:#}");
+            assert!(finds_no_repository(&error), "{error:#}");
+            assert_eq!(
+                format!("{error:#}"),
+                format!(
+                    "{ours}: fatal: not a git repository (or any of the parent directories): .git"
+                )
+            );
+        }
     }
 
     #[test]

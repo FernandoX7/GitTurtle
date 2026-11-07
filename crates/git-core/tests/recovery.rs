@@ -230,6 +230,49 @@ fn failed_stash_restore_keeps_untracked_collision_and_saved_entry() {
     );
 }
 
+/// Stash restoration runs configured filters, so its failure reads Git's
+/// streams as every other write's failure does, redacted and then as a
+/// terminal leaves them: a smudge filter that writes a credential marker, a
+/// carriage return and its secret, then fails, showed the secret alone,
+/// which no marker then names.
+#[cfg(unix)]
+#[test]
+fn failed_stash_restore_never_shows_a_filter_s_secret() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.write(".gitattributes", "file.txt filter=leak\n");
+    f.base();
+    f.write("file.txt", "saved changes\n");
+    let stash = create_stash(&f, "Filtered", false);
+    f.write(".git/leaked", b"password=\rSECRET1\n");
+    let leaked = f.root.join(".git/leaked");
+    f.write(
+        ".git/smudge",
+        format!("#!/bin/sh\ncat '{}' >&2\nexit 1\n", leaked.display()),
+    );
+    let smudge = f.root.join(".git/smudge");
+    fs::set_permissions(&smudge, fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(&["config", "filter.leak.clean", "cat"]);
+    f.git(&["config", "filter.leak.smudge", smudge.to_str().unwrap()]);
+    f.git(&["config", "filter.leak.required", "true"]);
+    let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
+    let error = f.recover(RecoveryCommand::ApplyStash { plan }).unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(
+        diagnostic.starts_with("Stash restoration did not complete. The stash remains saved."),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("SECRET1"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("\n\nGit stderr:\npassword=[redacted]\n"),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        f.repo().stash_list(0, 20).unwrap().entries[0].oid,
+        stash.oid
+    );
+}
+
 #[test]
 fn stash_drop_rechecks_reflog_position_and_only_removes_the_reviewed_entry() {
     let f = Fixture::new();

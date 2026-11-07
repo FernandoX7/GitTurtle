@@ -458,15 +458,21 @@ impl GitRepository {
         } else {
             ""
         };
-        // Keep both original streams, including stdout-only merge diagnostics.
+        // Keep both streams, including stdout-only merge diagnostics,
+        // redacted and then as a terminal leaves them (`reported_redacted`),
+        // as every other write's failure reads them: stash apply runs
+        // configured filters, whose output can hold a credential.
         // The leading sentence is suitable for the compact operation error bar;
         // Details retains the full diagnostic content and actual exit status.
-        bail!(
-            "{summary} {saved}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
-            output.status,
-            text(&output.stdout),
-            text(&output.stderr),
-        )
+        Err(git_failure(
+            &output.stderr,
+            format!(
+                "{summary} {saved}\n\n{guidance}{local_state}\n\nGit result: {}\n\nGit stdout:\n{}\n\nGit stderr:\n{}",
+                output.status,
+                reported_redacted(&output.stdout, authentication::redact_current),
+                reported_redacted(&output.stderr, authentication::redact_current),
+            ),
+        ))
     }
 
     fn recovery_head(&self) -> Result<(RecoveryHead, RepositoryStatus)> {

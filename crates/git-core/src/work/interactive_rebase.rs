@@ -404,7 +404,7 @@ impl GitRepository {
         let result = bounded_write_output(command, None, WRITE_TIMEOUT)?;
         // Only Git's explicit editor refusal is a deliberate native pause.
         // Cancellation, timeouts, hooks and signing failures retain uncertainty.
-        let stderr = authentication::redact_current(&text(&result.stderr));
+        let stderr = reported_redacted(&result.stderr, authentication::redact_current);
         if !result.status.success()
             && editor.directory.join("message.requested").is_file()
             && self
@@ -431,12 +431,16 @@ impl GitRepository {
             drop(editor);
             return Ok(WriteOutcome { message: "Rebase paused for commit-message review. Choose Continue to edit the message in GitTurtle. The operation can also be aborted or resumed after restarting.".into(), commit_oid: self.status()?.head, up_to_date: false });
         }
-        ensure!(
-            result.status.success(),
-            "Interactive rebase stopped: {}\n{}\nReview Working Changes and the operation state before choosing Continue or Abort. No retry was attempted.",
-            stderr.trim(),
-            authentication::redact_current(&text(&result.stdout)).trim()
-        );
+        if !result.status.success() {
+            return Err(git_failure(
+                &result.stderr,
+                format!(
+                    "Interactive rebase stopped: {}\n{}\nReview Working Changes and the operation state before choosing Continue or Abort. No retry was attempted.",
+                    stderr.trim(),
+                    reported_redacted(&result.stdout, authentication::redact_current).trim()
+                ),
+            ));
+        }
         integration::integration_outcome(self, result)
     }
 }

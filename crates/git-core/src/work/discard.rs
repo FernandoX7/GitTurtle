@@ -259,11 +259,15 @@ fn ensure_single_file_restore(target: GitTarget<'_>, head: &str, paths: &[PathBu
         .args(["ls-tree", "-z", "--full-tree", head, "--"])
         .args(paths);
     let output = bounded_output(command, GIT_TIMEOUT)?;
-    ensure!(
-        output.status.success(),
-        "Unable to inspect the reviewed commit's restore paths: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to inspect the reviewed commit's restore paths: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     for record in output
         .stdout
         .split(|byte| *byte == 0)
@@ -282,17 +286,27 @@ fn ensure_single_file_restore(target: GitTarget<'_>, head: &str, paths: &[PathBu
             path.display()
         );
     }
+    ensure_single_index_restore(target, paths)
+}
+
+/// The index half of [`ensure_single_file_restore`]: refuse a restore whose
+/// literal pathspecs also select staged files beneath the reviewed paths.
+fn ensure_single_index_restore(target: GitTarget<'_>, paths: &[PathBuf]) -> Result<()> {
     let mut command = git_command(target);
     command
         .arg("--literal-pathspecs")
         .args(["ls-files", "--cached", "-z", "--"])
         .args(paths);
     let output = bounded_output(command, GIT_TIMEOUT)?;
-    ensure!(
-        output.status.success(),
-        "Unable to inspect the selected index paths: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to inspect the selected index paths: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     for record in output
         .stdout
         .split(|byte| *byte == 0)
@@ -506,5 +520,235 @@ mod tests {
             working_identity(temp.path(), Path::new("fifo"), Instant::now()).unwrap(),
             WorkingIdentity::Other
         );
+    }
+
+    /// The steps of a write whose `.git` goes away while it runs, each of
+    /// which Git can stop at its confinement: an interactive rebase whose
+    /// pre-rebase hook writes a credential marker, a return and its secret,
+    /// then Git's words where the path named holds a return, and removes the
+    /// `.git`; then, each called alone where a write would fail before it,
+    /// discard's checks of the reviewed commit's restore paths and of the
+    /// index, the HEAD check, ignore's tracked-path check and worktree
+    /// removal's ignored-content check, all reading where the `.git` is gone,
+    /// a fast-forward pull's refusal whose output forges the same words, and,
+    /// in a linked worktree whose administration directory went with the
+    /// `.git`, status and the configuration reads a write makes. Each
+    /// failure carries the type Git's raw words decide, so `execute` words
+    /// the repository gone (`GitRepository::word_gone`), and keeps its
+    /// message as it was, the rebase's and the pull's redacted and then read
+    /// as a terminal leaves them, with no secret.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_s_steps_finding_no_repository_carry_its_type() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            text(trim_line(&output.stdout))
+        };
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        git(&["config", "commit.gpgSign", "false"]);
+        for content in ["one\n", "two\n"] {
+            std::fs::write(root.join("notes.txt"), content).unwrap();
+            git(&["add", "notes.txt"]);
+            git(&["commit", "-q", "-m", content.trim()]);
+        }
+        let head = git(&["rev-parse", "HEAD"]);
+        // A linked worktree on a commit the rebase leaves alone, whose
+        // administration directory goes with the `.git`.
+        let linked_path = temp.path().join("linked");
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "topic",
+            linked_path.to_str().unwrap(),
+            "HEAD~1",
+        ]);
+        let linked = GitRepository::open(&linked_path).unwrap();
+        let hooks = temp.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let written = temp.path().join("written");
+        std::fs::write(
+            &written,
+            b"password=\rSECRET1\nfatal: not a git repository: /a\rb/.git/worktrees/x\n",
+        )
+        .unwrap();
+        let hook = hooks.join("pre-rebase");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ncat '{}' >&2\nrm -rf '{}'\nexit 1\n",
+                written.display(),
+                root.join(".git").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+
+        let plan = repo.interactive_rebase_plan("HEAD~1").unwrap();
+        let steps = plan.steps();
+        let rebase = repo
+            .execute(&WriteCommand::InteractiveRebase(std::sync::Arc::new(
+                InteractiveRebaseCommand::Start {
+                    plan,
+                    steps,
+                    acknowledge_published: false,
+                },
+            )))
+            .expect_err("the hook refuses the rebase");
+        assert!(!root.join(".git").exists(), "the hook removed the `.git`");
+        assert!(
+            format!("{rebase:#}").starts_with(&format!(
+                "The repository at {} is gone: Git finds no repository there: ",
+                repo.path().display()
+            )),
+            "{rebase:#}"
+        );
+        let restore =
+            ensure_single_file_restore(repo.target(), &head, &[PathBuf::from("notes.txt")])
+                .expect_err("no repository there");
+        let resolve = repo.has_head().expect_err("no repository there");
+        let index = ensure_single_index_restore(repo.target(), &[PathBuf::from("notes.txt")])
+            .expect_err("no repository there");
+        let tracked = crate::work::ignore::tracked_paths_at(repo.target(), Path::new("notes.txt"))
+            .expect_err("no repository there");
+        let ignored = crate::work::worktrees::ignored_worktree_files(repo.target())
+            .expect_err("no repository there");
+        // A fast-forward pull's refusal, Git's words forged after a secret.
+        let refusal = temp.path().join("refusal");
+        std::fs::write(
+            &refusal,
+            b"password=\rSECRET1\nfatal: Not possible to fast-forward, aborting.\nfatal: not a git repository: /a\rb/.git/worktrees/x\n",
+        )
+        .unwrap();
+        let mut pull = Command::new("sh");
+        pull.args(["-c", "cat \"$2\" >&2; exit 1", "pull", "--ff-only"])
+            .arg(&refusal);
+        let pull = checked_write_output(pull, None, GIT_TIMEOUT).expect_err("the pull is refused");
+        let gone = "fatal: not a git repository (or any of the parent directories): .git";
+        // The rebase's stop as it was: the hook's words, then Git's own for
+        // the refusal, which Git words differently across releases ("error:
+        // The pre-rebase hook …" in 2.55) and an older Git follows with more
+        // once the `.git` is gone, then ours.
+        let stopped = rebase.root_cause().to_string();
+        let (hook, rest) = stopped
+            .strip_prefix("Interactive rebase stopped: ")
+            .and_then(|rest| rest.split_once('\n'))
+            .expect("the rebase's stop");
+        assert_eq!(hook, "password=[redacted]", "{stopped:?}");
+        let (named, rest) = rest.split_once('\n').expect("Git's words");
+        assert_eq!(named, "b/.git/worktrees/x", "{stopped:?}");
+        assert!(
+            rest.ends_with("\nReview Working Changes and the operation state before choosing Continue or Abort. No retry was attempted."),
+            "{stopped:?}"
+        );
+        // The linked worktree's administration directory went with the
+        // `.git`, so even its configuration reads find no repository, and
+        // status does at its first, the configured filters.
+        assert!(!root.join(".git/worktrees/linked").exists());
+        let status = linked.status().expect_err("no repository there");
+        let lfs_config = effective_lfs_config(linked.target()).expect_err("no repository there");
+        for (error, shown) in [
+            (rebase, stopped.clone()),
+            (
+                restore,
+                format!("Unable to inspect the reviewed commit's restore paths: {gone}"),
+            ),
+            (resolve, format!("Unable to resolve HEAD: {gone}\n")),
+            (
+                index,
+                format!("Unable to inspect the selected index paths: {gone}"),
+            ),
+            (tracked, format!("Unable to inspect tracked paths: {gone}\n")),
+            (
+                ignored,
+                format!("Unable to inspect ignored worktree content: {gone}\n"),
+            ),
+            (
+                pull,
+                "Branches have diverged; choose Merge or Rebase to continue.\n\nGit stderr:\npassword=[redacted]\nfatal: Not possible to fast-forward, aborting.\nb/.git/worktrees/x\n\nGit stdout:\n".into(),
+            ),
+            (status, "Unable to inspect configured filters".into()),
+            (
+                lfs_config,
+                "Cannot read the effective Git configuration for LFS.".into(),
+            ),
+        ] {
+            assert_eq!(error.root_cause().to_string(), shown);
+            assert!(
+                error.chain().any(|cause| cause.is::<NotARepository>()),
+                "{error:#}"
+            );
+            assert!(finds_no_repository(&error), "{error:#}");
+            assert!(!format!("{error:#}").contains("SECRET1"), "{error:#}");
+        }
+        // Git names the missing administration directory differently across
+        // releases ("(null)" in 2.55), so only its first words are ours to
+        // assert.
+        for (error, ours) in [
+            (
+                normal_config_at(linked.target(), "user.name").map(drop),
+                "Unable to read Git configuration",
+            ),
+            (
+                branch_upstream_configured(linked.target(), "topic").map(drop),
+                "Unable to read the branch's upstream configuration",
+            ),
+            (
+                linked.profile_config().map(drop),
+                "Unable to read Git identity configuration",
+            ),
+            (
+                linked.tag_signing(true).map(drop),
+                "Unable to read tag signing configuration",
+            ),
+            (
+                linked
+                    .management_config_values("remote.origin.url", true)
+                    .map(drop),
+                "Unable to read Git configuration",
+            ),
+            (
+                linked
+                    .management_config_entries_in_scope("^remote\\.", false)
+                    .map(drop),
+                "Unable to inspect Git configuration",
+            ),
+            (
+                GitRepository::lfs_storage_from(
+                    PathBuf::from("unused"),
+                    &lfs_storage_config(linked.target()).expect("Git ran"),
+                )
+                .map(drop),
+                "Unable to read local LFS storage configuration",
+            ),
+        ] {
+            let error = error.expect_err("no repository there");
+            assert!(
+                error
+                    .root_cause()
+                    .to_string()
+                    .starts_with(&format!("{ours}: fatal: not a git repository")),
+                "{error:#}"
+            );
+            assert!(
+                error.chain().any(|cause| cause.is::<NotARepository>()),
+                "{error:#}"
+            );
+        }
     }
 }

@@ -1,4 +1,4 @@
-use gitturtle_core::{ChangeStatus, GitRepository, TextPreview};
+use gitturtle_core::{ChangeStatus, GitRepository, NotARepository, TextPreview};
 use std::{
     collections::BTreeMap,
     fs,
@@ -15,8 +15,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::named("repository")
+    }
+    fn named(name: &str) -> Self {
         let temp = TempDir::new().unwrap();
-        let root = temp.path().join("repository");
+        let root = temp.path().join(name);
         fs::create_dir(&root).unwrap();
         let fixture = Self { temp, root };
         fixture.git(&["init", "-b", "main"]);
@@ -95,7 +98,44 @@ fn empty_repository_and_nested_discovery() {
     fs::create_dir_all(&nested).unwrap();
     assert_eq!(GitRepository::open(nested).unwrap().path(), repo.path());
     assert!(!repo.is_bare());
-    assert!(GitRepository::open(f.temp.path()).is_err());
+    // A folder no repository holds is told apart by its type, which the app
+    // reads before any text.
+    let plain = GitRepository::open(f.temp.path()).unwrap_err();
+    assert!(plain.is::<NotARepository>(), "{plain:#}");
+}
+
+/// Git names the folder it could not enter, so a repository called "not a
+/// git repository" whose access was denied reports that failure: opening it
+/// is not a folder with no repository, and a write's check of what Git finds
+/// there fails with the access error rather than finding it gone.
+#[cfg(unix)]
+#[test]
+fn denied_folder_named_not_a_git_repository_reports_the_access_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root enters a mode-000 folder, so only a normal user is denied. Its
+    // parent stays searchable: a folder under an unsearchable one is no
+    // directory to open, and Git is never started.
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let f = Fixture::named("not a git repository");
+    let repo = f.open();
+    fs::set_permissions(&f.root, fs::Permissions::from_mode(0o000)).unwrap();
+    let opened = GitRepository::open(&f.root);
+    let found = repo.found_at_path();
+    fs::set_permissions(&f.root, fs::Permissions::from_mode(0o755)).unwrap();
+    let opened = opened.unwrap_err();
+    assert!(!opened.is::<NotARepository>(), "{opened:#}");
+    assert!(
+        format!("{opened:#}").ends_with("Permission denied"),
+        "{opened:#}"
+    );
+    let found = found.expect_err("an access error, not a repository gone");
+    assert!(
+        format!("{found:#}").ends_with("Permission denied"),
+        "{found:#}"
+    );
 }
 
 #[test]

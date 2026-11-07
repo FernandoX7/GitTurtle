@@ -231,26 +231,7 @@ impl GitRepository {
             }
             // git worktree remove permits ignored files. Refuse those as well;
             // users must explicitly move/remove their content outside this UI.
-            let mut command = passive_status_command(repo.target())?;
-            command.args([
-                "ls-files",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-                "-z",
-            ]);
-            let output = bounded_output(command, GIT_TIMEOUT)?;
-            ensure!(
-                output.status.success(),
-                "Unable to inspect ignored worktree content: {}",
-                text(&output.stderr)
-            );
-            let ignored: Vec<PathBuf> = output
-                .stdout
-                .split(|b| *b == 0)
-                .filter(|p| !p.is_empty())
-                .map(path_from_bytes)
-                .collect();
+            let ignored = ignored_worktree_files(repo.target())?;
             details.ignored_files = ignored.len();
             // Keep status/index identities in the content snapshot as well
             // as the raw bytes captured by the no-follow filesystem walk.
@@ -613,6 +594,35 @@ impl GitRepository {
         }
         Ok(())
     }
+}
+
+/// The ignored files in the worktree `target` names, which `git worktree
+/// remove` permits, read passively with configured filters disabled.
+pub(super) fn ignored_worktree_files(target: GitTarget<'_>) -> Result<Vec<PathBuf>> {
+    let mut command = passive_status_command(target)?;
+    command.args([
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+    ]);
+    let output = bounded_output(command, GIT_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to inspect ignored worktree content: {}",
+                reported(&output.stderr)
+            ),
+        ));
+    }
+    Ok(output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(path_from_bytes)
+        .collect())
 }
 
 fn worktree_directory_identity(path: &Path) -> Result<WorktreeDirectoryIdentity> {

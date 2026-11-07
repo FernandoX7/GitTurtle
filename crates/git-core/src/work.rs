@@ -253,11 +253,15 @@ impl GitRepository {
             "-z",
         ]);
         let output = bounded_output(command, GIT_TIMEOUT)?;
-        ensure!(
-            output.status.success(),
-            "Unable to read working-copy status: {}",
-            text(&output.stderr).trim()
-        );
+        if !output.status.success() {
+            return Err(git_failure(
+                &output.stderr,
+                format!(
+                    "Unable to read working-copy status: {}",
+                    reported(&output.stderr).trim()
+                ),
+            ));
+        }
         let bytes = output.stdout;
         let mut status = parse_status(&bytes)?;
         let git_dir = path_from_bytes(trim_line(&run_git(
@@ -1006,11 +1010,12 @@ impl GitRepository {
 
     fn has_head(&self) -> Result<bool> {
         let result = run_git_output(self.target(), &["rev-parse", "--verify", "--quiet", "HEAD"])?;
-        ensure!(
-            result.status.success() || result.status.code() == Some(1),
-            "Unable to resolve HEAD: {}",
-            text(&result.stderr)
-        );
+        if !(result.status.success() || result.status.code() == Some(1)) {
+            return Err(git_failure(
+                &result.stderr,
+                format!("Unable to resolve HEAD: {}", reported(&result.stderr)),
+            ));
+        }
         Ok(result.status.success())
     }
     fn validate_branch(&self, name: &str) -> Result<()> {
@@ -1517,8 +1522,8 @@ fn validate_branch_at(target: GitTarget<'_>, name: &str) -> Result<()> {
     let output = run_git_output(target, &["check-ref-format", &format!("refs/heads/{name}")])
         .context("Unable to validate the branch name")?;
     if !output.status.success() {
-        let stderr = text(&output.stderr);
-        let stdout = text(&output.stdout);
+        let stderr = reported(&output.stderr);
+        let stdout = reported(&output.stdout);
         let diagnostics = [stderr.trim(), stdout.trim()]
             .into_iter()
             .filter(|message| !message.is_empty())
@@ -1611,10 +1616,15 @@ fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
             "^filter\\..*\\.(clean|process|required)$",
         ],
     )?;
-    ensure!(
-        result.status.success() || result.status.code() == Some(1),
-        "Unable to inspect configured filters"
-    );
+    // Typed as every configuration read is (`git_failure`): in a linked
+    // worktree whose administration directory is gone, this is where status
+    // and worktree removal's inspection first find no repository.
+    if !(result.status.success() || result.status.code() == Some(1)) {
+        return Err(git_failure(
+            &result.stderr,
+            "Unable to inspect configured filters".into(),
+        ));
+    }
     let mut command = git_command(target);
     for key in result
         .stdout
@@ -1653,11 +1663,15 @@ fn branch_upstream_configured(target: GitTarget<'_>, branch: &str) -> Result<boo
     if output.status.code() == Some(1) {
         return Ok(false);
     }
-    ensure!(
-        output.status.success(),
-        "Unable to read the branch's upstream configuration: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to read the branch's upstream configuration: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     Ok(!output.stdout.is_empty())
 }
 /// Ordinary branch push arguments. The explicit refspec and disabled
@@ -1701,11 +1715,15 @@ fn normal_config_at(target: GitTarget<'_>, key: &str) -> Result<Option<String>> 
     if output.status.code() == Some(1) {
         return Ok(None);
     }
-    ensure!(
-        output.status.success(),
-        "Unable to read Git configuration: {}",
-        text(&output.stderr).trim()
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Unable to read Git configuration: {}",
+                reported(&output.stderr).trim()
+            ),
+        ));
+    }
     Ok(Some(text(
         output.stdout.strip_suffix(&[0]).unwrap_or(&output.stdout),
     )))
@@ -1791,61 +1809,42 @@ fn checked_write_output(
     let fast_forward_pull = command.get_args().any(|arg| arg == "pull")
         && command.get_args().any(|arg| arg == "--ff-only");
     let output = bounded_write_output(command, input, timeout)?;
-    let stderr = authentication::redact_current(&text(&output.stderr));
-    let stdout = authentication::redact_current(&text(&output.stdout));
+    // Git's own streams, redacted and then as a terminal leaves them, before
+    // any words of ours join them; the guidance below and the failure's type
+    // (`git_failure`, so `execute` words a repository gone mid-write as gone)
+    // read the raw bytes.
+    let stderr = reported_redacted(&output.stderr, authentication::redact_current);
+    let stdout = reported_redacted(&output.stdout, authentication::redact_current);
     if !output.status.success()
         && let Some(headline) =
             diagnostics::pull_refusal_headline(&output.stderr, &output.stdout, fast_forward_pull)
     {
-        bail!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}");
+        return Err(git_failure(
+            &output.stderr,
+            format!("{headline}\n\nGit stderr:\n{stderr}\n\nGit stdout:\n{stdout}"),
+        ));
     }
-    ensure!(
-        output.status.success(),
-        "Git operation failed: {}{}{}",
-        if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        },
-        if stdout.trim().is_empty() || stderr.trim().is_empty() {
-            String::new()
-        } else {
-            format!("\n{}", stdout.trim())
-        },
-        diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
-            .map_or(String::new(), |help| format!("\n\n{help}"))
-    );
+    if !output.status.success() {
+        return Err(git_failure(
+            &output.stderr,
+            format!(
+                "Git operation failed: {}{}{}",
+                if stderr.trim().is_empty() {
+                    stdout.trim()
+                } else {
+                    stderr.trim()
+                },
+                if stdout.trim().is_empty() || stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stdout.trim())
+                },
+                diagnostics::guidance(&output.stderr, &output.stdout, creates_commit)
+                    .map_or(String::new(), |help| format!("\n\n{help}"))
+            ),
+        ));
+    }
     Ok(output)
-}
-
-/// `output`, Git's reported output, as a terminal leaves it: Git writes a
-/// step's progress on one line, each step ended by a carriage return so the
-/// next overwrites it, so within each line only the text after its last
-/// carriage return is kept, a trailing one (as in a `\r\n` line end)
-/// keeping the text before it, and a line that ends up blank is dropped. A
-/// line without a carriage return is kept as it is, so output without one
-/// comes back unchanged. Decided 2026-11-07: after a rebase, the status read
-/// "Rebasing (1/3)Rebasing (2/3)Rebasing (3/3)Successfully rebased and
-/// updated refs/heads/main.", the returns dropped as it was drawn, where a
-/// terminal leaves only the outcome. Lines are cut only at the ASCII CR and
-/// LF bytes, which never occur inside a UTF-8 sequence, so what is kept is
-/// the text Git wrote, byte for byte.
-fn as_terminal_leaves(output: &str) -> std::borrow::Cow<'_, str> {
-    if !output.contains('\r') {
-        return output.into();
-    }
-    let lines: Vec<&str> = output
-        .split('\n')
-        .filter_map(|line| {
-            if !line.contains('\r') {
-                return Some(line);
-            }
-            let line = line.trim_end_matches('\r');
-            let shown = line.rsplit_once('\r').map_or(line, |(_, after)| after);
-            (!shown.trim().is_empty()).then_some(shown)
-        })
-        .collect();
-    lines.join("\n").into()
 }
 
 #[cfg(unix)]
@@ -2166,6 +2165,7 @@ mod tests {
             ("Rebasing (3/3)\r", "Rebasing (3/3)"),
             ("Counting 1\rCounting 2\r\r", "Counting 2"),
             ("first\n\r\n  \rlast", "first\nlast"),
+            ("\n \r\nRebasing (1/1)\rDone.\n", "Done.\n"),
             ("Étape 1/2\r🐢 fini ✓\r\nΩ", "🐢 fini ✓\nΩ"),
             ("no return\n\n  spaced \n", "no return\n\n  spaced \n"),
             ("", ""),
@@ -2233,6 +2233,222 @@ mod tests {
             "three\ntwo\none\nside\nbase\n",
             "the three commits were replayed onto side"
         );
+    }
+
+    /// A write that fails reports Git's own output as a terminal leaves it,
+    /// after our words: a pre-commit hook writes two steps' progress, each
+    /// ended by a carriage return, then its error on the same line, and the
+    /// failure reads "Git operation failed: error: …" with no step before
+    /// the error. Applied to the composed text instead, the rule would keep
+    /// only the error and lose our words before it.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_write_reports_its_error_without_its_progress() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        let hooks = temp.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nprintf 'Checking (1/2)\\rChecking (2/2)\\rerror: notes.txt is not formatted\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The repository's own settings, over whatever the caller's global
+        // configuration says.
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        git(&["add", "notes.txt"]);
+
+        let error = repo
+            .execute(&WriteCommand::Commit {
+                message: "notes".into(),
+            })
+            .expect_err("the hook refuses the commit");
+        let report = format!("{error:#}");
+        assert_eq!(
+            report.lines().next(),
+            Some("Git operation failed: error: notes.txt is not formatted"),
+            "{report:?}"
+        );
+        assert!(
+            !report.contains("Checking") && !report.contains('\r'),
+            "no progress before the error: {report:?}"
+        );
+        assert!(!repo.has_head().unwrap(), "nothing was committed");
+    }
+
+    /// A failure that redacts Git's output redacts each stream before it is
+    /// read as a terminal leaves it: a pre-commit hook that writes a
+    /// credential marker, a carriage return and then its secret fails with
+    /// the secret redacted, where reading it so first left "Git operation
+    /// failed: SECRET1", the secret alone, which no marker names. Every
+    /// failure that redacts reads Git's streams the same way
+    /// (`reported_redacted`), with the redaction it uses: the interactive
+    /// rebase's stop and Git LFS's tooling checks too.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_write_never_shows_a_secret_after_a_carriage_return() {
+        use std::os::unix::fs::PermissionsExt;
+        let cases = [
+            (
+                b"password=\rSECRET1\n".as_slice(),
+                "SECRET1",
+                "Git operation failed: password=[redacted]",
+            ),
+            (
+                b"Authorization: Bearer \rSECRET2\n",
+                "SECRET2",
+                "Git operation failed: Authorization:[redacted]",
+            ),
+        ];
+        for (written, secret, first) in cases {
+            for redact in [
+                authentication::redact_current as fn(&str) -> String,
+                redact_diagnostic,
+            ] {
+                let shown = reported_redacted(written, redact);
+                assert!(!shown.contains(secret), "{shown:?}");
+                assert!(shown.ends_with("[redacted]"), "{shown:?}");
+            }
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let root = temp.path().join("work");
+            let repo = GitRepository::init(&root, "main").unwrap();
+            let git = |args: &[&str]| {
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "git {args:?}: {output:?}");
+            };
+            let hooks = temp.path().join("hooks");
+            std::fs::create_dir(&hooks).unwrap();
+            let bytes = temp.path().join("written");
+            std::fs::write(&bytes, written).unwrap();
+            let hook = hooks.join("pre-commit");
+            std::fs::write(
+                &hook,
+                format!("#!/bin/sh\ncat '{}' >&2\nexit 1\n", bytes.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+            git(&["config", "commit.gpgSign", "false"]);
+            git(&["config", "user.name", "Fixture"]);
+            git(&["config", "user.email", "f@example.invalid"]);
+            std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+            git(&["add", "notes.txt"]);
+
+            let error = repo
+                .execute(&WriteCommand::Commit {
+                    message: "notes".into(),
+                })
+                .expect_err("the hook refuses the commit");
+            let report = format!("{error:#}");
+            assert!(!report.contains(secret), "{report:?}");
+            assert_eq!(report.lines().next(), Some(first), "{report:?}");
+            assert!(!repo.has_head().unwrap(), "nothing was committed");
+        }
+    }
+
+    /// A write whose `.git` goes away while it runs, its Git saying so where
+    /// the path it names holds a carriage return: here a pre-commit hook
+    /// that writes a credential marker, a return and its secret, then Git's
+    /// words, and removes the `.git`. The failure carries the type Git's raw
+    /// words decide, so `execute` words it as the repository gone
+    /// (`word_gone`), its own message as it was, redacted and then read as
+    /// a terminal leaves it, with no secret. Told apart by that message,
+    /// which keeps none of "not a git repository", the write said only "Git
+    /// operation failed: …".
+    #[cfg(unix)]
+    #[test]
+    fn a_write_finding_no_repository_is_worded_gone_whatever_its_message_keeps() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("work");
+        let repo = GitRepository::init(&root, "main").unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        let hooks = temp.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let written = temp.path().join("written");
+        std::fs::write(
+            &written,
+            b"password=\rSECRET1\nfatal: not a git repository: /a\rb/.git/worktrees/x\n",
+        )
+        .unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ncat '{}' >&2\nrm -rf '{}'\nexit 1\n",
+                written.display(),
+                root.join(".git").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        git(&["config", "commit.gpgSign", "false"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["config", "user.email", "f@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "notes\n").unwrap();
+        git(&["add", "notes.txt"]);
+
+        let error = repo
+            .execute(&WriteCommand::Commit {
+                message: "notes".into(),
+            })
+            .expect_err("the hook refuses the commit");
+        assert!(!root.join(".git").exists(), "the hook removed the `.git`");
+        // The write's own message, as before the type: redacted, then as a
+        // terminal leaves it.
+        let failed = "Git operation failed: password=[redacted]\nb/.git/worktrees/x\n\nReview Git's output and the current repository state. For a commit, check the configured hooks, identity and signing program. GitTurtle preserves that configuration and does not bypass failures or retry automatically.";
+        assert_eq!(error.root_cause().to_string(), failed);
+        assert!(
+            error.chain().any(|cause| cause.is::<NotARepository>()),
+            "{error:#}"
+        );
+        assert!(finds_no_repository(&error), "{error:#}");
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "The repository at {} is gone: Git finds no repository there: {failed}",
+                repo.path().display()
+            )
+        );
+        assert!(!format!("{error:#}").contains("SECRET1"), "{error:#}");
     }
 
     #[test]

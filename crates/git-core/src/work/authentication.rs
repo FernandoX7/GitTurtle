@@ -399,7 +399,8 @@ impl Drop for AskpassServer {
 }
 
 /// Remove userinfo and query/fragment values from URL-bearing Git diagnostics.
-/// Also redact common credential assignment/header forms. Paths are untouched.
+/// Also redact common credential assignment/header forms, wherever they appear:
+/// a path holding one is cut like any other text.
 pub fn redact_diagnostic(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for part in input.split_inclusive(char::is_whitespace) {
