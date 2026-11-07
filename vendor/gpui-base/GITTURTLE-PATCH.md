@@ -759,6 +759,41 @@ the same for an OTP field (`scripts/vendor-crate-test.sh vendor/gpui-base
 window_activation`). Remove this part with the rest of the caret-start
 patch.
 
+The held-blur patch makes a blur that comes while a code editor's
+completion or code-action menu is open wait for that menu, in
+`InputBaseState::on_blur` and the added `run_held_blur` and `blurred` in
+`src/input/base/state.rs`, runtime code only. Upstream's `on_blur`
+returned at once while such a menu was open (`is_context_menu_open`; only
+the editor kind has these menus, so every other field's blur runs at once
+as before), since the menu's list takes focus for a click on one of its
+items and the inserted item gives it back. A menu that closed with focus
+elsewhere, as after a click into another field, left that blur unrun: the
+caret, no longer drawn once the menu closed (`show_cursor`), kept its
+blink timer, which redrew the unfocused editor twice a second, and no
+`Blur` was emitted. The held blur now watches the editor's notifications,
+which a close of a menu outside a draw sends and each blink too, and runs
+whole as the menu closes (a close during a draw, whose notifications reach
+no observer, it sees at the next blink, at most an interval later; no close
+runs during a draw today), its blink stopped, its hover, diagnostic and
+inline-completion state cleared and `Blur` emitted, unless the editor then
+holds focus in an active window: GPUI reports that focus in the next frame
+it draws, which ends the watch (`on_focus`) and starts the caret as any
+focus does, held a whole interval before it first blinks off. An editor
+holding the window's focus without being drawn as its menu closes keeps
+blinking until it is drawn, focus leaves it or its window goes inactive. The kit test is
+`input::state::tests::a_menu_closed_with_focus_elsewhere_stops_the_caret`:
+an editor whose completion menu is open, blurred, blinks on with no
+`Blur`; its menu closed with focus in another field, it emits `Blur` once,
+draws no caret, and neither blinks nor notifies in five seconds; and with
+focus given back as its menu closes, it emits no blur, draws its caret in
+the frame that reports the focus and blinks it off one interval later,
+and with focus then leaving it, it emits `Blur` once and no second one at
+a later notification of the editor, which a watch left live past the
+focus reported back ran (`on_focus` ends it) (`scripts/vendor-crate-test.sh vendor/gpui-base a_menu_closed`). Upstream's
+early return fails its first part: the blur never comes, and the editor
+blinks on. No application view opens these menus. Remove this part once
+upstream runs a blur that an open menu held back.
+
 The caret-start patch also makes `BlinkCursor::pause` in
 `src/input/base/blink_cursor.rs` last one interval, and pauses the caret
 for every edit and selection in `src/input/base/state.rs` and

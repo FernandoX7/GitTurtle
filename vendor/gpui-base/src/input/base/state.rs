@@ -384,6 +384,10 @@ pub struct InputBaseState<M: InputModeKind> {
         Rc<dyn Fn(NativeMenu, InputContextMenuCapabilities, Point<Pixels>, &mut Window, &mut App)>,
     >,
     pending_context_menu: Option<(Point<Pixels>, usize)>,
+    /// GitTurtle patch: a blur held back while a completion or code-action
+    /// menu is open, watching the input's notifications for the menu to
+    /// close (`on_blur`, `run_held_blur`).
+    held_blur: Option<Subscription>,
 
     /// Whether the context menu that shows on right-click is enabled.
     ///
@@ -725,6 +729,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             diagnostic_popover: None,
             context_menu_handler: None,
             pending_context_menu: None,
+            held_blur: None,
             enable_context_menu: true,
             completion_inserting: false,
             overlay_action_handler: None,
@@ -2565,6 +2570,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        // GitTurtle patch: focus reported back ends a blur held back while
+        // a menu was open; the start below blinks the caret as any focus
+        // does.
+        self.held_blur = None;
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.start(cx);
         });
@@ -2577,9 +2586,42 @@ impl<M: InputModeKind> InputBaseState<M> {
         // input leaves the drawn frame or the window goes inactive.
         self.pending_context_menu = None;
         if M::is_context_menu_open(self, cx) {
+            // GitTurtle patch: the blur waits for the menu, which may have
+            // taken focus for a click on one of its items, and runs as the
+            // menu closes unless focus has come back to the input by then.
+            // Upstream returned here for good, so a menu closed with focus
+            // elsewhere left the caret blinking, its timer redrawing the
+            // unfocused input twice a second. A close outside a draw
+            // notifies the input, which the watch sees at once; one during a
+            // draw, whose notifications reach no observer, it sees at the
+            // next blink, which notifies the input too, at most an interval
+            // later. No close runs during a draw today.
+            let input = cx.entity();
+            self.held_blur = Some(cx.observe_in(&input, window, |this, _, window, cx| {
+                this.run_held_blur(window, cx)
+            }));
             return;
         }
+        self.blurred(window, cx);
+    }
 
+    /// GitTurtle patch: runs a blur held back while a menu was open
+    /// (`on_blur`) once the menu has closed, unless the input holds focus in
+    /// an active window, where GPUI reports its focus in the frame it next
+    /// draws, which ends the watch (`on_focus`).
+    fn run_held_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if M::is_context_menu_open(self, cx)
+            || (self.focus_handle.is_focused(window) && window.is_window_active())
+        {
+            return;
+        }
+        self.held_blur = None;
+        self.blurred(window, cx);
+    }
+
+    /// What a blur does: ends the caret's blink and the hover, diagnostic
+    /// and inline-completion state, clamps a number, and emits `Blur`.
+    fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.undo_manager.break_transaction_coalescing();
 
         // NOTE: Do not cancel select, when blur.
@@ -3939,8 +3981,8 @@ mod tests {
 
     /// Counts the notifications of `input`'s blink cursor, each a blink
     /// that redraws the input.
-    fn count_blinks(
-        input: &Entity<InputBaseState<InputMode>>,
+    fn count_blinks<M: InputModeKind>(
+        input: &Entity<InputBaseState<M>>,
         cx: &mut VisualTestContext,
     ) -> std::rc::Rc<std::cell::Cell<usize>> {
         let blinks = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -4018,6 +4060,156 @@ mod tests {
             0,
             "A, focused but not drawn, starts nothing as the window turns active"
         );
+    }
+
+    /// A code editor above a single-line input, for the tests of a blur an
+    /// open completion menu holds back.
+    struct EditorAndInput {
+        editor: Entity<InputBaseState<EditorMode>>,
+        input: Entity<InputBaseState<InputMode>>,
+    }
+
+    impl Render for EditorAndInput {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex()
+                        .w(px(200.))
+                        .h(px(80.))
+                        .child(self.editor.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .w(px(200.))
+                        .h(px(30.))
+                        .child(self.input.clone()),
+                )
+        }
+    }
+
+    /// GitTurtle patch: a blur that comes while the code editor's completion
+    /// menu is open waits for the menu, and runs as the menu closes with
+    /// focus elsewhere: the caret is not drawn, its blink stops and nothing
+    /// redraws the editor at rest, and `Blur` is emitted once. Upstream's
+    /// blur returned for good, so the caret blinked on unfocused, its timer
+    /// redrawing the editor twice a second. Where focus comes back to the
+    /// editor as its menu closes, as a click on an item gives it back, no
+    /// blur runs and the caret blinks as any focus starts it, held a whole
+    /// interval before it first blinks off.
+    #[gpui::test]
+    fn a_menu_closed_with_focus_elsewhere_stops_the_caret(cx: &mut TestAppContext) {
+        use std::{cell::Cell, rc::Rc, time::Duration};
+        // The blink cursor's interval.
+        let interval = Duration::from_millis(500);
+        cx.update(crate::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            cx.set_global(Theme::default());
+            EditorAndInput {
+                editor: cx.new(|cx| crate::input::EditorState::new(window, cx)),
+                input: cx.new(|cx| crate::input::InputState::new(window, cx)),
+            }
+        });
+        draw(cx);
+        activate(cx);
+        let (editor, input) =
+            root.read_with(cx, |root, _| (root.editor.clone(), root.input.clone()));
+        let editor_focus = editor.read_with(cx, |state, _| state.focus_handle.clone());
+        let input_focus = input.read_with(cx, |state, _| state.focus_handle.clone());
+        let blurs = Rc::new(Cell::new(0));
+        let redraws = Rc::new(Cell::new(0));
+        cx.update(|_, cx| {
+            let blurred = blurs.clone();
+            cx.subscribe(&editor, move |_, event: &InputEvent, _| {
+                if matches!(event, InputEvent::Blur) {
+                    blurred.set(blurred.get() + 1);
+                }
+            })
+            .detach();
+            let redrawn = redraws.clone();
+            cx.observe(&editor, move |_, _| redrawn.set(redrawn.get() + 1))
+                .detach();
+        });
+        let blinks = count_blinks(&editor, cx);
+        let caret = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| editor.read(cx).show_cursor(window, cx))
+        };
+        let open_menu = |cx: &mut VisualTestContext| {
+            editor.update(cx, |state, cx| {
+                state.present_completion_items(
+                    0,
+                    "",
+                    vec![lsp_types::CompletionItem {
+                        label: "select".into(),
+                        ..Default::default()
+                    }],
+                    cx,
+                )
+            });
+            assert!(
+                editor.read_with(cx, |state, cx| state.is_context_menu_open(cx)),
+                "the completion menu is open"
+            );
+        };
+        let focus = |handle: &FocusHandle, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.focus(handle, cx));
+            draw(cx);
+        };
+
+        focus(&editor_focus, cx);
+        open_menu(cx);
+        focus(&input_focus, cx);
+        wait(cx, 5);
+        assert_eq!(blurs.get(), 0, "the blur waits for the open menu");
+        assert!(blinks.get() >= 9, "and the caret blinks on meanwhile");
+
+        editor.update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 1, "the menu's close runs the blur once");
+        assert!(!caret(cx), "the unfocused editor draws no caret");
+        draw(cx);
+        blinks.set(0);
+        redraws.set(0);
+        wait(cx, 5);
+        assert_eq!(blinks.get(), 0, "its blink has stopped");
+        assert_eq!(redraws.get(), 0, "and nothing redraws it at rest");
+
+        // Focus given back to the editor before its menu closes.
+        focus(&editor_focus, cx);
+        open_menu(cx);
+        focus(&input_focus, cx);
+        cx.update(|window, cx| {
+            window.focus(&editor_focus, cx);
+            editor.update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 1, "focus back on the close runs no blur");
+        draw(cx);
+        assert!(caret(cx), "the caret shows as focus is reported back");
+        cx.executor()
+            .advance_clock(interval - Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(caret(cx), "held until an interval has passed");
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        assert!(!caret(cx), "then blinks off");
+        blinks.set(0);
+        wait(cx, 5);
+        assert!(blinks.get() >= 9, "and blinks on: {} blinks", blinks.get());
+        assert_eq!(blurs.get(), 1, "with no blur run late");
+        // Focus leaving it again blurs it once: the focus reported back
+        // ended the watch, so a later notification of the editor, outside a
+        // draw, runs no second blur.
+        focus(&input_focus, cx);
+        assert_eq!(blurs.get(), 2, "focus leaving it blurs it once");
+        editor.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(blurs.get(), 2, "and a later notification runs no blur");
     }
 
     /// GitTurtle patch: the menu places the caret at the press's offset
