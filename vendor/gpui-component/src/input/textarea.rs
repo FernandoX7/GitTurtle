@@ -22,6 +22,8 @@ pub struct Textarea {
     tab_index: isize,
     role: RoleOverride,
     aria_label: Option<SharedString>,
+    /// GitTurtle patch: the accessible description ([`Self::aria_description`]).
+    aria_description: Option<SharedString>,
 
     /// An optional context menu builder to allow a custom context menu.
     ///
@@ -42,6 +44,7 @@ impl Textarea {
             tab_index: 0,
             role: RoleOverride::default(),
             aria_label: None,
+            aria_description: None,
             context_menu_builder: None,
         }
     }
@@ -91,6 +94,13 @@ impl Textarea {
         self
     }
 
+    /// GitTurtle patch: set the field's accessible description, as
+    /// [`Input::aria_description`] does.
+    pub fn aria_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.aria_description = Some(description.into());
+        self
+    }
+
     /// Replace the built-in context menu shown on right-click.
     ///
     /// The closure receives an empty menu and returns the one to show, so it
@@ -121,6 +131,9 @@ impl RenderOnce for Textarea {
             .role(self.role)
             .when_some(self.height, |this, height| this.h(height))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .when_some(self.aria_description, |this, description| {
+                this.aria_description(description)
+            })
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
             })

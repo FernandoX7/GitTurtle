@@ -2452,6 +2452,19 @@ whole form at every width; otherwise the two are the same, as upstream.
 GitTurtle's width-step regressions compare it with a window opened at each
 width (`cargo test --locked -p gitturtle draws_one_frame_where_it_settles`).
 
+The field-description patch, paired with the [base patch](../gpui-base/GITTURTLE-PATCH.md)'s
+`InputAccessibility::description`, modifies `src/input/input.rs` and
+`src/input/textarea.rs`: the styled `Input` and `Textarea` take an
+accessible description (`aria_description`), as the patched `Switch` does,
+and the editing element that owns the field's focus writes it as its node's
+description, which AT-SPI reports as the object's description and assistive
+technology reads after the field's name, role and value, so a field's
+visible helper text can be read with it. A field given none writes none, as
+upstream. The application's
+`native_accessibility::input_tests::a_field_carries_its_accessible_description`
+reads it from a single-line and a multi-line field's node. Remove it when
+upstream's Input and Textarea take a description.
+
 The modal-test patch modifies only the test module of
 `src/text/window_selection.rs` and changes no built code. Its
 `setup_modal` sets `App::set_reduce_motion` before opening the window, so

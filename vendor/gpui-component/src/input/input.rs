@@ -143,6 +143,8 @@ pub struct Input {
     role: RoleOverride,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
+    /// GitTurtle patch: the accessible description ([`Self::aria_description`]).
+    aria_description: Option<SharedString>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -214,6 +216,7 @@ impl Input {
             role: RoleOverride::default(),
             accessibility_id: None,
             aria_label: None,
+            aria_description: None,
             context_menu_builder: None,
         }
     }
@@ -226,6 +229,14 @@ impl Input {
 
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
         self.aria_label = Some(label.into());
+        self
+    }
+
+    /// GitTurtle patch: set the field's accessible description, which
+    /// assistive technology reads after its name, role and value (AT-SPI's
+    /// description), as a field's visible helper text is read beside it.
+    pub fn aria_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.aria_description = Some(description.into());
         self
     }
 
@@ -567,6 +578,7 @@ impl RenderOnce for Input {
                 placeholder,
                 author_id: self.accessibility_id,
                 expose_value: expose_accessibility_value,
+                description: self.aria_description,
             },
             cx,
         );

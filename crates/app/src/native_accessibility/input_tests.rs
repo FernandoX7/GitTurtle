@@ -290,3 +290,58 @@ fn every_text_field_writes_its_text_as_runs(cx: &mut TestAppContext) {
     assert_eq!(text, "QA Fixture Two");
     assert_eq!(caret, Some("QA Fixture Two".len()));
 }
+
+/// A single-line and a multi-line field carry the accessible description
+/// they are given on the node their editing element writes, where every
+/// adapter reads it (AT-SPI's description), so the helper text drawn beside
+/// a field can be read with it; a field given none has none.
+#[gpui::test]
+fn a_field_carries_its_accessible_description(cx: &mut TestAppContext) {
+    struct Probe {
+        described: Entity<InputState>,
+        plain: Entity<InputState>,
+        message: Entity<TextareaState>,
+    }
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(
+                    Input::new(&self.described)
+                        .aria_label("Name")
+                        .aria_description("Used for new commits"),
+                )
+                .child(Input::new(&self.plain).aria_label("Email"))
+                .child(
+                    Textarea::new(&self.message)
+                        .aria_label("Commit message")
+                        .aria_description("The first line is the subject"),
+                )
+        }
+    }
+    cx.update(gpui_kit::init);
+    let (probe, cx) = cx.add_window_view(|window, cx| Probe {
+        described: cx.new(|cx| InputState::new(window, cx)),
+        plain: cx.new(|cx| InputState::new(window, cx)),
+        message: cx.new(|cx| TextareaState::new(window, cx)),
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (described, plain, message) = cx.read(|cx| {
+        let probe = probe.read(cx);
+        (
+            probe.described.clone(),
+            probe.plain.clone(),
+            probe.message.clone(),
+        )
+    });
+    let described = crate::views::tests::input_node(cx, &described);
+    assert_eq!(described.label(), Some("Name"));
+    assert_eq!(described.description(), Some("Used for new commits"));
+    let plain = crate::views::tests::input_node(cx, &plain);
+    assert_eq!(plain.description(), None);
+    let message = crate::views::tests::input_node(cx, &message);
+    assert_eq!(message.role(), Role::MultilineTextInput);
+    assert_eq!(message.description(), Some("The first line is the subject"));
+}

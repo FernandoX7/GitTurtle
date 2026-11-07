@@ -279,6 +279,10 @@ pub struct InputAccessibility {
     pub placeholder: Option<SharedString>,
     pub author_id: Option<SharedString>,
     pub expose_value: bool,
+    /// GitTurtle patch: the field's accessible description, such as the
+    /// helper text drawn beside it, which assistive technology reads after
+    /// its name, role and value.
+    pub description: Option<SharedString>,
 }
 
 /// The shared text-editing engine behind [`crate::input::InputState`],
@@ -3410,6 +3414,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                     })
                     .when_some(accessibility.placeholder, |this, placeholder| {
                         this.aria_placeholder(placeholder)
+                    })
+                    .when_some(accessibility.description, |this, description| {
+                        this.aria_description(description)
                     })
                     .when_some(accessibility_value, |this, value| this.aria_value(value))
                     .a11y_synthetic_children(move |builder| {
