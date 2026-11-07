@@ -1478,17 +1478,18 @@ pub(crate) struct AppDropdown {
 /// states, `None` for a group nothing refuses
 /// ([`AppDropdown::follows_refusal`]). They are the reasons its rows state,
 /// so the open menu is built again whenever any row's reason changes. The
-/// Git profile picker's menu has three groups, its saved profiles, New
+/// Git profile picker's menu has four groups: its saved profiles, New
 /// profile… and Manage profiles…, refused while a profile is saved, while
 /// the saved profiles are first read or cannot be, and while the repository
-/// is read or cannot be. One reason for the whole menu, ranked otherwise
-/// than its rows, could hold while a row's changed, leaving the open menu
-/// stating a reason gone.
+/// is read or cannot be; and Retry profile storage, offered while the saved
+/// profiles' last read or save failed. One reason for the whole menu,
+/// ranked otherwise than its rows, could hold while a row's changed,
+/// leaving the open menu stating a reason gone.
 pub(crate) type MenuRefusal = fn(&crate::GitTurtle) -> MenuReasons;
 
 /// The reasons a [`MenuRefusal`] reads, one for each group of the menu's
 /// items, in the menu's order.
-pub(crate) type MenuReasons = [Option<&'static str>; 3];
+pub(crate) type MenuReasons = [Option<&'static str>; 4];
 
 /// What a menu that follows writes reads as it is built
 /// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],

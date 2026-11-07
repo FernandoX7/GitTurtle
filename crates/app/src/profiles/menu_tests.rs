@@ -738,3 +738,44 @@ async fn the_open_profile_menu_follows_each_rows_reason_through_a_save(cx: &mut 
     cx.simulate_keystrokes("escape");
     draw(cx);
 }
+
+/// With the saved profiles listed and the menu open, a read or save of the
+/// profile store that fails shows Retry profile storage, with the line that
+/// says what failed, at once, and one that then succeeds takes both away.
+/// The menu's key read only why items were refused, which a failure leaves
+/// as it was once the saved profiles are listed, so the open menu went
+/// without Retry until it was opened again, and kept it, and the failure's
+/// line, after a read that succeeded.
+#[gpui::test]
+async fn the_open_profile_menu_offers_retry_as_the_store_fails(cx: &mut TestAppContext) {
+    const RETRY: &str = "Retry profile storage";
+    const FAILED: &str = "menu-item: Profiles: store unreadable · Label";
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, two_profiles()).await;
+    hold_quiet_reads_for_test(&app, cx);
+    open_menu(&app, cx).await;
+    let offered: Vec<String> = [
+        "Work · qa@work.example",
+        "Personal · qa@home.example",
+        "New profile…",
+        "Manage profiles…",
+    ]
+    .map(String::from)
+    .into();
+    assert_eq!(rows(cx), offered, "at rest Retry is not offered");
+    assert!(!shown(cx, FAILED));
+
+    set(&app, cx, |app| {
+        app.profiles.error = Some("store unreadable".into())
+    });
+    let mut retrying = offered.clone();
+    retrying.push(RETRY.into());
+    assert_eq!(rows(cx), retrying, "the failure offers Retry at once");
+    assert!(shown(cx, FAILED), "with the line that says what failed");
+
+    set(&app, cx, |app| app.profiles.error = None);
+    assert_eq!(rows(cx), offered, "a read that succeeds takes Retry away");
+    assert!(!shown(cx, FAILED), "and the failure's line");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+}

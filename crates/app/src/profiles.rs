@@ -295,13 +295,29 @@ impl GitTurtle {
         }
     }
 
+    /// Why Retry profile storage is offered, below the line that says what
+    /// failed: the saved profiles' last read or save failed; `None` while
+    /// neither did. The menu's key reads it as Retry's group
+    /// ([`Self::profile_menu_refusal`]), so the open menu offers Retry as a
+    /// failure comes and takes it away as one ends. Read only for why items
+    /// were refused, which a failure changes nowhere once the saved
+    /// profiles are listed, a menu open as a later read or save failed went
+    /// without Retry, and one open as a read then succeeded kept it, until
+    /// the menu was opened again.
+    fn profile_store_failure(&self) -> Option<&'static str> {
+        self.profiles.error.is_some().then_some(STORAGE_UNAVAILABLE)
+    }
+
     /// Each group's reason by the text it states
     /// (`AppDropdown::follows_refusal`, which builds the open menu again
     /// when any changes): every reason a row states for the window's own
-    /// state, so the menu is built again whenever one changes. A write's
-    /// is followed apart (`AppDropdown::follows_writes`).
+    /// state, so the menu is built again whenever one changes, and why
+    /// Retry profile storage is offered. A write's is followed apart
+    /// (`AppDropdown::follows_writes`).
     fn profile_menu_refusal(&self) -> MenuReasons {
-        MenuGroup::ALL.map(|group| self.profile_menu_reason(group).map(Refusal::text))
+        let [saved, create, manage] =
+            MenuGroup::ALL.map(|group| self.profile_menu_reason(group).map(Refusal::text));
+        [saved, create, manage, self.profile_store_failure()]
     }
     /// The profile store failed with `error`, for tests in other modules.
     #[cfg(test)]
@@ -606,7 +622,7 @@ impl GitTurtle {
                         },
                     ),
                 );
-                if this.profiles.error.is_some() {
+                if this.profile_store_failure().is_some() {
                     let retry_owner = owner.clone();
                     menu = profile_menu_item(
                         menu,
