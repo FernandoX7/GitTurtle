@@ -110,8 +110,16 @@ impl Details {
     }
 }
 
+/// The presented message, the toolbar's last layout and the message's one
+/// focus handle, which every presentation of this inspection tracks, so a
+/// reply that rebuilds the presentation, as another commit selected does,
+/// leaves focus and its ring on the text and Tab moves on from it.
 #[derive(Default)]
-pub(super) struct State(RefCell<Option<Presentation>>, Cell<Option<Toolbar>>);
+pub(super) struct State(
+    RefCell<Option<Presentation>>,
+    Cell<Option<Toolbar>>,
+    std::cell::OnceCell<FocusHandle>,
+);
 
 /// How the message toolbar lays out Copy message, Hash and, in History and
 /// Compare, the selected commit's Actions in an inspector the window draws
@@ -381,6 +389,12 @@ impl State {
         }
     }
 
+    /// The presented message's focus handle, which its text tracks.
+    #[cfg(test)]
+    pub(crate) fn focus(&self) -> Option<FocusHandle> {
+        self.0.borrow().as_ref().map(|state| state.focus.clone())
+    }
+
     /// The presented message and metadata's height as last measured
     /// (`GitTurtle::message_extent`).
     #[cfg(test)]
@@ -452,7 +466,12 @@ impl State {
                 .last()
                 .map_or(0, |piece| piece.start + piece.text.len());
             let pieces = Arc::new(pieces);
-            let focus = cx.focus_handle();
+            // The text is a Tab stop: GPUI ignores the `tab_stop` of the div
+            // that tracks this handle, so the handle carries it.
+            let focus = self
+                .2
+                .get_or_init(|| cx.focus_handle().tab_stop(true))
+                .clone();
             *retained = Some(Presentation {
                 oid: commit.oid.clone(),
                 scroll: ListState::new(pieces.len() + 1, ListAlignment::Top, px(100.))
@@ -931,6 +950,9 @@ impl GitTurtle {
                 .child(list)
                 .child(selection.registrar(scroll.clone()))
                 .child(message_cue(scroll.clone(), cx))
+                // Its keyboard ring on its own edge, inside its clip, over
+                // the text, so none of it moves.
+                .children(self.focus_ring.edge(&focus, rgb(colors.accent)))
             )
             .into_any_element()
     }

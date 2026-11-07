@@ -85,6 +85,8 @@ mod settings;
 mod shortcuts;
 mod split_diff;
 mod system_preview;
+#[cfg(test)]
+mod tab_order_tests;
 mod tags;
 #[cfg(test)]
 mod test_support;
@@ -971,7 +973,10 @@ impl GitTurtle {
             nav_rows: vec![],
             nav_ids: vec![],
             nav_cursor: Some(0),
-            nav_focus: cx.focus_handle(),
+            // A Tab stop, as the lists below are: GPUI ignores the `tab_stop`
+            // of a div that tracks a handle of its own, so a list whose
+            // handle is made without it is passed over by Tab and Shift+Tab.
+            nav_focus: cx.focus_handle().tab_stop(true),
             nav_mode: NavMode::Local,
             expanded_folders: HashSet::new(),
             seed_folders: true,
@@ -1010,9 +1015,13 @@ impl GitTurtle {
             subscriptions: vec![],
             _display_preferences_task: None,
             applied_contrast: appearance::more_contrast(cx),
+            // The window's root, which draws no ring, is no Tab stop.
             app_focus: cx.focus_handle(),
-            focus: cx.focus_handle(),
-            file_focus: cx.focus_handle(),
+            // History's commit list, and the file list Compare's changed
+            // files, Working Changes' files and File history's revisions
+            // share: each a Tab stop (`nav_focus`).
+            focus: cx.focus_handle().tab_stop(true),
+            file_focus: cx.focus_handle().tab_stop(true),
             file_menu: None,
             file_menu_row: None,
             working_row_ids: Default::default(),
@@ -1739,8 +1748,10 @@ impl GitTurtle {
             {
                 let markdown = markdown.clone();
                 let quick = self.is_quick_source();
-                self.markdown_view =
-                    Some(cx.new(|cx| markdown_view::View::new(markdown, quick, cx)));
+                let ring = self.focus_ring.clone();
+                self.markdown_view = Some(
+                    cx.new(|cx| markdown_view::View::new(markdown, quick, cx).with_ring(ring)),
+                );
             }
             return;
         }

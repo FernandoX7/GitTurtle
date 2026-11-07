@@ -71,6 +71,16 @@ impl State {
     pub(super) fn is_visible(&self) -> bool {
         self.visible
     }
+    /// The attribution lines' focus handle, while a target is open.
+    #[cfg(test)]
+    pub(crate) fn focus(&self) -> Option<FocusHandle> {
+        self.focus.clone()
+    }
+    /// Whether the shown attribution lines draw `ring`, the window's keyboard
+    /// ring, on their edge this frame.
+    pub(super) fn ring_shows(&self, ring: &crate::focus_ring::FocusRing) -> bool {
+        self.visible && self.focus.as_ref().is_some_and(|focus| ring.shows(focus))
+    }
     pub(super) fn owns_focus(&self, window: &Window) -> bool {
         self.visible
             && self
@@ -156,7 +166,9 @@ impl GitTurtle {
             .then(|| Box::new(std::mem::take(&mut self.blame)));
         self.blame = State {
             visible: true,
-            focus: Some(cx.focus_handle()),
+            // The lines are one Tab stop: GPUI ignores the `tab_stop` of the
+            // div that tracks this handle, so the handle carries it.
+            focus: Some(cx.focus_handle().tab_stop(true)),
             previous,
             repository: Some(repo.path().to_owned()),
             target: Some(target),
@@ -552,10 +564,13 @@ impl GitTurtle {
                 .child(static_text("blame-lineage-limit", lineage).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
             .children(self.blame.data.as_ref().filter(|data| data.shallow).map(|_| static_text("blame-shallow-boundary", "Shallow repository · attribution and line history stop at the locally available boundary.").flex_shrink_0().px_3().py_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
             .children(self.blame.error.as_ref().map(|error| static_text("blame-error", format!("Attribution unavailable: {error}")).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
-            .child(crate::native_accessibility::clips_children(div().id("blame-lines-region").role(Role::ListBox).aria_label("Source lines and commit attribution").tab_stop(true).key_context("GitTurtleList").on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| { this.copy_blame_line(false, window, cx); })).track_focus(focus).flex_1().min_h_0().min_w_0()
+            .child(crate::native_accessibility::clips_children(div().id("blame-lines-region").role(Role::ListBox).aria_label("Source lines and commit attribution").tab_stop(true).key_context("GitTurtleList").on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| { this.copy_blame_line(false, window, cx); })).track_focus(focus).flex_1().min_h_0().min_w_0().relative()
                 .child(if count == 0 { div().id("blame-empty-state").size_full().child(empty(empty_title, empty_detail)).into_any_element() } else {
                     uniform_list("blame-lines", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.render_blame_row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.blame.scroll).into_any_element()
-                })))
+                })
+                // Its keyboard ring on its own edge, over the lines, so none of
+                // them moves.
+                .children(self.focus_ring.edge(focus, rgb(p.accent)))))
             .child(div().flex_shrink_0().max_h(px(260.)).border_t_1().border_color(rgb(p.border)).p_3().flex().flex_col().gap_2()
                 .child(static_text("blame-selected-summary", summary).text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
                 .child(static_text("blame-selected-details", detail).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))

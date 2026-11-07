@@ -807,6 +807,9 @@ pub struct View {
     link_task: Option<Task<()>>,
     depth: usize,
     notice: Option<String>,
+    /// The window's keyboard ring, which the view draws on its own edge
+    /// while it holds focus; none where nothing gave it one.
+    ring: Option<crate::focus_ring::FocusRing>,
 }
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -814,6 +817,23 @@ pub struct Bookmark {
     linked: bool,
 }
 impl View {
+    /// The view drawing `ring`, the window's keyboard ring, on its edge
+    /// while it holds focus.
+    pub(crate) fn with_ring(mut self, ring: crate::focus_ring::FocusRing) -> Self {
+        self.ring = Some(ring);
+        self
+    }
+    /// The rendered text's focus handle.
+    #[cfg(test)]
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+    /// Whether the view draws its keyboard ring this frame.
+    pub(crate) fn ring_shows(&self) -> bool {
+        self.ring
+            .as_ref()
+            .is_some_and(|ring| ring.shows(&self.focus))
+    }
     pub fn bookmark(&self) -> Bookmark {
         Bookmark {
             positions: self.lists.each_ref().map(|list| {
@@ -927,6 +947,7 @@ impl View {
         });
         self.notice = Some("Opening captured local document…".into());
         let depth = self.depth + 1;
+        let ring = self.ring.clone();
         self.link_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
@@ -941,7 +962,7 @@ impl View {
                 match result {
                     Ok((path, source, markdown)) => {
                         this.notice = None;
-                        open_local_document(path, source, markdown, depth, window, cx);
+                        open_local_document(path, source, markdown, depth, ring, window, cx);
                     }
                     Err(error) => this.notice = Some(format!("{error:#}")),
                 }
@@ -1002,12 +1023,15 @@ impl View {
             comparison,
             lists,
             quick,
-            focus: cx.focus_handle(),
+            // The rendered text is a Tab stop: GPUI ignores the `tab_stop`
+            // of the div that tracks this handle, so the handle carries it.
+            focus: cx.focus_handle().tab_stop(true),
             active_side: 1,
             linked: false,
             link_task: None,
             depth: 0,
             notice: None,
+            ring: None,
         }
     }
     fn block(&mut self, side: usize, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1278,6 +1302,7 @@ fn open_local_document(
     source: Arc<str>,
     markdown: Option<Arc<Comparison>>,
     depth: usize,
+    ring: Option<crate::focus_ring::FocusRing>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<LocalDocument> {
@@ -1288,6 +1313,7 @@ fn open_local_document(
             cx.new(|cx| {
                 let mut view = View::new(markdown, true, cx);
                 view.depth = depth;
+                view.ring = ring;
                 view
             })
         }),
@@ -1412,6 +1438,7 @@ impl Render for View {
             .role(Role::Group)
             .aria_label("Rendered Markdown preview")
             .size_full()
+            .relative()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let modifiers = &event.keystroke.modifiers;
@@ -1549,6 +1576,9 @@ impl Render for View {
                     .child(header)
                     .child(div().flex_1().min_h_0().on_mouse_down(MouseButton::Left,cx.listener(move |this,_,window,cx| {this.active_side=side;this.focus.focus(window,cx);})).child(list))
             }))
+            // Its keyboard ring on its own edge, over both sides, so nothing
+            // moves.
+            .children(self.ring.as_ref().and_then(|ring| ring.edge(&self.focus, rgb(colors.accent))))
     }
 }
 
@@ -1621,7 +1651,7 @@ mod tests {
             // the dialog at rest instead.
             cx.set_reduce_motion(true);
             app.read(cx).file_focus.clone().focus(window, cx);
-            open_local_document(path, source.clone(), Some(markdown), 1, window, cx)
+            open_local_document(path, source.clone(), Some(markdown), 1, None, window, cx)
         });
         fn settle(cx: &mut VisualTestContext) {
             for _ in 0..2 {

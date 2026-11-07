@@ -1289,8 +1289,13 @@ impl GitTurtle {
                         reveals.track(&reveals.failure, "retry-file-history", retry, room, cx)
                     }))
             }))
-            .child(gpui_kit::base::ElementExt::on_prepaint(
+            .child(
                 crate::native_accessibility::clips_children(div()
+                    // The list's rows report where it lies, so the panel
+                    // reveals it whole in the frame Tab first draws it: the
+                    // kit's `on_prepaint` canvas, absolute with no insets,
+                    // lay at the list's foot and reported it a list lower.
+                    .on_children_prepainted(reveals.panel.control(self.file_focus.clone(), room))
                     .id("file-revision-list").debug_selector(|| "file-revision-list".into())
                     .role(Role::ListBox)
                     .aria_label("File revisions, newest first")
@@ -1303,6 +1308,7 @@ impl GitTurtle {
                         },
                     ))
                     .flex_1()
+                    .relative()
                     // One whole row, which a failed page's notice gives way to.
                     .min_h(least.row)
                     .child(if count == 0 {
@@ -1327,12 +1333,11 @@ impl GitTurtle {
                         .size_full()
                         .track_scroll(&self.file_history.scroll)
                         .into_any_element()
-                    })),
-                {
-                    let report = reveals.panel.control(self.file_focus.clone(), room);
-                    move |bounds, window, cx| report(vec![bounds], window, cx)
-                },
-            ))
+                    })
+                    // Its keyboard ring on its own edge, over the rows, so
+                    // none of them moves.
+                    .children(self.focus_ring.edge(&self.file_focus, rgb(p.accent)))),
+            )
             )
             .child(
                 crate::native_accessibility::clips_children(div()
@@ -2693,17 +2698,22 @@ pub(crate) mod tests {
                     .focus(window, cx);
             });
             draw(cx);
-            // Copy message and Hash; the message's text and the revisions
-            // are no Tab stops (their focus handles are none).
+            // Copy message, Hash and the message's text, then the
+            // revisions, below a failed page's notice. The text and the
+            // revisions were no Tab stops, their handles made without it
+            // where GPUI ignores the div's own, so Tab passed them by.
             let mut expected = vec![
                 "close-file-history",
                 "copy-history-path",
                 "older-file-revision",
                 MESSAGE,
                 MESSAGE,
+                MESSAGE,
             ];
             if failed {
-                expected.extend([RETRY, "older-file-page"]);
+                expected.extend([RETRY, LIST, "older-file-page"]);
+            } else {
+                expected.push(LIST);
             }
             // Not every stop is in view before the walk.
             let below = expected

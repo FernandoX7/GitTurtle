@@ -247,7 +247,9 @@ impl State {
     pub fn new(cx: &mut App) -> Self {
         Self {
             scroll: UniformListScrollHandle::new(),
-            focus: cx.focus_handle(),
+            // The tree is one Tab stop: GPUI ignores the `tab_stop` of the div
+            // that tracks this handle, so the handle carries it.
+            focus: cx.focus_handle().tab_stop(true),
             cursor: None,
             rows: Vec::new(),
             group_form: None,
@@ -961,6 +963,9 @@ impl GitTurtle {
                         .track_scroll(&self.project_pane.scroll)
                         .into_any_element()
                     })
+                    // Its keyboard ring on its own edge, over the rows, so
+                    // none of them moves.
+                    .children(self.focus_ring.edge(&self.project_pane.focus, rgb(colors.accent)))
                     .children(self.render_keyboard_menu(cx))),
             )
             .children(self.project_pane.error.as_ref().map(|error| {

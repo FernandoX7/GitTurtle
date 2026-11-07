@@ -1092,7 +1092,7 @@ impl GitTurtle {
                     .key_context("GitTurtleNavigation")
                     .tab_stop(true)
                     .track_focus(&self.nav_focus)
-                    .flex_1().min_h_0()
+                    .flex_1().min_h_0().relative()
                     .on_action(cx.listener(|this, _: &native_accessibility::NextNavigation, window, cx| this.move_navigation(true, false, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::PreviousNavigation, window, cx| this.move_navigation(false, false, window, cx)))
                     .on_action(cx.listener(|this, _: &native_accessibility::FirstNavigation, window, cx| this.move_navigation(false, true, window, cx)))
@@ -1104,6 +1104,9 @@ impl GitTurtle {
                     .child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                         range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
                     })).size_full().track_scroll(&self.nav_scroll))
+                    // Its keyboard ring on its own edge, over the rows, so
+                    // none of them moves.
+                    .children(self.focus_ring.edge(&self.nav_focus, rgb(colors.accent)))
                     .children(self.nav_menu.as_ref().map(|menu| {
                         menu.render("navigation-menu-overlay", Self::dismiss_nav_menu, cx)
                     }))),
@@ -3223,15 +3226,28 @@ impl GitTurtle {
 
     /// Whether the comparison's text draws the keyboard ring on its pane's
     /// edge this frame ([`Self::shown_text`]), in Compare or a Working
-    /// preview. The inspector's selected row, whose leading marker stands a
-    /// few pixels right of that edge, then leaves the accent to the ring.
+    /// preview, or Blame's lines or the rendered Markdown, which ring their
+    /// own, stand in its place. The inspector's selected row, whose leading
+    /// marker stands a few pixels right of that edge, then leaves the accent
+    /// to the ring.
     pub(crate) fn text_ring_shows(&self, cx: &App) -> bool {
+        // Blame's lines, shown over the comparison, ring their own edge.
+        if self.blame.is_visible() {
+            return self.blame.ring_shows(&self.focus_ring);
+        }
         let shows =
             |editor: &Entity<EditorState>| self.focus_ring.shows(&editor.read(cx).focus_handle(cx));
         match self.shown_text() {
             Some(ShownText::Editor(editor)) => shows(editor),
             Some(ShownText::Split(view)) => view.read(cx).editors().iter().any(shows),
-            None => false,
+            // The rendered Markdown rings its own edge.
+            None => {
+                self.text_mode == TextMode::Markdown
+                    && self
+                        .markdown_view
+                        .as_ref()
+                        .is_some_and(|view| view.read(cx).ring_shows())
+            }
         }
     }
 
