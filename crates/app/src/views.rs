@@ -32653,6 +32653,125 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A focused composer stop stays whole as it grows in place, where the
+    /// list and the composer scroll together at 18 pt in a 461 × 490
+    /// window: the commit title, focused with 72 characters at the body's
+    /// top, gains its long-title note inside its stop, below its field, as a
+    /// 73rd character is typed, its top where it was and its foot past the
+    /// body's foot, and every frame drawn shows the stop whole, a gap inside
+    /// the body, revealed by the least scroll; so again as the note leaves.
+    /// Revealed from its top's move alone, the stop was drawn past the
+    /// body's foot for the frame the note came in. The body growing below a
+    /// stop that keeps its place and its height, as the draft-save note and
+    /// Retry come below the focused description at the body's foot and
+    /// leave again, scrolls nothing.
+    #[gpui::test]
+    async fn a_focused_composer_stop_stays_whole_as_it_grows_in_place(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+            "the body scrolls"
+        );
+        let (title, description) = app.read_with(cx, |app, cx| {
+            (
+                app.commit_title.read(cx).focus_handle(cx),
+                app.commit_message.read(cx).focus_handle(cx),
+            )
+        });
+        let gap = cx.update(|window, _| window.pixel_snap(appearance::ui_size(4.)));
+        let slack = px(0.01);
+        let reveal = app.read_with(cx, |app, _| app.working_body.clone());
+        // Every frame drawn since the last call draws the focused stop whole,
+        // a gap inside the body; the last of them.
+        let whole = |frames: Vec<crate::focus_reveal::tests::Painted>, at: &str| {
+            assert!(!frames.is_empty(), "{at}: the body drawn");
+            for (index, frame) in frames.iter().enumerate() {
+                let control = frame
+                    .control
+                    .unwrap_or_else(|| panic!("{at}: frame {index} draws the stop"));
+                assert!(
+                    control.top() + slack >= frame.viewport.top() + gap
+                        && control.bottom() <= frame.viewport.bottom() - gap + slack,
+                    "{at}: frame {index} of {} draws the stop {control:?} cut in {:?}",
+                    frames.len(),
+                    frame.viewport
+                );
+            }
+            frames.last().cloned().expect("a frame")
+        };
+        // The description, its foot a gap above the body's foot.
+        cx.update(|window, cx| window.focus(&description, cx));
+        draw(cx);
+        let frame = reveal.take_painted().pop().expect("a frame");
+        let control = frame.control.expect("the description drawn");
+        let offset = (frame.offset + frame.viewport.bottom() - gap - control.bottom())
+            .clamp(-frame.max_offset, px(0.));
+        reveal.scroll().set_offset(point(px(0.), offset));
+        draw(cx);
+        let before = reveal.take_painted().pop().expect("a frame");
+        let foot = before.control.expect("the description drawn").bottom();
+        assert!(
+            (foot - (before.viewport.bottom() - gap)).abs() < px(0.5),
+            "the description's foot {foot:?} at the body's foot {:?}",
+            before.viewport
+        );
+        for (error, at) in [
+            (Some("The disk is full"), "the draft-save note came"),
+            (None, "the draft-save note left"),
+        ] {
+            app.update(cx, |app, cx| {
+                app.draft_save_error = error.map(Into::into);
+                cx.notify();
+            });
+            draw(cx);
+            let last = whole(reveal.take_painted(), at);
+            assert_eq!(last.offset, before.offset, "{at}: the body scrolls nothing");
+        }
+        // The title, 72 characters long, its stop whole at the body's top.
+        reveal.scroll().set_offset(point(px(0.), px(0.)));
+        cx.update(|window, cx| {
+            window.focus(&title, cx);
+            app.update(cx, |app, cx| {
+                app.commit_title
+                    .update(cx, |input, cx| input.set_value("x".repeat(72), window, cx))
+            })
+        });
+        draw(cx);
+        let before = reveal.take_painted().pop().expect("a frame");
+        let stop = before.control.expect("the title drawn");
+        assert!(
+            stop.bottom() < before.viewport.bottom() - gap,
+            "the title's stop {stop:?} above the body's foot {:?}",
+            before.viewport
+        );
+        cx.simulate_input("y");
+        draw(cx);
+        let last = whole(reveal.take_painted(), "the long-title note came");
+        let grown = last.control.expect("the title drawn");
+        assert!(
+            stop.bottom() + (grown.size.height - stop.size.height) > last.viewport.bottom(),
+            "the note {grown:?} reaches past the body's foot {:?} from {stop:?}",
+            last.viewport
+        );
+        assert!(
+            (grown.bottom() - (last.viewport.bottom() - gap)).abs() < px(0.5),
+            "the title's stop {grown:?} revealed at the body's foot {:?}",
+            last.viewport
+        );
+        cx.simulate_keystrokes("backspace");
+        draw(cx);
+        whole(reveal.take_painted(), "the long-title note left");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Where the list and the composer scroll together, the Working body
     /// shows the app's scroll cue (`tags::ScrollCue`), as the other scroll
     /// views do: at 13 and 18 pt in a 461 × 490 window and at 18 pt in a

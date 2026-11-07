@@ -94,6 +94,17 @@ struct Observation {
     content: u64,
 }
 
+/// How far what the container holds has moved the control holding focus
+/// since the last frame drew it, as the view knows before layout
+/// ([`FocusReveal::content`]): its leading edge and its foot, which part
+/// where the control itself grows or shrinks, as the commit title's stop
+/// does as its long-title note comes inside it, its top where it was.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Moved {
+    pub(crate) top: Pixels,
+    pub(crate) foot: Pixels,
+}
+
 /// A control a frame drew: its focus handle, where it lay with the container
 /// at offset zero, the margin it is revealed with, and, for a control inside
 /// a revealing container of its own ([`FocusReveal::control_within`]), that
@@ -195,7 +206,7 @@ pub(crate) struct FocusReveal {
     /// places its controls, and how far the control holding focus has moved
     /// since the last frame drew it, as the view knows before layout
     /// ([`Self::content`]).
-    content: Rc<Cell<(u64, Pixels)>>,
+    content: Rc<Cell<(u64, Moved)>>,
     /// The focus handles [`Self::focus`] has handed out, by control id:
     /// those of the controls the last frame drew, of the one holding focus
     /// wherever it is, as one a person has scrolled out of a list that
@@ -310,17 +321,21 @@ impl FocusReveal {
     /// For the render of the view that builds the container, before
     /// [`Self::reveal`], in every frame: what the container holds, as far as
     /// it places its controls (`key`), and how far that has moved the control
-    /// holding focus since the last frame drew it (`moved`), where the view
-    /// knows it before layout, as the Working body knows that its list's
-    /// floor has given up a row above the composer. A change of `key` under
+    /// holding focus since the last frame drew it (`moved`), its top and its
+    /// foot, where the view knows them before layout, as the Working body
+    /// knows that its list's floor has given up a row above the composer, or
+    /// that the long-title note has come inside the title's stop below its
+    /// field. A change of `key` under
     /// unchanged focus reveals the control as a resize does where the last
     /// frame showed it so, whoever placed the focus, since the change is
     /// no one's input: by the least scroll, from where `moved` puts it, so
     /// the frame that first draws it moved shows it whole, and never where
     /// the person has scrolled it out of view. Only a resize revealed, so a
     /// refresh that staged a file moved the focused commit title a row up
-    /// and cut its label at the body's top.
-    pub(crate) fn content(&self, key: u64, moved: Pixels) {
+    /// and cut its label at the body's top; revealed from its top's move
+    /// alone, the title's stop, its note come below its field, was drawn
+    /// past the body's foot for the frame the note came in.
+    pub(crate) fn content(&self, key: u64, moved: Moved) {
         self.content.set((key, moved));
     }
 
@@ -371,15 +386,17 @@ impl FocusReveal {
             inner.reveal(window, cx);
         }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
-            // Where the content has moved it since the last frame drew it.
-            // What moved it down lengthens the container's reach by as much,
-            // which this frame's layout clamps the offset to: clamped to the
-            // last frame's reach, a control at the container's foot that
-            // rows coming above it moved down stayed below the foot for the
-            // frame they came in.
+            // Where the content has moved it since the last frame drew it,
+            // from its moved top to its moved foot. What moved its foot down
+            // lengthens the container's reach by at least as much, which this
+            // frame's layout clamps the offset to: clamped to the last
+            // frame's reach, a control at the container's foot that rows
+            // coming above it moved down stayed below the foot for the frame
+            // they came in.
             let moved = self.content.get().1;
-            let at = bounds + point(px(0.), self.scroll.offset().y + moved);
-            let reach = self.scroll.max_offset().y + moved.max(Pixels::ZERO);
+            let mut at = bounds + point(px(0.), self.scroll.offset().y + moved.top);
+            at.size.height = (at.size.height + moved.foot - moved.top).max(Pixels::ZERO);
+            let reach = self.scroll.max_offset().y + moved.foot.max(Pixels::ZERO);
             if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due, reach) {
                 self.scroll.set_offset(offset);
             }
@@ -665,7 +682,7 @@ impl FocusReveal {
         *self.observed.borrow_mut() = observed;
         self.next_focus.set(false);
         // The move is the one since the last frame, which this frame now is.
-        self.content.set((self.content.get().0, px(0.)));
+        self.content.set((self.content.get().0, Moved::default()));
         #[cfg(test)]
         self.painted.borrow_mut().push(tests::Painted {
             focus: window.focused(cx),

@@ -4224,11 +4224,24 @@ impl GitTurtle {
                         .position(|focus| focus.contains_focused(window, cx))
                 })
                 .flatten();
+            // Each stop's foot, among the same positions: the title's rows
+            // and any long-title note end where the Description section
+            // begins, the section where the draft-save note and Retry begin,
+            // and those where Set your commit identity begins; that and Commit
+            // keep their height. Moved by its top alone, the title's stop
+            // was drawn past the body's foot for the frame its long-title
+            // note came in below its field.
+            const FEET: [usize; 5] = [1, 2, 3, 3, 4];
             let moved = layout.update(cx, |layout, _| {
                 let last = layout.scrolled_stops.replace(at);
                 focused
                     .zip(last)
-                    .map_or(0., |(index, last)| at[index] - last[index])
+                    .map_or_else(Default::default, |(index, last)| {
+                        crate::focus_reveal::Moved {
+                            top: px(at[index] - last[index]),
+                            foot: px(at[FEET[index]] - last[FEET[index]]),
+                        }
+                    })
             });
             let key = {
                 use std::hash::{Hash as _, Hasher as _};
@@ -4236,7 +4249,7 @@ impl GitTurtle {
                 (floor.to_bits(), rows, content.to_bits()).hash(&mut key);
                 key.finish()
             };
-            reveal.content(key, px(moved));
+            reveal.content(key, moved);
             reveal.reveal(window, cx);
         } else {
             layout.update(cx, |layout, _| layout.scrolled_stops = None);
