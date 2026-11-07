@@ -138,7 +138,7 @@ Repository tabs share a 512 MiB retained-state admission allowance (`repository_
 | Local event coalescing | 64 queued events, 16 paths per event, 4,096 metadata fingerprints |
 | Saved app preferences | 8 MiB, including commit drafts |
 | Recovery text and original-series records | 256 entries / 64 MiB text; 2 MiB conflict / 1 MiB message; explicit discard |
-| Original/rewritten series | 100 commits / 32 MiB patches and messages per side |
+| Original/rewritten series | 100 commits / 32 MiB patches and messages per side; 4 MiB of Git output per read, so a commit's patch can be no larger |
 | Stash browser | 40 rows per UI page; core reflog snapshot up to 16 MiB or 50,000 records |
 
 The [Git service budgets](../crates/git-core/README.md#budgets-and-behavior) describe raw-object, partial-staging, stash, and write limits. Bounds report incomplete or unavailable work rather than silently truncating editable content.

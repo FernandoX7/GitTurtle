@@ -3648,11 +3648,11 @@ mod tests {
         let error = review
             .read_with(cx, |review, _| review.error.clone())
             .expect("the bounded review refuses the series");
-        assert!(
-            error
-                .starts_with("Original series is unavailable or outside the bounded linear review")
-                && error.contains("Git output exceeded its limit"),
-            "the capture is found and its series is past the bound: {error}"
+        assert_eq!(
+            error,
+            "This series is too large to review here: its patches pass the review's 4 MiB read \
+             limit. Compare it with `git range-diff`.",
+            "the capture is found and its series is past the bound"
         );
         let says = Says {
             line: &error,
