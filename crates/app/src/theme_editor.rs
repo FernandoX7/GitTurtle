@@ -406,7 +406,9 @@ gpui::actions!(
         PageUpAction,
         PageDownAction,
         PageTopAction,
-        PageBottomAction
+        PageBottomAction,
+        NextPickerStop,
+        PreviousPickerStop
     ]
 );
 
@@ -414,6 +416,10 @@ gpui::actions!(
 /// bindings of [`init`] are tried first and fall through when they do not
 /// apply.
 pub(super) const SETTINGS_CONTEXT: &str = "GitTurtleSettings";
+
+/// The key context around a row's colour picker, its trigger and its
+/// popover ([`step_in_picker`]).
+const PICKER_CONTEXT: &str = "GitTurtleColorPicker";
 
 /// Tab and Shift-Tab inside Settings walk the Your themes rows through
 /// [`GitTurtle::tab_theme_rows`] before the toolkit's own tab order, which
@@ -432,7 +438,57 @@ pub(super) fn init(cx: &mut App) {
         KeyBinding::new("pagedown", PageDownAction, Some("GitTurtle")),
         KeyBinding::new("home", PageTopAction, Some("GitTurtle")),
         KeyBinding::new("end", PageBottomAction, Some("GitTurtle")),
+        // In the kit popover's context inside a row's picker, deeper than the
+        // dialog's Tab and below a text field's, which passes Tab on.
+        KeyBinding::new(
+            "tab",
+            NextPickerStop,
+            Some("GitTurtleColorPicker > Popover"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            PreviousPickerStop,
+            Some("GitTurtleColorPicker > Popover"),
+        ),
     ]);
+}
+
+/// Tab (`forward`) or Shift-Tab in a row's open colour picker, whose
+/// `trigger` holds its popover: focus moves to the popover's next or
+/// previous stop, a swatch or its hex field, and wraps at either end, so
+/// it never rests behind the drawn popover (decided 2026-11-07, `DESIGN.md`'s
+/// focus rules), which closes only on Escape, a choice or a click outside.
+/// The popover is drawn after the dialog, and GPUI's order reaches the
+/// dialog's stops past either end of the popover's, so Tab steps on round
+/// that order until it is back inside the popover. Shift-Tab goes once round
+/// it forward, to the popover's stop that Tab would have come from: the
+/// kit's featured swatches repeat palette colours and share their focus
+/// handles, and GPUI steps back from a shared handle at its later place, so
+/// steps back circled among swatches and never reached the hex field. With
+/// no other stop in the popover, focus stays where it was.
+fn step_in_picker(trigger: &FocusHandle, forward: bool, window: &mut Window, cx: &mut App) {
+    let Some(start) = window.focused(cx) else {
+        return;
+    };
+    let mut passed = Vec::new();
+    let mut before = None;
+    loop {
+        window.focus_next(cx);
+        let Some(reached) = window.focused(cx) else {
+            break;
+        };
+        if reached == start || passed.contains(&reached) {
+            break;
+        }
+        if trigger.contains_focused(window, cx) && !trigger.is_focused(window) {
+            if forward {
+                return;
+            }
+            before = Some(reached.clone());
+        }
+        passed.push(reached);
+    }
+    window.focus(before.as_ref().unwrap_or(&start), cx);
 }
 
 /// `Instant::now()` when the edit-frame trace runs: under `GITTURTLE_TRACE`,
@@ -2414,7 +2470,8 @@ impl ThemeForm {
         let kind = row.kind;
         let color = self.draft.get(kind);
         let label = kind.label();
-        let picker_focused = row.picker.focus_handle(cx).is_focused(window);
+        let trigger = row.picker.focus_handle(cx);
+        let picker_focused = trigger.is_focused(window);
         div()
             .id(("theme-token", kind as usize))
             .debug_selector(move || format!("theme-token-{}", kind.key()))
@@ -2504,6 +2561,16 @@ impl ThemeForm {
                 // its swatch would vanish on a matching background: a 1 px
                 // border edge at rest, the 2 px accent ring when focused.
                 div()
+                    .key_context(PICKER_CONTEXT)
+                    .on_action({
+                        let trigger = trigger.clone();
+                        move |_: &NextPickerStop, window, cx| {
+                            step_in_picker(&trigger, true, window, cx)
+                        }
+                    })
+                    .on_action(move |_: &PreviousPickerStop, window, cx| {
+                        step_in_picker(&trigger, false, window, cx)
+                    })
                     .rounded(px(7.))
                     .map(|ring| {
                         if picker_focused {
@@ -3831,6 +3898,179 @@ pub(crate) mod tests {
             visible,
             "the focused Readability list is in view in the side column"
         );
+    }
+
+    /// The stops inside the popover `trigger` holds, as GPUI's order meets
+    /// them from the focused stop, once round the window's whole order; focus
+    /// is left where it was.
+    fn popover_order(trigger: &FocusHandle, window: &mut Window, cx: &mut App) -> Vec<FocusHandle> {
+        let start = window.focused(cx).expect("a focused stop");
+        let (mut all, mut stops) = (Vec::new(), Vec::new());
+        loop {
+            window.focus_next(cx);
+            let reached = window.focused(cx).expect("a stop");
+            if all.contains(&reached) {
+                break;
+            }
+            all.push(reached.clone());
+            if trigger.contains_focused(window, cx) && !trigger.is_focused(window) {
+                stops.push(reached);
+            }
+        }
+        window.focus(&start, cx);
+        stops
+    }
+
+    /// Whether the last frame drew the kit's focus ring, the bordered quads
+    /// of the installed `button_focus_ring` in the theme's ring colour, whole:
+    /// every edge shown by the parts the popover paints it in, and inside a
+    /// quad filled with the popover's colour, the popover's surface.
+    fn kit_ring_whole_in_popover(cx: &mut VisualTestContext) -> bool {
+        let (outer, setting, surface) = cx.update(|window, cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let setting = theme.button_focus_ring;
+            let colour = theme.ring.alpha(setting.opacity);
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let outer = window.painted_quads().into_iter().find_map(|quad| {
+                (quad.border_color == colour
+                    && quad.border_widths.top.as_f32() == setting.width.as_f32() * scale)
+                    .then(|| {
+                        Bounds::from_corners(
+                            gpui::point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            gpui::point(
+                                logical(quad.bounds.right()),
+                                logical(quad.bounds.bottom()),
+                            ),
+                        )
+                    })
+            });
+            (outer, setting, Background::from(theme.popover))
+        });
+        let Some(outer) = outer else {
+            return false;
+        };
+        let footprint = setting.gap + setting.width;
+        let quads = painted_quads(cx);
+        let ring = PaintedRing::around(&quads, outer.dilate(-footprint), footprint);
+        ring.edges(setting.width)
+            .into_iter()
+            .all(|(_, band)| ring.shows(band))
+            && quads.iter().any(|quad| {
+                quad.background == surface
+                    && quad.bounds.left() <= outer.left()
+                    && quad.bounds.top() <= outer.top()
+                    && outer.right() <= quad.bounds.right()
+                    && outer.bottom() <= quad.bounds.bottom()
+            })
+    }
+
+    /// A row's colour picker, opened from its trigger by Enter, keeps focus
+    /// in its popover while the popover is drawn (decided 2026-11-07,
+    /// `DESIGN.md`'s focus rules): Tab and Shift+Tab cycle through the
+    /// popover's own stops, its swatches and its hex field, each met once a
+    /// cycle and wrapping at both ends; the hex field's ring lies whole inside
+    /// it, and Escape from the field closes it with focus back on the
+    /// trigger. At 13 pt in 1480 × 973 and at 18 pt in 461 × 490. The
+    /// popover does not close on blur, and Tab past its last swatch moved
+    /// focus to the editor's rows behind it while it stayed drawn. The stops
+    /// are those GPUI's order holds inside the popover ([`popover_order`]);
+    /// the kit's featured swatches share their palette twins' focus handles,
+    /// so that order steps over some swatches.
+    #[gpui::test]
+    fn tab_and_shift_tab_cycle_inside_the_open_colour_picker(cx: &mut TestAppContext) {
+        let (app, cx) = open_at_rest(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        let form = form(cx, &app);
+        let picker = cx.read(|cx| form.read(cx).row(TokenKind::ALL[0]).picker.clone());
+        let trigger = cx.read(|cx| picker.focus_handle(cx));
+        let hex = cx.read(|cx| picker.read(cx).hex_input().read(cx).focus_handle(cx));
+        for (text, viewport) in [
+            (13, size(px(1480.), px(973.))),
+            (18, size(px(461.), px(490.))),
+        ] {
+            let at = format!(
+                "{text} pt in {} × {}",
+                f32::from(viewport.width),
+                f32::from(viewport.height)
+            );
+            cx.simulate_resize(viewport);
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(cx);
+            cx.update(|window, cx| trigger.focus(window, cx));
+            settle(cx);
+            // The whole press: the kit's dialog takes Enter again only once
+            // its key comes up.
+            press(cx, "enter");
+            assert!(
+                cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Enter opens the picker"
+            );
+            // Each Tab from the popover's surface, which opening focuses,
+            // until focus comes back to the first stop it met.
+            let cycle = |key: &str, cx: &mut VisualTestContext| {
+                let mut met = Vec::new();
+                loop {
+                    press(cx, key);
+                    let (open, inside, focused) = cx.update(|window, cx| {
+                        (
+                            picker.read(cx).is_open(),
+                            trigger.contains_focused(window, cx) && !trigger.is_focused(window),
+                            window.focused(cx),
+                        )
+                    });
+                    assert!(open, "{at}: {key} leaves the popover drawn");
+                    assert!(
+                        inside,
+                        "{at}: {key} after {} stops keeps focus inside the drawn popover",
+                        met.len()
+                    );
+                    let focused = focused.expect("a stop holds focus");
+                    if met.first() == Some(&focused) {
+                        return met;
+                    }
+                    assert!(
+                        !met.contains(&focused),
+                        "{at}: {key} meets each stop once a cycle"
+                    );
+                    met.push(focused);
+                }
+            };
+            let stops = cx.update(|window, cx| popover_order(&trigger, window, cx));
+            let forward = cycle("tab", cx);
+            let backward = cycle("shift-tab", cx);
+            assert!(forward.contains(&hex), "{at}: Tab reaches the hex field");
+            assert_eq!(forward, stops, "{at}: Tab meets every stop, in order");
+            assert_eq!(
+                backward,
+                forward.iter().rev().cloned().collect::<Vec<_>>(),
+                "{at}: Shift+Tab meets the same stops in the reverse order"
+            );
+            // Tab on to the hex field, whose ring the popover holds whole,
+            // and Escape from it.
+            let to_hex = forward.iter().position(|stop| *stop == hex).unwrap();
+            for _ in 0..=to_hex {
+                press(cx, "tab");
+            }
+            assert!(
+                cx.update(|window, _| hex.is_focused(window)),
+                "{at}: Tab reaches the hex field again"
+            );
+            assert!(
+                kit_ring_whole_in_popover(cx),
+                "{at}: the hex field's ring lies whole inside the popover"
+            );
+            press(cx, "escape");
+            assert!(
+                !cx.read(|cx| picker.read(cx).is_open()),
+                "{at}: Escape from the hex field closes the picker"
+            );
+            assert!(
+                cx.update(|window, _| trigger.is_focused(window)),
+                "{at}: Escape gives focus back to the trigger"
+            );
+        }
     }
 
     /// At 461 × 490, at 13 and 18 pt, the Base menu's twenty palettes and
