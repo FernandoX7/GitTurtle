@@ -361,32 +361,56 @@ async fn reopen(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     open_menu(app, cx).await;
 }
 
-/// The accessible name of each command the profile menu last built refused,
-/// once it is drawn under it and says why: its reason, after its command,
-/// in the name the menu keys rest on (`PopupMenuItem::reason_stated`).
-fn refused(cx: &mut VisualTestContext) -> Vec<String> {
+/// The commands the profile menu last built, once each is drawn under what
+/// it reads as.
+fn built(cx: &mut VisualTestContext) -> Vec<crate::branch_actions::PickerItem> {
     let items = PROFILE_MENU_ITEMS.with(|items| items.borrow().clone());
     assert!(!items.is_empty(), "the menu is built");
+    for item in &items {
+        drawn_name(cx, item);
+    }
     items
-        .into_iter()
+}
+
+/// What `item` reads as, once it is drawn under it: its command where it is
+/// offered, and where it is refused its accessible name, which says why, its
+/// reason after its command, in the name the menu keys rest on
+/// (`PopupMenuItem::reason_stated`).
+fn drawn_name(cx: &mut VisualTestContext, item: &crate::branch_actions::PickerItem) -> String {
+    let name = if item.disabled {
+        let name = item.name.clone().unwrap_or_else(|| item.label.clone());
+        assert!(
+            item.reason_stated && name.starts_with(&format!("{}, ", item.label)),
+            "{item:?} says why it is refused"
+        );
+        name
+    } else {
+        item.label.clone()
+    };
+    let role = match item.checked {
+        Some(ticked) => format!("MenuItemCheckBox {}", if ticked { "True" } else { "False" }),
+        None => "MenuItem".into(),
+    };
+    let disabled = if item.disabled { " disabled" } else { "" };
+    let drawn = format!("menu-item: {name} · {role}{disabled}");
+    assert!(shown(cx, &drawn), "{drawn}");
+    name
+}
+
+/// The accessible name of each command the profile menu last built refused,
+/// once it is drawn under it and says why ([`drawn_name`]).
+fn refused(cx: &mut VisualTestContext) -> Vec<String> {
+    built(cx)
+        .iter()
         .filter(|item| item.disabled)
-        .map(|item| {
-            let name = item.name.clone().unwrap_or_else(|| item.label.clone());
-            assert!(
-                item.reason_stated && name.starts_with(&format!("{}, ", item.label)),
-                "{item:?} says why it is refused"
-            );
-            let role = match item.checked {
-                Some(ticked) => {
-                    format!("MenuItemCheckBox {}", if ticked { "True" } else { "False" })
-                }
-                None => "MenuItem".into(),
-            };
-            let drawn = format!("menu-item: {name} · {role} disabled");
-            assert!(shown(cx, &drawn), "{drawn}");
-            name
-        })
+        .map(|item| drawn_name(cx, item))
         .collect()
+}
+
+/// What each command the profile menu last built reads as, offered or
+/// refused, once drawn ([`drawn_name`]).
+fn rows(cx: &mut VisualTestContext) -> Vec<String> {
+    built(cx).iter().map(|item| drawn_name(cx, item)).collect()
 }
 
 /// Every item the profile menu refuses says why, as the branch picker's do,
@@ -524,6 +548,192 @@ async fn every_item_the_profile_menu_refuses_says_why(cx: &mut TestAppContext) {
         refused(cx),
         Vec::<String>::new(),
         "built again as the repository is read, they are offered"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+}
+
+/// Two saved profiles, Work and Personal.
+fn two_profiles() -> Store {
+    let mut store = Store::default();
+    store.definitions = vec![
+        definition("work", "Work", "qa@work.example"),
+        definition("personal", "Personal", "qa@home.example"),
+    ];
+    store
+}
+
+/// Changes the app's state with the menu open and draws, which builds the
+/// open menu again where what it follows changed.
+fn set(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, change: impl FnOnce(&mut GitTurtle)) {
+    app.update(cx, |app, cx| {
+        change(app);
+        cx.notify();
+    });
+    draw(cx);
+}
+
+/// Each row of the open profile menu states its own reason after every
+/// step, in each order a profile save and the reads its items wait for can
+/// cross: a save that starts while the saved profiles are first read, the
+/// read landing during it, or failing; and one that starts while the
+/// repository is read, the read landing during it, or failing. The menu's
+/// key once ranked the save over every read while its rows ranked a reason
+/// of their own first, so a read that landed during a save left the open
+/// menu without the saved profiles, and one that failed left New profile…
+/// or the saved profiles stating the save, until the save ended.
+#[gpui::test]
+async fn the_open_profile_menu_follows_each_rows_reason_through_a_save(cx: &mut TestAppContext) {
+    const WORK: &str = "Work · qa@work.example";
+    const PERSONAL: &str = "Personal · qa@home.example";
+    const CREATE: &str = "New profile…";
+    const MANAGE: &str = "Manage profiles…";
+    const RETRY: &str = "Retry profile storage";
+    const SAVE: &str = "available when saving profile finishes";
+    let (_fixture, app, cx) = history_window(cx).await;
+    use_store(&app, cx, two_profiles()).await;
+    hold_quiet_reads_for_test(&app, cx);
+    let saving = |names: &[&str]| -> Vec<String> {
+        names.iter().map(|name| format!("{name}, {SAVE}")).collect()
+    };
+    let rows_are = |cx: &mut VisualTestContext, expected: &[String], step: &str| {
+        assert_eq!(rows(cx), expected, "{step}");
+    };
+    let row = |name: &str, why: &str| format!("{name}, {why}");
+
+    // The saved profiles are first read as a save starts; the read lands
+    // during the save.
+    set(&app, cx, |app| app.profiles.store = None);
+    open_menu(&app, cx).await;
+    rows_are(
+        cx,
+        &[
+            row(CREATE, "available when loading profiles finishes"),
+            MANAGE.into(),
+        ],
+        "New profile… waits for the saved profiles' first read",
+    );
+    set(&app, cx, |app| app.profiles.saving = true);
+    rows_are(cx, &saving(&[CREATE, MANAGE]), "the save refuses both");
+    set(&app, cx, |app| app.profiles.store = Some(two_profiles()));
+    rows_are(
+        cx,
+        &saving(&[WORK, PERSONAL, CREATE, MANAGE]),
+        "the read lands during the save: the saved profiles are listed, waiting for it",
+    );
+    set(&app, cx, |app| app.profiles.saving = false);
+    rows_are(
+        cx,
+        &[WORK.into(), PERSONAL.into(), CREATE.into(), MANAGE.into()],
+        "the save's end offers every row",
+    );
+
+    // The same read fails during the save.
+    set(&app, cx, |app| app.profiles.store = None);
+    set(&app, cx, |app| app.profiles.saving = true);
+    rows_are(cx, &saving(&[CREATE, MANAGE]), "the save refuses both");
+    set(&app, cx, |app| {
+        app.profiles.error = Some("store unreadable".into())
+    });
+    rows_are(
+        cx,
+        &[
+            row(CREATE, "storage unavailable"),
+            row(MANAGE, SAVE),
+            RETRY.into(),
+        ],
+        "the read fails during the save: New profile… says why beside it",
+    );
+    set(&app, cx, |app| app.profiles.saving = false);
+    rows_are(
+        cx,
+        &[
+            row(CREATE, "storage unavailable"),
+            MANAGE.into(),
+            RETRY.into(),
+        ],
+        "the save's end offers Manage profiles…",
+    );
+    cx.simulate_keystrokes("escape");
+    use_store(&app, cx, two_profiles()).await;
+
+    // The repository is read as a save starts; the read lands during the
+    // save.
+    let repository = app.update(cx, |app, _| app.repository.take());
+    set(&app, cx, |app| app.loading = Some("Reading local history…"));
+    open_menu(&app, cx).await;
+    let reading = "available when reading local history finishes";
+    rows_are(
+        cx,
+        &[
+            row(WORK, reading),
+            row(PERSONAL, reading),
+            CREATE.into(),
+            MANAGE.into(),
+        ],
+        "a saved profile waits for the repository's read",
+    );
+    set(&app, cx, |app| app.profiles.saving = true);
+    rows_are(
+        cx,
+        &saving(&[WORK, PERSONAL, CREATE, MANAGE]),
+        "the save refuses every row",
+    );
+    let read = repository.clone();
+    set(&app, cx, move |app| {
+        app.repository = read;
+        app.loading = None;
+    });
+    rows_are(
+        cx,
+        &saving(&[WORK, PERSONAL, CREATE, MANAGE]),
+        "the read lands during the save, which still refuses every row",
+    );
+    set(&app, cx, |app| app.profiles.saving = false);
+    rows_are(
+        cx,
+        &[WORK.into(), PERSONAL.into(), CREATE.into(), MANAGE.into()],
+        "the save's end offers every row",
+    );
+
+    // The same read fails during the save.
+    set(&app, cx, |app| {
+        app.repository = None;
+        app.loading = Some("Reading local history…");
+    });
+    set(&app, cx, |app| app.profiles.saving = true);
+    rows_are(
+        cx,
+        &saving(&[WORK, PERSONAL, CREATE, MANAGE]),
+        "the save refuses every row",
+    );
+    set(&app, cx, |app| app.loading = None);
+    rows_are(
+        cx,
+        &[
+            row(WORK, "repository unavailable"),
+            row(PERSONAL, "repository unavailable"),
+            row(CREATE, SAVE),
+            row(MANAGE, SAVE),
+        ],
+        "the read fails during the save: each saved profile says why beside it",
+    );
+    set(&app, cx, |app| app.profiles.saving = false);
+    rows_are(
+        cx,
+        &[
+            row(WORK, "repository unavailable"),
+            row(PERSONAL, "repository unavailable"),
+            CREATE.into(),
+            MANAGE.into(),
+        ],
+        "the save's end offers the rest",
+    );
+    set(&app, cx, move |app| app.repository = repository);
+    rows_are(
+        cx,
+        &[WORK.into(), PERSONAL.into(), CREATE.into(), MANAGE.into()],
+        "the repository read again, every row is offered",
     );
     cx.simulate_keystrokes("escape");
     draw(cx);

@@ -16,7 +16,7 @@ mod manager_tests;
 mod menu_tests;
 mod store;
 use crate::focus_reveal::{FocusReveal, Trigger};
-use crate::native_accessibility::MenuWait;
+use crate::native_accessibility::{MenuReasons, MenuWait};
 use store::{Definition, Mutation, Signing, Store};
 
 /// Presses a profile's Apply…, whose review opens once its preparation
@@ -70,6 +70,64 @@ const STORAGE_UNAVAILABLE: &str = "Storage unavailable";
 /// Why a saved profile cannot be applied where the repository could not be
 /// read: applying one writes that repository's configuration.
 const REPOSITORY_UNAVAILABLE: &str = "Repository unavailable";
+
+/// The profile menu's groups of items, each refused for a reason of its
+/// own ([`GitTurtle::profile_menu_reason`]), in the menu's order.
+#[derive(Clone, Copy)]
+enum MenuGroup {
+    /// The saved profiles, listed once they are read, each applied to the
+    /// repository.
+    Saved,
+    /// New profile…, which joins the saved profiles.
+    Create,
+    /// Manage profiles…, which needs neither.
+    Manage,
+}
+
+impl MenuGroup {
+    /// Every group, which the menu's key reads
+    /// ([`GitTurtle::profile_menu_refusal`]).
+    const ALL: [Self; 3] = [Self::Saved, Self::Create, Self::Manage];
+}
+
+/// Why a group of the profile menu's items is refused for the window's own
+/// state rather than a write's ([`GitTurtle::profile_menu_reason`]).
+#[derive(Clone, Copy)]
+enum Refusal {
+    /// A reason of its own, which no wait's end changes, drawn beside its
+    /// command (`native_accessibility::detailed_item`): the saved profiles
+    /// or the repository could not be read.
+    Own(&'static str),
+    /// What it waits for, by the label of what runs, in the room its
+    /// command leaves (`native_accessibility::waiting_item`), after a
+    /// write, which comes first: a profile save, the saved profiles' first
+    /// read or the repository's.
+    Waits(&'static str),
+}
+
+impl Refusal {
+    /// The text it states, which the menu's key compares
+    /// ([`GitTurtle::profile_menu_refusal`]): a reason of an item's own is
+    /// never the label of a wait.
+    fn text(self) -> &'static str {
+        match self {
+            Self::Own(reason) | Self::Waits(reason) => reason,
+        }
+    }
+
+    /// `label`'s item, refused for `reason`, the first that holds of a
+    /// reason of its own, the write's `wait` and what it waits for.
+    fn item(label: SharedString, wait: Option<MenuWait>, reason: Option<Self>) -> PopupMenuItem {
+        match reason {
+            Some(Self::Own(reason)) => crate::native_accessibility::detailed_item(label, reason),
+            reason => crate::native_accessibility::waiting_item(
+                label,
+                false,
+                wait.or(reason.map(|reason| MenuWait::named(reason.text()))),
+            ),
+        }
+    }
+}
 
 use crate::native_accessibility::text as label;
 
@@ -199,29 +257,51 @@ impl GitTurtle {
         self.profiles.saving
     }
 
-    /// Why the profile menu refuses items for the window's own state rather
-    /// than a write's, by the first reason that holds
-    /// (`AppDropdown::follows_refusal`, which builds the open menu again as
-    /// it changes): a profile save, which refuses every item that acts; the
-    /// saved profiles' first read, or their failure, which refuses New
-    /// profile…; and the repository's read, or its failure, which refuses
-    /// the saved profiles. Each refuses every item listed meanwhile that a
-    /// later one refuses, as no saved profile is listed until they are
-    /// read, so the menu is built again whenever an item's reason changes.
-    fn profile_menu_refusal(&self) -> Option<&'static str> {
-        if self.profiles.saving {
-            return Some(SAVING_PROFILE);
+    /// Why `group`'s items are refused for the window's own state rather
+    /// than a write's, the first reason that holds, or `None` while none
+    /// does: what the menu's rows state and what its key compares
+    /// ([`Self::profile_menu_refusal`]), so the open menu is built again
+    /// whenever a row's reason changes. A reason of the item's own comes
+    /// first, as no wait's end would make it available, then a profile
+    /// save, which refuses every item that acts, then the read the item
+    /// waits for: the saved profiles' first read for New profile…, the
+    /// repository's for a saved profile. The saved profiles are listed only
+    /// once read, so until then their group states that read's reason. The
+    /// menu's key once ranked the save first and its rows a reason of the
+    /// item's own first, so a read that failed during a save left the open
+    /// menu stating the save, and one that succeeded left it without the
+    /// saved profiles, until the save ended.
+    fn profile_menu_reason(&self, group: MenuGroup) -> Option<Refusal> {
+        let saving = self
+            .profiles
+            .saving
+            .then_some(Refusal::Waits(SAVING_PROFILE));
+        let store = match (&self.profiles.store, &self.profiles.error) {
+            (Some(_), _) => None,
+            (None, None) => Some(Refusal::Waits(LOADING_PROFILES)),
+            (None, Some(_)) => Some(Refusal::Own(STORAGE_UNAVAILABLE)),
+        };
+        match group {
+            MenuGroup::Saved => store.or(match (self.repository.is_none(), self.loading) {
+                (false, _) => saving,
+                (true, Some(read)) => saving.or(Some(Refusal::Waits(read))),
+                (true, None) => Some(Refusal::Own(REPOSITORY_UNAVAILABLE)),
+            }),
+            MenuGroup::Create => match store {
+                own @ Some(Refusal::Own(_)) => own,
+                read => saving.or(read),
+            },
+            MenuGroup::Manage => saving,
         }
-        if self.profiles.store.is_none() {
-            return Some(if self.profiles.error.is_none() {
-                LOADING_PROFILES
-            } else {
-                STORAGE_UNAVAILABLE
-            });
-        }
-        self.repository
-            .is_none()
-            .then(|| self.loading.unwrap_or(REPOSITORY_UNAVAILABLE))
+    }
+
+    /// Each group's reason by the text it states
+    /// (`AppDropdown::follows_refusal`, which builds the open menu again
+    /// when any changes): every reason a row states for the window's own
+    /// state, so the menu is built again whenever one changes. A write's
+    /// is followed apart (`AppDropdown::follows_writes`).
+    fn profile_menu_refusal(&self) -> MenuReasons {
+        MenuGroup::ALL.map(|group| self.profile_menu_reason(group).map(Refusal::text))
     }
     /// The profile store failed with `error`, for tests in other modules.
     #[cfg(test)]
@@ -433,43 +513,27 @@ impl GitTurtle {
                 PROFILE_MENU_ITEMS.with(|items| items.borrow_mut().clear());
                 // Read as it opens, and built again as a write starts or
                 // ends and its reload lands (`AppDropdown::follows_writes`)
-                // and as the window's own reason to refuse items changes
-                // (`AppDropdown::follows_refusal`,
-                // `GitTurtle::profile_menu_refusal`). Every item it refuses
-                // says why, as the branch picker's do, so the menu keys rest
-                // on it and a screen reader hears why: what it waits for, a
-                // write, a profile save, the saved profiles' first read or
-                // the repository's, in the room its command leaves
-                // (`native_accessibility::waiting_item`), or else a reason
-                // of its own beside it, where the saved profiles or the
-                // repository could not be read, which no wait's end changes
-                // (`native_accessibility::detailed_item`). New profile…
-                // while the saved profiles were read or could not be, and
-                // the saved profiles while the repository was, were dimmed
-                // with nothing to say why, and a write's items once were
-                // too. The header that opens the menu is drawn only on the
-                // repository's page, so no item is refused for another
-                // page. Retrying the profile store, which no write touches,
-                // stays available.
+                // and as any group's reason to refuse its items for the
+                // window's own state changes (`AppDropdown::follows_refusal`,
+                // `GitTurtle::profile_menu_refusal`), each row stating its
+                // group's reason (`GitTurtle::profile_menu_reason`). Every
+                // item it refuses says why, as the branch picker's do, so
+                // the menu keys rest on it and a screen reader hears why:
+                // what it waits for, a write, a profile save, the saved
+                // profiles' first read or the repository's, in the room its
+                // command leaves (`native_accessibility::waiting_item`), or
+                // else a reason of its own beside it, where the saved
+                // profiles or the repository could not be read, which no
+                // wait's end changes (`native_accessibility::detailed_item`).
+                // New profile… while the saved profiles were read or could
+                // not be, and the saved profiles while the repository was,
+                // were dimmed with nothing to say why, and a write's items
+                // once were too. The header that opens the menu is drawn
+                // only on the repository's page, so no item is refused for
+                // another page. Retrying the profile store, which no write
+                // touches, stays available.
                 let wait = this.menu_wait();
-                let saving = this
-                    .profiles
-                    .saving
-                    .then(|| MenuWait::named(SAVING_PROFILE));
-                // `label`, unavailable for `own`, or else waiting for the
-                // write, the save or `then`, the first that holds.
-                let item = |label: SharedString,
-                            own: Option<&'static str>,
-                            then: Option<MenuWait>| {
-                    match own {
-                        Some(reason) => crate::native_accessibility::detailed_item(label, reason),
-                        None => crate::native_accessibility::waiting_item(
-                            label,
-                            false,
-                            wait.or(saving).or(then),
-                        ),
-                    }
-                };
+                let reason = |group| this.profile_menu_reason(group);
                 if let Some(profile) = &this.profile {
                     menu = menu.label(current_identity(profile)).separator();
                 }
@@ -485,11 +549,7 @@ impl GitTurtle {
                     // A profile is applied to the repository: it waits for
                     // the read that opens it, and is unavailable where that
                     // read could not open it.
-                    let (unread, read) = match (this.repository.is_none(), this.loading) {
-                        (false, _) => (None, None),
-                        (true, Some(read)) => (None, Some(MenuWait::named(read))),
-                        (true, None) => (Some(REPOSITORY_UNAVAILABLE), None),
-                    };
+                    let saved = reason(MenuGroup::Saved);
                     for profile in &store.definitions {
                         let profile = profile.clone();
                         let owner = owner.clone();
@@ -497,10 +557,10 @@ impl GitTurtle {
                         let checked = assigned.is_some_and(|current| current.id == profile.id);
                         menu = profile_menu_item(
                             menu,
-                            item(
+                            Refusal::item(
                                 format!("{} · {}", profile.label, profile.email).into(),
-                                unread,
-                                read,
+                                wait,
+                                saved,
                             )
                             .checked(checked)
                             .on_click(move |_, window, cx| {
@@ -526,23 +586,25 @@ impl GitTurtle {
                 // Creating a profile needs the saved profiles it joins, as
                 // the manager's New profile… does: it waits for their first
                 // read, and is unavailable where they could not be read.
-                let (unread, read) = match (&this.profiles.store, &this.profiles.error) {
-                    (Some(_), _) => (None, None),
-                    (None, None) => (None, Some(MenuWait::named(LOADING_PROFILES))),
-                    (None, Some(_)) => (Some(STORAGE_UNAVAILABLE), None),
-                };
+                let create = reason(MenuGroup::Create);
                 menu = profile_menu_item(
                     menu.separator(),
-                    item("New profile…".into(), unread, read).on_click(move |_, window, cx| {
-                        let _ =
-                            create_owner.update(cx, |this, cx| this.edit_profile(None, window, cx));
-                    }),
+                    Refusal::item("New profile…".into(), wait, create).on_click(
+                        move |_, window, cx| {
+                            let _ = create_owner
+                                .update(cx, |this, cx| this.edit_profile(None, window, cx));
+                        },
+                    ),
                 );
+                let manage = reason(MenuGroup::Manage);
                 menu = profile_menu_item(
                     menu,
-                    item("Manage profiles…".into(), None, None).on_click(move |_, window, cx| {
-                        let _ = manage_owner.update(cx, |this, cx| this.open_profiles(window, cx));
-                    }),
+                    Refusal::item("Manage profiles…".into(), wait, manage).on_click(
+                        move |_, window, cx| {
+                            let _ =
+                                manage_owner.update(cx, |this, cx| this.open_profiles(window, cx));
+                        },
+                    ),
                 );
                 if this.profiles.error.is_some() {
                     let retry_owner = owner.clone();
@@ -564,7 +626,8 @@ impl GitTurtle {
                 menu
             })
             // A write's start or end builds the open menu again, and so does
-            // a change in why it refuses items for the window's own state.
+            // a change in why it refuses any group of items for the window's
+            // own state.
             .follows_writes(cx.entity().downgrade())
             .follows_refusal(Self::profile_menu_refusal)
             .into_any_element()

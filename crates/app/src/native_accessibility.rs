@@ -1473,12 +1473,22 @@ pub(crate) struct AppDropdown {
     refusal: Option<MenuRefusal>,
 }
 
-/// Why a button's menu refuses some of its items for a state of the app's
-/// own rather than a write's, by the first reason that holds, or `None`
-/// while none does ([`AppDropdown::follows_refusal`]): the Git profile
-/// picker's menu while a profile is saved, while the saved profiles are
-/// first read or cannot be, and while the repository is read or cannot be.
-pub(crate) type MenuRefusal = fn(&crate::GitTurtle) -> Option<&'static str>;
+/// Why a button's menu refuses its items for a state of the app's own
+/// rather than a write's: each group of its items' reason, by the text it
+/// states, `None` for a group nothing refuses
+/// ([`AppDropdown::follows_refusal`]). They are the reasons its rows state,
+/// so the open menu is built again whenever any row's reason changes. The
+/// Git profile picker's menu has three groups, its saved profiles, New
+/// profile… and Manage profiles…, refused while a profile is saved, while
+/// the saved profiles are first read or cannot be, and while the repository
+/// is read or cannot be. One reason for the whole menu, ranked otherwise
+/// than its rows, could hold while a row's changed, leaving the open menu
+/// stating a reason gone.
+pub(crate) type MenuRefusal = fn(&crate::GitTurtle) -> MenuReasons;
+
+/// The reasons a [`MenuRefusal`] reads, one for each group of the menu's
+/// items, in the menu's order.
+pub(crate) type MenuReasons = [Option<&'static str>; 3];
 
 /// What a menu that follows writes reads as it is built
 /// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],
@@ -1525,9 +1535,10 @@ struct MenuInputs {
     /// HEAD's commit, for a menu that acts on HEAD itself
     /// ([`Self::with_tip`]); `None` for every other menu.
     tip: Option<Option<String>>,
-    /// Why the menu refuses items for the app's own state, for a menu that
-    /// follows it ([`Self::with_refusal`]); `None` for every other menu.
-    refusal: Option<&'static str>,
+    /// Why the menu refuses each group of its items for the app's own
+    /// state, for a menu that follows it ([`Self::with_refusal`]); `None`
+    /// for every other menu.
+    refusal: Option<MenuReasons>,
 }
 
 /// The commit a commit's menu acts on, read as its object ID
@@ -1572,7 +1583,7 @@ impl MenuInputs {
     /// as well, which also reads why, where `refusal` reads it
     /// ([`AppDropdown::follows_refusal`]).
     fn with_refusal(mut self, app: &crate::GitTurtle, refusal: Option<MenuRefusal>) -> Self {
-        self.refusal = refusal.and_then(|refusal| refusal(app));
+        self.refusal = refusal.map(|refusal| refusal(app));
         self
     }
 
@@ -1615,12 +1626,12 @@ impl AppDropdown {
     }
 
     /// The menu's builder also refuses items for a state of the app's own,
-    /// which `refusal` names by the first reason that holds, each item
+    /// which `refusal` names by each group of items' reason, each item
     /// saying why: following writes ([`Self::follows_writes`]), it is built
-    /// again as well once that reason changes ([`MenuInputs`]), so an item
-    /// refused for it states why as it now stands and is offered once it
-    /// ends. The Git profile picker's menu, built only as it opened or as a
-    /// write started or ended, kept a saved profile refused once the
+    /// again as well once any group's reason changes ([`MenuInputs`]), so an
+    /// item refused for it states why as it now stands and is offered once
+    /// it ends. The Git profile picker's menu, built only as it opened or as
+    /// a write started or ended, kept a saved profile refused once the
     /// repository read it waited for had landed, until it was opened again.
     pub(crate) fn follows_refusal(mut self, refusal: MenuRefusal) -> Self {
         self.refusal = Some(refusal);
