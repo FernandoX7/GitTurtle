@@ -771,10 +771,11 @@ cover current upstream x86-64 Omarchy.
        older failure's text while the menu stays open (only `load_profiles` replaces an error without clearing it, at
        startup and from Retry; probably unreachable); `docs/profiles.md:3` says Retry goes once a read succeeds (it also
        goes as a save starts, which clears the error; pre-existing).
-       FU26-B review (2026-11-06): `dialog_sides`' stretched-Button check measures text runs only, so a future ghost
-       Button reserving "Copied" beside a shorter label or carrying a trailing icon would fail it (widest content);
-       Copy commit ID's `flex_shrink(1.)` would clip rather than wrap a label too long for the column; two
-       `select_newest` test helpers in `reflog.rs` (low).
+       FU27-C landed 2026-11-06 (the dialogs' ghost walk measures a Button's widest content, its held-back Copied
+       included; Copy commit ID wraps beside its glyph in a column narrower than its content, the glyph beside the first
+       line, Copied in place; one `select_newest` helper); its re-check's nits (low): the wrapped label's 0.5 × scale top
+       margin lies inside the glyph test's 1 px tolerance (`copy_feedback.rs:578`); `confirming_with` clones `id` for the
+       test-only selector each frame in release (`copy_feedback.rs:524`).
        A field's caret may keep blinking unfocused when its context menu closes with focus elsewhere
        (`on_blur` returns early while the menu is open, `vendor/gpui-base/src/input/base/state.rs:2569`; FU26-D re-check, low).
        FU27-B landed 2026-11-06 (the GitHub connection pane's "Local worktree:" line keeps to one line, its path
@@ -811,9 +812,12 @@ cover current upstream x86-64 Omarchy.
          Back's frame keeps focus; History's search held for a loading tab and run or dropped as
          its restore ends). FU19-A5 landed too (every restore end runs or drops the held search; a
          restore always ends, including a refused 4 KiB query and a write-refused search).
-         Left (low): an opener drawn on both pages keeps BASE behaviour; a refused page leaves
-         `history_paging.scope` pinned; a saved offset beyond `next_offset` shows an empty window. Still to verify: a live
-         preparation dimming Projects while its shortcut cancels it (PG5, `main.rs`).
+         FU27-D landed 2026-11-06 (a restore's unread page leaves paging on the shown history; a page appends only in the
+         window's scope; a saved page past the end shows the last page; the opener on both pages is unreachable and PG5 was
+         already fixed by `a9a62b4b`); its re-check's nits (low): "every other end clears it" (`history_paging.rs:18-21`,
+         `navigation-and-refresh.md:79`) overstates: `invalidate_read` and bare generation bumps drop a page without clearing
+         `reading` (harmless, the next read sets it; say the real guarantee); the landed round could also assert the scope and
+         `next_offset`.
        - (C2) Editor highlights' palette rules: FU19-C2 to C5 landed 2026-11-05 night (More
          contrast word tints beyond their lines, Find's other matches fitted by the text rule, the
          current match's off distance, fallbacks keeping Off colours; the hover/selected order in
@@ -829,9 +833,6 @@ cover current upstream x86-64 Omarchy.
          form, Activity, the LFS form, the comparison form; verify); Reset column layout and
          Choose a project at a card's edge; the worktree manager's fixed 11 px text inset
          against the scaled label inset.
-         Left after FU19-F2 (queued 2026-11-06; FU26-B landed the same day: the Reflog's Buttons on its text edge, the Reflog fitted to its dialog's cap, Load commits never wraps): the ghost-Button rule at the dialogs F2 did not
-         cover (the Reflog's Review recovery branch…, `reflog.rs:1175`, stretched in a column;
-         interactive rebase's Load commits, verify).
      - **FU20 (proposed):**
        - (GitHub Files: FU20-GH and FU20-GH4 landed 2026-11-05 night (the narrow body's fit, Source's ring, Overview's stop 12, editor rows whole, the body's reveal on return, the list fitted with no file selected, the mode row cache's tests; Changes' range hint may lie below the body's foot, decided); FU20-GH5 landed 2026-11-06 (a text's lines worked out once per change, allocation hygiene: no CPU change in release; the opt-in rest bench; the sweep at `REVEAL_SIZES`); FU20-GH6 landed 2026-11-06 (the PR list's first row and Changes' patch rings whole at 18 pt, a row a list cuts counted where the list shows it, the sweep reading lines as drawn, its found walks always-on; native check in QA-106); also soft-wrapped rows above an editor's top row uncounted (low), the title-and-mode-row height reused from another text size for one frame, and `files_settles_in_a_frame_after_a_resize` hanging under one mutation (test infra); decided 2026-11-05) the panel's Files section fits a narrow
          body: the changed-file list at most half the body's height, the patch or Source the
