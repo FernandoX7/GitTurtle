@@ -2474,6 +2474,19 @@ pub(crate) fn bounded_accessible_text<'a>(
     format!("{}…", &text[..end]).into()
 }
 
+/// Whether `bounded` is `text` as [`bounded_accessible_text`] carries it,
+/// decided without building it, so a frame that draws a text it drew
+/// before keeps what it built then (`tags::error_line`).
+pub(crate) fn carries_accessible_text(bounded: &str, text: &str) -> bool {
+    if text.len() <= ACCESSIBLE_TEXT_BYTES {
+        return bounded == text;
+    }
+    let end = crate::text_cut::floor_cluster(text, ACCESSIBLE_TEXT_BYTES - '…'.len_utf8());
+    bounded.len() == end + '…'.len_utf8()
+        && bounded.starts_with(&text[..end])
+        && bounded.ends_with('…')
+}
+
 /// An element with an ID whose node is a live region: an assistive
 /// technology announces what it says when it changes, at once for a failure
 /// or a refusal ([`assertive`](LiveRegion::assertive)), after what it is

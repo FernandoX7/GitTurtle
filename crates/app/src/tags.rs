@@ -83,7 +83,9 @@ const ERROR_TOOLTIP_BYTES: usize = 1024;
 /// was shown through a resize, as macOS keeps a shown tooltip until the
 /// pointer moves off: the next hover answers for the new cut. Drawn whole,
 /// a long Git report, as a hook's or a remote's stderr, grew the form by
-/// each of its lines, past its fields and actions.
+/// each of its lines, past its fields and actions. The line's state key and
+/// its bounded text are kept for its id ([`kept_line`]), so a frame at rest
+/// formats and copies neither.
 pub(crate) fn error_line(
     id: &'static str,
     text: &str,
@@ -91,7 +93,7 @@ pub(crate) fn error_line(
     window: &mut Window,
     cx: &mut App,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
-    let whole = native_accessibility::bounded_accessible_text(text);
+    let (key, whole) = kept_line(id, text);
     // The size the line is drawn and measured at, set on the line itself,
     // so its prepaint never reads the window's text style for it: that read
     // builds GPUI's default text style, whose font features are an
@@ -104,11 +106,9 @@ pub(crate) fn error_line(
     // How the line was laid out last, which its prepaint records, kept
     // across frames so the hover a frame began reads the latest.
     let laid_out = window
-        .use_keyed_state(
-            ElementId::from(SharedString::from(format!("{id}/laid-out"))),
-            cx,
-            |_, _| std::rc::Rc::new(std::cell::RefCell::new(None::<LaidOut>)),
-        )
+        .use_keyed_state(key, cx, |_, _| {
+            std::rc::Rc::new(std::cell::RefCell::new(None::<LaidOut>))
+        })
         .read(cx)
         .clone();
     let recorded = laid_out.clone();
@@ -171,6 +171,67 @@ pub(crate) fn error_line(
             .child(whole.clone()),
         whole,
     )
+}
+
+/// What the error line `id` drew last ([`kept_line`]): the key of the state
+/// that keeps how it was laid out, `{id}/laid-out`, and its text as drawn,
+/// bounded (`bounded_accessible_text`). One entry for each line's id, which
+/// are static, each at most 16 KiB of text, so what is kept is bounded by
+/// the forms the app has.
+struct KeptLine {
+    key: ElementId,
+    whole: SharedString,
+}
+
+thread_local! {
+    static KEPT_LINES: std::cell::RefCell<HashMap<&'static str, KeptLine>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the error lines [`kept_line`] has found their key and
+    /// text for, and the allocations it made doing so.
+    static KEPT_LINE_TEXT: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The state key and the text the error line `id` draws for `text`, kept
+/// for the id ([`KeptLine`]): the key formatted the first time the line is
+/// drawn and the text copied again only when it changes. A form's render
+/// builds its line in every frame that draws the form, so a frame at rest
+/// builds neither: each frame formatted the key and copied the report,
+/// which can be 16 KiB. Two windows drawing the same line with different
+/// reports take turns with its entry, each copying its report as every
+/// frame did before, never drawing the other's.
+fn kept_line(id: &'static str, text: &str) -> (ElementId, SharedString) {
+    #[cfg(test)]
+    let before = crate::test_support::allocations();
+    let kept = KEPT_LINES.with_borrow_mut(|lines| {
+        let line = lines.entry(id).or_insert_with(|| KeptLine {
+            key: SharedString::from(format!("{id}/laid-out")).into(),
+            whole: SharedString::default(),
+        });
+        if !native_accessibility::carries_accessible_text(&line.whole, text) {
+            line.whole = native_accessibility::bounded_accessible_text(text);
+        }
+        (line.key.clone(), line.whole.clone())
+    });
+    #[cfg(test)]
+    KEPT_LINE_TEXT.with(|counted| {
+        let (lines, allocations) = counted.get();
+        counted.set((
+            lines + 1,
+            allocations + crate::test_support::allocations() - before,
+        ));
+    });
+    kept
+}
+
+/// Empties [`KEPT_LINES`], for a test that counts what an error line
+/// builds: a GPUI test's seeds share the thread and its cache.
+#[cfg(test)]
+fn forget_kept_lines() {
+    KEPT_LINES.with_borrow_mut(HashMap::clear);
 }
 
 /// How the latest frame that drew an error line laid it out
@@ -2648,6 +2709,80 @@ pub(crate) mod tests {
             );
         }
         set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// An error line keeps its state key and its text for its id
+    /// ([`kept_line`]): under Create tag, frames at rest find both without
+    /// an allocation, for a one-line report and for a report past 16 KiB,
+    /// which the line carries cut; a new report is copied once, as the next
+    /// frame draws it, and the key, formatted as the line is first drawn, is
+    /// kept through every report. The line's accessible value is each report
+    /// as it is carried. Every frame formatted the line's key and copied its
+    /// report.
+    #[gpui::test]
+    async fn an_error_line_builds_its_key_and_text_only_on_a_change(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{bounded_accessible_text, written};
+        // Empty, as a GPUI test's seeds share the thread and its cache.
+        forget_kept_lines();
+        let fixture = tempfile::tempdir().unwrap();
+        let (_app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        // The allocations finding the line's key and text took while `report`
+        // was set and drawn, and the value the line was written with.
+        let drawn = |cx: &mut VisualTestContext, report: &str| {
+            KEPT_LINE_TEXT.set((0, 0));
+            written::forget();
+            cx.update(|window, cx| {
+                form.update(cx, |form, cx| {
+                    set_error_line(&mut form.error, report, window, cx);
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let (lines, allocations) = KEPT_LINE_TEXT.get();
+            assert!(lines > 0, "the form draws its error line");
+            let value = written::get("tag-preparation-error")
+                .and_then(|line| line.node.value().map(str::to_owned));
+            (allocations, value)
+        };
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            KEPT_LINE_TEXT.set((0, 0));
+            for _ in 0..3 {
+                form.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            let (lines, allocations) = KEPT_LINE_TEXT.get();
+            assert!(lines >= 3, "{at}: each frame draws the line");
+            assert_eq!(
+                allocations, 0,
+                "{at}: frames at rest build neither the line's key nor its text"
+            );
+        };
+        // Longer than the 23 bytes a shared string holds in place, so its
+        // copy is an allocation.
+        const EXISTS: &str = "Tag v9.0 already exists in this repository";
+        let (first, value) = drawn(cx, EXISTS);
+        assert!(
+            first > 1,
+            "the first frame formats the key and copies the text"
+        );
+        assert_eq!(value.as_deref(), Some(EXISTS));
+        at_rest("a one-line report", cx);
+
+        let long = "remote: hook declined the tag\n".repeat(1_000);
+        let carried = bounded_accessible_text(long.as_str());
+        assert!(carried.len() < long.len(), "the report is carried cut");
+        let (copied, value) = drawn(cx, &long);
+        assert!(copied > 0, "a new report is copied");
+        assert_eq!(value.as_deref(), Some(&*carried), "carried cut");
+        at_rest("a report past 16 KiB", cx);
+
+        let (copied, value) = drawn(cx, EXISTS);
+        assert_eq!(
+            copied, 1,
+            "the one-line report is copied once, into its shared text, and the key is kept"
+        );
+        assert_eq!(value.as_deref(), Some(EXISTS));
+        at_rest("the one-line report again", cx);
     }
 
     /// A hover's tooltip answers for the frame drawn last, its width, text
