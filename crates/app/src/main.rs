@@ -15,6 +15,8 @@ mod conflicts;
 mod copy_feedback;
 mod desktop_text;
 #[cfg(test)]
+mod dialog_close_tests;
+#[cfg(test)]
 mod dialog_sides;
 mod diff_view;
 mod discard;

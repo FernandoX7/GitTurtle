@@ -47,6 +47,9 @@ pub struct Root {
     /// Render the Linux CSD `window_border` wrapper.
     bordered: bool,
     window_id: gpui::WindowId,
+    /// GitTurtle patch: a close asked the window to draw before its next
+    /// input and no frame has been drawn since ([`draw_before_next_input`]).
+    draw_pending: bool,
 }
 
 #[derive(Clone)]
@@ -84,6 +87,43 @@ impl ActiveDialog {
     }
 }
 
+/// GitTurtle patch: has `window` draw again once the effects of what closed
+/// a dialog or sheet have run, before the platform hands it the next input.
+///
+/// GPUI hit-tests a press against the frame the window last drew, and a
+/// window draws when the platform next asks for a frame, or as a key event
+/// arrives (`Window::dispatch_key_event` draws a dirty window first), never
+/// as a mouse event does. So a modal taken away here stayed in that frame,
+/// its backdrop and its Buttons taking every press, until the window drew
+/// again: a click on a History row before the Return that closed the
+/// branch dialog came up was swallowed by the gone dialog's backdrop, and
+/// a click where its Rename… had been pressed it. Drawn here, a press after
+/// the close acts on what the window draws without the modal: the control
+/// the close gave focus back to and the page beneath. The frame is
+/// presented as the platform next asks for one, as any frame drawn there is.
+///
+/// Closes in one effect cycle draw once ([`Root::draw_pending`]): the draw
+/// waits one more turn of the cycle, behind every effect queued by the code
+/// that closed them, and a frame the window draws first, as for a key event,
+/// takes its place. Drawn ahead of the platform's frame, it replaces that
+/// frame's draw, except where an effect queued later still changes what the
+/// window shows: then that frame draws again.
+fn draw_before_next_input(root: &mut Root, window: &mut Window, cx: &mut App) {
+    if std::mem::replace(&mut root.draw_pending, true) {
+        return;
+    }
+    window.defer(cx, |window, cx| {
+        window.defer(cx, |window, cx| {
+            let pending = Root::try_update(window, cx, |root, _, _| {
+                std::mem::take(&mut root.draw_pending)
+            });
+            if pending == Some(true) {
+                window.draw(cx).clear(cx);
+            }
+        });
+    });
+}
+
 impl Root {
     /// Clears window-owned text selection synchronously.
     #[deprecated(note = "use gpui_base::TextSelection::clear instead")]
@@ -110,6 +150,7 @@ impl Root {
             window_shadow_size: window_border::SHADOW_SIZE,
             bordered: true,
             window_id: window.window_handle().window_id(),
+            draw_pending: false,
         }
     }
 
@@ -325,15 +366,20 @@ impl Root {
     }
 
     pub fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
+        let closing = !self.active_dialogs.is_empty();
         if let Some(handle) = self.close_dialog_internal() {
             window.focus(&handle, cx);
         }
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        if closing {
+            draw_before_next_input(self, window, cx);
+        }
     }
 
     pub fn close_all_dialogs(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         self.focused_input = None;
+        let closing = !self.active_dialogs.is_empty();
         let previous_focused_handle = self
             .active_dialogs
             .first()
@@ -344,6 +390,9 @@ impl Root {
         }
         gpui_base::TextSelection::clear(window, cx);
         cx.notify();
+        if closing {
+            draw_before_next_input(self, window, cx);
+        }
     }
 
     pub fn open_sheet_at<F>(
@@ -379,6 +428,9 @@ impl Root {
 
     pub fn close_sheet(&mut self, window: &mut Window, cx: &mut Context<'_, Root>) {
         self.focused_input = None;
+        if self.active_sheet.is_some() {
+            draw_before_next_input(self, window, cx);
+        }
         if let Some(previous_handle) = self
             .active_sheet
             .as_ref()
@@ -563,6 +615,8 @@ impl Styled for Root {
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.theme().font_size);
+        // GitTurtle patch: this frame draws what a close asked for.
+        self.draw_pending = false;
         let active_scope = self.active_text_selection_scope();
         TextSelection::activate_scope(active_scope, window, cx);
 
@@ -608,6 +662,48 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    /// A view that counts the frames that draw it.
+    struct Counted(Rc<std::cell::Cell<usize>>);
+
+    impl Render for Counted {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            div()
+        }
+    }
+
+    /// GitTurtle patch: two dialogs closed in one handler have the window
+    /// draw once before its next input, after every effect the handler
+    /// queued, not once for each close and again for the notification the
+    /// second close queued after the first one's draw. (A test window draws
+    /// whatever is left dirty as its effects end, as the platform's next
+    /// frame would.)
+    #[gpui::test]
+    fn two_closes_in_one_handler_draw_once(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let drawn = Rc::new(std::cell::Cell::new(0));
+        let counted = drawn.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Counted(counted));
+            Root::new(view, window, cx).bordered(false)
+        });
+        cx.update(|window, cx| {
+            Root::update(window, cx, |root, window, cx| {
+                root.open_dialog(|dialog, _, _| dialog, window, cx);
+                root.open_dialog(|dialog, _, _| dialog, window, cx);
+            })
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let before = drawn.get();
+        cx.update(|window, cx| {
+            Root::update(window, cx, |root, window, cx| {
+                root.close_dialog(window, cx);
+                root.close_dialog(window, cx);
+            })
+        });
+        assert_eq!(drawn.get() - before, 1, "two closes draw once");
     }
 
     #[gpui::test]

@@ -731,6 +731,41 @@ cover it. Remove it when upstream gives a confirmed dialog's focus back as
 it closes, or never over focus moved since the close, and both tests pass
 without it.
 
+The dialog-close-draw patch modifies `src/root.rs`. GPUI hit-tests a press
+against the frame the window last drew. A window draws as the platform next
+asks for a frame, or as a key event arrives (`Window::dispatch_key_event`
+draws a dirty window first), never as a mouse event does, so a dialog or
+sheet that `Root::close_dialog`, `Root::close_all_dialogs` or
+`Root::close_sheet` takes away stayed in that frame until the window drew
+again: its backdrop swallowed a press there, and its Buttons took one, the
+closed dialog's own action included. A click on a History row given before
+the Return that confirmed the branch dialog came up was lost to the gone
+dialog's backdrop, and a click where its Rename… had been opened the rename
+form (native QA-106e D6). Patched, a close that takes a modal away has the
+window draw again once the effects of what closed it have run, before the
+platform hands it the next input (`Window::defer`), so a press after the
+close acts on what the window draws without the modal, on the control the
+close gave focus back to and the page beneath it; a close with nothing open
+draws nothing. Closes in one effect cycle draw once (`Root::draw_pending`):
+the draw waits one more turn of the cycle, behind every effect the code that
+closed them queued, and a frame the window draws first, as for a key event,
+takes its place. The frame is presented as the platform next asks for one,
+as any frame drawn between frames is, and replaces that frame's own draw,
+except where an effect queued later still changes what the window shows:
+then that frame draws again. The kit's `two_closes_in_one_handler_draw_once`
+(`scripts/vendor-crate-test.sh vendor/gpui-component root::`) counts the
+draws of two dialogs closed in one handler. The app's `dialog_close_tests`
+(`cargo test --locked -p gitturtle dialog_close_tests::`) click a History
+row before Return on the branch dialog's Done comes up, after it, in the
+frame after and two frames later, with motion reduced and not, and before
+and after the key-up with the dialog opened from a stash's row, as on the
+native route; where its Rename… was; after Return on the Tags dialog's
+Done, reached with Tab; and after Escape. `close_all_dialogs` and
+`close_sheet` draw as `close_dialog` does, untested while no product code
+calls them. Remove it when upstream takes a closed modal out of the
+window's input as it closes, or hit-tests a press against a frame drawn
+since, and those tests pass without it.
+
 The secondary-edge patch modifies `src/theme/mod.rs` and
 `src/button/button.rs`. Upstream draws a bordered secondary Button's edge in
 the shared `border` at rest and sets it from `border` again in its hovered,
