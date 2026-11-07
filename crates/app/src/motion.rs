@@ -4895,6 +4895,9 @@ mod tests {
             Some(true),
             "{opening:?}"
         );
+        // Earlier quiet reads land first, so none reads this two-step
+        // change half made (`a_right_click_working_menu_is_built_once_per_change`).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         quietly_refreshed(&app, cx);
@@ -5389,6 +5392,9 @@ mod tests {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", opening);
+        // Earlier quiet reads land first, so none reads this two-step
+        // change half made (`a_right_click_working_menu_is_built_once_per_change`).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         quietly_refreshed(&app, cx);
@@ -5520,6 +5526,9 @@ mod tests {
             ["Ignore…"],
             "{opening:?}: Up moved the cursor to Ignore…"
         );
+        // Earlier quiet reads land first, so none reads this two-step
+        // change half made (`a_right_click_working_menu_is_built_once_per_change`).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         quietly_refreshed(&app, cx);
@@ -5682,6 +5691,9 @@ mod tests {
             "{opening:?}: the keys moved the cursor to Discard changes…"
         );
 
+        // Earlier quiet reads land first, so none reads this two-step
+        // change half made (`a_right_click_working_menu_is_built_once_per_change`).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
         assert!(
             !committing_git(&repository, &["merge", "-q", "side"])
@@ -5837,6 +5849,9 @@ mod tests {
             "the click focuses the list"
         );
 
+        // Earlier quiet reads land first, so none reads this two-step
+        // change half made (`a_right_click_working_menu_is_built_once_per_change`).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
         assert!(
             !committing_git(&repository, &["merge", "-q", "side"])
@@ -8004,6 +8019,16 @@ mod tests {
         next_frame(cx);
         assert_eq!(built(), 1, "built once as its rows land");
         assert_eq!(delete(cx), Some(true), "once the rows land");
+        // Every quiet read the window has asked for lands before gamma
+        // changes outside the app, so only the read that change asks for
+        // reads it. One asked for earlier, as the rescan the watcher's setup
+        // asks for as it lands, which each read the test starts puts back to
+        // wait, ran on a slow host as the test changed gamma: it read gamma
+        // added but not yet edited, and its rows, drawn before those of the
+        // read the change asked for, took gamma's Unstaged row away for a
+        // frame, and the row's open menu with it, so that menu was never
+        // built again (macOS, Quality run 42394566783).
+        quiet_reads_land(&app, cx);
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         quietly_refreshed(&app, cx);
