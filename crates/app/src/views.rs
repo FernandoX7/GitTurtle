@@ -6081,10 +6081,7 @@ impl GitTurtle {
     fn operation_status_size(&self, widths: &ChromeWidths, window: &Window) -> OperationStatus {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
-        let line = window
-            .text_style()
-            .line_height
-            .to_pixels(appearance::ui_text(11.).into(), rem);
+        let line = LineKey::line_height(window).to_pixels(appearance::ui_text(11.).into(), rem);
         let limit = snap(appearance::ui_size(OPERATION_PROGRESS_WIDTH));
         let gap = snap(rem * 0.5);
         let control = snap(appearance::ui_size(28.));
@@ -6168,7 +6165,8 @@ impl GitTurtle {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let scaled = |base: f32| snap(appearance::ui_size(base));
-        let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+        let line_height = LineKey::line_height(window);
+        let line = |size: Pixels| snap(line_height.to_pixels(size.into(), rem));
         let control = scaled(28.);
         // The return slot keeps the labelled Projects' width in every mode.
         let back = if narrow {
@@ -6452,7 +6450,8 @@ impl GitTurtle {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let scaled = |base: f32| snap(appearance::ui_size(base));
-        let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+        let line_height = LineKey::line_height(window);
+        let line = |size: Pixels| snap(line_height.to_pixels(size.into(), rem));
         let action = scaled(34.);
         let text = line(appearance::ui_text(11.));
         // Medium kit Buttons: `px_3`, a 16 px icon and the label `gap_2`
@@ -7247,10 +7246,11 @@ pub(crate) struct LineKey {
 }
 
 thread_local! {
-    /// The key the window's root render read as it began, which every
-    /// [`LineKey::current`] for that window shares until the render ends
-    /// ([`LineKey::frame`]).
-    static FRAME_LINE: RefCell<Option<(gpui::WindowId, LineKey)>> = const { RefCell::new(None) };
+    /// The key and line height the window's root render read as it began,
+    /// which every [`LineKey::current`] and [`LineKey::line_height`] for that
+    /// window shares until the render ends ([`LineKey::frame`]).
+    static FRAME_LINE: RefCell<Option<(gpui::WindowId, LineKey, DefiniteLength)>> =
+        const { RefCell::new(None) };
 }
 
 impl LineKey {
@@ -7269,32 +7269,65 @@ impl LineKey {
         let shared = FRAME_LINE.with_borrow(|frame| {
             frame
                 .as_ref()
-                .filter(|(drawn, _)| *drawn == window_id)
-                .map(|(_, key)| key.clone())
+                .filter(|(drawn, ..)| *drawn == window_id)
+                .map(|(_, key, _)| key.clone())
         });
         #[cfg(test)]
         line_key_reads::current(shared.is_some(), std::panic::Location::caller());
         shared.unwrap_or_else(|| Self::read(window))
     }
 
+    /// The line height interface text takes, as a length its text size
+    /// resolves, shared as [`Self::current`] shares the key: within the
+    /// window's root render the one that render read with its key as it
+    /// began ([`Self::frame`]), anywhere else the window's text style's.
+    /// The header's and the action bar's layout predictions read it many
+    /// times a frame (`GitTurtle::chrome`, `GitTurtle::header_plan`), each
+    /// read of the window's text style an allocation: 13 a frame in History
+    /// at 1,480 × 800.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn line_height(window: &Window) -> DefiniteLength {
+        let window_id = window.window_handle().window_id();
+        let shared = FRAME_LINE.with_borrow(|frame| {
+            frame
+                .as_ref()
+                .filter(|(drawn, ..)| *drawn == window_id)
+                .map(|(.., line_height)| *line_height)
+        });
+        #[cfg(test)]
+        line_key_reads::line_height(shared.is_some(), std::panic::Location::caller());
+        shared.unwrap_or_else(|| window.text_style().line_height)
+    }
+
     /// The key the window's text style gives now.
     fn read(window: &Window) -> Self {
+        Self::of(&window.text_style(), window)
+    }
+
+    /// The key `style`, the window's text style, gives.
+    fn of(style: &gpui::TextStyle, window: &Window) -> Self {
         Self {
-            font: window.text_style().font(),
+            font: style.font(),
             scale: appearance::ui_scale().to_bits(),
             rem: f32::from(window.rem_size()).to_bits(),
         }
     }
 
-    /// Reads the key once for the window's root render, which holds the
-    /// returned guard for its whole body: every [`Self::current`] for the
-    /// window shares it until the guard drops, and what was shared before
-    /// comes back as it drops.
+    /// Reads the key and the line height once for the window's root render,
+    /// in one read of the window's text style; the render holds the returned
+    /// guard for its whole body: every [`Self::current`] and
+    /// [`Self::line_height`] for the window shares them until the guard
+    /// drops, and what was shared before comes back as it drops.
     pub(crate) fn frame(window: &Window) -> FrameLine {
-        let key = Self::read(window);
+        let style = window.text_style();
+        let key = Self::of(&style, window);
         #[cfg(test)]
         line_key_reads::frame();
-        FrameLine(FRAME_LINE.replace(Some((window.window_handle().window_id(), key))))
+        FrameLine(FRAME_LINE.replace(Some((
+            window.window_handle().window_id(),
+            key,
+            style.line_height,
+        ))))
     }
 }
 
@@ -7368,11 +7401,58 @@ pub(crate) mod line_key_reads {
             READS.set(reads);
         }
     }
+
+    thread_local! {
+        /// The line heights read ([`super::LineKey::line_height`]): those
+        /// that shared a root render's, and those that read the window's
+        /// text style for their own.
+        static LINE_HEIGHTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    /// The line heights read since the last take, wherever they were read:
+    /// how many shared a root render's and how many read their own.
+    pub(crate) fn take_line_heights() -> (usize, usize) {
+        LINE_HEIGHTS.replace((0, 0))
+    }
+
+    thread_local! {
+        /// The lines in `views.rs` of the calls that shared a root render's
+        /// line height, each with how often, kept without allocating.
+        static SHARED_CALLERS: Cell<[(u32, u32); 8]> = const { Cell::new([(0, 0); 8]) };
+    }
+
+    /// The lines in `views.rs` of the calls that shared a root render's line
+    /// height since the last take.
+    pub(crate) fn take_shared_callers() -> Vec<u32> {
+        (SHARED_CALLERS.replace([(0, 0); 8]).into_iter())
+            .filter(|(_, count)| *count > 0)
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    pub(super) fn line_height(shared: bool, caller: &std::panic::Location<'_>) {
+        let (kept, read) = LINE_HEIGHTS.get();
+        LINE_HEIGHTS.set(if shared {
+            (kept + 1, read)
+        } else {
+            (kept, read + 1)
+        });
+        if shared && caller.file().ends_with("views.rs") {
+            let mut callers = SHARED_CALLERS.get();
+            if let Some(slot) = callers
+                .iter_mut()
+                .find(|(line, count)| *line == caller.line() || *count == 0)
+            {
+                *slot = (caller.line(), slot.1 + 1);
+            }
+            SHARED_CALLERS.set(callers);
+        }
+    }
 }
 
-/// The line key a window's root render shares while it runs
+/// The line key and line height a window's root render shares while it runs
 /// ([`LineKey::frame`]).
-pub(crate) struct FrameLine(Option<(gpui::WindowId, LineKey)>);
+pub(crate) struct FrameLine(Option<(gpui::WindowId, LineKey, DefiniteLength)>);
 
 impl Drop for FrameLine {
     fn drop(&mut self) {
@@ -22963,6 +23043,85 @@ pub(crate) mod tests {
             "the badge reads the new count"
         );
         at_rest("one fewer working file", cx);
+    }
+
+    /// The header's and the action bar's layout predictions take the line
+    /// height their text inherits from the root render's one read of the
+    /// window's text style ([`LineKey::line_height`]): in History at
+    /// 1,480 × 800 and in a 700 × 330 window, whose compact chrome places a
+    /// running write's status by its line height too, a frame reads the
+    /// window's text style once, as the root render begins, and the chrome,
+    /// the header's plan and the status's size read none of their own: each
+    /// of `GitTurtle::operation_status_size`, `header_layout` and
+    /// `full_actions_height_with` takes the frame's (both forms reach the
+    /// status's size with no write running, as they measure its room),
+    /// where they read it 13 times a frame at 1,480 × 800, an allocation
+    /// each.
+    #[gpui::test]
+    async fn the_header_reads_the_line_height_once_a_frame(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        // Each layout function's lines in this file, after its signature to
+        // the brace that closes it, where its line height is taken.
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/views.rs"))
+            .expect("the view's source");
+        let lines = source.lines().collect::<Vec<_>>();
+        let body = |function: &str| {
+            let signature = format!("fn {function}(");
+            let start = (lines.iter())
+                .position(|line| line.trim_start().starts_with(&signature))
+                .unwrap_or_else(|| panic!("{function} is in views.rs"));
+            let end = start
+                + (lines[start..].iter())
+                    .position(|line| *line == "    }")
+                    .unwrap_or_else(|| panic!("{function} ends"));
+            (start + 2)..=(end + 1)
+        };
+        let functions = [
+            "operation_status_size",
+            "header_layout",
+            "full_actions_height_with",
+        ]
+        .map(|function| (function, body(function)));
+        for (width, height, compact) in [(1480., 800., false), (700., 330., true)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, cx| app.read(cx).chrome(window, cx).is_compact()),
+                compact,
+                "{width} × {height}: the chrome's form"
+            );
+            line_key_reads::watch("views.rs");
+            let _ = line_key_reads::take_line_heights();
+            let _ = line_key_reads::take_shared_callers();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let frames = line_key_reads::take().frames;
+            let (shared, read) = line_key_reads::take_line_heights();
+            let callers = line_key_reads::take_shared_callers();
+            line_key_reads::stop();
+            for (function, body) in &functions {
+                assert!(
+                    callers.iter().any(|line| body.contains(&(*line as usize))),
+                    "{width} × {height}: {function} takes the frame's line height (lines \
+                     {body:?}; shared at {callers:?})"
+                );
+            }
+            assert_eq!(frames, 1, "{width} × {height}: one root render");
+            assert!(
+                shared > 0,
+                "{width} × {height}: the header's layout reads the line height"
+            );
+            assert_eq!(
+                read, 0,
+                "{width} × {height}: the frame reads the window's text style once, at its root \
+                 render, and the header's layout shares that read"
+            );
+        }
     }
 
     /// The status bar's room for Cancel, and so the idle bar's hints, follow
