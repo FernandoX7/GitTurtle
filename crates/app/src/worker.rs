@@ -1,6 +1,8 @@
 mod repository_identity;
 #[cfg(test)]
 mod snapshot_bench;
+#[cfg(test)]
+mod working_bench;
 use repository_identity::RepositoryIdentity;
 
 use crate::{graph, text::PatchPresentation};
