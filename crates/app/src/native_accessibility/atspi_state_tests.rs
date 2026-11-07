@@ -17,6 +17,7 @@ use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
 };
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::gpui;
 use gpui_kit::gpui::accesskit::{
     ActionHandler, ActionRequest, Live, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
 };
@@ -919,4 +920,86 @@ fn a_point_query_passes_over_a_control_where_its_clip_hides_it() {
     assert_eq!(at(40).as_deref(), Some("Cut by the top fold"));
     assert_eq!(at(50).as_deref(), Some("Cut by the top fold"));
     assert_eq!(at(80).as_deref(), Some("Inside"));
+}
+
+/// What Orca 51.1 speaks of the focused entry in `update`'s tree as it
+/// moves to it (`speech_generator.py`, `_generate_entry`): its name, its
+/// role, and the line at the caret, which it reads through the Text
+/// interface (`_generate_text_line`), or where that gives nothing, the
+/// entry's placeholder (`generator.py`, `_generate_accessible_placeholder_text`).
+fn orca_reads_entry(update: TreeUpdate) -> String {
+    use accesskit_atspi_common::Granularity;
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        update,
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let window = adapter.platform_node(adapter.root_id());
+    let entry = adapter.platform_node(window.child_at_index(0).unwrap().expect("the entry"));
+    assert_eq!(entry.role().unwrap(), AtspiRole::Entry);
+    let line = if entry.supports_text().unwrap() {
+        let caret = entry.caret_offset().unwrap();
+        let (line, ..) = entry.string_at_offset(caret, Granularity::Line).unwrap();
+        line.trim_end_matches('\n').to_owned()
+    } else {
+        String::new()
+    };
+    let name = entry.name().unwrap();
+    let placeholder = entry.attributes().unwrap().remove("placeholder-text");
+    let spoken = match placeholder {
+        Some(placeholder) if line.is_empty() && placeholder != name => placeholder,
+        _ => line,
+    };
+    format!("{name} entry {spoken}")
+}
+
+/// Orca reads Settings' Name and Email by their values, and an empty field
+/// by its placeholder. Filled with "QA Fixture" and
+/// "qa-fixture@example.invalid", they were read "Name entry Your name" and
+/// "Email entry you@example.com" (QA-106b S4): the fields wrote no text
+/// runs, so AT-SPI gave them no Text interface to read their values
+/// through, and Orca spoke their placeholders.
+#[gpui::test]
+fn orca_reads_the_identity_fields_by_their_values(cx: &mut gpui::TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = crate::tags::tests::tagged_repository(fixture.path());
+    let (app, cx) = crate::tags::tests::window(cx, &repo);
+    cx.update(|_, cx| crate::theme_editor::init(cx));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+    let settle = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    settle(cx);
+    let (name, email) = cx.read(|cx| {
+        let app = app.read(cx);
+        (app.identity_name.clone(), app.identity_email.clone())
+    });
+    let reads = |values: [&str; 2], cx: &mut VisualTestContext| {
+        for (field, value) in [(&name, values[0]), (&email, values[1])] {
+            cx.update(|window, cx| {
+                field.update(cx, |state, cx| state.set_value(value, window, cx))
+            });
+        }
+        settle(cx);
+        [&name, &email].map(|field| {
+            let node = crate::views::tests::input_node(cx, field);
+            let text = cx.update(|_, cx| field.update(cx, |state, _| state.accessible_text()));
+            orca_reads_entry(super::input_tests::field_tree(node, text))
+        })
+    };
+    assert_eq!(
+        reads(["QA Fixture", "qa-fixture@example.invalid"], cx),
+        [
+            "Name entry QA Fixture",
+            "Email entry qa-fixture@example.invalid"
+        ]
+    );
+    assert_eq!(
+        reads(["", ""], cx),
+        ["Name entry Your name", "Email entry you@example.com"]
+    );
 }

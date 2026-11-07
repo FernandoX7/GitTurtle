@@ -118,3 +118,175 @@ fn input_semantics_follow_the_editing_focus_owner(cx: &mut TestAppContext) {
     assert_eq!(nodes[0].author_id(), Some("fixture.input"));
     assert_eq!(nodes[0].placeholder(), Some("Repository placeholder"));
 }
+
+/// The tree of a window holding only a field's node, `node` as its editing
+/// element writes it, with what that element writes beside it while an
+/// assistive technology is active: the value and the text runs of `text`
+/// (`InputState::accessible_text`), their selection, and focus on it.
+pub(crate) fn field_tree(
+    mut node: gpui::accesskit::Node,
+    text: Option<gpui_kit::base::input::AccessibleText>,
+) -> gpui::accesskit::TreeUpdate {
+    use gpui::accesskit::{Node, NodeId, Tree, TreeId, TreeUpdate};
+    use std::hash::{Hash as _, Hasher as _};
+    let field = NodeId(1);
+    // A run's ID from its key, never the root's or the field's.
+    let run = |key: usize| {
+        let mut hasher = std::hash::DefaultHasher::new();
+        key.hash(&mut hasher);
+        NodeId((hasher.finish() >> 2) + 2)
+    };
+    let mut nodes = Vec::new();
+    if let Some(text) = text {
+        let (runs, selection) = text.runs(run);
+        node.set_value(text.value().to_string());
+        node.set_children(runs.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        node.set_text_selection(selection);
+        nodes.extend(runs);
+    }
+    let mut root = Node::new(Role::Window);
+    root.set_children(vec![field]);
+    nodes.insert(0, (field, node));
+    nodes.insert(0, (NodeId(0), root));
+    TreeUpdate {
+        nodes,
+        tree: Some(Tree::new(NodeId(0))),
+        tree_id: TreeId::ROOT,
+        focus: field,
+    }
+}
+
+/// Every text field reaches assistive technology with its value: a
+/// single-line field, an empty one, a multi-line field and the code editor
+/// each write text runs holding their text, which is what AccessKit's
+/// adapters read it through (the AT-SPI adapter gives a field the Text
+/// interface only with them), with the caret on them; a password writes
+/// none. Settings' Name field holding "QA Fixture" wrote none, and Orca
+/// read it by its placeholder, "Your name" (QA-106b S4).
+#[gpui::test]
+fn every_text_field_writes_its_text_as_runs(cx: &mut TestAppContext) {
+    use gpui_kit::component::input::{Editor, EditorState};
+    struct Probe {
+        name: Entity<InputState>,
+        email: Entity<InputState>,
+        token: Entity<InputState>,
+        message: Entity<TextareaState>,
+        source: Entity<EditorState>,
+    }
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(Input::new(&self.name).aria_label("Name"))
+                .child(Input::new(&self.email).aria_label("Email"))
+                .child(
+                    Input::new(&self.token)
+                        .aria_label("Token")
+                        .content_type(InputContentType::Password),
+                )
+                .child(Textarea::new(&self.message).aria_label("Message"))
+                .child(
+                    Editor::new(&self.source)
+                        .aria_label("File text")
+                        .h(px(120.)),
+                )
+        }
+    }
+    cx.update(gpui_kit::init);
+    let (probe, cx) = cx.add_window_view(|window, cx| Probe {
+        name: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Your name")
+                .default_value("QA Fixture")
+        }),
+        email: cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com")),
+        token: cx.new(|cx| InputState::new(window, cx).default_value("hunter2")),
+        message: cx.new(|cx| TextareaState::new(window, cx).default_value("Subject\n\nBody")),
+        source: cx.new(|cx| EditorState::new(window, cx).default_value("fn main() {}\n")),
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fields = cx.read(|cx| {
+        let probe = probe.read(cx);
+        (
+            probe.name.clone(),
+            probe.email.clone(),
+            probe.token.clone(),
+            probe.message.clone(),
+            probe.source.clone(),
+        )
+    });
+
+    /// What the field's node gives every adapter, read through AccessKit's
+    /// consumer: whether it has text runs, the text they hold, how many
+    /// runs it has and the caret's character offset in that text.
+    fn read(update: gpui::accesskit::TreeUpdate) -> (bool, String, usize, Option<usize>) {
+        let tree = accesskit_consumer::Tree::new(update, true);
+        let state = tree.state();
+        let field = state.focus().expect("the field holds focus");
+        if !field.supports_text_ranges() {
+            return (false, String::new(), 0, None);
+        }
+        let caret = field
+            .text_selection_focus()
+            .map(|focus| focus.to_global_usv_index());
+        (
+            true,
+            field.document_range().text(),
+            field.children().count(),
+            caret,
+        )
+    }
+    macro_rules! tree {
+        ($field:expr) => {{
+            let node = crate::views::tests::input_node(cx, &$field);
+            let text = cx.update(|_, cx| $field.update(cx, |state, _| state.accessible_text()));
+            field_tree(node, text)
+        }};
+    }
+
+    let (runs, text, count, caret) = read(tree!(fields.0));
+    assert!(runs, "the Name field writes text runs");
+    assert_eq!(text, "QA Fixture");
+    assert_eq!(count, 1, "one line, one run");
+    assert_eq!(
+        caret,
+        Some(0),
+        "the caret where the value set it, at its start"
+    );
+    let name = crate::views::tests::input_node(cx, &fields.0);
+    assert_eq!(name.label(), Some("Name"));
+    assert_eq!(name.placeholder(), Some("Your name"));
+
+    let (runs, text, count, caret) = read(tree!(fields.1));
+    assert!(runs, "an empty field writes its one, empty, run");
+    assert_eq!((text.as_str(), count, caret), ("", 1, Some(0)));
+
+    let (runs, ..) = read(tree!(fields.2));
+    assert!(!runs, "a password writes no text");
+    let token = cx.update(|_, cx| fields.2.update(cx, |state, _| state.accessible_text()));
+    assert!(token.is_none(), "a password exposes no value");
+
+    let (runs, text, count, _) = read(tree!(fields.3));
+    assert!(runs, "the multi-line field writes text runs");
+    assert_eq!(
+        (text.as_str(), count),
+        ("Subject\n\nBody", 3),
+        "a run a line"
+    );
+
+    let (runs, text, count, _) = read(tree!(fields.4));
+    assert!(runs, "the code editor writes text runs");
+    assert_eq!(text, "fn main() {}\n");
+    assert_eq!(count, 2, "its line, and the empty line after its break");
+
+    // Typing reaches the runs, the caret after what was typed.
+    cx.update(|window, cx| fields.0.update(cx, |state, cx| state.focus(window, cx)));
+    cx.simulate_keystrokes("end");
+    cx.simulate_input(" Two");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (_, text, _, caret) = read(tree!(fields.0));
+    assert_eq!(text, "QA Fixture Two");
+    assert_eq!(caret, Some("QA Fixture Two".len()));
+}

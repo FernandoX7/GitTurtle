@@ -296,6 +296,10 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) extras: M::Extras,
     pub(super) focus_handle: FocusHandle,
     accessibility_presentation: Option<InputAccessibility>,
+    /// GitTurtle patch: the text segmented for assistive technology, kept
+    /// only while a client is active and rebuilt when the text changes
+    /// ([`Self::accessible_text`]).
+    accessible_text: Option<Rc<super::accessible_text::Segmented>>,
     pub(super) mode: LayoutMode,
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
@@ -569,6 +573,41 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
+    /// GitTurtle patch: what this field writes to assistive technology, its
+    /// text whole with the runs and selection AccessKit's adapters read it
+    /// through, or `None` for a field that shows them no value: a masked
+    /// field, one its styled input presents as secret (a password), and one
+    /// no styled input presents. The field renders it only while a client
+    /// is active, and segments its text again only when the text changed.
+    pub fn accessible_text(&mut self) -> Option<super::accessible_text::AccessibleText> {
+        let exposed = !self.masked
+            && self
+                .accessibility_presentation
+                .as_ref()
+                .is_some_and(|presentation| presentation.expose_value);
+        if !exposed {
+            self.accessible_text = None;
+            return None;
+        }
+        let segmented = match &self.accessible_text {
+            Some(segmented) if segmented.is_of(&self.text) => segmented.clone(),
+            _ => {
+                let segmented = Rc::new(super::accessible_text::Segmented::of(&self.text));
+                self.accessible_text = Some(segmented.clone());
+                segmented
+            }
+        };
+        let Selection { start, end } = self.selected_range;
+        let (anchor, focus) = if self.selection_reversed {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        Some(super::accessible_text::AccessibleText::new(
+            segmented, anchor, focus,
+        ))
+    }
+
     /// Whether this input spans more than one line.
     ///
     /// Answered by the mode marker, which is fixed when the state is built.
@@ -678,6 +717,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             extras: M::Extras::default(),
             focus_handle: focus_handle.clone(),
             accessibility_presentation: None,
+            accessible_text: None,
             text: "".into(),
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             search_session: super::SearchSession::default(),
@@ -3346,10 +3386,15 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         let accessibility = self.accessibility_presentation.clone();
         // Only an active accessibility client needs a text snapshot. Secret
         // content types stay hidden even when a visual mask is toggled off.
-        let accessibility_value = (window.is_a11y_active()
-            && !self.masked
-            && accessibility.as_ref().is_some_and(|a| a.expose_value))
-        .then(|| self.text.to_string());
+        // GitTurtle patch: the snapshot holds the text runs AccessKit's
+        // adapters read a field's text through, as well as its value.
+        let accessible_text = if window.is_a11y_active() {
+            self.accessible_text()
+        } else {
+            self.accessible_text = None;
+            None
+        };
+        let accessibility_value = accessible_text.as_ref().map(|text| text.value());
         let disabled = self.disabled;
         let readonly = self.readonly;
         let accessibility_state = entity.clone();
@@ -3373,6 +3418,13 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                         }
                         if readonly {
                             builder.parent_node().set_read_only();
+                        }
+                        if let Some(text) = accessible_text {
+                            let (runs, selection) = text.runs(|key| builder.synthetic_node_id(key));
+                            for (id, run) in runs {
+                                builder.push_child(id, run);
+                            }
+                            builder.parent_node().set_text_selection(selection);
                         }
                     })
                     .when(!disabled && !readonly, |this| {

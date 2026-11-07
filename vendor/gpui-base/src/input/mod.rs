@@ -10,6 +10,9 @@ use gpui::App;
 /// Character used by masked editor modes.
 pub(crate) const MASK_CHAR: char = '•';
 
+// GitTurtle patch: a field's text as assistive technology reads it.
+#[path = "base/accessible_text.rs"]
+mod accessible_text;
 mod base;
 #[path = "base/blink_cursor.rs"]
 pub(crate) mod blink_cursor;
@@ -62,6 +65,7 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 pub use crate::number_input::{NumberInputEvent, NumberStep};
+pub use accessible_text::AccessibleText;
 pub use base::{InputBase, InputContextMenuCapabilities, InputStyles};
 pub use cursor::Selection;
 pub use decorations::{TextDecoration, TextDecorationCollection};
