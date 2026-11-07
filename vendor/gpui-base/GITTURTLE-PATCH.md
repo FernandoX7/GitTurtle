@@ -1098,8 +1098,21 @@ a single-line field, a multi-line field and on the default Button, with
 part when upstream leaves Enter on a focused Button in a dialog to the
 Button, and those tests pass without it.
 
-The same patch keeps a held Enter from confirming a dialog (decided by the
-coordinator after the security re-review of 2026-11-05). Bound to
+The constructor builds that key context from the static name
+(`button::button_context`, 2026-11-07, allocation hygiene) rather than
+handing GPUI's `key_context` the `&str`, which parsed it on every call:
+the name collected into a new string and the context's entry, two
+allocations for every base Button built, and a Button is built again in
+every frame that draws it. The built context shares the static name and
+makes only its one entry; it equals the parsed one, so binding and
+dispatch are unchanged. The kit test is
+`button::tests::the_key_context_shares_the_static_name_across_frames`,
+which reads the focused Button's context from two frames and finds both
+naming the one static string. This goes with the dialog-button part above.
+
+The dialog-button patch also keeps a held Enter from confirming a
+dialog (decided by the coordinator after the security re-review of
+2026-11-05). Bound to
 `Confirm`, Enter confirmed on every repeat a held key sends, since GPUI
 hands an action no key event: held on a body Button that opens a
 confirmation (Stashes' Drop…, Git profiles' Delete…), the fresh press

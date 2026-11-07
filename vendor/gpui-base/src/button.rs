@@ -3,7 +3,7 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{
     A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId, FocusHandle,
     GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement,
-    KeyboardButton, KeyboardClickEvent, LayoutId, MouseButton, ParentElement, Pixels,
+    KeyContext, KeyboardButton, KeyboardClickEvent, LayoutId, MouseButton, ParentElement, Pixels,
     Refineable as _, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement,
     StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, relative,
 };
@@ -45,10 +45,9 @@ impl Button {
             // Enter to the Button. A caller's own `key_context` replaces it,
             // and that Button opts out of the dialog's Enter press: Enter on
             // it is the dialog's `Confirm` again, unless the caller binds the
-            // key in its own context.
-            base: div()
-                .id(id.clone())
-                .key_context(crate::dialog::BUTTON_CONTEXT),
+            // key in its own context. Built from the static name, never
+            // parsed ([`button_context`]).
+            base: div().id(id.clone()).key_context(button_context()),
             id,
             style: StyleRefinement::default(),
             semantic_styles: ButtonStyles::default(),
@@ -169,6 +168,17 @@ impl Button {
             .flatten(),
         )
     }
+}
+
+/// GitTurtle patch: the Button's key context, [`crate::dialog::BUTTON_CONTEXT`],
+/// built from the static name rather than parsed from it. Given a `&str`,
+/// `key_context` parses it on every call, collecting the name into a new
+/// string, and a Button is built again in every frame that draws it; built
+/// here, the context shares the static name and makes only its one entry.
+fn button_context() -> KeyContext {
+    let mut context = KeyContext::default();
+    context.add(SharedString::new_static(crate::dialog::BUTTON_CONTEXT));
+    context
 }
 
 impl Selectable for Button {
@@ -511,6 +521,39 @@ mod tests {
 
         assert_eq!(button_clicks.get(), 2);
         assert_eq!(keyboard_events.get(), 2);
+    }
+
+    /// GitTurtle patch: a Button's key context is built from the static
+    /// name `Button`, never parsed (`button_context`), so a frame that builds
+    /// the Button again copies nothing of the name: the focused Button's
+    /// context, read from two frames and both kept, names the one static
+    /// string in each, and is the context parsing the name makes. Parsed on
+    /// every construction, each frame's context held a copy of its own.
+    #[gpui::test]
+    fn the_key_context_shares_the_static_name_across_frames(cx: &mut TestAppContext) {
+        let (cx, ..) = harness(cx, false);
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+        let focused_context = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                window
+                    .context_stack()
+                    .into_iter()
+                    .find(|context| context.contains(crate::dialog::BUTTON_CONTEXT))
+                    .expect("the focused Button's key context")
+            })
+        };
+        let first = focused_context(cx);
+        let second = focused_context(cx);
+        assert!(first == KeyContext::parse(crate::dialog::BUTTON_CONTEXT).unwrap());
+        assert!(second == first);
+        let name = |context: &KeyContext| context.primary().map(|entry| entry.key.as_ptr());
+        assert_eq!(
+            name(&first),
+            name(&second),
+            "both frames' contexts share the static name"
+        );
     }
 
     #[gpui::test]
