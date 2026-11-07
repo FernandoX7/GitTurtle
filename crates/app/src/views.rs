@@ -25692,13 +25692,13 @@ pub(crate) mod tests {
             ]
         )));
         // Each size's form: whether the controls share one row, whether
-        // Refresh keeps its control there, and whether the composer keeps its
-        // heading.
-        for (width, height, text, tight, refresh, heading) in [
-            (461., 490., 13, true, true, false),
-            (461., 490., 18, true, false, false),
-            (640., 680., 13, false, true, true),
-            (640., 680., 18, true, true, false),
+        // Refresh keeps its control there, whether the composer keeps its
+        // heading, and whether the list and the composer scroll together.
+        for (width, height, text, tight, refresh, heading, scrolls) in [
+            (461., 490., 13, true, true, false, true),
+            (461., 490., 18, true, false, false, true),
+            (640., 680., 13, false, true, true, false),
+            (640., 680., 18, true, true, false, true),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             COMPACT_NAMES.with(|names| names.borrow_mut().clear());
@@ -25838,6 +25838,16 @@ pub(crate) mod tests {
                     && commit.bottom() <= composer.bottom()
                     && body.bottom() <= px(height) - status + px(0.01),
                 "{at}: {composer:?}, title {label:?} {title:?}, commit {commit:?} in {body:?}"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                scrolls,
+                "{at}: the body scrolls"
+            );
+            // Where nothing scrolls, Commit lies whole above the status bar.
+            assert!(
+                scrolls || commit.bottom() <= px(height) - status,
+                "{at}: {commit:?} above the status bar"
             );
             // One leading inset for every row.
             let leading = inspector.left() + inset;
@@ -30400,11 +30410,13 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.working_paths.staged_count),
             2
         );
-        for (text, height, shown) in [
-            (13, 490., false),
-            (18, 490., false),
-            (13, 640., true),
-            (18, 980., true),
+        // Each size, whether the heading shows, and whether the list and the
+        // composer scroll together.
+        for (text, height, shown, scrolls) in [
+            (13, 490., false, true),
+            (18, 490., false, true),
+            (13, 640., true, false),
+            (18, 980., true, false),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(height)));
@@ -30430,6 +30442,15 @@ pub(crate) mod tests {
                     && commit.bottom() <= composer.bottom()
                     && label.top() >= composer.top(),
                 "{at}: {composer:?}, {label:?}, {commit:?} in {body:?}"
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                scrolls,
+                "{at}: the body scrolls"
+            );
+            assert!(
+                scrolls || commit.bottom() <= px(height) - status,
+                "{at}: {commit:?} above the status bar"
             );
             let heading = cx.debug_bounds("commit-composer-heading");
             if shown {
@@ -30469,17 +30490,23 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
         settle(&app, cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for (text, width, height) in [
-            (13, 461., 490.),
-            (18, 461., 490.),
-            (13, 640., 680.),
-            (18, 640., 680.),
+        // Each size, and whether the list and the composer scroll together.
+        for (text, width, height, scrolls) in [
+            (13, 461., 490., true),
+            (18, 461., 490., true),
+            (13, 640., 680., false),
+            (18, 640., 680., true),
         ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                scrolls,
+                "{at}: the body scrolls"
+            );
             let (gap, padding, row, status) = cx.update(|window, cx| {
                 (
                     window.pixel_snap(appearance::ui_size(4.)),
@@ -30521,11 +30548,14 @@ pub(crate) mod tests {
                 list.bottom() <= composer.top() + slack && composer.top() - list.bottom() < row,
                 "{at}: the list {list:?} above {composer:?}"
             );
-            let scrolls = composer.bottom() > body.bottom() + slack;
             assert!(
                 (scrolls || (body.bottom() - composer.bottom()).abs() <= slack)
                     && (px(height) - status - body.bottom()).abs() <= slack,
                 "{at}: {composer:?} ends at the body's foot {body:?}, above the status bar"
+            );
+            assert!(
+                scrolls || commit.bottom() <= px(height) - status,
+                "{at}: {commit:?} above the status bar"
             );
             assert!(
                 !scrolls || (composer.top() - list.bottom()).abs() <= slack,
@@ -30720,15 +30750,17 @@ pub(crate) mod tests {
             "commit-description",
             "commit-description-hint",
         ];
+        // Each size, and whether the list and the composer scroll together
+        // there, with and without an identity.
         let sizes = [
-            (13, 461., 490.),
-            (18, 461., 490.),
-            (13, 640., 680.),
-            (18, 640., 680.),
-            (18, 461., 980.),
-            (18, 461., 1400.),
-            (13, 1480., 980.),
-            (18, 1480., 980.),
+            (13, 461., 490., true),
+            (18, 461., 490., true),
+            (13, 640., 680., false),
+            (18, 640., 680., true),
+            (18, 461., 980., false),
+            (18, 461., 1400., false),
+            (13, 1480., 980., false),
+            (18, 1480., 980., false),
         ];
         for identity in [false, true] {
             // The repository's own identity, which the app reads back. The app
@@ -30752,7 +30784,7 @@ pub(crate) mod tests {
                 Some((name.to_owned(), email.to_owned())),
                 "the fixture's identity"
             );
-            for (text, width, height) in sizes {
+            for (text, width, height, scrolls) in sizes {
                 cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
                 cx.simulate_resize(size(px(width), px(height)));
                 draw(cx);
@@ -30777,11 +30809,15 @@ pub(crate) mod tests {
                 let slack = px(0.5);
                 // The composer scrolls with the list where the body cannot
                 // hold both; otherwise it ends inside the window.
-                let scrolls = composer.bottom() > body.bottom() + slack;
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                    scrolls,
+                    "{at}: the body scrolls"
+                );
                 assert!(
-                    (scrolls || composer.bottom() <= px(height))
+                    (scrolls || composer.bottom() <= body.bottom() + slack)
                         && commit.bottom() <= composer.bottom(),
-                    "{at}: {commit:?} in {composer:?}"
+                    "{at}: {commit:?} in {composer:?}, the body {body:?}"
                 );
                 // The whole section, always.
                 let section = SECTION.map(|selector| cx.debug_bounds(selector));
