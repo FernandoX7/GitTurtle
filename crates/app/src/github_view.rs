@@ -2325,7 +2325,7 @@ impl Panel {
             return;
         }
         let closer = review
-            .closer
+            .closing
             .take()
             .filter(|closer| review.closers_drawn.get_mut().contains(closer));
         match closer {
@@ -2358,8 +2358,10 @@ impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.announce(window, cx);
         self.name_row_parts();
-        // The controls this frame draws enabled that can take a pane away ([`Panel::closing`]).
+        // The controls this frame draws enabled that can take a pane away ([`Panel::closing`]),
+        // and the one pressed since the last frame, which this frame alone may hand focus to.
         self.review.closers_drawn.get_mut().clear();
+        self.review.closing = self.review.closer.take();
         // The focus a pane that can go with it holds in the frame the window last drew
         // ([`Panel::hand_off_lost_pane_focus`]).
         let review = &self.review;
@@ -11546,6 +11548,72 @@ mod tests {
         assert!(
             cx.update(|window, _| account.is_focused(window) && !window.context_stack().is_empty()),
             "the pane's focus moves to Connect account, which closed it, drawn"
+        );
+    }
+
+    /// The control a press records as the panel's closer takes the focus a pane held only as
+    /// the frame its press draws takes the pane away ([`review::ReviewState::closer`]), in a
+    /// 1,480 × 800 window at 13 pt: with Threads' Conversations pane focused by a click on its
+    /// heading, Account options opens the connection pane, taking no pane away; a page of
+    /// files the panel receives later replaces Threads with no press since, and the file list
+    /// takes the pane's focus ([`Panel::focus_visible_section`]). Kept until another press,
+    /// the closer gave it to Account options, whose press had closed nothing.
+    #[gpui::test]
+    async fn a_press_that_takes_no_pane_away_leaves_no_closer_for_later(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap();
+        let files = page.items.clone();
+        let (section, account, file_list) = cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            (
+                review.section_focus.clone(),
+                review.account_focus.clone(),
+                review.file_focus.clone(),
+            )
+        });
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+        };
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_click(at, Modifiers::none());
+            settle(cx);
+        };
+        show_surface(
+            (&app, &panel, &pull, &files),
+            Surface::Threads,
+            (13, 1480., 800.),
+            cx,
+        )
+        .await;
+        click(cx, "github-conversations-heading");
+        click(cx, "github-account-options");
+        assert!(
+            panel.read_with(cx, |panel, _| panel.review.connection_open),
+            "Account options opens the connection pane"
+        );
+        assert!(
+            cx.update(|window, _| section.is_focused(window)),
+            "the Conversations pane keeps the focus its heading's click gave it"
+        );
+        panel.update(cx, |panel, cx| {
+            panel.receive_file_page(page);
+            cx.notify();
+        });
+        settle(cx);
+        assert_eq!(panel.read_with(cx, |panel, _| panel.review.mode), 0);
+        let (on_account, on_list) =
+            cx.update(|window, _| (account.is_focused(window), file_list.is_focused(window)));
+        assert!(
+            !on_account && on_list,
+            "the file list takes the pane's focus, not Account options \
+             (Account options {on_account}, the file list {on_list})"
         );
     }
 

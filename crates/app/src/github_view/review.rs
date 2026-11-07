@@ -136,9 +136,15 @@ pub(super) struct ReviewState {
     /// Files' Previous and Next page, which take focus Threads' Conversations pane held as the
     /// page they load replaces it.
     pub file_page_focus: [FocusHandle; 2],
-    /// The control whose press last took a pane away, or asked for what will, which the
-    /// panel's guard gives focus the pane held ([`Panel::closing`]).
+    /// The control whose press takes a pane away, or whose request's answer does as it
+    /// arrives, as a page of files replaces Threads, since the window last drew
+    /// ([`Panel::closing`]): the next frame takes it ([`ReviewState::closing`]), so a press
+    /// that took nothing away leaves nothing for a later frame.
     pub closer: Option<FocusHandle>,
+    /// The closer of the frame the window last drew ([`ReviewState::closer`]), which the
+    /// panel's guard gives focus a pane held as that frame took the pane away
+    /// ([`Panel::hand_off_lost_pane_focus`]), and which the next frame replaces.
+    pub closing: Option<FocusHandle>,
     /// The controls that can take a pane away which the last frame drew enabled, so tracking
     /// their focus ([`Panel::closing`]): a disabled Button tracks none, and focus given to
     /// one is drawn nowhere.
@@ -212,6 +218,7 @@ impl ReviewState {
             create_focus: cx.focus_handle().tab_stop(true),
             file_page_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             closer: None,
+            closing: None,
             closers_drawn: Default::default(),
             pane_held: None,
             preparing: false,
@@ -1911,7 +1918,10 @@ impl Panel {
         self.focus_visible_section(window, cx);
         cx.notify();
     }
-    fn file_page(&mut self, page: u32, window: &mut Window, cx: &mut Context<Self>) {
+    /// Loads page `page` of the PR's files, asked for by Previous (`side` 0) or Next (1), which
+    /// takes focus Threads' Conversations pane held as the page replaces it
+    /// ([`ReviewState::closer`]).
+    fn file_page(&mut self, page: u32, side: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(pull) = self.captured(cx) else {
             return;
         };
@@ -1920,15 +1930,18 @@ impl Panel {
         self.run(
             RequestKind::Load,
             move |control| Client(UiTransport::open(fixture, moved)?).files(&pull, page, &control),
-            |result, this, _, _| match result {
-                Ok(page) => this.receive_file_page(page),
+            move |result, this, _, _| match result {
+                Ok(page) => {
+                    this.review.closer = Some(this.review.file_page_focus[side].clone());
+                    this.receive_file_page(page)
+                }
                 Err(error) => this.error = Some(format!("{error:#}")),
             },
             window,
             cx,
         );
     }
-    fn receive_file_page(&mut self, page: github::Page<PullFile>) {
+    pub(super) fn receive_file_page(&mut self, page: github::Page<PullFile>) {
         self.review.cancel_preparation();
         self.review.files = page.items;
         self.review.file_page = page.page;
@@ -2547,8 +2560,7 @@ impl Panel {
                         )
                         .debug_selector(|| "github-files-previous".into())
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.review.closer = Some(this.review.file_page_focus[0].clone());
-                            this.file_page(this.review.file_page - 1, window, cx)
+                            this.file_page(this.review.file_page - 1, 0, window, cx)
                         })),
                     )
                     .child(
@@ -2563,8 +2575,7 @@ impl Panel {
                         )
                         .debug_selector(|| "github-files-next".into())
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.review.closer = Some(this.review.file_page_focus[1].clone());
-                            this.file_page(this.review.file_page + 1, window, cx)
+                            this.file_page(this.review.file_page + 1, 1, window, cx)
                         })),
                     ),
             );
