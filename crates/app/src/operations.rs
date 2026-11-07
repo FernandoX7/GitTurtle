@@ -192,26 +192,14 @@ impl SerialExecutor {
     pub fn drain_within(&self, limit: std::time::Duration) {
         let deadline = std::time::Instant::now() + limit;
         let (done, drained) = mpsc::channel();
-        let mut marker: Operation = Box::new(move |_| {
-            let _ = done.send(());
-        });
-        loop {
-            match self.sender.try_send(marker) {
-                Ok(()) => break,
-                Err(mpsc::TrySendError::Full(refused)) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the {} executor's queue stayed full for {limit:?}: a job ahead of the drain never answered or is still held",
-                        self.name
-                    );
-                    marker = refused;
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => {
-                    panic!("the {} executor stopped before the drain", self.name)
-                }
-            }
-        }
+        self.queue_within(
+            Box::new(move |_| {
+                let _ = done.send(());
+            }),
+            limit,
+            deadline,
+            "drain",
+        );
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         match drained.recv_timeout(left) {
             Ok(()) => {}
@@ -228,17 +216,62 @@ impl SerialExecutor {
     /// Holds this executor's thread until the returned guard drops, as a
     /// slow job would: whatever is submitted meanwhile waits behind it. A
     /// GPUI test holds a dialog's read this way to act on its loading row
-    /// before the reply lands.
+    /// before the reply lands. Where the queue has no room for the hold
+    /// within [`test_wait`], as behind a job the test itself still holds,
+    /// it fails the test at the caller's line.
     #[cfg(test)]
+    #[track_caller]
     pub fn hold(&self) -> Held {
+        self.hold_within(test_wait())
+    }
+
+    /// [`hold`](Self::hold), failing after `limit` rather than
+    /// [`test_wait`].
+    #[cfg(test)]
+    #[track_caller]
+    pub fn hold_within(&self, limit: std::time::Duration) -> Held {
         let (release, released) = mpsc::channel::<()>();
-        self.sender
-            .send(Box::new(move |_| {
+        self.queue_within(
+            Box::new(move |_| {
                 // Dropping the guard closes the channel, which ends the wait.
                 let _ = released.recv();
-            }))
-            .expect("the executor accepts the hold");
+            }),
+            limit,
+            std::time::Instant::now() + limit,
+            "hold",
+        );
         Held { _release: release }
+    }
+
+    /// Queues a test's `job`, named `what`, waiting for room in the bounded
+    /// queue until `deadline`. A blocking send waited for good behind a job
+    /// the waiting thread itself held, an earlier hold's guard among them.
+    #[cfg(test)]
+    #[track_caller]
+    fn queue_within(
+        &self,
+        mut job: Operation,
+        limit: std::time::Duration,
+        deadline: std::time::Instant,
+        what: &str,
+    ) {
+        loop {
+            match self.sender.try_send(job) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Full(refused)) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the {} executor's queue stayed full for {limit:?}: a job ahead of the {what} never answered or is still held",
+                        self.name
+                    );
+                    job = refused;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    panic!("the {} executor stopped before the {what}", self.name)
+                }
+            }
+        }
     }
 
     /// [`Self::submit_read`] for a read of `key` that reads what is there
@@ -665,6 +698,27 @@ mod tests {
         running.recv().unwrap();
         let _queued: Vec<_> = (0..8).map(|_| executor.submit(|| Ok(()))).collect();
         executor.drain_within(std::time::Duration::from_millis(50));
+    }
+
+    /// A hold behind a held job and a full queue finds no room either, and
+    /// fails, naming the executor: its blocking send waited for good, as it
+    /// would behind an earlier hold whose guard the same test still keeps.
+    #[test]
+    #[should_panic(expected = "the hold-full-test executor's queue stayed full")]
+    fn a_hold_behind_a_full_held_queue_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("hold-full-test");
+        // The held job is running, off the queue, before its eight slots
+        // are taken.
+        let (started, running) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let _running = executor.submit(move || {
+            started.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        });
+        running.recv().unwrap();
+        let _queued: Vec<_> = (0..8).map(|_| executor.submit(|| Ok(()))).collect();
+        let _hold = executor.hold_within(std::time::Duration::from_millis(50));
     }
 
     /// `GITTURTLE_TEST_WAIT_SECS` raises the waits' bound on a slow host
