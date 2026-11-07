@@ -31210,8 +31210,8 @@ pub(crate) mod tests {
     /// Shift+Tab at the body's top, stays whole, a gap inside the body, in
     /// every frame drawn as a watcher's refresh stages a file and the floor gives up a
     /// row, where it once kept its offset and cut the title's label at the
-    /// body's top. Commit, revealed at the body's foot, is revealed again
-    /// once the draft-save note and its Retry come above it.
+    /// body's top. Commit, revealed at the body's foot, stays whole in every
+    /// frame drawn as the draft-save note and its Retry come above it.
     #[gpui::test]
     async fn a_focused_composer_stop_stays_whole_as_the_content_around_it_moves(
         cx: &mut TestAppContext,
@@ -31329,8 +31329,17 @@ pub(crate) mod tests {
         let commit = app.read_with(cx, |app, cx| app.working_body.focus("commit-staged", cx));
         assert!(cx.update(|window, _| commit.is_focused(window)));
         assert_inside(cx, &["commit-staged"], padding, "Commit");
+        let button = cx.debug_bounds("commit-staged").expect("Commit");
+        let body = cx.debug_bounds("working-body").expect("the body");
+        assert!(
+            (body.bottom() - padding - button.bottom()).abs() < px(0.5),
+            "Commit {button:?} at the body's foot {body:?}"
+        );
         let composer = cx.debug_bounds("commit-composer").expect("the composer");
-        // The draft-save note and its Retry come above it.
+        // The draft-save note and its Retry come above it: Commit stays
+        // whole in every frame drawn, where it once lay below the body's
+        // foot for one frame by their height.
+        reveal.take_painted();
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
                 app.draft_save_error = Some("The disk is full".into());
@@ -31348,6 +31357,20 @@ pub(crate) mod tests {
         );
         assert!(cx.update(|window, _| commit.is_focused(window)));
         assert_inside(cx, &["commit-staged"], padding, "the note came");
+        let frames = reveal.take_painted();
+        assert!(!frames.is_empty(), "the note draws the body");
+        for (index, frame) in frames.iter().enumerate() {
+            let control = frame
+                .control
+                .unwrap_or_else(|| panic!("frame {index} draws Commit"));
+            assert!(
+                control.top() + slack >= frame.viewport.top() + padding
+                    && control.bottom() <= frame.viewport.bottom() - padding + slack,
+                "frame {index} of {} draws Commit {control:?} cut in {:?}",
+                frames.len(),
+                frame.viewport
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

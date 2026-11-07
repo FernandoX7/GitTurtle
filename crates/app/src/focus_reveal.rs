@@ -372,9 +372,15 @@ impl FocusReveal {
         }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
             // Where the content has moved it since the last frame drew it.
+            // What moved it down lengthens the container's reach by as much,
+            // which this frame's layout clamps the offset to: clamped to the
+            // last frame's reach, a control at the container's foot that
+            // rows coming above it moved down stayed below the foot for the
+            // frame they came in.
             let moved = self.content.get().1;
             let at = bounds + point(px(0.), self.scroll.offset().y + moved);
-            if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due) {
+            let reach = self.scroll.max_offset().y + moved.max(Pixels::ZERO);
+            if let Some(offset) = self.target(at, margin, self.scroll.bounds(), due, reach) {
                 self.scroll.set_offset(offset);
             }
         }
@@ -723,13 +729,15 @@ impl FocusReveal {
     /// reveals it by it again. One the last frame showed whole is revealed
     /// by its leading edge wherever a resize leaves it too tall to fit:
     /// kept where it was, a 500 px control Tab had shown whole kept 153 px
-    /// of itself in a view a resize had cut to 450 px.
+    /// of itself in a view a resize had cut to 450 px. The offset is kept
+    /// within `reach`, how far the container scrolls.
     fn target(
         &self,
         bounds: Bounds<Pixels>,
         margin: Pixels,
         viewport: Bounds<Pixels>,
         due: Due,
+        reach: Pixels,
     ) -> Option<Point<Pixels>> {
         if viewport.size.height <= Pixels::ZERO {
             return None;
@@ -752,10 +760,7 @@ impl FocusReveal {
             return None;
         };
         let previous = self.scroll.offset();
-        let offset = point(
-            previous.x,
-            (previous.y + delta).clamp(-self.scroll.max_offset().y, px(0.)),
-        );
+        let offset = point(previous.x, (previous.y + delta).clamp(-reach, px(0.)));
         (offset != previous).then_some(offset)
     }
 
@@ -768,7 +773,8 @@ impl FocusReveal {
             return;
         };
         let viewport = self.scroll.bounds();
-        let Some(offset) = self.target(bounds, margin, viewport, due) else {
+        let reach = self.scroll.max_offset().y;
+        let Some(offset) = self.target(bounds, margin, viewport, due, reach) else {
             return;
         };
         let scroll = self.scroll.clone();

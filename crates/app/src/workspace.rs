@@ -29,10 +29,12 @@ pub(crate) struct WorkingInspectorLayout {
     /// The whole inspector's height as last laid out, which no form of its
     /// rows changes, so it can choose the form (`WorkingFit`).
     inspector: Pixels,
-    /// The file list's floor in the last frame where the list and the
-    /// composer scrolled together, the height above the composer's stops
-    /// (`GitTurtle::render_working_body`).
-    scrolled_floor: Option<f32>,
+    /// Where the composer's stops lay below the body's top, as far as the
+    /// list's floor and the composer's rows place them, in the last frame
+    /// where the list and the composer scrolled together
+    /// (`GitTurtle::render_working_body`): the title, the description,
+    /// Retry, Set your commit identity and Commit.
+    scrolled_stops: Option<[f32; 5]>,
 }
 
 /// Whether the list/composer body, `height` tall, takes the short form, with
@@ -70,6 +72,8 @@ struct WorkingBodyParts {
     /// The composer's fields' rows but the description's field
     /// (`GitTurtle::composer_rows`).
     rows: Pixels,
+    /// Where its stops below the title begin among those rows.
+    stops: ComposerStops,
     /// The Description section's own rows
     /// (`GitTurtle::description_section`).
     section: Pixels,
@@ -414,12 +418,17 @@ impl ComposerMetrics {
     /// What the composer takes beside its scrolling fields: its border, the
     /// pinned heading and the commit action.
     fn chrome(&self) -> Pixels {
+        self.above_fields() + self.action + self.padding
+    }
+
+    /// What lies above the composer's fields: its border and the heading.
+    fn above_fields(&self) -> Pixels {
         let heading = if self.heading {
             self.padding + self.heading_row
         } else {
             px(0.)
         };
-        self.border + heading + self.action + self.padding
+        self.border + heading
     }
 
     /// The description's least field: one line inside its 8 px above and
@@ -469,6 +478,20 @@ impl ComposerMetrics {
         let field = px(16.) + self.text * lines;
         (lines >= 1.).then(|| f32::from(window.pixel_snap(field).min(room)))
     }
+}
+
+/// Where the composer's stops below the title begin among its fields' rows,
+/// from the fields' top, but for the description's field
+/// (`GitTurtle::composer_rows`): what a change of those rows moves each
+/// stop by is known before layout (`GitTurtle::render_working_body`).
+#[derive(Clone, Copy, Debug, Default)]
+struct ComposerStops {
+    /// The Description section, below the title's rows and any note.
+    description: Pixels,
+    /// The draft-save note and Retry, below the Description section.
+    retry: Pixels,
+    /// Set your commit identity, below the draft-save note and Retry.
+    identity: Pixels,
 }
 
 /// How many of the file list's rows it keeps whole whatever else gives way:
@@ -1416,9 +1439,10 @@ impl GitTurtle {
     /// the Description section's label and hint with the gaps around its
     /// field (`description_section`), the guidance after it, and the gap
     /// above the commit action, wrapped texts laid out once per text, size
-    /// and width (`wrapped_lines`). `shown`: the list shows a status's rows,
-    /// its own or those kept while a newer one's are prepared. `title_length`:
-    /// the title's committed length (`title_length`).
+    /// and width (`wrapped_lines`), and where among them the stops below the
+    /// title begin. `shown`: the list shows a status's rows, its own or
+    /// those kept while a newer one's are prepared. `title_length`: the
+    /// title's committed length (`title_length`).
     fn composer_rows(
         &self,
         metrics: &ComposerMetrics,
@@ -1427,7 +1451,7 @@ impl GitTurtle {
         shown: bool,
         title_length: usize,
         window: &Window,
-    ) -> Pixels {
+    ) -> (Pixels, ComposerStops) {
         use crate::appearance::{ui_size, ui_text};
         let rem = window.rem_size();
         let gap = metrics.gap;
@@ -1439,7 +1463,9 @@ impl GitTurtle {
         if title_length > 72 {
             rows += gap + metrics.small * lines(LONG_TITLE_NOTE, ui_text(10.), room);
         }
+        let description = rows;
         rows += self.description_section(metrics, width, window);
+        let retry = rows;
         // The guidance after it, which the section leaves room for.
         if self.draft_save_error.is_some() {
             rows += gap
@@ -1447,6 +1473,7 @@ impl GitTurtle {
                 + rem * 0.25
                 + ui_size(28.);
         }
+        let identity = rows;
         if !identity_ready && shown {
             rows += gap + ui_size(28.);
         }
@@ -1454,7 +1481,12 @@ impl GitTurtle {
             let text = room - px(15.) - rem * 0.5;
             rows += gap + px(15.).max(metrics.label * lines(CONFLICT_NOTE, ui_text(11.), text));
         }
-        rows + metrics.gap
+        let stops = ComposerStops {
+            description,
+            retry,
+            identity,
+        };
+        (rows + metrics.gap, stops)
     }
 
     /// The Description section's rows in the composer's fields, `width`
@@ -3354,7 +3386,7 @@ impl GitTurtle {
                 width,
                 list_size: previous_list.map(|size| size.item),
                 inspector: (viewport - px(200.)).max(px(160.)),
-                scrolled_floor: None,
+                scrolled_stops: None,
             })
         });
         self.working_layout.set(Some(layout.clone()));
@@ -3565,7 +3597,7 @@ impl GitTurtle {
         // the heading leaves before the body would scroll.
         let least = if composer {
             let metrics = ComposerMetrics::new(short, true, window);
-            let rows = self.composer_rows(
+            let (rows, _) = self.composer_rows(
                 &metrics,
                 fitted_width,
                 identity_ready,
@@ -3588,7 +3620,7 @@ impl GitTurtle {
         let metrics = ComposerMetrics::new(short, fit.heading, window);
         // The fields' rows but the description's field, at the interface
         // size: the composer prefers room for them whole with that field.
-        let rows = self.composer_rows(
+        let (rows, stops) = self.composer_rows(
             &metrics,
             fitted_width,
             identity_ready,
@@ -3940,6 +3972,7 @@ impl GitTurtle {
                     fit,
                     metrics,
                     rows,
+                    stops,
                     section,
                     title_length,
                     floor,
@@ -3977,6 +4010,7 @@ impl GitTurtle {
             fit,
             metrics,
             rows,
+            stops,
             section,
             title_length,
             floor,
@@ -4108,20 +4142,51 @@ impl GitTurtle {
         // its top the next time it does, revealing the control focus rests
         // on then, as when the window shrinks under the title.
         let reveal = &self.working_body;
+        let title_focus = self.commit_title.read(cx).focus_handle(cx);
+        let description_focus = self.commit_message.read(cx).focus_handle(cx);
+        let commit_focus = reveal.focus("commit-staged", cx);
+        let identity_focus = reveal.focus("configure-identity", cx);
+        let retry_focus = reveal.focus("retry-commit-draft", cx);
         if scrolls {
             // A composer stop holding focus stays whole as the content
             // around it moves: the list's floor giving up a row as a file is
             // staged, the rows changing in number, or the composer's own
             // rows, as the draft-save note and its Retry come or the long
-            // title's note grows. Its stops lie below the list, which a
-            // change of its floor moves them by, known before layout.
+            // title's note grows. Its stops lie below the list and below
+            // the composer's rows above each, which a change moves them by,
+            // known before layout: moved by the floor alone, Commit was
+            // drawn below the body's foot for a frame as the note and Retry
+            // came above it.
             let rows = self.working_rows.len();
-            let composer_focused =
-                !self.file_focus.contains_focused(window, cx) && reveal.holds_focus(window, cx);
+            let top = floor + f32::from(metrics.above_fields());
+            let field = description.unwrap_or_default();
+            let at = [
+                top,
+                top + f32::from(stops.description),
+                top + f32::from(stops.retry) + field,
+                top + f32::from(stops.identity) + field,
+                floor + content,
+            ];
+            let stop_focus = [
+                &title_focus,
+                &description_focus,
+                &retry_focus,
+                &identity_focus,
+                &commit_focus,
+            ];
+            let focused = reveal
+                .holds_focus(window, cx)
+                .then(|| {
+                    stop_focus
+                        .iter()
+                        .position(|focus| focus.contains_focused(window, cx))
+                })
+                .flatten();
             let moved = layout.update(cx, |layout, _| {
-                let last = layout.scrolled_floor.replace(floor);
-                last.filter(|_| composer_focused)
-                    .map_or(0., |last| floor - last)
+                let last = layout.scrolled_stops.replace(at);
+                focused
+                    .zip(last)
+                    .map_or(0., |(index, last)| at[index] - last[index])
             });
             let key = {
                 use std::hash::{Hash as _, Hasher as _};
@@ -4132,18 +4197,13 @@ impl GitTurtle {
             reveal.content(key, px(moved));
             reveal.reveal(window, cx);
         } else {
-            layout.update(cx, |layout, _| layout.scrolled_floor = None);
+            layout.update(cx, |layout, _| layout.scrolled_stops = None);
             reveal.reveal_next_focus();
             if reveal.scroll().offset() != Point::default() {
                 reveal.scroll().set_offset(Point::default());
             }
         }
         let (gap, padding) = (metrics.gap, metrics.padding);
-        let title_focus = self.commit_title.read(cx).focus_handle(cx);
-        let description_focus = self.commit_message.read(cx).focus_handle(cx);
-        let commit_focus = reveal.focus("commit-staged", cx);
-        let identity_focus = reveal.focus("configure-identity", cx);
-        let retry_focus = reveal.focus("retry-commit-draft", cx);
         let branch = self
             .work_status
             .as_ref()
