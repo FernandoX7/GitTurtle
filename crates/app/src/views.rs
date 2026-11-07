@@ -8875,27 +8875,8 @@ impl GitTurtle {
             .with_state(&self.history_panels)
             // The kit paints its divider over History's first pixel,
             // where the commit list draws its left edge and focus ring;
-            // the sidebar's own right border is the divider. Paint the
-            // line on that border instead, in its color at rest and the
-            // ring's while dragged; the hit area and drag stay the kit's.
-            .with_handle_appearance(std::rc::Rc::new(
-                |handle: &gpui_kit::base::ResizeHandleContext, _, cx| {
-                    let line = if handle.is_active() {
-                        gpui_kit::component::Theme::global(cx).colors.ring
-                    } else {
-                        rgb(palette(cx).border).into()
-                    };
-                    Some(
-                        div()
-                            .flex_none()
-                            .h_full()
-                            .w(px(1.))
-                            .ml(px(-1.))
-                            .bg(line)
-                            .into_any_element(),
-                    )
-                },
-            ))
+            // the sidebar's own right border is the divider.
+            .with_handle_appearance(divider_on_own_border())
             .on_resize({
                 let owner = cx.entity().downgrade();
                 move |panels, window, cx| {
@@ -9390,6 +9371,29 @@ impl GitTurtle {
     }
 }
 
+/// A panel group's divider drawn on the leading panel's own right border,
+/// in the border's colour at rest and the ring's while dragged, where the
+/// kit paints it over the next panel's first pixel, which holds that
+/// panel's left edge and focus ring; the hit area and drag stay the kit's.
+fn divider_on_own_border() -> gpui_kit::base::ResizeHandleRenderer {
+    std::rc::Rc::new(|handle: &gpui_kit::base::ResizeHandleContext, _, cx| {
+        let line = if handle.is_active() {
+            gpui_kit::component::Theme::global(cx).colors.ring
+        } else {
+            rgb(palette(cx).border).into()
+        };
+        Some(
+            div()
+                .flex_none()
+                .h_full()
+                .w(px(1.))
+                .ml(px(-1.))
+                .bg(line)
+                .into_any_element(),
+        )
+    })
+}
+
 impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
@@ -9497,6 +9501,11 @@ impl Render for GitTurtle {
                         panels.update(cx, |panels, _| panels.fit_container(bounds.size.width));
                         h_resizable("workspace-columns")
                             .with_state(&panels)
+                            // The kit paints its divider over the page's
+                            // first pixel, where the navigator draws its left
+                            // edge and focus ring, beside the pane's own right
+                            // border, which so read doubled.
+                            .with_handle_appearance(divider_on_own_border())
                             .on_resize(move |panels, window, cx| {
                                 if let Some(width) = panels.read(cx).sizes().first().copied() {
                                     let _ = owner.update(cx, |this, cx| {

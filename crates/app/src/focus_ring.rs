@@ -279,6 +279,55 @@ pub(crate) fn painted_outlines_where(
     })
 }
 
+/// The fills the last frame painted over `outline` after it: every quad
+/// with a fill, later in the scene's order than the outline's strips, whose
+/// drawn part, inside its clip, meets the band of one of the outline's four
+/// sides. Its clip masks can leave a side whole while a later fill hides it:
+/// the kit's panel divider, drawn last over the page's first pixel, covered
+/// the navigator ring's left side beside the project pane.
+#[cfg(test)]
+pub(crate) fn painted_over(
+    cx: &mut gpui_kit::VisualTestContext,
+    outline: &PaintedOutline,
+) -> Vec<Bounds<Pixels>> {
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let logical = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+            Bounds::from_corners(
+                point(
+                    px(bounds.left().as_f32() / scale),
+                    px(bounds.top().as_f32() / scale),
+                ),
+                point(
+                    px(bounds.right().as_f32() / scale),
+                    px(bounds.bottom().as_f32() / scale),
+                ),
+            )
+        };
+        let (b, w) = (outline.bounds, outline.width);
+        let band =
+            |left, top, right, bottom| Bounds::from_corners(point(left, top), point(right, bottom));
+        let bands = [
+            band(b.left(), b.top(), b.right(), b.top() + w),
+            band(b.right() - w, b.top(), b.right(), b.bottom()),
+            band(b.left(), b.bottom() - w, b.right(), b.bottom()),
+            band(b.left(), b.top(), b.left() + w, b.bottom()),
+        ];
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.order > outline.order && !quad.background.is_transparent())
+            .map(|quad| logical(quad.bounds.intersect(&quad.content_mask.bounds)))
+            .filter(|drawn| {
+                bands.iter().any(|band| {
+                    let met = drawn.intersect(band);
+                    met.size.width > px(0.) && met.size.height > px(0.)
+                })
+            })
+            .collect()
+    })
+}
+
 /// The focused kit Input whose text lies in `text` draws its focus whole in
 /// the last frame: its own 1 px edge in the theme's ring colour, the accent,
 /// and outside that edge the ring a focused Button draws, the installed

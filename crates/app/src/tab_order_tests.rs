@@ -98,13 +98,16 @@ type Stop = (Option<FocusHandle>, String);
 
 /// The stops `key` meets on the shown page from `start`, or from the
 /// window's root, until focus comes round, with every failure of the
-/// sweep's checks at a stop added to `failures`.
+/// sweep's checks at a stop added to `failures`, and, at a stop named in
+/// `lists`, every fill painted over its ring after it.
+#[allow(clippy::too_many_arguments)]
 fn stops(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
     key: &str,
     surface: &str,
     names: &Names,
+    lists: &[&str],
     start: Option<FocusHandle>,
     failures: &mut Vec<String>,
 ) -> Vec<Stop> {
@@ -112,10 +115,27 @@ fn stops(
     cx.update(|window, cx| window.focus(&start, cx));
     views::tests::draw(cx);
     let mut met = Vec::new();
-    sweep::walk_each(app, cx, key, surface, 13, failures, &mut |cx, _, ring| {
+    let mut covered = Vec::new();
+    sweep::walk_each(app, cx, key, surface, 13, failures, &mut |cx, at, ring| {
         let focused = cx.update(|window, cx| window.focused(cx));
-        met.push((focused, names.of(cx, ring)));
+        let name = names.of(cx, ring);
+        // A list's ring is whole inside its clips, and nothing is painted
+        // over it after: the kit's divider beside the project pane covered
+        // the navigator's left side.
+        if lists.contains(&name.as_str()) {
+            for outline in ring {
+                let over = focus_ring::painted_over(cx, outline);
+                if !over.is_empty() {
+                    covered.push(format!(
+                        "{at}: fills painted after its ring at {:?} cover it: {over:?}",
+                        outline.bounds
+                    ));
+                }
+            }
+        }
+        met.push((focused, name));
     });
+    failures.extend(covered);
     met
 }
 
@@ -137,8 +157,17 @@ fn audit(
     let start = (!once)
         .then(|| cx.update(|window, cx| window.focused(cx)))
         .flatten();
-    let forward = stops(app, cx, "tab", surface, names, start.clone(), failures);
-    let backward = stops(app, cx, "shift-tab", surface, names, start, failures);
+    let forward = stops(
+        app,
+        cx,
+        "tab",
+        surface,
+        names,
+        lists,
+        start.clone(),
+        failures,
+    );
+    let backward = stops(app, cx, "shift-tab", surface, names, lists, start, failures);
     let named =
         |walk: &[Stop]| -> Vec<String> { walk.iter().map(|(_, name)| name.clone()).collect() };
     println!(
