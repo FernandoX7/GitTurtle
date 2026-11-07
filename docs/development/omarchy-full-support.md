@@ -763,12 +763,18 @@ cover current upstream x86-64 Omarchy.
        nothing (no scrolling fallback; FU29-A). A status line draws a two-line text whole, its first line rising
        above the 26 px bar (`views.rs:~9073`; FU29-B: draw the first line only). An unrelated watcher warning set
        before a tab is marked stays beside the mark (FU26-E2 report; low).
+       Found by QA-106b (2026-11-07; also on the previous build): (FU29-C) Orca reads a text field's placeholder,
+       never its value (Settings' Name and Email: "Your name", "you@example.com"): the entries expose `placeholder-text`
+       and no Text interface. With eight tabs, Ctrl+T opens the Open Folder dialog and refuses only after a folder is
+       chosen (`repository_tabs.rs:1453`). As History's read lands, Orca announces its list over an open profiles menu.
+       A failed profile store read leaves the menu header "Profiles are unavailable or still loading" above the failure
+       line. The palette's first row is still heard twice on open (QA-106b O2; a slow "go to hi" repeats the whole
+       reading at "i": FU22-B's fail-safe, kept).
      - **Held Enter residuals (FU21-E landed 2026-11-06: a held Enter that opened a dialog reaches
        nothing in or behind it until its key-up, input-method repeats included; native QA-106 pending):**
        (macOS, verify) a Command pressed mid-hold clears the press's start, so if Cocoa keeps repeating
        Enter across the change the first plain repeat after Command's release reaches a field's or
-       list's binding (never a confirmation; FU21-E review N3, security S8); (nit) the patch note's
-       "read in the loop's next iteration" is "current or next iteration" (`dispatcher.rs:246-262`).
+       list's binding (never a confirmation; FU21-E review N3, security S8).
      - **Accessibility and polish found 2026-11-06 (FU22; FU24-C landed 2026-11-06: Keyboard Shortcuts' status
        says a spoken entry once, the tab strip and window controls keep a ring's room apart):** the palette's
        first row may be heard twice on open (QA-106 listens). Palette, pre-existing (FU22-B review): a key
@@ -776,23 +782,20 @@ cover current upstream x86-64 Omarchy.
        row; a click on an unavailable row leaves the status's reading stale (only the error alert is
        heard); held Down repeats under 100 ms apart leave the row they end on unheard (QA-94's quiet
        moves) (FU25-A, with the palette taking FU24-C's returned-row rule and one shared timing owner).
-       The exact-fit strip tests run undecorated, so a decorated window's `strip_width` fit is
-       untested (low).
+       FU28-D landed 2026-11-07 (a decorated exact-fit strip case; a field's caret no longer blinks unfocused after its
+       context menu closes, only the code editor's completion and code-action menus holding a blur; nits below).
        FU27-A landed 2026-11-06 (one reason per group feeds the profiles menu's rebuild key and its rows; the open menu
-       shows and drops Retry as the store fails and recovers); its review's nits (low): the "Profiles: …" line can keep an
+       shows and drops Retry as the store fails and recovers); its review's nit (low): the "Profiles: …" line can keep an
        older failure's text while the menu stays open (only `load_profiles` replaces an error without clearing it, at
-       startup and from Retry; probably unreachable); `docs/profiles.md:3` says Retry goes once a read succeeds (it also
-       goes as a save starts, which clears the error; pre-existing).
+       startup and from Retry; probably unreachable); the `docs/profiles.md:3` Retry nit landed with FU28-D.
        FU27-C landed 2026-11-06 (the dialogs' ghost walk measures a Button's widest content, its held-back Copied
        included; Copy commit ID wraps beside its glyph in a column narrower than its content, the glyph beside the first
-       line, Copied in place; one `select_newest` helper); its re-check's nits (low): the wrapped label's 0.5 × scale top
-       margin lies inside the glyph test's 1 px tolerance (`copy_feedback.rs:578`); `confirming_with` clones `id` for the
-       test-only selector each frame in release (`copy_feedback.rs:524`).
-       A field's caret may keep blinking unfocused when its context menu closes with focus elsewhere
-       (`on_blur` returns early while the menu is open, `vendor/gpui-base/src/input/base/state.rs:2569`; FU26-D re-check, low).
+       line, Copied in place; one `select_newest` helper); its re-check's nit (low; the glyph tolerance one landed with
+       FU28-D, now 0.25 px): `confirming_with` clones `id` for the test-only selector each frame in release
+       (`copy_feedback.rs:524`).
        FU27-B landed 2026-11-06 (the GitHub connection pane's "Local worktree:" line keeps to one line, its path
        elided in the middle as the header's; the panel's stops all draw their rings, checked over 1,526 stops); found
-       by its probe (low): Pulls at 17 pt in 461 × 490, stops 2 and 3 leave a line cut at the body's edge; Overview at
+       by its probe (low; in FU28-A's remaining commits, in review, fix pass FU28-A2): Pulls at 17 pt in 461 × 490, stops 2 and 3 leave a line cut at the body's edge; Overview at
        17 pt (461, 440 px) and 18 pt (480 px): no stop shows `github-captured-identities` (below every stop's view).
      - **A Refresh moves a tab whose `.git` vanished to an enclosing repository (found by FU26-A, 2026-11-06; FU26-E):**
        `RepositorySession::open` rediscovers from the tab's path, so with an enclosing work tree (a dotfiles
@@ -811,10 +814,7 @@ cover current upstream x86-64 Omarchy.
        landed, the testing skill names the recurring races; FU23-A in review: `564d0be6`'s cause was
        macOS's long `TMPDIR` wrapping the fixture path, and the paging test's seed caches):
        FU25-C landed 2026-11-06 (one test root per process, removed at exit, a killed process's root swept
-       by the next run); its review's nits: `make_writable`'s `chmod` follows a link swapped in after its
-       check (same user, permissions only), a kill between `tempdir_in` and the rename leaves a
-       `.gitturtle-app-tests-staging-*` directory, and `working_selection.rs:1158` and `text_review.rs:1028`
-       still name directories by pid and nanoseconds (single-test, self-removing; low). FU26-A landed 2026-11-06 (the
+       by the next run); its review's nits landed with FU28-C 2026-11-07. FU26-A landed 2026-11-06 (the
        long- and in-checkout-`TMPDIR` test causes; `narrow_history_keeps_paging_in_the_column`'s seed caches were
        already emptied by `59a5a3ef`).
      - **FU19 (B, C, D, G and E+H landed 2026-11-05 afternoon, D5 the same evening; A (with A2, A3) and C2 (with C3, C4) in flight; F waits for FU19-A's kit dialog file and FU20-A's profile dialogs):**
@@ -826,10 +826,7 @@ cover current upstream x86-64 Omarchy.
          restore always ends, including a refused 4 KiB query and a write-refused search).
          FU27-D landed 2026-11-06 (a restore's unread page leaves paging on the shown history; a page appends only in the
          window's scope; a saved page past the end shows the last page; the opener on both pages is unreachable and PG5 was
-         already fixed by `a9a62b4b`); its re-check's nits (low): "every other end clears it" (`history_paging.rs:18-21`,
-         `navigation-and-refresh.md:79`) overstates: `invalidate_read` and bare generation bumps drop a page without clearing
-         `reading` (harmless, the next read sets it; say the real guarantee); the landed round could also assert the scope and
-         `next_offset`.
+         already fixed by `a9a62b4b`); its re-check's nits landed with FU28-D 2026-11-07.
        - (C2) Editor highlights' palette rules: FU19-C2 to C5 landed 2026-11-05 night (More
          contrast word tints beyond their lines, Find's other matches fitted by the text rule, the
          current match's off distance, fallbacks keeping Off colours; the hover/selected order in
@@ -883,7 +880,7 @@ cover current upstream x86-64 Omarchy.
        palette's status; a refused menu-bar item looks enabled (`platform_polish.rs`); the
        animated AVIF caption on macOS (`native.rs`); VoiceOver's reading of check menu items
        and of copy announcements from dialogs (the backlog line above).
-     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); `branch_actions.rs`'s picker label still formats each frame (FU22-D landed 2026-11-06: empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); the profile button's accessible name and tooltip format each header render (`profiles.rs:272-285`); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); FU26-F landed 2026-11-06 (the shared Button helpers' icon paths and names kept per symbol, the header's line height read once per frame, the status bar's hints and Settings' Back tooltip built only on a change; release: −2.3 to −2.7 % UI-thread CPU per frame at rest); left: a dialog error line's state key and text copy, per-frame `format!("icons/{…}.svg")` in `projects.rs` (:777, :1026, :1208) and `empty_state.rs:222`, and the kit's `Button::new` parsing a key context per frame;
+     - **Performance, S-M:** FU20-P2 landed 2026-11-05 night (`render_git_actions` builds its text only on a change); FU22-D landed 2026-11-06 (empty states build their line text only on a change); FU20-P landed 2026-11-05 night (the chrome's text and the scope toolbar's count built only on a change; release: no CPU change, allocation hygiene); FU25-D landed 2026-11-06 (the header's labels, tooltips, picker names and badge kept per input, the profile button's name and tooltip and `branch_actions.rs`'s picker label included; release: no CPU change, allocation hygiene; `tags.rs`'s read already ran only on a change, `bd8a67f5`); FU26-F landed 2026-11-06 (the shared Button helpers' icon paths and names kept per symbol, the header's line height read once per frame, the status bar's hints and Settings' Back tooltip built only on a change; release: −2.3 to −2.7 % UI-thread CPU per frame at rest); FU28-B landed 2026-11-07 (a dialog error line's state key and text, the project hub's icon paths and recent rows' text kept, the kit's Button key context built from its static name; release: −151 allocations per frame at rest on Projects, −27 to −31 on History and Changes, no CPU change; `empty_state.rs`'s cost was already gone); left:
        hayro's full-resolution decode profile and the grained-alpha peak on x86-64 (measure);
        read tags after the history page when only one CPU is available (+5.9 ms on one core,
        brief 10's follow-up in `c219a6f2`), M; a release scroll measurement for the per-row
@@ -893,9 +890,11 @@ cover current upstream x86-64 Omarchy.
        release lands in another window (one ignored Enter; clear it on deactivation); a
        single-line field's own Enter binding still runs on held repeats (no repository write
        submits that way).
-     - **Test infrastructure and nits:** the GitHub Files title-and-mode-row height reused from another text size for one frame (FU20-GH4); `SerialExecutor::hold`'s blocking `send` on a full
-       8-slot queue (`operations.rs:233`) and the hold delaying quiet jobs queued during the
-       click (FU17-E); `github_view.rs`'s remaining test premises after FU18-D; tests calling
+     - **Test infrastructure and nits (FU28-C landed 2026-11-07: the PDF helper tests wait on `Slots::waiting`, the
+       hold's send no longer blocks on a full queue; the packager and confirmation-test items and SK1's nits were
+       already fixed):** the GitHub Files title-and-mode-row height reused from another text size for one frame
+       (FU20-GH4); `SerialExecutor::hold` delaying quiet jobs queued during the click (FU17-E);
+       `github_view.rs`'s remaining test premises after FU18-D; tests calling
        `hold_quiet_reads(true)` directly and the other quiet-read wait helpers checked against
        FU12-E's window (`repository_tabs.rs:6807`, `motion.rs:8964`, `page_navigation.rs:920`,
        `recovery.rs`); FU12-D's test needing a Tab first; the M4 Tab test's first-frame scroll;
@@ -903,12 +902,8 @@ cover current upstream x86-64 Omarchy.
        patch note; no press test for the dropped-reply release (FU13-C 1, `main.rs`);
        `State::reset` clearing the hold (`automatic_refresh.rs:90`), the GIF assertion and the
        hue order under 7:1 (FU10-C, M1, M2 N3); FU14-B's first-paint gating untested; FU8-D's
-       wrap slack and `FIT_SLACK` only on a test fault; `tests/pdf_helper.rs` sleeps
-       (`:638`, `:670`, `:965`, `:1107`) to `Slots::waiting`; the AVIF-animation fixture not
-       reproducible (Pillow timestamps); the packager test failing without `readelf`; SK1's nits
-       (`DESIGN.md:136` says Escape is kept longest though "↑↓" outlasts it; one `STATUS_TEXT`
-       slot shared by windows); the confirmation test's own Git identity (`confirmation_tests.rs:122`); the benchmark
-       records' kill-at-work low ends predating FU8fix (a note at the next measurement).
+       wrap slack and `FIT_SLACK` only on a test fault; the AVIF-animation fixture not
+       reproducible (Pillow timestamps); the benchmark records' kill-at-work low ends predating FU8fix (a note at the next measurement).
      - **Tooling and CI:** `qa.py` cannot launch on this host (python-xlib) and has no
        Hyprland backend, frame recorder or horizontal scroll (QA harness); the QA tooling
        items (ΔEOK analysis kind, the `;` keysym, per-channel tolerance, `runenv.py:323`
