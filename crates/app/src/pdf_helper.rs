@@ -579,7 +579,7 @@ impl Slots {
     #[cfg(test)]
     #[allow(
         dead_code,
-        reason = "tests/image_helper.rs observes it; the app's own tests do not"
+        reason = "tests/image_helper.rs and tests/pdf_helper.rs observe it; the app's own tests do not"
     )]
     pub(crate) fn waiting(&self) -> usize {
         self.waiting.load(Ordering::SeqCst)

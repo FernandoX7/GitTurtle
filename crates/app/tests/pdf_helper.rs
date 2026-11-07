@@ -1513,8 +1513,12 @@ mod client {
         let failure = client.render(b"not a pdf", 0, &|| Ok(())).unwrap_err();
         assert!(matches!(failure, Failure::Refused(_)), "{failure:?}");
         assert_eq!(failure.to_string(), "Unrecognized PDF header");
-        // Time for a wrongly started fake to write its pid.
-        thread::sleep(Duration::from_millis(200));
+        // The request's return is the condition: the runner starts, waits
+        // for and reaps its helper on the calling thread before the request
+        // returns (the leaves-no-process tests check it), and this fake
+        // writes its pid before anything else while nothing would end it
+        // early (the check passes, the deadline is 30 s). A helper this
+        // request started has therefore written its pid by now.
         assert!(!fakes.path("pid").exists());
     }
 
@@ -1597,6 +1601,22 @@ mod client {
         };
         let pids = [0, 1, 2, 3].map(|index| fakes.path(&format!("pid-{index}")));
         let pdf = fixtures::benign();
+        // Until one request waits in the slots, having found both taken for
+        // a whole tick; a failure ends every request first.
+        let one_waiting = |which: &str| {
+            let started = Instant::now();
+            while slots.waiting() != 1 {
+                if started.elapsed() > Duration::from_secs(10) {
+                    cancel_waiting.store(true, Ordering::SeqCst);
+                    release.store(true, Ordering::SeqCst);
+                    panic!(
+                        "the {which} request never waited for a slot ({} wait)",
+                        slots.waiting()
+                    );
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
         thread::scope(|scope| {
             let running = [0, 1].map(|index| {
                 let (pid, slots, pdf, check) = (&pids[index], &slots, &pdf, &running_check);
@@ -1613,8 +1633,7 @@ mod client {
                 );
                 (result, Instant::now())
             });
-            // Give the waiting request time to start a helper it must not.
-            thread::sleep(Duration::from_millis(150));
+            one_waiting("third");
             assert!(!pids[2].exists(), "a third helper started");
             let cancelled_at = Instant::now();
             cancel_waiting.store(true, Ordering::SeqCst);
@@ -1629,7 +1648,7 @@ mod client {
                     Client::with(fake(&pids[3], &format!("exec cat {locked}")), LONG, &slots)
                         .render(&pdf, 0, &|| Ok(()))
                 });
-            thread::sleep(Duration::from_millis(150));
+            one_waiting("later");
             assert!(!pids[3].exists(), "a third helper started");
             release.store(true, Ordering::SeqCst);
             for request in running {
