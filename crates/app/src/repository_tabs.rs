@@ -9653,11 +9653,14 @@ mod tests {
     }
 
     /// A cold tab's restore whose saved page lies past the end, as after a
-    /// rewrite shortened history to the snapshot's own rows, ends in
-    /// History as the empty page lands (`receive_history_page`), and
-    /// History's search asked for while the snapshot was read opens there.
-    /// So does one whose page is refused while a write runs, one whose
-    /// saved query, past 4 KiB, the search refuses (`finish_tab_snapshot`),
+    /// fetch at a shallower depth cut its saved scope's history to the
+    /// snapshot's own rows, shows the newest page in its place
+    /// (`receive_history_page`), and with no saved commit for that page to
+    /// list ends in History there, where History's search asked for while
+    /// the snapshot was read opens. So does one whose last page, asked for
+    /// in that page's place, a write starting meanwhile refuses, one whose
+    /// page is refused while a write runs, one whose saved query, past
+    /// 4 KiB, the search refuses (`finish_tab_snapshot`),
     /// and one whose saved query a write running as its typing pause ends
     /// keeps from being searched (`continue_history_search`). Left set with
     /// no read under way, the restore never ended, and the search it held
@@ -9686,6 +9689,7 @@ mod tests {
             "its page refused",
             "its query past 4 KiB",
             "its search refused while a write runs",
+            "its last page refused",
         ]
         .into_iter()
         .enumerate()
@@ -9693,6 +9697,7 @@ mod tests {
             let refused = round == 1;
             let long_query = round == 2;
             let search_refused = round == 3;
+            let last_refused = round == 4;
             if round > 0 {
                 cx.update(|window, cx| {
                     app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
@@ -9723,6 +9728,9 @@ mod tests {
                     Bookmark {
                         comparison: None,
                         compare: true,
+                        // No saved commit for the page shown to list.
+                        selection: None,
+                        selected_oid: None,
                         pinned: Some(SavedHistoryScope::Commit(tip.clone())),
                         offset: 2,
                         ..bookmark.clone()
@@ -9747,7 +9755,32 @@ mod tests {
             }
             drop(held);
             app.read_with(cx, |app, _| app.worker.wait_idle());
+            // The snapshot lands, and its saved page waits for the reader.
+            let page_held = last_refused.then(|| app.read_with(cx, |app, _| app.worker.hold()));
             cx.executor().run_until_parked();
+            if let Some(page_held) = page_held {
+                app.read_with(cx, |app, _| {
+                    assert!(app.repository_tabs.restoring.is_some(), "{when}: restoring");
+                    assert_eq!(app.loading, Some("Reading older history…"), "{when}");
+                });
+                // A write starts before the empty page at the end lands, and
+                // refuses the last page the window asks for in its place:
+                // the restore ends there with the snapshot's rows.
+                app.update(cx, |app, _| app.operation_busy = Some("Committing…"));
+                drop(page_held);
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+                app.read_with(cx, |app, _| {
+                    assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                    assert_eq!(app.loading, None, "{when}: nothing read");
+                    assert_eq!(
+                        (app.history_paging.offset, app.visible.len()),
+                        (0, 2),
+                        "{when}: the snapshot's rows"
+                    );
+                });
+                app.update(cx, |app, _| app.operation_busy = None);
+            }
             if refused {
                 app.update(cx, |app, _| app.operation_busy = None);
             } else if long_query {
@@ -9777,11 +9810,12 @@ mod tests {
             } else {
                 app.read_with(cx, |app, _| app.worker.wait_idle());
                 cx.executor().run_until_parked();
-                assert_eq!(
-                    app.read_with(cx, |app, _| app.status.clone()),
-                    "Reached the end of this captured history",
-                    "{when}"
-                );
+                // The newest page, which holds the whole history, shows in
+                // the saved page's place.
+                app.read_with(cx, |app, _| {
+                    assert_eq!(app.history_paging.offset, 0, "{when}: the newest page");
+                    assert_eq!(app.visible.len(), 2, "{when}: its rows");
+                });
             }
             settle_tab_test(&app, cx).await;
             draw_tab_frames(cx);
@@ -9900,6 +9934,89 @@ mod tests {
             app.read_with(cx, |app, _| {
                 assert_eq!(app.error, None, "{when}: Older read");
                 assert_eq!(listed(app), history, "{when}: Older continues it");
+            });
+        }
+    }
+
+    /// A cold tab's restore whose saved page lies at or past the end of its
+    /// saved scope's history, as after a fetch at a shallower depth, shows
+    /// the last page's worth of rows up to that end, in that
+    /// scope, and selects the saved commit where that page lists it
+    /// (`receive_history_page`). The empty page at the end emptied History's
+    /// window, and a page past it failed the restore's read, leaving the
+    /// snapshot's rows under an error.
+    #[gpui::test]
+    async fn a_restores_page_past_the_end_shows_the_last_page(cx: &mut TestAppContext) {
+        let (_first, app, cx) = crate::views::tests::history_window(cx).await;
+        let root = tempfile::tempdir().unwrap();
+        let page = history_paging::PAGE_SIZE;
+        let total = page + 20;
+        let repo = linear_history_fixture(root.path().join("history"), total as u32);
+        let path = repo.path().to_owned();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_repository_tab(path, window, cx)));
+        settle_tab_test(&app, cx).await;
+        let listed = |app: &GitTurtle| {
+            app.commits
+                .iter()
+                .map(|commit| commit.oid.clone())
+                .collect::<Vec<_>>()
+        };
+        let (tip, bookmark) = app.read_with(cx, |app, cx| {
+            assert_eq!(app.history_paging.next_offset, Some(page), "a page listed");
+            (app.commits[0].oid.clone(), app.tab_bookmark(cx))
+        });
+        // The whole history, newest first.
+        let history = repo
+            .history(total + 1)
+            .unwrap()
+            .into_iter()
+            .map(|commit| commit.oid)
+            .collect::<Vec<_>>();
+        assert_eq!(history.len(), total, "the fixture's history");
+        let oldest = history[total - 1].clone();
+        for (offset, when) in [(total, "at the end"), (total + page, "past the end")] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.update(cx, |app, _| {
+                let tab = &mut app.repository_tabs.tabs[1];
+                tab.warm = None;
+                tab.saved = Bookmark {
+                    comparison: None,
+                    compare: false,
+                    selection: None,
+                    selected_oid: Some(oldest.clone()),
+                    selected_file: None,
+                    query: String::new(),
+                    pinned: Some(SavedHistoryScope::Commit(tip.clone())),
+                    offset,
+                    ..bookmark.clone()
+                };
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx))
+            });
+            settle_tab_test(&app, cx).await;
+            draw_tab_frames(cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.repository_tabs.restoring.is_none(), "{when}: ended");
+                assert_eq!(app.error, None, "{when}: read");
+                // A full page, whose end Older's empty read then confirms.
+                assert_eq!(
+                    (app.history_paging.offset, app.history_paging.next_offset),
+                    (total - page, Some(total)),
+                    "{when}: the last page"
+                );
+                assert_eq!(listed(app), history[total - page..], "{when}: its rows");
+                assert_eq!(app.visible.len(), page, "{when}: listed");
+                assert_eq!(
+                    app.selected_commit
+                        .map(|index| app.commits[index].oid.clone()),
+                    Some(oldest.clone()),
+                    "{when}: the saved commit"
+                );
             });
         }
     }

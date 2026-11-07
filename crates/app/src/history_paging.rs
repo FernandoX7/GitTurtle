@@ -174,13 +174,26 @@ impl GitTurtle {
             graph_notice,
             elapsed,
         } = result;
-        if page.commits.is_empty()
-            && page.offset == self.history_paging.next_offset.unwrap_or(usize::MAX)
-        {
-            self.history_paging.next_offset = None;
-            self.status = "Reached the end of this captured history".into();
-            // A restore's saved page past the end, as after a rewrite
-            // shortened history, ends the restore in History. Left set, it
+        if page.commits.is_empty() {
+            let end = page.offset;
+            if reading.is_none() && Some(end) == self.history_paging.next_offset {
+                self.history_paging.next_offset = None;
+                self.status = "Reached the end of this captured history".into();
+                self.end_restore_in_history(window, cx);
+                return;
+            }
+            // The page asked for lies past its history's end, `end`, as a
+            // restored tab's saved page does where a fetch at a shallower
+            // depth cut that history since: the last page's worth of rows up
+            // to the end shows in its place, in the same scope, and a
+            // restore goes on from it to its saved selection. Shown as it
+            // came, the empty page emptied History's window.
+            if end > 0 && self.read_history_page(reading, end.saturating_sub(PAGE_SIZE), window, cx)
+            {
+                return;
+            }
+            // A scope with no commits, or that page refused: paging stays as
+            // it was, and a restore ends in History. Left set, a restore
             // waited for a page that never came, and held History's search
             // asked for meanwhile.
             self.end_restore_in_history(window, cx);

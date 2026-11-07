@@ -1305,10 +1305,13 @@ impl RepositorySession {
                     .append(&page.commits, GRAPH_LANE_LIMIT, GRAPH_EDGE_LIMIT, || {
                         cancellation.check()
                     })?;
-                ensure!(
-                    page.next_offset.is_some() || history.traversal.offset() == offset,
-                    "Saved history position is past the captured history"
-                );
+                // A position past the history's end, as a restored tab's
+                // saved page is where a shallower fetch cut it, reads as
+                // the empty page at the end, which tells the window where
+                // the history ends (`receive_history_page`).
+                if page.next_offset.is_none() {
+                    break;
+                }
             }
             let page = history.traversal.next_page(
                 limit.clamp(1, gitturtle_core::MAX_HISTORY_PAGE),
@@ -3277,6 +3280,14 @@ mod image_tests {
         let previous = read(500, &mut session);
         assert_eq!(previous.page.commits, expected[500..1000]);
         assert_eq!(previous.graph, expected_graph[500..1000]);
+        // A position past the end reads as the empty page at the end, and
+        // the last page's worth of rows up to it keeps its ancestry.
+        let past = read(5000, &mut session);
+        assert!(past.page.commits.is_empty(), "past the end");
+        assert_eq!((past.page.offset, past.page.next_offset), (1203, None));
+        let last = read(703, &mut session);
+        assert_eq!(last.page.commits, expected[703..]);
+        assert_eq!(last.graph, expected_graph[703..]);
         execute(Job::ReleaseHistory, &mut cache, &active(), &mut session).unwrap();
         assert!(session.history.is_none());
     }
