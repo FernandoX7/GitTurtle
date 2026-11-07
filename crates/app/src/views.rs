@@ -33204,7 +33204,11 @@ pub(crate) mod tests {
     /// the track: the filter reads "Filter" inside its field, the title's
     /// counter "0/72", Commit "Commit" whole beside its icon, and each file
     /// row its whole name, with what the narrow row order leaves beside it,
-    /// inside the row, ending where the track begins. Fitted to the
+    /// inside the row, ending where the track begins: the bare status glyph
+    /// a `gap_2` from the name and the folder below it, without the tile,
+    /// the status word or the Stage or Unstage control. In a 640 × 680
+    /// window at that size, scrolling too, the rows keep their fuller form:
+    /// the tile, the folder, the status word and the control. Fitted to the
     /// inspector's width, they were laid out a gutter too wide.
     #[gpui::test]
     async fn a_scrolling_working_body_fits_what_it_holds_beside_its_gutter(
@@ -33365,6 +33369,25 @@ pub(crate) mod tests {
                 "row {position}: its control only beside a status mark, which leaves last"
             );
             let text = bounds(cx, format!("working-path-{position}").leak());
+            // The named form: the glyph a `gap_2` from the name, its folder
+            // below it, and nothing else beside it.
+            let folder = part(cx, "folder");
+            assert_eq!(
+                (
+                    tile.is_some(),
+                    glyph.is_some(),
+                    folder.is_some(),
+                    status.is_some(),
+                    stage.is_some()
+                ),
+                (false, true, true, false, false),
+                "row {position}: (tile, glyph, folder, status word, control)"
+            );
+            let spacing = text.left() - glyph.expect("the glyph").right();
+            assert!(
+                (spacing - rem * 0.5).abs() < px(0.5),
+                "row {position}'s glyph {spacing:?} from its name"
+            );
             let shown = bounds(cx, format!("working-name-{position}").leak());
             let whole = width_of(cx, &name, appearance::ui_text(12.), FontWeight::MEDIUM);
             assert!(
@@ -33389,6 +33412,34 @@ pub(crate) mod tests {
             }
         }
         assert!(drawn > 0, "the list draws a file row");
+        // The fuller form at 18 pt in a 640 × 680 window, which scrolls too.
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+            "the body scrolls in 640 × 680"
+        );
+        let first = app.read_with(cx, |app, _| {
+            app.working_rows
+                .iter()
+                .position(|row| matches!(row, workspace::WorkingRow::File(..)))
+                .expect("a file row")
+        });
+        let part = |cx: &mut VisualTestContext, kind: &str| {
+            cx.debug_bounds(format!("working-{kind}-{first}").leak())
+                .is_some()
+        };
+        assert_eq!(
+            (
+                part(cx, "tile"),
+                part(cx, "glyph"),
+                part(cx, "folder"),
+                part(cx, "status"),
+                part(cx, "stage")
+            ),
+            (true, false, true, true, true),
+            "row {first} in 640 × 680: (tile, glyph, folder, status word, control)"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
