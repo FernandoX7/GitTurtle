@@ -1098,10 +1098,17 @@ pub(super) fn inherit_test_settings_directory(
 /// locked until it ends, and the kernel releases that lock however it ends: a
 /// root whose lock can be taken is abandoned. Unlike the pid in the name, the
 /// lock holds across reused pids and across pid namespaces that share the
-/// temporary directory, and a root is staged under a name the sweep skips and
-/// renamed into place only once locked.
+/// temporary directory. A root is staged under its own prefix and renamed into
+/// place only once locked, so a process killed in between leaves a staged
+/// root: the sweep takes one once it last changed before the sweeping process
+/// started, and only while it holds the root's lock, which it makes if the
+/// root has none yet, renaming the root to a tombstone before it removes it.
+/// A process that loses its staged root that way fails at its lock and stages
+/// another.
 #[cfg(test)]
 pub(crate) mod test_directories {
+    #[cfg(target_os = "linux")]
+    use std::time::Duration;
     use std::{
         fs, io,
         path::{Path, PathBuf},
@@ -1109,10 +1116,13 @@ pub(crate) mod test_directories {
             OnceLock,
             atomic::{AtomicU64, Ordering},
         },
+        time::SystemTime,
     };
 
     const PREFIX: &str = "gitturtle-app-tests-";
     const STAGING: &str = ".gitturtle-app-tests-staging-";
+    /// A staged root a sweep took, renamed out of its owner's reach.
+    const REMOVING: &str = ".gitturtle-app-tests-removing-";
     const LOCK: &str = ".lock";
 
     struct Root {
@@ -1172,24 +1182,37 @@ pub(crate) mod test_directories {
             .path
     }
 
+    /// This process's root, locked. Another process's sweep can take a staged
+    /// root before its lock is held ([`remove_abandoned`]); the attempt then
+    /// fails at the lock or the rename, and the next one stages another.
     fn create_root(temporary: &Path) -> Root {
+        let mut failure = None;
+        for _ in 0..8 {
+            match stage_root(temporary) {
+                Ok(root) => return root,
+                Err(error) => failure = Some(error),
+            }
+        }
+        panic!("create the test root: {failure:?}");
+    }
+
+    fn stage_root(temporary: &Path) -> io::Result<Root> {
         let staged = tempfile::Builder::new()
             .prefix(STAGING)
-            .tempdir_in(temporary)
-            .expect("stage the test root");
-        let lock = fs::File::create(staged.path().join(LOCK)).expect("create the root's lock");
-        lock.try_lock().expect("lock the test root");
+            .tempdir_in(temporary)?;
+        let lock = fs::File::create(staged.path().join(LOCK))?;
+        lock.try_lock().map_err(io::Error::other)?;
         let suffix = staged
             .path()
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_prefix(STAGING))
-            .expect("a staged root name")
+            .ok_or_else(|| io::Error::other("a staged root name"))?
             .to_owned();
         let path = temporary.join(format!("{PREFIX}{}-{suffix}", std::process::id()));
-        fs::rename(staged.path(), &path).expect("place the test root");
+        fs::rename(staged.path(), &path)?;
         let _ = staged.keep();
-        Root { path, _lock: lock }
+        Ok(Root { path, _lock: lock })
     }
 
     extern "C" fn remove_root() {
@@ -1206,23 +1229,28 @@ pub(crate) mod test_directories {
 
     /// Removes the roots in `temporary` that no live process owns: those whose
     /// lock this process can take, and those without one, which a worker still
-    /// saving made again while its exiting process removed its root. It skips
-    /// links, other users' entries and names without a pid, which older builds
-    /// used and which no rule tells dead from live.
+    /// saving made again while its exiting process removed its root. A staged
+    /// root, which a process killed between staging and placing its root
+    /// leaves with or without its lock, goes once it last changed before this
+    /// process started (a newer one may be a live process's that has not
+    /// taken its lock yet) and only while this sweep holds its lock, made if
+    /// missing ([`staged_lock`]), renamed to a tombstone first; tombstones,
+    /// which no process holds, go too. It skips links, other users' entries
+    /// and names without a pid, which older builds used and which no rule
+    /// tells dead from live.
     fn remove_abandoned(temporary: &Path) {
         let Ok(entries) = fs::read_dir(temporary) else {
             return;
         };
+        let started = process_start();
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let Some((pid, _)) = name
-                .to_str()
-                .and_then(|name| name.strip_prefix(PREFIX))
-                .and_then(|rest| rest.split_once('-'))
-            else {
+            let Some(name) = name.to_str() else {
                 continue;
             };
-            if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+            let staged = name.starts_with(STAGING);
+            let removing = name.starts_with(REMOVING);
+            if !staged && !removing && !named_by_pid(name) {
                 continue;
             }
             // Not followed: a link's metadata is the link's.
@@ -1232,17 +1260,129 @@ pub(crate) mod test_directories {
             if !metadata.is_dir() || !owned(&metadata) {
                 continue;
             }
+            if staged && !metadata.modified().is_ok_and(|modified| modified < started) {
+                continue;
+            }
             let path = entry.path();
+            let remove = |path: &Path| {
+                BEFORE_REMOVAL.with(|hook| {
+                    if let Some(hook) = hook.borrow().as_ref() {
+                        hook(path);
+                    }
+                });
+                remove_tree(path);
+            };
+            if removing {
+                // A sweep's tombstone: no process holds one.
+                remove(&path);
+                continue;
+            }
+            if staged {
+                // Taken only under its lock, made if missing, and renamed to
+                // a tombstone before anything in it goes. Its owner places it
+                // only once it holds that lock, so it cannot while this sweep
+                // holds it; once renamed, the owner's lock under the staged
+                // name fails to open, so it stages another. Removing the
+                // folder in place could unlink a lock the owner made after
+                // the sweep's own lock went, and the owner would place a
+                // root without one.
+                if let Some(_lock) = staged_lock(&path) {
+                    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                    let tombstone =
+                        temporary.join(format!("{REMOVING}{}-{sequence}", std::process::id()));
+                    if fs::rename(&path, &tombstone).is_ok() {
+                        remove(&tombstone);
+                    }
+                }
+                continue;
+            }
             match fs::File::open(path.join(LOCK)) {
                 Ok(lock) => {
                     if lock.try_lock().is_ok() {
-                        remove_tree(&path);
+                        remove(&path);
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => remove_tree(&path),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => remove(&path),
                 Err(_) => {}
             }
         }
+    }
+
+    /// What [`BEFORE_REMOVAL`] runs, given the folder about to go.
+    type BeforeRemoval = Box<dyn Fn(&Path)>;
+
+    thread_local! {
+        /// Runs on the sweeping thread just before the sweep removes a
+        /// folder, where a test stands in for the folder's owner.
+        static BEFORE_REMOVAL: std::cell::RefCell<Option<BeforeRemoval>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The lock of the staged root at `path`, made if it is missing and taken,
+    /// or `None` while another process holds it.
+    fn staged_lock(path: &Path) -> Option<fs::File> {
+        let lock = fs::File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(path.join(LOCK))
+            .ok()?;
+        lock.try_lock().ok()?;
+        Some(lock)
+    }
+
+    /// Whether `name` is a placed root's, `gitturtle-app-tests-<pid>-<suffix>`.
+    fn named_by_pid(name: &str) -> bool {
+        name.strip_prefix(PREFIX)
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(pid, _)| {
+                !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    }
+
+    /// When this process started, or a time before that: Linux reads it from
+    /// `/proc/self/stat`, which rounds down to a clock tick.
+    #[cfg(target_os = "linux")]
+    fn process_start() -> SystemTime {
+        let now = SystemTime::now();
+        let age = || -> Option<Duration> {
+            let stat = fs::read_to_string("/proc/self/stat").ok()?;
+            // Field 22, `starttime`, in clock ticks since boot; the fields after
+            // the name's closing parenthesis start at 3.
+            let ticks: u64 = stat[stat.rfind(')')? + 1..]
+                .split_whitespace()
+                .nth(19)?
+                .parse()
+                .ok()?;
+            // SAFETY: `sysconf` has no preconditions.
+            let per_second = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+                .ok()
+                .filter(|&per_second| per_second > 0)?;
+            let mut boot = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: writes the clock `starttime` counts on into a local.
+            if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut boot) } != 0 {
+                return None;
+            }
+            let since_boot = Duration::new(
+                u64::try_from(boot.tv_sec).ok()?,
+                u32::try_from(boot.tv_nsec).ok()?,
+            );
+            let at = Duration::from_secs(ticks / per_second)
+                + Duration::from_nanos((ticks % per_second) * 1_000_000_000 / per_second);
+            since_boot.checked_sub(at)
+        };
+        age().and_then(|age| now.checked_sub(age)).unwrap_or(now)
+    }
+
+    /// Elsewhere the sweep's own time stands in, later than the start: a live
+    /// process whose staged root this sweep takes stages another
+    /// ([`create_root`]).
+    #[cfg(not(target_os = "linux"))]
+    fn process_start() -> SystemTime {
+        SystemTime::now()
     }
 
     #[cfg(unix)]
@@ -1267,22 +1407,122 @@ pub(crate) mod test_directories {
         let _ = fs::remove_dir_all(path);
     }
 
+    /// Makes the folder at `path` and the folders under it writable for their
+    /// owner. Each is changed from its parent's descriptor without following
+    /// a link and listed from its own descriptor, so a link swapped in after
+    /// a check is never changed through and cannot hide a folder's entries.
+    /// Links stay as they are.
     fn make_writable(path: &Path) {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
                 return;
-            }
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
-            if let Ok(entries) = fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    make_writable(&entry.path());
-                }
+            };
+            let Ok(name) = std::ffi::CString::new(name.as_bytes()) else {
+                return;
+            };
+            if let Ok(parent) = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY)
+                .open(parent)
+            {
+                make_entry_writable(&parent, &name);
             }
         }
         #[cfg(not(unix))]
         let _ = path;
+    }
+
+    /// Makes the folder `name` in the open folder `parent`, and the folders
+    /// under it, writable. It is changed before it is opened, so one without
+    /// read or search permission opens too, by name and without following a
+    /// link: an entry swapped for a link since the check is refused on Linux
+    /// and changed itself, never its target, on macOS.
+    #[cfg(unix)]
+    fn make_entry_writable(parent: &fs::File, name: &std::ffi::CStr) {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: fills a local `stat` for a NUL-terminated name relative to
+        // an open folder.
+        let found = unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        // SAFETY: `fstatat` filled `status` when it returned 0.
+        if found != 0 || unsafe { status.assume_init() }.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return;
+        }
+        // SAFETY: a NUL-terminated name relative to an open folder.
+        let _ = unsafe {
+            libc::fchmodat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                0o700,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        // SAFETY: opens a NUL-terminated name relative to an open folder.
+        let opened = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if opened >= 0 {
+            // SAFETY: `openat` returned a new descriptor that nothing else owns.
+            make_tree_writable(&unsafe { fs::File::from_raw_fd(opened) });
+        }
+    }
+
+    /// Makes the folders in the open folder `directory` writable.
+    #[cfg(unix)]
+    fn make_tree_writable(directory: &fs::File) {
+        for name in entry_names(directory) {
+            make_entry_writable(directory, &name);
+        }
+    }
+
+    /// The names in the open folder `directory`, read from its own
+    /// descriptor rather than a path a link could take over.
+    #[cfg(unix)]
+    fn entry_names(directory: &fs::File) -> Vec<std::ffi::CString> {
+        use std::os::fd::AsRawFd;
+        let mut names = Vec::new();
+        // SAFETY: duplicates an open descriptor for `fdopendir`, which owns
+        // the copy once it succeeds; `closedir` closes it.
+        let copy = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if copy < 0 {
+            return names;
+        }
+        // SAFETY: as above.
+        let stream = unsafe { libc::fdopendir(copy) };
+        if stream.is_null() {
+            // SAFETY: `fdopendir` failed, so the copy is still this call's.
+            unsafe { libc::close(copy) };
+            return names;
+        }
+        loop {
+            // SAFETY: reads the open stream; each entry stays valid until the
+            // next read, and its name is copied before then.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `d_name` holds a NUL-terminated name.
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name != c"." && name != c".." {
+                names.push(name.to_owned());
+            }
+        }
+        // SAFETY: closes the stream `fdopendir` opened, and the copy with it.
+        unsafe { libc::closedir(stream) };
+        names
     }
 
     #[cfg(test)]
@@ -1401,6 +1641,143 @@ pub(crate) mod test_directories {
             assert!(root.is_dir(), "a killed process runs no exit hook");
             remove_abandoned(temporary.path());
             assert_eq!(names(temporary.path()), vec![older]);
+        }
+
+        fn set_modified(path: &Path, time: SystemTime) {
+            fs::File::open(path).unwrap().set_modified(time).unwrap();
+        }
+
+        #[test]
+        fn the_sweep_takes_staged_roots_no_live_process_holds_once_older_than_this_process() {
+            let temporary = TestDirectory::new("temporary");
+            let staged = |name: &str| {
+                let path = temporary.path().join(format!("{STAGING}{name}"));
+                fs::create_dir(&path).unwrap();
+                path
+            };
+            // Killed after staging, before its lock; and before its rename.
+            let unlocked = staged("unlocked");
+            let lock_free = staged("lock-free");
+            fs::File::create(lock_free.join(LOCK)).unwrap();
+            let held = staged("held");
+            let lock = fs::File::create(held.join(LOCK)).unwrap();
+            lock.try_lock().unwrap();
+            // As a live process leaves one between staging and its lock.
+            let newer = staged("newer");
+            // A tombstone another sweep left: no process holds one.
+            fs::create_dir(temporary.path().join(format!("{REMOVING}left"))).unwrap();
+            let day = std::time::Duration::from_secs(86_400);
+            for path in [&unlocked, &lock_free, &held] {
+                set_modified(path, SystemTime::now() - day);
+            }
+            set_modified(&newer, SystemTime::now() + day);
+            #[cfg(unix)]
+            {
+                let elsewhere = temporary.path().join("elsewhere");
+                fs::create_dir(&elsewhere).unwrap();
+                set_modified(&elsewhere, SystemTime::now() - day);
+                std::os::unix::fs::symlink(
+                    &elsewhere,
+                    temporary.path().join(format!("{STAGING}link")),
+                )
+                .unwrap();
+            }
+
+            remove_abandoned(temporary.path());
+            let mut expected = vec![format!("{STAGING}held"), format!("{STAGING}newer")];
+            if cfg!(unix) {
+                expected.extend([format!("{STAGING}link"), "elsewhere".to_owned()]);
+            }
+            expected.sort();
+            assert_eq!(names(temporary.path()), expected);
+            drop(lock);
+        }
+
+        /// The sweep takes a staged root only while it holds the root's
+        /// lock and renames it to a tombstone before removing anything, so
+        /// its owner, going on once the sweep holds the lock, cannot even
+        /// make its lock under the staged name and never places the root.
+        #[test]
+        fn a_staged_root_goes_only_under_its_lock_so_a_live_owner_cannot_place_it() {
+            let temporary = TestDirectory::new("temporary");
+            // An owner between staging and its lock, its folder older than
+            // this process.
+            let staged = temporary.path().join(format!("{STAGING}live"));
+            fs::create_dir(&staged).unwrap();
+            set_modified(
+                &staged,
+                SystemTime::now() - std::time::Duration::from_secs(86_400),
+            );
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let record = seen.clone();
+            BEFORE_REMOVAL.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                    // As `stage_root` goes on: its lock, then the rename once
+                    // it holds it.
+                    let owner = fs::File::create(staged.join(LOCK))
+                        .map(|lock| lock.try_lock().is_ok())
+                        .map_err(|error| error.kind());
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    record
+                        .borrow_mut()
+                        .push((name.starts_with(REMOVING), owner));
+                }));
+            });
+            remove_abandoned(temporary.path());
+            BEFORE_REMOVAL.with(|hook| hook.borrow_mut().take());
+            assert_eq!(
+                *seen.borrow(),
+                vec![(true, Err(io::ErrorKind::NotFound))],
+                "one removal, a tombstone's, with the owner's lock refused"
+            );
+            assert_eq!(names(temporary.path()), Vec::<String>::new());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn making_a_tree_writable_never_changes_a_link_swapped_in_for_it() {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let temporary = TestDirectory::new("writable");
+            let (tree, moved, elsewhere) = (
+                temporary.path().join("tree"),
+                temporary.path().join("moved"),
+                temporary.path().join("elsewhere"),
+            );
+            for folder in [
+                "tree/inner",
+                "tree/only-here",
+                "tree/unreadable",
+                "elsewhere/inner",
+            ] {
+                fs::create_dir_all(temporary.path().join(folder)).unwrap();
+            }
+            let opened = fs::File::open(&tree).unwrap();
+            // A link takes the tree's place once the walk has opened it.
+            fs::rename(&tree, &moved).unwrap();
+            symlink(&elsewhere, &tree).unwrap();
+            let set = |path: PathBuf, mode| {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap()
+            };
+            set(moved.join("inner"), 0o500);
+            set(moved.join("only-here"), 0o500);
+            set(moved.join("unreadable"), 0o000);
+            set(elsewhere.join("inner"), 0o500);
+            set(elsewhere.clone(), 0o500);
+            let modes = |top: &Path, names: &[&str]| {
+                names
+                    .iter()
+                    .map(|name| fs::metadata(top.join(name)).unwrap().permissions().mode() & 0o777)
+                    .collect::<Vec<_>>()
+            };
+
+            make_tree_writable(&opened);
+            assert_eq!(
+                modes(&moved, &["inner", "only-here", "unreadable"]),
+                [0o700; 3]
+            );
+            assert_eq!(modes(&elsewhere, &["", "inner"]), [0o500; 2]);
+            make_writable(&tree);
+            assert_eq!(modes(&elsewhere, &["", "inner"]), [0o500; 2]);
         }
     }
 }
