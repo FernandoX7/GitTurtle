@@ -49,6 +49,14 @@ fn label(
 /// `{id}-{index}`, the separator ending the phrase before it; on one line
 /// they read as the text does, and the accessible name is the whole text.
 /// Like a [`label`]'s, its lines are never left cut at the body's edge.
+///
+/// A phrase wider than the line wraps at the line's width, the width the
+/// label is drawn in: as a wrapping item it may shrink below its text's
+/// unwrapped width, which its least width otherwise is (GPUI measures text
+/// for a least width without wrapping it). Changes' range hint, in a 461 ×
+/// 490 window at 18 pt, laid its second phrase out on one line 649 px wide in
+/// a 344 px label and drew it under the body's scrollbar, cut at the body's
+/// edge (QA-106d).
 fn phrases(
     id: &'static str,
     text: impl Into<SharedString>,
@@ -71,6 +79,7 @@ fn phrases(
     .children(parts.into_iter().enumerate().map(move |(index, phrase)| {
         div()
             .debug_selector(move || format!("{id}-{index}"))
+            .min_w_0()
             .child(phrase)
     }))
 }
@@ -10535,6 +10544,102 @@ mod tests {
             })
         });
         settle_panel(app, cx).await;
+    }
+
+    /// Changes' range hint wraps inside its column, clear of the body's scrollbar gutter, with
+    /// the renamed `docs/review/界面-guide.md` open in a 461 × 490 window at 18 pt as at 13 pt:
+    /// its box ends where the body's content does, before the gutter, and every line it draws
+    /// lies inside the box. Its second phrase, alone wider than the line, was laid out on one
+    /// line, 649 px wide in a 344 px box at 18 pt and 468 px in 350 px at 13 pt, and drawn
+    /// under the scrollbar to the body's edge, natively cut there at "selects a s" (QA-106d).
+    #[gpui::test]
+    async fn the_range_hint_wraps_inside_its_column(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        for interface in [13, 18] {
+            let at = format!("{interface} pt");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = Some(pull.clone());
+                    panel.review.show_list = false;
+                    panel.review.section = Section::Files;
+                    panel.review.files = files.clone();
+                    panel.review.selected_file = None;
+                    panel.select_review_file(1, window, cx);
+                })
+            });
+            settle_panel(&app, cx).await;
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            assert_eq!(
+                panel.read_with(cx, |panel, _| panel.review.files[1].filename.clone()),
+                "docs/review/界面-guide.md"
+            );
+            // The body scrolled until the hint's foot is in view, as a person reads it.
+            let (hint, body) = (
+                cx.debug_bounds("github-range-hint").expect("the hint"),
+                cx.debug_bounds("github-panel").expect("the body"),
+            );
+            let below = hint.bottom() - (body.bottom() - room);
+            if below > px(0.) {
+                scroll.set_offset(point(px(0.), scroll.offset().y - below));
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+            }
+            let (hint, body) = (
+                cx.debug_bounds("github-range-hint").expect("the hint"),
+                cx.debug_bounds("github-panel").expect("the body"),
+            );
+            // Where the body's content ends: its gutter and the room its rings take lie past it.
+            let edge = body.right() - room - crate::tags::ScrollCue::gutter();
+            assert!(
+                hint.right() <= edge + px(0.5),
+                "{at}: the hint's box {hint:?} ends before the gutter at {edge:?}"
+            );
+            let lines: Vec<Bounds<Pixels>> = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == mark)
+                    .map(|quad| {
+                        Bounds::from_corners(
+                            point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                        )
+                    })
+                    // The hint's own, starting inside its box: a row of the patch above it,
+                    // which the patch's box clips, runs below that box's foot.
+                    .filter(|line| {
+                        line.top() >= hint.top() - px(0.5)
+                            && line.top() < hint.bottom()
+                            && line.left() >= hint.left() - px(0.5)
+                    })
+                    .collect()
+            });
+            assert!(lines.len() > 1, "{at}: the hint draws lines {lines:?}");
+            for line in &lines {
+                assert!(
+                    line.right() <= hint.right() + px(0.5)
+                        && line.bottom() <= hint.bottom() + px(0.5),
+                    "{at}: the hint's line {line:?} runs past its box {hint:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Whether the last frame stood the file beside the changed-file list rather than below it.
