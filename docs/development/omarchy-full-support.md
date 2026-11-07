@@ -769,6 +769,12 @@ cover current upstream x86-64 Omarchy.
        alias tab's mark is cleared by an explicit Open only through the exact alias path (`find` matches bytes;
        accepted). (QA note) H4 (2)'s over-4-KiB refusal cannot be produced through a saved session (the loader
        cuts queries over 4,096 characters, `repository_tabs.rs:303`).
+       (S) File History: with a failed page, `PanelLeast` reserves the message panel's whole 45 % share, so a
+       short message can scroll needlessly (up to ~60 px at 18 pt in 461 × ~560-620): cap the share by the
+       message panel's measured extent; share `commit_message::MESSAGE_SHARE` instead of the copied 0.45; the
+       walk test's pre-walk clone of the failure region's reveal (FU29-A re-check 2). (S, allocation rule)
+       `FocusReveal`: a record path taking one bounds value, so `Reveals::track` and other per-control reports
+       stop allocating a `Vec` and cloning the reveal per button per frame (FU29-A3).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
