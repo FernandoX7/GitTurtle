@@ -519,6 +519,12 @@ impl ScrollCue {
         }
     }
 
+    /// Whether this frame keeps the gutter: where the list overflowed when
+    /// last laid out ([`cues`]).
+    pub(crate) fn kept(&self) -> bool {
+        self.cued.0
+    }
+
     /// The gutter a list's rows keep while they overflow: the scrollbar's
     /// width and the room of the ring every palette installs, so a row's
     /// ring ends where the track begins.

@@ -8,7 +8,7 @@ use gitturtle_core::{
 };
 use gpui_kit::component::input::Paste;
 use gpui_kit::prelude::FluentBuilder;
-use std::ops::Range;
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 const MAX_RETAINED_DRAFT_BYTES: usize = 64 * 1024 * 1024;
 /// The viewer's block steps, in `shortcuts.rs` notation: the tooltips name
@@ -334,6 +334,46 @@ pub struct ConflictView {
     /// The frames left before the body reveals the result draft once more
     /// after the person's action focused it ([`Self::focus_resolution`]).
     redraw_reveal: u8,
+    /// Whether the next frame reveals the result draft from where that
+    /// frame lays it out, as the person's action that focused it asked
+    /// ([`Self::focus_resolution`], [`reveal_laid_out`]).
+    reveal_draft: bool,
+    /// The review's column as last measured before layout
+    /// ([`Self::render_review`]).
+    measured: Option<Measured>,
+    /// How many times the review's column has been measured before layout.
+    #[cfg(test)]
+    measures: usize,
+}
+
+/// What sets the height of the review's column, in a frame laid out for a
+/// room `size`: the room, the scale and text sizes it is drawn at, its
+/// focus rings' room, and what each of its sections holds, the versions
+/// shown, the result draft and its error, the saved draft's row, the
+/// storage status and the block review. The block review an edit starts is
+/// left out while it is under way ([`Measured::pending`]).
+#[derive(Clone, PartialEq)]
+struct ColumnKey {
+    size: Size<Pixels>,
+    scale: f32,
+    text: (Pixels, Pixels),
+    room: Pixels,
+    sides: (bool, bool, [bool; 3]),
+    draft: (bool, Option<DraftIssue>),
+    saved: Option<bool>,
+    storage: String,
+    blocks: (usize, usize, Option<usize>, Option<String>),
+}
+
+/// The review's column measured before layout, by what set its height
+/// then, and whether it was taller than the review.
+struct Measured {
+    key: ColumnKey,
+    /// Whether the block review was under way: its frames show its status
+    /// and, choosing a block, versions saying so, so the frame after it ends
+    /// measures the column again.
+    pending: bool,
+    taller: bool,
 }
 
 impl EventEmitter<ConflictEvent> for ConflictView {}
@@ -362,6 +402,10 @@ impl ConflictView {
             block_executor: SerialExecutor::new("conflict-block-review"),
             body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             redraw_reveal: 0,
+            reveal_draft: false,
+            measured: None,
+            #[cfg(test)]
+            measures: 0,
             presentation,
             readers: [None, None, None],
             resolution: None,
@@ -413,6 +457,7 @@ impl ConflictView {
     fn focus_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = &self.resolution {
             self.body.reveal_next_focus();
+            self.reveal_draft = true;
             self.redraw_reveal = 2;
             window.focus(&editor.focus_handle(cx), cx);
         }
@@ -713,24 +758,184 @@ impl Render for ConflictView {
             .flex()
             .flex_col()
             .child(crate::in_frame::in_frame(move |bounds, window, cx| {
-                view.update(cx, |view, cx| {
-                    view.render_review(bounds.size.height, window, cx)
-                })
-                .unwrap_or_else(|_| div().into_any_element())
+                view.update(cx, |view, cx| view.render_review(bounds, window, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
             }))
     }
 }
 
 impl ConflictView {
-    /// The review `height` tall: its body, which scrolls as one where it is
-    /// taller, with the result draft as many whole lines tall as `height`
-    /// shows whole with its ring ([`draft_lines`]).
+    /// The review in `bounds`: its body, which scrolls as one where it is
+    /// taller, with the result draft as many whole lines tall as the
+    /// review shows whole with its ring ([`draft_lines`]).
     fn render_review(
         &mut self,
-        height: Pixels,
+        bounds: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Where the window is too short for the review, its body scrolls as
+        // one, and a control the keyboard moves onto, a Button, a version's
+        // text or the result draft, scrolls into view whole with its ring's
+        // room in the frame that first draws the focus. Each control reports
+        // where it lies to the body.
+        let room = crate::appearance::button_ring_room(cx);
+        let lines = draft_lines(bounds.size.height, room, window);
+        // A guard: the frame after the one that first draws the draft
+        // focused, which shows it whole where it stays (`reveal_draft`),
+        // reveals the draft holding focus again from where it lies there,
+        // should that frame lay the body out otherwise.
+        if self.redraw_reveal > 0 {
+            self.redraw_reveal -= 1;
+            if self.redraw_reveal > 0 {
+                window.defer(cx, |window, _| window.refresh());
+            } else if let Some(editor) = &self.resolution
+                && editor.focus_handle(cx).is_focused(window)
+            {
+                self.body.reveal_next_focus();
+            }
+        }
+        self.body.reveal(window, cx);
+        // Its scrollbar, while it overflows, runs in a gutter at the body's
+        // right, clear of the controls and their rings; along a track too
+        // short for a thumb, the body's edges fade instead (`ScrollCue`).
+        let cue = crate::tags::ScrollCue::revealing(&self.body, Pixels::ZERO);
+        // The cue keeps the gutter where the body overflowed when last laid
+        // out. Where it did not, as in the frame that opens the file or
+        // first draws the draft Edit result opens, the review's column is
+        // laid out first at the review's width, with the versions at their
+        // 100 px, and keeps the gutter in this frame where it is taller than
+        // the review: laid out without it, the frame that first drew the
+        // draft focused drew the controls above it wrapped into the wider
+        // column, and the next, keeping the gutter, moved the draft 70 px
+        // down past the body's foot, in a 461 × 490 half tile.
+        let reserve = !cue.kept() && self.taller_than(bounds.size, room, lines, window, cx);
+        let laid = Rc::new(Cell::new(None));
+        // The body is the column itself, so where everything fits the
+        // versions take the room the rest leaves, as they did before it
+        // scrolled, and where it does not they keep their 100 px and the rest
+        // its own height, and the column scrolls.
+        let body = self
+            .review_column(lines, room, Some((&cue, laid.clone())), cx)
+            .when(reserve, |body| body.pr(crate::tags::ScrollCue::gutter()))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(self.body.scroll());
+        // Focus the person's action moved into the draft is revealed from
+        // where this frame lays the draft out, before the body is
+        // prepainted, so the frame that first draws it focused draws it
+        // whole with its ring where it stays, whether or not an earlier
+        // frame drew it: from where the last frame drew it, the draft the
+        // file opened with, which no frame had drawn, was painted at the
+        // body's top offset, below its foot, and revealed a frame later.
+        let reveal = std::mem::take(&mut self.reveal_draft)
+            && self
+                .resolution
+                .as_ref()
+                .is_some_and(|editor| editor.focus_handle(cx).is_focused(window));
+        let scroll = self.body.scroll().clone();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .when(reveal, |review| {
+                review.child(div().on_children_prepainted(move |_, window, _| {
+                    if let Some(draft) = laid.get() {
+                        reveal_laid_out(&scroll, window.layout_bounds(draft), room, bounds);
+                    }
+                }))
+            })
+            .child(cue.list(body, "conflict-review-scrollbar").size_full())
+            .into_any_element()
+    }
+
+    /// Whether the review's column, laid out `size.width` wide, is taller
+    /// than `size.height`: measured again only where what sets its height
+    /// has changed since it was last measured ([`ColumnKey`]), where a
+    /// reveal of the draft from this frame's layout is pending, and before
+    /// the body is first laid out, and otherwise as last measured. Measured
+    /// in every frame where the review fits, it was laid out once more for
+    /// each caret blink and keystroke in the draft at 1,480 × 800.
+    fn taller_than(
+        &mut self,
+        size: Size<Pixels>,
+        room: Pixels,
+        lines: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let key = ColumnKey {
+            size,
+            scale: window.scale_factor(),
+            text: (
+                crate::appearance::ui_text(12.),
+                crate::appearance::code_text(),
+            ),
+            room,
+            sides: (
+                self.base,
+                self.block_mode,
+                self.readers.each_ref().map(Option::is_some),
+            ),
+            draft: (self.resolution.is_some(), self.draft_error),
+            saved: self.durable_saved.as_ref().map(|(valid, _)| *valid),
+            storage: self.durable_status.clone(),
+            blocks: (
+                self.blocks.len(),
+                self.block_selected,
+                self.blocks
+                    .get(self.block_selected)
+                    .map(|block| block.first_line),
+                self.block_issue.clone(),
+            ),
+        };
+        // An edit's block review keeps the measure of the state it began
+        // from while it is under way, its frames measured again only for
+        // another change: its status is shorter than any it replaces, and
+        // where its versions alone overflow the review, the cue draws the
+        // gutter one frame later (`ScrollCue::observe`), as it did for every
+        // change before the column was measured.
+        let pending = self.block_pending;
+        if let Some(measured) = &self.measured
+            && measured.key == key
+            && (pending || !measured.pending)
+            && !self.reveal_draft
+        {
+            return measured.taller;
+        }
+        #[cfg(test)]
+        {
+            self.measures += 1;
+        }
+        let column = self.review_column(lines, room, None, cx);
+        let taller = crate::in_frame::measured_height(column, size.width, window, cx)
+            > size.height + px(0.01);
+        self.measured = Some(Measured {
+            key,
+            pending,
+            taller,
+        });
+        taller
+    }
+
+    /// The review's column: its header, the block controls, the versions,
+    /// and the footer with the saved draft, the whole-file actions, the
+    /// result draft `lines` whole lines tall and the save actions, whose
+    /// controls report where they lie to the body, a ring's `room` clear of
+    /// its edges. Drawn, it is `cue`'s list, and the draft records the
+    /// layout it is laid out under in `laid`; without them it is only
+    /// measured, its versions their 100 px and the draft its height alone.
+    fn review_column(
+        &mut self,
+        lines: f32,
+        room: Pixels,
+        drawn: Option<(&crate::tags::ScrollCue, Rc<Cell<Option<LayoutId>>>)>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let (observe, laid) = drawn.map_or((None, None), |(cue, laid)| {
+            (Some(cue.observe(self.body.observe())), Some(laid))
+        });
         let p = palette(cx);
         let current = self.presentation.label(1);
         let incoming = self.presentation.label(2);
@@ -753,32 +958,6 @@ impl ConflictView {
                 self.blocks[self.block_selected].first_line
             )
         };
-        // Where the window is too short for the review, its body scrolls as
-        // one, and a control the keyboard moves onto, a Button, a version's
-        // text or the result draft, scrolls into view whole with its ring's
-        // room in the frame that first draws the focus. Each control reports
-        // where it lies to the body.
-        let room = crate::appearance::button_ring_room(cx);
-        let lines = draft_lines(height, room, window);
-        // The frame that first draws the draft focused lays the body out
-        // with the gutter the last frame's overflow kept, none in a view
-        // that opens with it, and the next keeps the gutter its overflow
-        // asks for, rewrapping the controls above the draft into the
-        // narrower column: the draft moved 70 px down past the body's foot
-        // after a reveal planned in the first frame, as the file opened in a
-        // 461 × 490 half tile. The draft holding focus is revealed again in
-        // that next frame, from where it lies there.
-        if self.redraw_reveal > 0 {
-            self.redraw_reveal -= 1;
-            if self.redraw_reveal > 0 {
-                window.defer(cx, |window, _| window.refresh());
-            } else if let Some(editor) = &self.resolution
-                && editor.focus_handle(cx).is_focused(window)
-            {
-                self.body.reveal_next_focus();
-            }
-        }
-        self.body.reveal(window, cx);
         let [drafts, branches, base, block_mode, whole_mode, external] = [
             "saved-conflict-drafts",
             "conflict-branches",
@@ -820,16 +999,14 @@ impl ConflictView {
             .resolution
             .as_ref()
             .map(|editor| editor.focus_handle(cx));
-        let sides = if self.base {
+        let sides = if laid.is_none() {
+            Vec::new()
+        } else if self.base {
             vec![self.render_side(0, room, cx)]
         } else {
             vec![self.render_side(1, room, cx), self.render_side(2, room, cx)]
         };
-        // Its scrollbar, while it overflows, runs in a gutter at the body's
-        // right, clear of the controls and their rings; along a track too
-        // short for a thumb, the body's edges fade instead (`ScrollCue`).
-        let cue = crate::tags::ScrollCue::revealing(&self.body, Pixels::ZERO);
-        let body = div().on_children_prepainted(cue.observe(self.body.observe())).id("conflict-review").debug_selector(|| "conflict-review".into()).flex().flex_col()
+        div().when_some(observe, |column, observe| column.on_children_prepainted(observe)).id("conflict-review").debug_selector(|| "conflict-review".into()).flex().flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if let Some(previous) = block_step(&event.keystroke) {
                     this.select_block(previous, window, cx); cx.stop_propagation();
@@ -896,9 +1073,16 @@ impl ConflictView {
                     .child(div().flex_1())
                     .child(button("manual-resolution", "Edit result", "", self.resolution.is_some()).track_focus(&edit_result).debug_selector(|| "manual-resolution".into()).disabled(self.presentation.result.is_none())
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
-                .children(self.resolution.as_ref().zip(draft_focus).map(|(editor, focus)| div().capture_action(cx.listener(Self::check_paste))
-                    .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room)).child(resolution_textarea(editor, lines, cx)))))
+                .children(self.resolution.as_ref().zip(draft_focus).map(|(editor, focus)| {
+                    let draft = div().debug_selector(|| "conflict-result-draft".into()).on_children_prepainted(self.body.control(focus, room));
+                    let draft = match &laid {
+                        Some(laid) => LaidOut { child: draft.child(resolution_textarea(editor, lines, cx)).into_any_element(), laid: laid.clone() }.into_any_element(),
+                        None => draft.h(draft_height(lines)).into_any_element(),
+                    };
+                    div().capture_action(cx.listener(Self::check_paste))
+                        .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
+                        .child(draft)
+                }))
                 .children(self.draft_error.map(|issue| div().id("conflict-draft-error").alert(issue.explanation()).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .on_children_prepainted(self.body.controls(vec![Some(stage_working.clone()), self.resolution.as_ref().map(|_| save_draft.clone()), self.resolution.as_ref().map(|_| save_result.clone())], room))
@@ -908,19 +1092,7 @@ impl ConflictView {
                     }))))
                     .children(self.resolution.as_ref().map(|_| button("save-conflict-resolution", "Save and stage result…", "", false).track_focus(&save_result).debug_selector(|| "save-conflict-resolution".to_string()).disabled(cannot_stage_draft).on_click(cx.listener(|this, _, _, cx| {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
-                    }))))));
-        // The body is the column itself, so where everything fits the
-        // versions take the room the rest leaves, as they did before it
-        // scrolled, and where it does not they keep their 100 px and the rest
-        // its own height, and the column scrolls.
-        let body = body
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(self.body.scroll());
-        cue.list(body, "conflict-review-scrollbar")
-            .size_full()
-            .into_any_element()
+                    }))))))
     }
 }
 
@@ -977,6 +1149,105 @@ fn draft_lines(height: Pixels, ring: Pixels, window: &Window) -> f32 {
     lines
 }
 
+/// The result draft's height `lines` whole lines tall, inside the field's
+/// padding and border ([`draft_metrics`]).
+fn draft_height(lines: f32) -> Pixels {
+    let (line, inset) = draft_metrics();
+    line * lines + inset * 2.
+}
+
+/// Scrolls the review's body, through `scroll`, by the least that shows
+/// the result draft, laid out at `draft` with the body at offset zero,
+/// whole with its focus ring's `ring` inside the body's `viewport`, or by
+/// its top where the draft with its ring is taller than the body, as
+/// `focus_reveal::FocusReveal` reveals a control. Called as the frame
+/// prepaints, before the body, so that frame lays the draft out revealed.
+fn reveal_laid_out(
+    scroll: &ScrollHandle,
+    draft: Bounds<Pixels>,
+    ring: Pixels,
+    viewport: Bounds<Pixels>,
+) {
+    let offset = scroll.offset();
+    let (top, bottom) = (draft.top() - ring, draft.bottom() + ring);
+    let y = if bottom - top > viewport.size.height || top + offset.y < viewport.top() {
+        viewport.top() - top
+    } else if bottom + offset.y > viewport.bottom() {
+        viewport.bottom() - bottom
+    } else {
+        return;
+    };
+    // The body holds its offset to its reach as it prepaints.
+    scroll.set_offset(point(offset.x, y.min(Pixels::ZERO)));
+}
+
+/// An element that holds `child` and records the layout ID it is laid out
+/// under in `laid`, so an element prepainted before it reads where this
+/// frame's layout puts it ([`reveal_laid_out`]), as the GitHub panel's top
+/// line is read (`github_view::LaidOut`).
+struct LaidOut {
+    child: AnyElement,
+    laid: Rc<Cell<Option<LayoutId>>>,
+}
+
+impl IntoElement for LaidOut {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for LaidOut {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let id = self.child.request_layout(window, cx);
+        self.laid.set(Some(id));
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
 /// The result draft's line pitch, the code editor's
 /// [`CODE_LINE_HEIGHT`] of the code size on a whole pixel, and the room
 /// around its lines on each side: the multi-line field's padding above and
@@ -1000,9 +1271,9 @@ const CODE_LINE_HEIGHT: f32 = 1.5;
 /// interface size's pitch drew 18 pt code at a 16 px pitch. A longer draft
 /// scrolls inside it.
 fn resolution_textarea(editor: &Entity<TextareaState>, lines: f32, cx: &App) -> Textarea {
-    let (line, inset) = draft_metrics();
+    let (line, _) = draft_metrics();
     Textarea::new(editor)
-        .h(line * lines + inset * 2.)
+        .h(draft_height(lines))
         .text_size(crate::appearance::code_text())
         .line_height(line)
         .code_font(cx)
@@ -1666,6 +1937,182 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// At 1,480 × 800, where the review fits, its column is measured before
+    /// layout only where what sets its height changes: a frame drawn again
+    /// at rest, a caret blink and a keystroke in the result draft measure
+    /// nothing; a resize, a section opening and Edit result measure it once.
+    /// It was measured in every frame drawn while the review fit.
+    #[gpui::test]
+    async fn the_review_measures_its_column_only_as_its_height_can_change(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(cx);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        assert_eq!(body.scroll().max_offset().y, px(0.), "the review fits");
+        // The measures since the last call.
+        let mut last = cx.read(|cx| view.read(cx).measures);
+        let mut since = |cx: &mut VisualTestContext| {
+            let now = cx.read(|cx| view.read(cx).measures);
+            now - std::mem::replace(&mut last, now)
+        };
+        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft"));
+
+        cx.update(|window, _| window.refresh());
+        settle(cx);
+        assert_eq!(since(cx), 0, "a frame drawn again");
+
+        // The caret at the draft's end, where a keystroke changes no block.
+        cx.update(|window, cx| {
+            let end = editor.read(cx).text().len();
+            editor.update(cx, |editor, cx| editor.set_selected_range(end..end, cx));
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        settle(cx);
+        since(cx);
+        // A blink redraws the draft, as its caret's timer does.
+        editor.update(cx, |_, cx| cx.notify());
+        settle(cx);
+        assert_eq!(since(cx), 0, "a caret blink");
+        cx.simulate_input("x");
+        // The block review the edit starts runs on its own thread.
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        if let Some(parse) = parse {
+            parse.await;
+        }
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).accepted_draft.ends_with('x')),
+            "the keystroke edits the draft"
+        );
+        assert_eq!(since(cx), 0, "a keystroke in the draft");
+
+        cx.simulate_resize(size(px(1480.), px(780.)));
+        settle(cx);
+        assert_eq!(since(cx), 1, "a resize");
+
+        let base = rendered(cx, "conflict-base");
+        cx.simulate_click(base.center(), Modifiers::default());
+        settle(cx);
+        assert!(cx.read(|cx| view.read(cx).base), "Base opens");
+        assert_eq!(since(cx), 1, "opening the base");
+
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.resolution = None;
+                cx.notify();
+            })
+        });
+        settle(cx);
+        since(cx);
+        let edit = rendered(cx, "manual-resolution");
+        cx.simulate_click(edit.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).resolution.is_some()),
+            "Edit result opens the draft"
+        );
+        assert_eq!(since(cx), 1, "Edit result");
+    }
+
+    /// A resize while an edit's block review runs measures the review's
+    /// column with that review's status, "Updating conflict blocks…", and
+    /// once the review lands the column is measured again, once: in a
+    /// 461 px wide half tile at 18 pt with 18 pt code, where the blocks'
+    /// status the review lands takes a line more than its own, and at a
+    /// height between the two, the first frame after it lands lays the body
+    /// out with the gutter, and every frame draws the focused draft where it
+    /// stays. Kept from while the review ran, the measure left the gutter
+    /// out of that frame, which drew the draft 434 px wide, and the next
+    /// drew it 415 px wide beside the gutter.
+    #[gpui::test]
+    async fn the_column_is_measured_again_once_a_block_review_lands(cx: &mut TestAppContext) {
+        const AT: &str = "461 px wide, 18 pt, code 18 pt";
+        cx.executor().allow_parking();
+        let (view, cx) = review_window(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let editor = cx.read(|cx| view.read(cx).resolution.clone().expect("the draft"));
+        let reach = |cx: &mut VisualTestContext| {
+            settle(cx);
+            body.scroll().bounds().size.height + body.scroll().max_offset().y
+        };
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        // The review's height with the blocks' status, read where it
+        // overflows and the draft keeps its eight lines, with the caret at
+        // the draft's end, where a keystroke changes no block. At this width
+        // the gutter rewraps no row, so it is the height the column measures.
+        cx.simulate_resize(size(px(461.), px(400.)));
+        cx.update(|window, cx| {
+            let end = editor.read(cx).text().len();
+            editor.update(cx, |editor, cx| editor.set_selected_range(end..end, cx));
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        let landed = reach(cx);
+
+        // A keystroke starts a block review, held on its worker while the
+        // window is resized.
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = futures::channel::oneshot::channel();
+        let held = cx.update(|_, cx| {
+            view.read(cx).block_executor.submit_read(move || {
+                let _ = started.send(());
+                wait.recv().map_err(|error| anyhow::anyhow!(error))?;
+                Ok(())
+            })
+        });
+        ready.await.unwrap();
+        cx.simulate_input("x");
+        let running = reach(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: the keystroke's block review runs"
+        );
+        assert!(
+            landed > running + px(8.),
+            "{AT}: the blocks' status takes a line more than the running review's, \
+             {landed:?} against {running:?}"
+        );
+
+        // The measures since the last call.
+        let mut last = cx.read(|cx| view.read(cx).measures);
+        let mut since = |cx: &mut VisualTestContext| {
+            let now = cx.read(|cx| view.read(cx).measures);
+            now - std::mem::replace(&mut last, now)
+        };
+        cx.simulate_resize(size(px(461.), (landed + running) / 2.));
+        settle(cx);
+        assert_eq!(
+            body.scroll().max_offset().y,
+            Pixels::ZERO,
+            "{AT}: the review fits while its block review runs"
+        );
+        assert_eq!(since(cx), 1, "{AT}: a resize while the block review runs");
+
+        // Every frame from here on is drawn after the review lands.
+        body.take_painted();
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        let parse = cx.update(|_, cx| view.update(cx, |view, _| view.block_task.take()));
+        parse.expect("the keystroke schedules a block review").await;
+        assert!(
+            !cx.read(|cx| view.read(cx).block_pending),
+            "{AT}: the block review lands"
+        );
+        settle(cx);
+        assert!(
+            cx.read(|cx| view.read(cx).accepted_draft.ends_with('x')),
+            "{AT}: the keystroke edits the draft"
+        );
+        assert!(
+            body.scroll().max_offset().y > Pixels::ZERO,
+            "{AT}: the review overflows with the blocks' status"
+        );
+        assert_drawn_where_it_stays(cx, &view, room, &format!("{AT}: the review lands"));
+        assert_eq!(since(cx), 1, "{AT}: the block review lands");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Along a track shorter than a scrollbar's thumb moves on, 56 px, as in
     /// a window 50 px tall, the body draws no scrollbar and fades the edges
     /// it continues past instead: the bottom's at its top, and the top's
@@ -2030,6 +2477,233 @@ mod tests {
                 DRAFT_LINES,
                 "{at}: the draft keeps its eight lines"
             );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Every frame the review's body painted with focus on the result
+    /// draft of `view` since `body` was last read draws the draft whole with
+    /// its ring's `room` inside the body, where the last of them draws it.
+    /// Frames before the draft took focus, as the one a click's press
+    /// paints with focus on Edit result, are left out.
+    fn assert_drawn_where_it_stays(
+        cx: &mut VisualTestContext,
+        view: &Entity<ConflictView>,
+        room: Pixels,
+        after: &str,
+    ) {
+        let (body, draft) = cx.read(|cx| {
+            let view = view.read(cx);
+            let draft = view
+                .resolution
+                .as_ref()
+                .map(|editor| editor.focus_handle(cx));
+            (view.body.clone(), draft)
+        });
+        let draft = draft.unwrap_or_else(|| panic!("{after}: the draft is open"));
+        let frames: Vec<_> = body
+            .take_painted()
+            .into_iter()
+            .filter(|frame| frame.focus.as_ref() == Some(&draft))
+            .collect();
+        let last = frames
+            .last()
+            .and_then(|frame| frame.control)
+            .unwrap_or_else(|| panic!("{after}: a frame draws the draft"));
+        for (index, frame) in frames.iter().enumerate() {
+            let draft = frame
+                .control
+                .unwrap_or_else(|| panic!("{after}: frame {index} draws the draft"));
+            let ring = draft.dilate(room);
+            assert!(
+                ring.top() + px(0.01) >= frame.viewport.top()
+                    && ring.bottom() <= frame.viewport.bottom() + px(0.01),
+                "{after}: frame {index} of {} paints the draft with its ring, {ring:?}, outside \
+                 the body, {:?}",
+                frames.len(),
+                frame.viewport
+            );
+            let moved = (draft.origin - last.origin).map(f32::from);
+            assert!(
+                moved.x.abs() < 0.01
+                    && moved.y.abs() < 0.01
+                    && (draft.size.width - last.size.width).abs() < px(0.01),
+                "{after}: frame {index} of {} paints the draft at {draft:?}, not where it stays, \
+                 {last:?}",
+                frames.len()
+            );
+        }
+    }
+
+    /// In a 461 × 490 half tile, at 13 pt with 12 pt code and at 18 pt with
+    /// 18 pt code, the review overflows, and the first frame that draws the
+    /// result draft focused, opening the file or after Edit result opens the
+    /// draft, lays the body out with its scrollbar's gutter and scrolled to
+    /// the draft, so every frame draws the draft whole with its ring where
+    /// it stays. Laid out without the gutter, from the overflow the last
+    /// frame kept, and scrolled only after painting, from the draft's bounds
+    /// in that frame, the first frame drew the draft at the body's top
+    /// offset, below its foot, and the next rewrapped the controls above it
+    /// into the narrower column and moved it down past the foot again.
+    #[gpui::test]
+    async fn the_first_frame_draws_the_draft_where_it_stays(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = merge_window(cx).await;
+        let room = cx.read(crate::appearance::button_ring_room);
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx);
+                window.blur(cx);
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            // Opened from its row the first time, and as the preview that
+            // answers that choice opens it again for the second.
+            let view = if app.read_with(cx, |app, _| app.conflict_view.is_none()) {
+                choose_notes(&app, cx)
+            } else {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.conflict_view = None;
+                        app.conflict_subscription = None;
+                        app.prepare_editor(true, window, cx);
+                    })
+                });
+                crate::views::tests::draw(cx);
+                app.read_with(cx, |app, _| app.conflict_view.clone())
+                    .expect("the file's conflict view")
+            };
+            let body = cx.read(|cx| view.read(cx).body.clone());
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: opened"));
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows"
+            );
+
+            // Edit result in a review whose draft is not open, as a file
+            // without blocks opens.
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.resolution = None;
+                    cx.notify();
+                });
+                body.reveal_next_focus();
+                body.focus("manual-resolution", cx).focus(window, cx);
+            });
+            settle(cx);
+            let edit = rendered(cx, "manual-resolution");
+            body.take_painted();
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            assert_eq!(
+                focused_control(cx, &view),
+                Some("conflict-result-draft"),
+                "{at}: Edit result focuses the draft"
+            );
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: Edit result"));
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 13 pt with 12 pt code and at 18 pt with 18 pt code, each action
+    /// that moves focus into the result draft from the body's top draws the
+    /// draft whole with its ring where it stays in every frame it paints:
+    /// in a 461 × 490 window, where the review overflows, Next and Previous,
+    /// clicked and by their keys; and at a height
+    /// where the review fits without the draft and overflows with it, Edit
+    /// result, whose draft is what makes the body overflow in the frame
+    /// that first draws it, so that frame lays the body out with the gutter.
+    #[gpui::test]
+    fn each_action_into_the_draft_draws_it_where_it_stays(cx: &mut TestAppContext) {
+        let (view, cx) = review_window(cx);
+        let room = cx.read(crate::appearance::button_ring_room);
+        let body = cx.read(|cx| view.read(cx).body.clone());
+        let from_top = |cx: &mut VisualTestContext, control: &'static str| {
+            cx.update(|window, cx| {
+                body.scroll().set_offset(Point::default());
+                body.reveal_next_focus();
+                body.focus(control, cx).focus(window, cx);
+            });
+            settle(cx);
+            body.take_painted();
+        };
+        let step = |cx: &mut VisualTestContext, previous: bool| {
+            let keystroke = Keystroke {
+                modifiers: Modifiers {
+                    alt: true,
+                    ..Modifiers::secondary_key()
+                },
+                key: if previous { "up" } else { "down" }.into(),
+                key_char: None,
+            };
+            cx.update(|window, cx| window.dispatch_keystroke(keystroke, cx));
+            settle(cx);
+        };
+        for (interface, code) in [(13, 12), (18, 18)] {
+            let at = format!("{interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows"
+            );
+
+            for (control, label) in [
+                ("next-conflict-block", "Next"),
+                ("previous-conflict-block", "Previous"),
+            ] {
+                from_top(cx, "saved-conflict-drafts");
+                let drawn = rendered(cx, control);
+                cx.simulate_click(drawn.center(), Modifiers::default());
+                settle(cx);
+                assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: {label} clicked"));
+            }
+            for (previous, label) in [(false, "Next"), (true, "Previous")] {
+                from_top(cx, "saved-conflict-drafts");
+                step(cx, previous);
+                assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: {label}'s key"));
+            }
+            assert_eq!(cx.read(|cx| view.read(cx).block_selected), 0, "{at}");
+
+            // The review's height with and without the draft, read where
+            // it overflows, and a height between them.
+            cx.simulate_resize(size(px(461.), px(200.)));
+            settle(cx);
+            let reach = |cx: &mut VisualTestContext| {
+                settle(cx);
+                body.scroll().bounds().size.height + body.scroll().max_offset().y
+            };
+            let with = reach(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.resolution = None;
+                    cx.notify();
+                })
+            });
+            let without = reach(cx);
+            assert!(
+                with > without + px(40.),
+                "{at}: {with:?} with the draft, {without:?} without"
+            );
+            cx.simulate_resize(size(px(461.), (with + without) / 2.));
+            settle(cx);
+            assert_eq!(
+                body.scroll().max_offset().y,
+                Pixels::ZERO,
+                "{at}: the review fits without the draft"
+            );
+            from_top(cx, "manual-resolution");
+            let edit = rendered(cx, "manual-resolution");
+            cx.simulate_click(edit.center(), Modifiers::default());
+            settle(cx);
+            assert!(
+                body.scroll().max_offset().y > Pixels::ZERO,
+                "{at}: the review overflows with the draft"
+            );
+            assert_drawn_where_it_stays(cx, &view, room, &format!("{at}: Edit result"));
         }
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
