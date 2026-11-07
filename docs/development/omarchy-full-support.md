@@ -751,6 +751,24 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
+     - **Found on 2026-11-07 (native QA-106c on `ec64f91c`, and the morning's reviews; briefed rounds FU30-A
+       conflict review draft, FU30-B Edit local commits, FU30-C lists out of the Tab order are in `briefs-q9/`):**
+       (keyboard, M) the Diff view's per-line staging checkboxes are mouse-only (no Tab stop; a click does not
+       focus them). (S) The Stashes dialog ignores Ctrl+R and window refocus after a stash is dropped from outside;
+       the dropped stash stays listed until its own Refresh. (S) A cold restore briefly shows "GitTurtle · Detached
+       HEAD · Profiles" in the header. (verify) Ctrl+[ then Ctrl+Shift+P in one input batch lost the palette in 2
+       of 3 (may be the input tool's batching; reproduce with separate key events first). (S) Changes: a
+       same-count change (one file moving from Unstaged to Staged) does not re-scroll the list to the selected row
+       (AGENTS.md: keep selected files visible). (S, after FU29-A2 and FU29-C) the commit description's hint
+       becomes its accessible description through the kit's `aria_description`. (S) File History: the header's and
+       footer's own scrolls show no scroll cue; at 18 pt in a 461 px window the "From … · first-parent lineage"
+       line is 61-80 px wide beside its copy button and wraps to ~135 px: give the text a minimum width and move
+       the button beneath it below that. (S, security hardening) a symlink inside a stored path (`commondir` or
+       `core.worktree` through a symlink) re-pointed after open is not re-resolved on the identity's fast path
+       (FU26-E2 security re-check C6/S1, `probes-FU26E2-sec2/`; Git never writes either layout). (nit) An old
+       alias tab's mark is cleared by an explicit Open only through the exact alias path (`find` matches bytes;
+       accepted). (QA note) H4 (2)'s over-4-KiB refusal cannot be produced through a saved session (the loader
+       cuts queries over 4,096 characters, `repository_tabs.rs:303`).
      - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
        (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
        Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
