@@ -29193,6 +29193,134 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A file row takes the widest of its forms that its drawn room holds,
+    /// beside "README.md" whole, measured from what the row draws: from 430
+    /// to 520 px wide and 490 tall at the default size and at 18 pt, the
+    /// form a row draws fits between its first and last drawn part, and
+    /// every wider form would not. Its fit once counted a fixed 12 px
+    /// leading inset against the drawn one, the list's leading inset with
+    /// the 2 px selection marker out of it, 9.75 px at the default size and
+    /// 13.5 at 18 pt: 2.25 px too strict at the one, 1.5 too lax at the
+    /// other.
+    #[gpui::test]
+    async fn narrow_file_rows_take_the_widest_form_their_room_holds(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("README.md"), "readme\n").unwrap();
+        std::fs::write(root.join("alpha.txt"), "alpha\n").unwrap();
+        fixture_git(&root, &["add", "README.md", "alpha.txt"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let position = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().unwrap().entries;
+            app.working_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, crate::workspace::WorkingRow::File(index, _)
+                        if entries[*index].path.as_os_str() == "README.md")
+                })
+                .expect("README.md's row")
+        });
+        let part = |cx: &mut VisualTestContext, kind: &str| {
+            cx.debug_bounds(format!("working-{kind}-{position}").leak())
+        };
+        let mut failures = Vec::new();
+        let mut drawn = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // Each text whole, its width rounded up as the fit measures it.
+            let (gap, close, control, floor, word) = cx.update(|window, _| {
+                let regular = window.text_style().font_weight;
+                let word = ["Conflict", "New", "Modified", "Deleted", "Renamed", "Type"]
+                    .into_iter()
+                    .map(|word| shaped_width(word, appearance::ui_text(10.), regular, window))
+                    .fold(px(0.), Pixels::max)
+                    .ceil();
+                (
+                    window.rem_size() * 0.5,
+                    window.rem_size() * 0.25,
+                    appearance::ui_size(28.),
+                    shaped_width(
+                        "README.md",
+                        appearance::ui_text(12.),
+                        FontWeight::MEDIUM,
+                        window,
+                    ),
+                    word,
+                )
+            });
+            // What a form takes with the name: its mark and the mark's gap
+            // before it, its word and its control after it.
+            let takes = |(status, tile, action, glyph, near): (bool, bool, bool, bool, bool)| {
+                let lead = if tile {
+                    px(26.) + gap
+                } else if glyph {
+                    px(16.) + if near { close } else { gap }
+                } else {
+                    px(0.)
+                };
+                lead + floor.ceil()
+                    + if status { gap + word } else { px(0.) }
+                    + if action { gap + control } else { px(0.) }
+            };
+            for width in 430..=520 {
+                let width = width as f32;
+                cx.simulate_resize(size(px(width), px(490.)));
+                draw(cx);
+                let at = format!("{text} pt at {width} × 490");
+                let (tile, glyph, status, stage) = (
+                    part(cx, "tile"),
+                    part(cx, "glyph"),
+                    part(cx, "status"),
+                    part(cx, "stage"),
+                );
+                let column = part(cx, "path").unwrap_or_else(|| panic!("{at}: README.md"));
+                let name = part(cx, "name").unwrap_or_else(|| panic!("{at}: its name"));
+                let near = glyph.is_some_and(|glyph| column.left() - glyph.right() < gap - px(0.5));
+                let form = (
+                    status.is_some(),
+                    tile.is_some(),
+                    stage.is_some(),
+                    glyph.is_some(),
+                    near,
+                );
+                drawn.insert((text, form));
+                // The row's room, from its first drawn part to its last.
+                let first = tile.or(glyph).unwrap_or(column).left();
+                let last = stage.or(status).unwrap_or(column).right();
+                let room = last - first;
+                if name.size.width < floor - px(0.01) || takes(form) > room + px(0.01) {
+                    failures.push(format!(
+                        "{at}: {form:?} takes {:?} in {room:?}, its name {name:?}",
+                        takes(form)
+                    ));
+                }
+                for wider in crate::workspace::FILE_FORMS
+                    .into_iter()
+                    .take_while(|wider| *wider != form)
+                {
+                    if takes(wider) <= room - px(0.01) {
+                        failures.push(format!(
+                            "{at}: {form:?} drawn where {wider:?}, {:?}, fits {room:?}",
+                            takes(wider)
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        // The walk reaches at least the tile and the bare glyph at each size.
+        assert!(drawn.len() >= 3, "{drawn:?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A file row keeps its name whole, at least a short one such as
     /// "README.md": at 18 pt in the 156 px inspector of a 461 × 490 window
     /// every row gives up its status word and then its Stage or Unstage

@@ -1130,7 +1130,7 @@ const FILE_NAME_FLOOR: &str = "README.md";
 /// `gap_1` from the name; last the glyph leaves, the folder below the name
 /// with it (`WorkingForms::file_folder`), only where the name's floor needs
 /// the glyph's room.
-const FILE_FORMS: [(bool, bool, bool, bool, bool); 7] = [
+pub(super) const FILE_FORMS: [(bool, bool, bool, bool, bool); 7] = [
     (true, true, true, false, false),
     (false, true, true, false, false),
     (false, false, true, true, false),
@@ -1321,8 +1321,9 @@ impl GitTurtle {
                 .unwrap_or((false, false, false));
         }
 
-        // A file row, inside the list's border and its 1 px margin: `pl` 10
-        // px with the 2 px selection edge, the 26 px status tile, the name,
+        // A file row, inside the list's 1 px margin and its border either
+        // side: its leading inset, the list's (`PANE_INSET` scaled: its `pl`
+        // and the 2 px selection marker), the 26 px status tile, the name,
         // then the status word and the Stage or Unstage control, and `pr_3`.
         // So the name keeps its floor, the row takes the first of
         // `FILE_FORMS` that fits: decoration gives way before an action,
@@ -1337,7 +1338,7 @@ impl GitTurtle {
                 widest,
             ]
         });
-        let file_room = body - px(3.) - px(12.) - rem * 0.75;
+        let file_room = body - px(3.) - ui_size(crate::appearance::PANE_INSET) - rem * 0.75;
         let fits = |(word, tile, action, glyph, close): (bool, bool, bool, bool, bool)| {
             let lead = if tile {
                 px(26.) + gap
