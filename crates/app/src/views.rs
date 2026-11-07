@@ -736,12 +736,13 @@ impl GitTurtle {
                 .border_b_1()
                 .border_color(rgb(p.border))
                 .child(
-                    button("page-back", "", "arrow-left", false)
-                        .accessibility_label(back_label)
-                        .tooltip(format!("{back_label} · {}[", primary_label()))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.return_from_page(window, cx)),
-                        ),
+                    noted_tooltip(
+                        button("page-back", "", "arrow-left", false)
+                            .accessibility_label(back_label),
+                        "page-back",
+                        settings_back_tooltip(back_label),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.return_from_page(window, cx))),
                 )
                 .child(app_icon(f32::from(appearance::ui_size(28.))))
                 .child(
@@ -7512,11 +7513,11 @@ thread_local! {
     /// [`STATUS_TEXT`] keeps a text's without parts; the spare hints and a
     /// hover read a text's whole width with parts here.
     static STATUS_PARTS: StatusPartWidths = const { RefCell::new(Measured::new()) };
-    /// [`StatusWidths`] for the keyboard hints, font, sizes and scale factor
-    /// drawn lately, so the windows, pages and text sizes drawn in turn keep
-    /// their own; its gaps and the warning's controls snap to the window's
-    /// device pixels.
-    static STATUS_WIDTHS: RefCell<Measured<(LineKey, u32, shortcuts::KeyHints), StatusWidths>> =
+    /// [`StatusWidths`] for the keyboard hints (by what they follow from,
+    /// [`HintsFor`]), font, sizes and scale factor drawn lately, so the
+    /// windows, pages and text sizes drawn in turn keep their own; its gaps
+    /// and the warning's controls snap to the window's device pixels.
+    static STATUS_WIDTHS: RefCell<Measured<StatusWidthsKey, StatusWidths>> =
         const { RefCell::new(Measured::new()) };
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
@@ -7553,6 +7554,41 @@ pub(crate) fn forget_chrome_text() {
 #[cfg(test)]
 pub(crate) fn forget_status_text() {
     STATUS_TEXT.with_borrow_mut(|cache| *cache = Measured::new());
+}
+
+thread_local! {
+    /// Back's tooltip on the Settings page with the label it reads
+    /// ([`settings_back_tooltip`]).
+    static SETTINGS_BACK_TOOLTIP: RefCell<Option<(&'static str, SharedString)>> =
+        const { RefCell::new(None) };
+}
+
+/// Back's tooltip on the Settings page, which reads `label` (back to
+/// Projects or to the repository, as Settings was opened) and Back's
+/// shortcut, formatted only when the label changes: every frame of Settings
+/// formatted it again.
+fn settings_back_tooltip(label: &'static str) -> SharedString {
+    SETTINGS_BACK_TOOLTIP.with_borrow_mut(|kept| {
+        if let Some((kept_label, tooltip)) = kept.as_ref()
+            && *kept_label == label
+        {
+            return tooltip.clone();
+        }
+        #[cfg(test)]
+        SETTINGS_BACK_TOOLTIP_FORMATTED.with(|formatted| formatted.set(formatted.get() + 1));
+        let tooltip = SharedString::from(format!("{label} · {}[", primary_label()));
+        *kept = Some((label, tooltip.clone()));
+        tooltip
+    })
+}
+
+/// Empties [`STATUS_WIDTHS`] and [`SETTINGS_BACK_TOOLTIP`], for a test that
+/// counts what the status bar's hints and Settings' Back build: a GPUI
+/// test's seeds share the thread and its caches.
+#[cfg(test)]
+pub(crate) fn forget_status_hints() {
+    STATUS_WIDTHS.with_borrow_mut(|cache| *cache = Measured::new());
+    SETTINGS_BACK_TOOLTIP.set(None);
 }
 
 /// What the status bar's room for Cancel is kept by
@@ -7596,6 +7632,55 @@ fn watch_control_height(cx: &App) -> Pixels {
     appearance::ui_size(WATCH_CONTROL).min(room)
 }
 
+/// What the status bar's keyboard hints follow from
+/// (`GitTurtle::key_hints`): under a modal dialog or sheet, the keys of the
+/// dialog control holding focus; else the page, and on a Repository page its
+/// mode. The bar's measured hints are kept by it with the font, sizes and
+/// scale factor ([`STATUS_WIDTHS`]), so a frame builds the hints, their
+/// forms and their widths only where one of those changes: every frame
+/// built the page's hints again, a few allocations each, to look the
+/// widths up by them.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum HintsFor {
+    Dialog(shortcuts::DialogKeys),
+    Settings,
+    Projects,
+    Repository(WorkspaceMode),
+}
+
+impl HintsFor {
+    /// The hints, each key with what it does.
+    pub(super) fn hints(self) -> shortcuts::KeyHints {
+        #[cfg(test)]
+        KEY_HINTS_BUILT.with(|built| built.set(built.get() + 1));
+        let key = |key: &str, action| (key.to_owned(), action);
+        let escape = |action| key(shortcuts::ESCAPE, action);
+        shortcuts::KeyHints::new(match self {
+            Self::Dialog(keys) => return keys.key_hints(),
+            Self::Settings => vec![key("Tab", "Move between controls"), escape("Back")],
+            Self::Projects => vec![
+                (format!("{}O", primary_label()), "Open repository"),
+                escape("Back"),
+            ],
+            Self::Repository(WorkspaceMode::Compare) => {
+                vec![escape("Back to history"), key("↑↓", "Files")]
+            }
+            Self::Repository(WorkspaceMode::Working) => {
+                vec![key("↑↓", "Review files"), escape("Back to history")]
+            }
+            Self::Repository(WorkspaceMode::History) => vec![
+                (format!("{}F", primary_label()), "Search"),
+                key("↑↓", "Navigate"),
+                key(shortcuts::ENTER, "Open file"),
+            ],
+        })
+    }
+}
+
+/// What [`STATUS_WIDTHS`] keeps each [`StatusWidths`] by: the line key, the
+/// window's scale factor and what the hints follow from.
+type StatusWidthsKey = (LineKey, u32, Option<HintsFor>);
+
 /// What the status bar's fitting measures, in the font and sizes of a
 /// [`LineKey`]: each form its keyboard hints can take, in the order they
 /// give way (`shortcuts::KeyHints::giving_way`: whole, their keys alone,
@@ -7603,10 +7688,10 @@ fn watch_control_height(cx: &App) -> Pixels {
 /// warning's words, Refresh and Details…, labelled or as its icon, with the
 /// gaps between; and the ellipsis the status line keeps at least.
 struct StatusWidths {
-    forms: Vec<(String, Pixels)>,
+    forms: Vec<(SharedString, Pixels)>,
     /// The whole form with the spare hints after the others, where there
     /// are any (`shortcuts::KeyHints::spare`).
-    spare: Option<(String, Pixels)>,
+    spare: Option<(SharedString, Pixels)>,
     warning: Pixels,
     warning_compact: Pixels,
     ellipsis: Pixels,
@@ -7619,7 +7704,7 @@ struct StatusWidths {
 /// ([`status_parts_end`]).
 #[derive(Debug, PartialEq, Eq)]
 struct StatusFit {
-    hints: Option<String>,
+    hints: Option<SharedString>,
     details_icon: bool,
     parts: Option<usize>,
 }
@@ -7862,6 +7947,14 @@ pub(crate) fn note_control_icon(id: &ElementId, path: &str) {
     let _ = (id, path);
 }
 
+/// `control` drawn with `tooltip`, noted under its element ID `id` as the
+/// tooltip it is drawn with ([`note_control_tooltip`]): the value noted is
+/// the one the control takes.
+fn noted_tooltip(control: Button, id: &'static str, tooltip: SharedString) -> Button {
+    note_control_tooltip(&id.into(), &tooltip);
+    control.tooltip(tooltip)
+}
+
 /// Notes `tooltip` as the tooltip text the control with element ID `id` is
 /// drawn with, for a test to read back ([`CONTROL_TOOLTIPS`]); outside tests
 /// it does nothing.
@@ -8033,6 +8126,13 @@ thread_local! {
     /// How many times the chrome's text was built (`GitTurtle::chrome_text`),
     /// for a test.
     static CHROME_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times the status bar's keyboard hints were built
+    /// ([`HintsFor::hints`]), for a test.
+    static KEY_HINTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times Settings' Back tooltip was formatted
+    /// ([`settings_back_tooltip`]), for a test.
+    static SETTINGS_BACK_TOOLTIP_FORMATTED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
     static STATUS_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// How many times the status line's whole text was measured for spare
     /// hints ([`STATUS_TEXT`]), for a test.
@@ -8750,7 +8850,7 @@ impl GitTurtle {
     #[cfg(test)]
     pub(super) fn status_hints(&self, window: &mut Window, cx: &mut App) -> Option<String> {
         let plan = self.frame_plan(window, cx);
-        self.fit_status_bar(plan, window, cx).hints
+        (self.fit_status_bar(plan, window, cx).hints).map(|hints| hints.to_string())
     }
 
     /// The header plan this window's frame works out
@@ -8765,38 +8865,30 @@ impl GitTurtle {
     /// does: the page's, or, under a modal dialog or sheet, those of the
     /// dialog control holding focus, which has keys of its own, or none. The
     /// page's keys do not reach the page beneath a modal, so its hints never
-    /// show there.
+    /// show there. The status bar finds its measured hints by what they
+    /// follow from ([`Self::hints_for`]) and builds them only for widths it
+    /// has not kept, so only tests build them each time.
+    #[cfg(test)]
     pub(super) fn key_hints(
         &self,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<shortcuts::KeyHints> {
+        self.hints_for(window, cx).map(HintsFor::hints)
+    }
+
+    /// What the keyboard hints follow from now ([`HintsFor`]), or none
+    /// under a modal dialog or sheet whose focused control has no keys of
+    /// its own.
+    fn hints_for(&self, window: &mut Window, cx: &mut App) -> Option<HintsFor> {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
-            return self
-                .dialog_hints
-                .focused(window)
-                .map(shortcuts::DialogKeys::key_hints);
+            return self.dialog_hints.focused(window).map(HintsFor::Dialog);
         }
-        let key = |key: &str, action| (key.to_owned(), action);
-        let escape = |action| key(shortcuts::ESCAPE, action);
-        Some(shortcuts::KeyHints::new(match self.page {
-            AppPage::Settings => vec![key("Tab", "Move between controls"), escape("Back")],
-            AppPage::Projects => vec![
-                (format!("{}O", primary_label()), "Open repository"),
-                escape("Back"),
-            ],
-            AppPage::Repository => match self.mode {
-                WorkspaceMode::Compare => vec![escape("Back to history"), key("↑↓", "Files")],
-                WorkspaceMode::Working => {
-                    vec![key("↑↓", "Review files"), escape("Back to history")]
-                }
-                WorkspaceMode::History => vec![
-                    (format!("{}F", primary_label()), "Search"),
-                    key("↑↓", "Navigate"),
-                    key(shortcuts::ENTER, "Open file"),
-                ],
-            },
-        }))
+        Some(match self.page {
+            AppPage::Settings => HintsFor::Settings,
+            AppPage::Projects => HintsFor::Projects,
+            AppPage::Repository => HintsFor::Repository(self.mode),
+        })
     }
 
     /// How the status bar lays out in this window, in the one responsive
@@ -8857,9 +8949,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut App,
     ) -> StatusFit {
-        let hints = self
-            .key_hints(window, cx)
-            .unwrap_or(shortcuts::KeyHints::new(Vec::new()));
+        let hints = self.hints_for(window, cx);
         let warning = self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
         let rem = window.rem_size();
         // The bar's `px_3` and `gap_2`, and its 5 px dot.
@@ -8881,7 +8971,12 @@ impl GitTurtle {
                 window.scale_factor().to_bits(),
                 hints,
             );
-            let widths = cache.get(key, |(_, _, hints)| self.status_widths(hints, window));
+            // The hints themselves are built only for widths not kept.
+            let widths = cache.get(key, |(_, _, hints)| {
+                let hints =
+                    hints.map_or_else(|| shortcuts::KeyHints::new(Vec::new()), HintsFor::hints);
+                self.status_widths(&hints, window)
+            });
             let line = match self.fresh_outcome() {
                 Some(outcome) => status_line_width(&STATUS_OUTCOME, outcome, window, || {
                     #[cfg(test)]
@@ -9086,7 +9181,7 @@ impl GitTurtle {
             + gap;
         let measured = |form: String| {
             let width = text(&form);
-            (form, width)
+            (SharedString::from(form), width)
         };
         StatusWidths {
             spare: (!hints.spare.is_empty()).then(|| measured(hints.whole())),
@@ -22345,7 +22440,7 @@ pub(crate) mod tests {
                     let plan = plan.expect("a Repository frame");
                     assert!(plan.full.is_some(), "{at}: the full header");
                     assert_eq!(plan.bar_room, room, "{at}: the frame's plan");
-                    let measured = |hints: Option<String>, cx: &mut VisualTestContext| {
+                    let measured = |hints: Option<SharedString>, cx: &mut VisualTestContext| {
                         hints.map(|hints| {
                             cx.update(|window, _| {
                                 line_widths(&[(&hints, appearance::ui_text(10.))], window)
@@ -23122,6 +23217,131 @@ pub(crate) mod tests {
                  render, and the header's layout shares that read"
             );
         }
+    }
+
+    /// The status bar's keyboard hints are built only when what they follow
+    /// from changes ([`HintsFor`]), and Settings' Back tooltip only when its
+    /// label does ([`settings_back_tooltip`]): at 1,480 × 800, frames at rest
+    /// in History, Changes and Settings build neither; Changes builds its
+    /// hints once, History's again finds them kept, Settings builds its
+    /// hints and formats Back's tooltip once each, and Settings opened from
+    /// Projects formats the tooltip once for its label; each is drawn as it
+    /// now reads. Every frame built the page's hints again, a few
+    /// allocations, and Settings formatted Back's tooltip again.
+    #[gpui::test]
+    async fn the_status_hints_and_settings_back_are_built_only_when_they_change(
+        cx: &mut TestAppContext,
+    ) {
+        // Empty, as a GPUI test's seeds share the thread and its caches.
+        forget_status_hints();
+        let (_fixture, app, cx) = working_window(cx).await;
+        hold_quiet_reads_for_test(&app, cx);
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let counts = || (KEY_HINTS_BUILT.get(), SETTINGS_BACK_TOOLTIP_FORMATTED.get());
+        let since = |before: (usize, usize)| {
+            let after = counts();
+            (after.0 - before.0, after.1 - before.1)
+        };
+        let at_rest = |at: &str, cx: &mut VisualTestContext| {
+            let before = counts();
+            for _ in 0..3 {
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            assert_eq!(since(before), (0, 0), "{at}: frames at rest build nothing");
+        };
+        let hints = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+        };
+        // Back's tooltip as a fresh frame draws it: the note is made with
+        // the value the Button takes (`noted_tooltip`).
+        let back = |cx: &mut VisualTestContext| {
+            CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().remove("page-back"));
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow().get("page-back").cloned())
+        };
+        let history = format!(
+            "{}F Search · ↑↓ Navigate · {} Open file",
+            primary_label(),
+            shortcuts::ENTER
+        );
+        type Page = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        // What showing `page` builds, its reads landed, in the frame that
+        // draws it.
+        async fn show(
+            app: &Entity<GitTurtle>,
+            page: Page,
+            cx: &mut VisualTestContext,
+        ) -> (usize, usize) {
+            let counts = || (KEY_HINTS_BUILT.get(), SETTINGS_BACK_TOOLTIP_FORMATTED.get());
+            let before = counts();
+            cx.update(|window, cx| app.update(cx, |app, cx| page(app, window, cx)));
+            settle(app, cx).await;
+            draw(cx);
+            let after = counts();
+            (after.0 - before.0, after.1 - before.1)
+        }
+
+        // The window opened in Changes, whose hints are kept from then:
+        // emptied, History's frame builds its own once.
+        forget_status_hints();
+        let before = counts();
+        draw(cx);
+        assert_eq!(since(before), (1, 0), "History builds its hints once");
+        at_rest("History", cx);
+        assert_eq!(hints(cx).as_deref(), Some(history.as_str()));
+        assert_eq!(
+            show(&app, GitTurtle::show_working, cx).await,
+            (1, 0),
+            "Changes builds its hints once"
+        );
+        at_rest("Changes", cx);
+        assert_eq!(
+            hints(cx).as_deref(),
+            Some("↑↓ Review files · Esc Back to history")
+        );
+        assert_eq!(
+            show(&app, GitTurtle::show_history, cx).await,
+            (0, 0),
+            "History's hints are kept"
+        );
+        at_rest("History again", cx);
+        assert_eq!(hints(cx).as_deref(), Some(history.as_str()));
+        assert_eq!(
+            show(&app, GitTurtle::show_settings, cx).await,
+            (1, 1),
+            "Settings builds its hints and formats Back's tooltip once each"
+        );
+        at_rest("Settings", cx);
+        assert_eq!(
+            hints(cx).as_deref(),
+            Some("Tab Move between controls · Esc Back")
+        );
+        assert_eq!(
+            back(cx),
+            Some(format!("Back to repository · {}[", primary_label()))
+        );
+
+        let before = counts();
+        app.update(cx, |app, cx| {
+            app.page_origin = AppPage::Projects;
+            cx.notify()
+        });
+        draw(cx);
+        assert_eq!(
+            since(before),
+            (0, 1),
+            "opened from Projects, Back's tooltip is formatted once for its label"
+        );
+        assert_eq!(
+            back(cx),
+            Some(format!("Back to Projects · {}[", primary_label()))
+        );
+        at_rest("Settings from Projects", cx);
     }
 
     /// The status bar's room for Cancel, and so the idle bar's hints, follow
