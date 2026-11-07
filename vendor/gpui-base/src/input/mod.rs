@@ -65,7 +65,7 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 pub use crate::number_input::{NumberInputEvent, NumberStep};
-pub use accessible_text::AccessibleText;
+pub use accessible_text::{AccessibleText, AccessibleTextSink, Builds};
 pub use base::{InputBase, InputContextMenuCapabilities, InputStyles};
 pub use cursor::Selection;
 pub use decorations::{TextDecoration, TextDecorationCollection};

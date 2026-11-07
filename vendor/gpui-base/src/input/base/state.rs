@@ -303,7 +303,10 @@ pub struct InputBaseState<M: InputModeKind> {
     /// GitTurtle patch: the text segmented for assistive technology, kept
     /// only while a client is active and rebuilt when the text changes
     /// ([`Self::accessible_text`]).
-    accessible_text: Option<Rc<super::accessible_text::Segmented>>,
+    accessible_text: Option<Rc<super::accessible_text::Cache>>,
+    /// GitTurtle patch: counts every change of [`Self::text`], so the text
+    /// segmented for assistive technology is rebuilt only when it changed.
+    text_revision: u64,
     pub(super) mode: LayoutMode,
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
@@ -577,14 +580,20 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
-    /// GitTurtle patch: what this field writes to assistive technology, its
-    /// text whole with the runs and selection AccessKit's adapters read it
-    /// through, or `None` for a field that shows them no value: a masked
-    /// field, one its styled input presents as secret (a password), and one
-    /// no styled input presents. The field renders it only while a client
-    /// is active, and segments its text again only when the text changed.
-    pub fn accessible_text(&mut self) -> Option<super::accessible_text::AccessibleText> {
-        let exposed = !self.masked
+    /// GitTurtle patch: what this field writes to assistive technology in a
+    /// frame drawn with a client `active`, as its render does: its text
+    /// whole with the runs and selection AccessKit's adapters read it
+    /// through, or `None` for a frame drawn with none, or for a field that
+    /// shows them no value: a masked field, one its styled input presents
+    /// as secret (a password), and one no styled input presents. It keeps
+    /// what it segmented while a client is active, and segments the text
+    /// again only when the text changed; a frame drawn with none drops it.
+    pub fn accessible_text(
+        &mut self,
+        active: bool,
+    ) -> Option<super::accessible_text::AccessibleText> {
+        let exposed = active
+            && !self.masked
             && self
                 .accessibility_presentation
                 .as_ref()
@@ -593,12 +602,15 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.accessible_text = None;
             return None;
         }
-        let segmented = match &self.accessible_text {
-            Some(segmented) if segmented.is_of(&self.text) => segmented.clone(),
+        let cache = match &self.accessible_text {
+            Some(cache) if cache.revision() == self.text_revision => cache.clone(),
             _ => {
-                let segmented = Rc::new(super::accessible_text::Segmented::of(&self.text));
-                self.accessible_text = Some(segmented.clone());
-                segmented
+                let cache = Rc::new(super::accessible_text::Cache::new(
+                    self.text_revision,
+                    &self.text,
+                ));
+                self.accessible_text = Some(cache.clone());
+                cache
             }
         };
         let Selection { start, end } = self.selected_range;
@@ -608,7 +620,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             (start, end)
         };
         Some(super::accessible_text::AccessibleText::new(
-            segmented, anchor, focus,
+            cache, anchor, focus,
         ))
     }
 
@@ -722,6 +734,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             focus_handle: focus_handle.clone(),
             accessibility_presentation: None,
             accessible_text: None,
+            text_revision: 0,
             text: "".into(),
             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
             search_session: super::SearchSession::default(),
@@ -1234,6 +1247,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn default_value(mut self, value: impl Into<SharedString>) -> Self {
         let text: SharedString = value.into();
         self.text = Rope::from(self.normalize_input(&text).as_ref());
+        self.text_revision += 1;
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
@@ -3057,6 +3071,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         let old_text = self.text.clone();
         self.text.replace(range.clone(), new_text);
+        self.text_revision += 1;
 
         let mut new_offset = (range.start + new_text.len()).min(self.text.len());
 
@@ -3075,6 +3090,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 && self.is_valid_input(&old_text.to_string(), cx)
             {
                 self.text = old_text;
+                self.text_revision += 1;
                 return;
             }
 
@@ -3082,6 +3098,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 let mask_text = self.mask_pattern.mask(&pending_text);
                 mask_changed = mask_text.as_str() != pending_text;
                 self.text = Rope::from(mask_text.as_str());
+                self.text_revision += 1;
                 let new_text_len =
                     (new_text.len() + mask_text.len()).saturating_sub(pending_text.len());
                 new_offset = (range.start + new_text_len).min(mask_text.len());
@@ -3203,6 +3220,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
 
         let old_text = self.text.clone();
         self.text.replace(range.clone(), new_text);
+        self.text_revision += 1;
 
         if self.is_single_line() {
             let pending_text = self.text.to_string();
@@ -3211,6 +3229,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 && self.is_valid_input(&old_text.to_string(), cx)
             {
                 self.text = old_text;
+                self.text_revision += 1;
                 if starts_composition {
                     self.undo_manager.commit_transaction();
                 }
@@ -3392,12 +3411,7 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         // content types stay hidden even when a visual mask is toggled off.
         // GitTurtle patch: the snapshot holds the text runs AccessKit's
         // adapters read a field's text through, as well as its value.
-        let accessible_text = if window.is_a11y_active() {
-            self.accessible_text()
-        } else {
-            self.accessible_text = None;
-            None
-        };
+        let accessible_text = self.accessible_text(window.is_a11y_active());
         let accessibility_value = accessible_text.as_ref().map(|text| text.value());
         let disabled = self.disabled;
         let readonly = self.readonly;
@@ -3426,12 +3440,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                         if readonly {
                             builder.parent_node().set_read_only();
                         }
-                        if let Some(text) = accessible_text {
-                            let (runs, selection) = text.runs(|key| builder.synthetic_node_id(key));
-                            for (id, run) in runs {
-                                builder.push_child(id, run);
-                            }
-                            builder.parent_node().set_text_selection(selection);
+                        if let Some(text) = &accessible_text {
+                            text.write(builder);
                         }
                     })
                     .when(!disabled && !readonly, |this| {

@@ -987,7 +987,7 @@ fn orca_reads_the_identity_fields_by_their_values(cx: &mut gpui::TestAppContext)
         settle(cx);
         [&name, &email].map(|field| {
             let node = crate::views::tests::input_node(cx, field);
-            let text = cx.update(|_, cx| field.update(cx, |state, _| state.accessible_text()));
+            let text = cx.update(|_, cx| field.update(cx, |state, _| state.accessible_text(true)));
             orca_reads_entry(super::input_tests::field_tree(node, text))
         })
     };
