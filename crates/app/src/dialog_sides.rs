@@ -43,7 +43,8 @@ const FRACTIONAL: [(u8, f32, f32, f32); 2] = [(13, 461., 490., 1.25), (18, 461.,
 /// themselves from the padding (the GitHub panel's, whose Files fit reads
 /// it, and the theme editor's). The signing site is no dialog of its own: it
 /// is the profile form's Use current repository signing settings, walked
-/// with the form.
+/// with the form. Interactive rebase's Load commits is a ghost Button that
+/// stands beside the base field rather than on the edge.
 #[derive(Clone, Copy, Debug)]
 enum Site {
     About,
@@ -59,6 +60,7 @@ enum Site {
     LfsSource,
     WorktreeCreated,
     Reflog,
+    InteractiveRebase,
 }
 
 impl Site {
@@ -79,10 +81,11 @@ impl Site {
     /// [`ghost_buttons_stand_their_labels_on_a_dialogs_text_edge`]: those in
     /// [`Self::ALL`], Download an LFS preview and Worktree created, opened
     /// from their openers with a working file's pointer and a worktree's
-    /// plan the fixture reads but never creates, and the Reflog, whose
+    /// plan the fixture reads but never creates, the Reflog, whose
     /// newest entry's details hold Copy commit ID and Review recovery
-    /// branch….
-    const GHOSTS: [Site; 10] = [
+    /// branch…, and interactive rebase, whose Load commits stands beside its
+    /// base field.
+    const GHOSTS: [Site; 11] = [
         Site::About,
         Site::Profiles,
         Site::ProfileForm,
@@ -93,6 +96,7 @@ impl Site {
         Site::LfsSource,
         Site::WorktreeCreated,
         Site::Reflog,
+        Site::InteractiveRebase,
     ];
 
     /// The rows of ghost Buttons standing at its text edge. Compare local
@@ -103,6 +107,7 @@ impl Site {
     /// series, which shows only while one is inspected, is not drawn. The
     /// Reflog's selected entry shows Copy commit ID below its selector and
     /// IDs, and Review recovery branch… below the recovery branch's name.
+    /// Interactive rebase's Load commits stands beside the base field.
     fn ghost_rows(self) -> Vec<Row> {
         let row = |selectors: &[(&'static str, Option<&'static str>)], icon: bool| Row {
             ghosts: selectors
@@ -111,6 +116,7 @@ impl Site {
                 .collect(),
             icon,
             drawn: true,
+            beside: false,
         };
         match self {
             Site::About => vec![row(&[("copy-bug-diagnostics", None)], true)],
@@ -134,6 +140,7 @@ impl Site {
                     ghosts: vec![(format!("revision-choice-{choice}"), None)],
                     icon: false,
                     drawn: choice == 0,
+                    beside: false,
                 })
                 .collect(),
             Site::RewriteReview => vec![row(
@@ -156,6 +163,7 @@ impl Site {
                         .collect(),
                     icon: false,
                     drawn: false,
+                    beside: false,
                 },
                 row(&[("read-lfs-source", None)], true),
             ],
@@ -181,6 +189,10 @@ impl Site {
                     false,
                 ),
             ],
+            Site::InteractiveRebase => vec![Row {
+                beside: true,
+                ..row(&[("load-rebase-commits", Some("Load commits"))], false)
+            }],
             _ => Vec::new(),
         }
     }
@@ -205,6 +217,7 @@ impl Site {
                 "edit-created-worktree",
             ],
             Site::Reflog => &["copy-reflog-oid", "review-reflog-recovery"],
+            Site::InteractiveRebase => &["load-rebase-commits"],
             _ => &[],
         }
     }
@@ -403,18 +416,26 @@ impl Site {
                 crate::reflog::ReflogBrowser::select_newest(&browser, cx);
                 views::tests::settle(app, cx).await;
             }
+            Site::InteractiveRebase => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_interactive_rebase(None, window, cx)
+                })
+                .await
+            }
         }
     }
 }
 
 /// A row of ghost Buttons at a dialog's text edge, each line's first
 /// standing on it: each Button's debug selector with its label where the
-/// test knows it, whether a leading icon starts their content, and whether
-/// the fixture draws the row's first.
+/// test knows it, whether a leading icon starts their content, whether
+/// the fixture draws the row's first, and whether they stand beside a field
+/// on its line instead, past the edge and never on it, on one line.
 struct Row {
     ghosts: Vec<(String, Option<&'static str>)>,
     icon: bool,
     drawn: bool,
+    beside: bool,
 }
 
 /// `bounds` in the window's logical pixels.
@@ -707,9 +728,12 @@ fn runs_in(
 /// pixel, and starts its label there, or with a leading icon its icon, the
 /// icon's width and gap before its label; on one line its frame ends its
 /// inset past its label, as wide as its content rather than stretched
-/// across the column; every line of a label without an icon starts there, and together they are as wide as the label, so one
-/// wider than its room wraps rather than end in an ellipsis; and no Button
-/// runs past the dialog's text column on the right.
+/// across the column; every line of a label without an icon starts there,
+/// and together they are as wide as the label, so one wider than its room
+/// wraps rather than end in an ellipsis;
+/// a Button standing beside a field stays on that line, past the edge, its
+/// label whole on one line and its frame as wide as its content; and no
+/// Button runs past the dialog's text column on the right.
 fn ghost_findings(
     cx: &mut VisualTestContext,
     site: Site,
@@ -777,13 +801,6 @@ fn ghost_findings(
             if !measured.insert(format!("{opening}: {selector}")) {
                 continue;
             }
-            if device(frame.left() + pull) != device(edge) {
-                failures.push(format!(
-                    "{at}: {selector}'s frame starts at {:?}, not its pull, {pull:?}, before \
-                     the text's edge {edge:?}",
-                    frame.left()
-                ));
-            }
             // As wide as its content: on one line its frame ends its inset
             // past its label, so a Button stretched across its column, its
             // content centred or not, fails.
@@ -797,6 +814,27 @@ fn ghost_findings(
                     line.right()
                 ));
             }
+            if row.beside {
+                // Beside the field, past the edge: on a line of its own it
+                // would stand at the row's start.
+                if frame.left() <= edge + slack {
+                    failures.push(format!(
+                        "{at}: {selector} at {frame:?} leaves the field's line for the edge \
+                         {edge:?}"
+                    ));
+                }
+                if runs.len() != 1 {
+                    failures.push(format!(
+                        "{at}: {selector} wraps its label beside the field: {runs:?}"
+                    ));
+                }
+            } else if device(frame.left() + pull) != device(edge) {
+                failures.push(format!(
+                    "{at}: {selector}'s frame starts at {:?}, not its pull, {pull:?}, before \
+                     the text's edge {edge:?}",
+                    frame.left()
+                ));
+            }
             if row.icon {
                 let content = start.left() - icon;
                 if (content - edge).abs() > px(1. / scale) {
@@ -807,7 +845,7 @@ fn ghost_findings(
                 }
                 continue;
             }
-            for line in &runs {
+            for line in runs.iter().filter(|_| !row.beside) {
                 if device(line.left()) != device(edge) {
                     failures.push(format!(
                         "{at}: {selector}'s label has a line at {:?}, not on the text's edge \
