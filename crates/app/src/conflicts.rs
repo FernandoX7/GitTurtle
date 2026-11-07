@@ -865,9 +865,22 @@ impl ConflictView {
                     // Keyed by this file's draft.
                     let mark = copy_feedback::Mark::new("copy-saved-conflict", &self.durable_key);
                     let copy_mark = mark.clone();
+                    let state = if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." };
+                    // Beside its actions where the line holds it, else on a
+                    // line of its own, ending in an ellipsis where even that
+                    // cannot hold it, its whole text its tooltip and, as a
+                    // label's value, its name: at 18 pt in a 461 × 490 half
+                    // tile it was cut at the review's side as "Saved draft
+                    // matches this operat". Named by `aria_label` on a
+                    // `div` with no role, it wrote no node at all.
+                    let status = noted_text_tooltip(
+                        crate::native_accessibility::text("conflict-saved-draft-state", state),
+                        "conflict-saved-draft-state",
+                        state,
+                    );
                     element.child(div().flex().flex_wrap().items_center().gap_2()
                         .on_children_prepainted(self.body.controls(vec![None, Some(copy_saved.clone()), Some(restore_saved.clone())], room))
-                        .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
+                        .child(status.min_w_0().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })))
                         .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).track_focus(&copy_saved).debug_selector(|| "copy-saved-conflict".into()).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved text", copy.clone())))
                         .child(button("restore-saved-conflict", "Restore saved draft", "", false).track_focus(&restore_saved).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
                             this.restore_saved_draft(window, cx);
@@ -909,6 +922,20 @@ impl ConflictView {
             .size_full()
             .into_any_element()
     }
+}
+
+/// `element` with `tooltip` as its tooltip, noted under its element ID `id`
+/// as the tooltip it is drawn with, as `views::noted_tooltip` notes a
+/// Button's: the value noted is the one the element takes.
+fn noted_text_tooltip<E: StatefulInteractiveElement>(
+    element: E,
+    id: &'static str,
+    tooltip: &'static str,
+) -> E {
+    crate::views::note_control_tooltip(&id.into(), tooltip);
+    element.tooltip(move |window, cx| {
+        gpui_kit::component::tooltip::Tooltip::new(tooltip).build(window, cx)
+    })
 }
 
 /// The whole lines the manual result draft prefers at every code size, and
@@ -2026,6 +2053,294 @@ mod tests {
             assert_eq!(draft_lines(room(3.), ring, window), 3.);
             assert_eq!(draft_lines(px(40.), ring, window), LEAST_DRAFT_LINES);
         });
+    }
+
+    /// The text runs painted in `region` that cross the left or right side
+    /// of their clip, marked as [`merge_window`] marks them: text cut
+    /// mid-glyph, where a run that ends in an ellipsis ends inside it. Code,
+    /// which scrolls sideways in its editor, lies in `code` and is left out.
+    fn cut_runs(
+        cx: &mut VisualTestContext,
+        region: Bounds<Pixels>,
+        code: &[Bounds<Pixels>],
+    ) -> Vec<String> {
+        let text = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+        let slack = gpui_kit::ScaledPixels(0.5);
+        quads
+            .into_iter()
+            .filter(|quad| quad.background == text)
+            .filter_map(|quad| {
+                let (drawn, clip) = (quad.bounds, quad.content_mask.bounds);
+                if drawn.left() >= clip.left() - slack && drawn.right() <= clip.right() + slack {
+                    return None;
+                }
+                let shown = drawn.intersect(&clip);
+                let middle = point(
+                    logical(shown.left() + shown.size.width / 2.),
+                    logical(shown.top() + shown.size.height / 2.),
+                );
+                (region.contains(&middle) && !code.iter().any(|code| code.contains(&middle))).then(
+                    || {
+                        format!(
+                            "{:.1}..{:.1} beside a clip of {:.1}..{:.1}, {:.1} px down",
+                            f32::from(logical(drawn.left())),
+                            f32::from(logical(drawn.right())),
+                            f32::from(logical(clip.left())),
+                            f32::from(logical(clip.right())),
+                            f32::from(logical(drawn.top())),
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// At 18 pt in a 461 × 490 half tile, nothing in the merge banner or the
+    /// conflict review is cut without an ellipsis: the banner's actions
+    /// become their icons, each named by its label with it as its tooltip,
+    /// inside the banner and the window, and the review's saved draft
+    /// status ends in an ellipsis, with its whole text as its tooltip and
+    /// its name. Labelled, the banner's actions ran past the window's edge,
+    /// Keep files… drawn as "Ke", and the status was cut at the review's
+    /// side as "Saved draft matches this operat". At 13 pt there the
+    /// actions are icons too, so the title and its detail are whole beside
+    /// them; in a 1,480 px window they keep their labels.
+    #[gpui::test]
+    async fn nothing_in_the_merge_banner_or_the_review_is_cut_in_a_half_tile(
+        cx: &mut TestAppContext,
+    ) {
+        const ACTIONS: [(&str, &str, &str); 4] = [
+            ("review-conflicts", "Review files", "changes"),
+            ("continue-operation", "Complete merge", "check"),
+            ("abort-operation", "Abort…", "reset"),
+            ("stop-operation", "Keep files…", "file-modified"),
+        ];
+        const SAVED: &str = "Saved draft matches this operation, index stages and working file.";
+        let (_fixture, app, cx) = merge_window(cx).await;
+        for (interface, code) in [(18, 18), (13, 12)] {
+            // Each pass reads only what its own frames drew: cleared once
+            // before the first, the 13 pt pass read the names, tooltips and
+            // icons the 18 pt pass had drawn.
+            crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+            crate::views::CONTROL_TOOLTIPS.with(|tips| tips.borrow_mut().clear());
+            crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+            let at = format!("461 × 490, {interface} pt, code {code} pt");
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            cx.simulate_resize(size(px(461.), px(490.)));
+            crate::views::tests::draw(cx);
+            let view = choose_notes(&app, cx);
+            // A matching saved draft offered, as after a restart, its row
+            // shown in the review's body.
+            let body = cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.durable_saved = Some((true, "saved\n".into()));
+                    cx.notify();
+                    view.body.clone()
+                })
+            });
+            crate::views::tests::draw(cx);
+            cx.update(|window, cx| {
+                body.reveal_next_focus();
+                body.focus("copy-saved-conflict", cx).focus(window, cx);
+            });
+            crate::views::tests::draw(cx);
+
+            let banner = rendered(cx, "operation-banner");
+            let window = cx.update(|window, _| window.viewport_size());
+            for (selector, label, symbol) in ACTIONS {
+                let control = rendered(cx, selector);
+                assert!(
+                    control.left() >= banner.left()
+                        && control.right() <= banner.right().min(window.width)
+                        && control.bottom() <= banner.bottom(),
+                    "{at}: {selector}, {control:?}, lies inside the banner, {banner:?}"
+                );
+                // Its icon alone, no wider than an icon's square.
+                let drawn =
+                    crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get(selector).cloned());
+                assert_eq!(
+                    drawn,
+                    Some(crate::icon_path(symbol)),
+                    "{at}: {selector} draws its icon"
+                );
+                assert!(
+                    control.size.width <= crate::appearance::ui_size(28.) + px(0.5),
+                    "{at}: {selector}, {control:?}, draws no label beside its icon"
+                );
+                let name =
+                    crate::views::COMPACT_NAMES.with(|names| names.borrow().get(selector).copied());
+                assert_eq!(name, Some(label), "{at}: {selector}'s accessible name");
+                let tooltip = crate::views::CONTROL_TOOLTIPS
+                    .with(|tips| tips.borrow().get(selector).cloned());
+                assert_eq!(
+                    tooltip.as_deref(),
+                    Some(label),
+                    "{at}: {selector}'s tooltip"
+                );
+            }
+            let cut = cut_runs(cx, banner, &[]);
+            assert!(
+                cut.is_empty(),
+                "{at}: the banner cuts text\n{}",
+                cut.join("\n")
+            );
+            // One row: the title and the actions on one line, the banner
+            // as tall as the taller of them inside its padding and border.
+            let (title, first) = (
+                rendered(cx, "operation-banner-title"),
+                rendered(cx, "review-conflicts"),
+            );
+            let padding = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.5));
+            let row = title.size.height.max(first.size.height) + padding * 2. + px(1.);
+            assert!(
+                first.top() < title.bottom() && (banner.size.height - row).abs() < px(0.01),
+                "{at}: the banner, {banner:?}, is one row, {row:?}, its title {title:?} beside \
+                 its actions from {first:?}"
+            );
+
+            // The body scrolled to the status's line.
+            let review = rendered(cx, "conflict-review");
+            let state = rendered(cx, "conflict-saved-draft-state");
+            cx.update(|window, _| {
+                let offset = body.scroll().offset().y + (review.top() - state.top());
+                body.scroll().set_offset(point(px(0.), offset.min(px(0.))));
+                window.refresh();
+            });
+            crate::views::tests::draw(cx);
+            let code = [
+                rendered(cx, "conflict-versions"),
+                rendered(cx, "conflict-result-draft"),
+            ];
+            let state = rendered(cx, "conflict-saved-draft-state");
+            assert!(
+                state.top() >= review.top() && state.bottom() <= review.bottom(),
+                "{at}: the saved draft's status, {state:?}, is shown in the body, {review:?}"
+            );
+            let cut = cut_runs(cx, review, &code);
+            assert!(
+                cut.is_empty(),
+                "{at}: the review cuts text\n{}",
+                cut.join("\n")
+            );
+            let tooltip = crate::views::CONTROL_TOOLTIPS
+                .with(|tips| tips.borrow().get("conflict-saved-draft-state").cloned());
+            assert_eq!(
+                tooltip.as_deref(),
+                Some(SAVED),
+                "{at}: the status's tooltip"
+            );
+            // Its name, the whole sentence however it ends on screen: a
+            // label's value, which adapters read as its name.
+            let written = crate::native_accessibility::written::get("conflict-saved-draft-state")
+                .unwrap_or_else(|| panic!("{at}: the status writes its node"));
+            assert_eq!(
+                (written.node.role(), written.node.value()),
+                (Role::Label, Some(SAVED)),
+                "{at}: the status's accessible name"
+            );
+            // At 18 pt it ends in an ellipsis.
+            let whole = cx.update(|window, _| {
+                crate::views::shaped_width(
+                    SAVED,
+                    crate::appearance::ui_text(11.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            if interface == 18 {
+                assert!(
+                    state.size.width < whole,
+                    "{at}: the status, {state:?}, ends in an ellipsis short of its {whole:?}"
+                );
+            }
+        }
+
+        // Where the title, its detail and the labelled actions fit, the
+        // actions keep their labels.
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        for (interface, code) in [(13, 12), (18, 18)] {
+            cx.update(|window, cx| {
+                crate::appearance::apply_text_sizes(interface, code, window, cx)
+            });
+            crate::views::tests::draw(cx);
+            for (selector, ..) in ACTIONS {
+                let name =
+                    crate::views::COMPACT_NAMES.with(|names| names.borrow().get(selector).copied());
+                assert_eq!(name, None, "{interface} pt: {selector} keeps its label");
+                assert!(
+                    rendered(cx, selector).size.width > crate::appearance::ui_size(28.),
+                    "{interface} pt: {selector} is wider than its icon"
+                );
+            }
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the merge banner's actions, as icons, have no room beside the
+    /// title's least, at 18 pt in a window 420 or 400 px wide, they stand on
+    /// a line of their own below the title whose first icon stands on the
+    /// title's edge, its ghost frame its icon inset before it, each action
+    /// whole inside the banner. They wrapped at the banner's padding, under
+    /// the warning icon, a left edge of their own. At 440 px they stand
+    /// beside the title.
+    #[gpui::test]
+    async fn the_banners_wrapped_actions_start_on_the_titles_edge(cx: &mut TestAppContext) {
+        const ACTIONS: [&str; 4] = [
+            "review-conflicts",
+            "continue-operation",
+            "abort-operation",
+            "stop-operation",
+        ];
+        let (_fixture, _app, cx) = merge_window(cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 18, window, cx));
+        for width in [440., 420., 400.] {
+            let at = format!("{width} × 490, 18 pt");
+            cx.simulate_resize(size(px(width), px(490.)));
+            crate::views::tests::draw(cx);
+            let banner = rendered(cx, "operation-banner");
+            let title = rendered(cx, "operation-banner-title");
+            let first = rendered(cx, ACTIONS[0]);
+            for selector in ACTIONS {
+                let control = rendered(cx, selector);
+                assert!(
+                    control.left() >= banner.left()
+                        && control.right() <= banner.right()
+                        && control.top() >= banner.top()
+                        && control.bottom() <= banner.bottom(),
+                    "{at}: {selector}, {control:?}, lies inside the banner, {banner:?}"
+                );
+                assert_eq!(
+                    control.top(),
+                    first.top(),
+                    "{at}: {selector} shares the first action's line"
+                );
+            }
+            if width > 430. {
+                assert!(
+                    first.top() < title.bottom(),
+                    "{at}: the actions, {first:?}, stand beside the title, {title:?}"
+                );
+                continue;
+            }
+            assert!(
+                first.top() >= title.bottom(),
+                "{at}: the actions, {first:?}, wrap below the title, {title:?}"
+            );
+            let inset = cx.update(|window, _| {
+                window.pixel_snap(crate::appearance::ui_size(crate::ICON_INSET))
+            });
+            assert!(
+                (first.left() - (title.left() - inset)).abs() < px(0.01),
+                "{at}: Review files' frame, {first:?}, stands its icon inset, {inset:?}, before \
+                 the title's edge, {title:?}, so its icon stands on it"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     fn snapshot() -> ConflictPreview {

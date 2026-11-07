@@ -2,6 +2,7 @@ use crate::workspace::refusing;
 use crate::*;
 use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCommand};
 use gpui_kit::component::WindowExt;
+use gpui_kit::prelude::FluentBuilder as _;
 
 /// The busy state of the comparison Merge… and Rebase… ask for.
 pub(crate) const COMPARING: &str = "Comparing branch tips…";
@@ -212,7 +213,14 @@ impl GitTurtle {
         );
     }
 
-    pub(super) fn render_operation_state(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The banner of an operation in progress, or of diverged branches,
+    /// across the repository page `width` wide.
+    pub(super) fn render_operation_state(
+        &self,
+        width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         // A write refuses each action here at once, and they look it only
         // once the write looks busy (`workspace::BusyLook`).
@@ -249,10 +257,38 @@ impl GitTurtle {
         } else {
             "Continue"
         };
+        let kind = operation.kind.label();
+        let title = format!("{kind} in progress · {}", operation.branch);
+        let detail = format!(
+            "{} · {}",
+            operation.target_label,
+            crate::counted(unresolved, "unresolved file", "unresolved files")
+        );
+        let fit = BannerFit::new(width, kind, &title, &detail, continuation, window);
+        // Labelled, or as its icon named by its label, with the label as its
+        // tooltip (DESIGN.md, "One responsive order").
+        let action = |id: &'static str, label: &'static str, symbol: &str| {
+            let control = if fit.labelled {
+                button(id, label, "", false)
+            } else {
+                let icon = button(id, "", symbol, false);
+                crate::views::noted_tooltip(
+                    crate::views::compact_control_name(icon, id, label),
+                    id,
+                    label.into(),
+                )
+            };
+            control.debug_selector(move || id.into())
+        };
         div()
+            .debug_selector(|| "operation-banner".into())
             .px_3()
             .py_2()
             .flex()
+            // Where even the actions' icons have no room beside the
+            // title's least, they wrap below it whole, as one group
+            // ([`BannerFit::wraps`]).
+            .flex_wrap()
             .items_center()
             .gap_2()
             .bg(rgb(p.subtle))
@@ -261,8 +297,9 @@ impl GitTurtle {
             .child(icon("file-conflict", 16., p.warning))
             .child(
                 div()
+                    .debug_selector(|| "operation-banner-title".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(fit.floor)
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -271,65 +308,171 @@ impl GitTurtle {
                             .truncate()
                             .text_size(crate::appearance::ui_text(12.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child(format!(
-                                "{} in progress · {}",
-                                operation.kind.label(),
-                                operation.branch
-                            )),
+                            .child(title),
                     )
                     .child(
                         div()
                             .truncate()
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
-                            .child(format!(
-                                "{} · {}",
-                                operation.target_label,
-                                crate::counted(unresolved, "unresolved file", "unresolved files")
-                            )),
+                            .child(detail),
                     ),
             )
             .child(
-                button("review-conflicts", "Review files", "", false)
-                    .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
-            )
-            .child(
-                refusing(
-                    button("continue-operation", continuation, "", false)
-                        .debug_selector(|| "continue-operation".into()),
-                    || "continue-operation".into(),
-                    busy || unresolved > 0,
-                    looks_busy || unresolved > 0,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.confirm_continue(continue_state.clone(), window, cx)
-                })),
-            )
-            .child(
-                refusing(
-                    button("abort-operation", "Abort…", "", false)
-                        .debug_selector(|| "abort-operation".into()),
-                    || "abort-operation".into(),
-                    busy,
-                    looks_busy,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.confirm_operation_end(abort_state.clone(), false, window, cx)
-                })),
-            )
-            .child(
-                refusing(
-                    button("stop-operation", "Keep files…", "", false)
-                        .debug_selector(|| "stop-operation".into()),
-                    || "stop-operation".into(),
-                    busy,
-                    looks_busy,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.confirm_operation_end(stop_state.clone(), true, window, cx)
-                })),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    // Wrapped, on a line of its own whose first icon stands
+                    // on the title's edge, the ghost Button's frame its icon
+                    // inset before it (DESIGN.md, "One left edge"): at the
+                    // banner's padding it stood under the warning icon, an
+                    // edge of its own.
+                    .when(fit.wraps, |actions| actions.w_full().pl(fit.indent))
+                    .child(
+                        action("review-conflicts", "Review files", "changes").on_click(
+                            cx.listener(|this, _, window, cx| this.show_working(window, cx)),
+                        ),
+                    )
+                    .child(
+                        refusing(
+                            action("continue-operation", continuation, "check"),
+                            || "continue-operation".into(),
+                            busy || unresolved > 0,
+                            looks_busy || unresolved > 0,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.confirm_continue(continue_state.clone(), window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        refusing(
+                            action("abort-operation", "Abort…", "reset"),
+                            || "abort-operation".into(),
+                            busy,
+                            looks_busy,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.confirm_operation_end(abort_state.clone(), false, window, cx)
+                            },
+                        )),
+                    )
+                    .child(
+                        refusing(
+                            // A file, never the close mark, which the
+                            // app keeps for cancel and clear: it ends the
+                            // operation and keeps the working files.
+                            action("stop-operation", "Keep files…", "file-modified"),
+                            || "stop-operation".into(),
+                            busy,
+                            looks_busy,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.confirm_operation_end(stop_state.clone(), true, window, cx)
+                            },
+                        )),
+                    ),
             )
             .into_any_element()
+    }
+}
+
+thread_local! {
+    /// What the operation banner's labelled line takes beside its padding,
+    /// icon and gaps, by its title, detail and continuation
+    /// ([`BannerFit::new`]).
+    static LABELLED_BANNER: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The banner title's least, by the operation's phrase.
+    static BANNER_TITLE_FLOOR: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// How the operation banner lays out in the repository page's width, in the
+/// one responsive order (DESIGN.md): its title, "Merge in progress · main",
+/// and its detail, the target and the unresolved files, are what it says, so
+/// its four actions keep their labels only where both lines are whole beside
+/// them, and otherwise become their icons, each named by its label and with
+/// it as its tooltip. The title then ends in an ellipsis where it must, down
+/// to its least, the operation's phrase whole ("Merge in progress…"), and
+/// below that the actions wrap beneath it as one group, each whole. Kept
+/// labelled at any width, at 18 pt in a 461 × 490 half tile the actions ran
+/// past the window's edge, Keep files… drawn as "Ke", and at 13 pt there
+/// they left the title "Merge i…" and its detail "other · 1…".
+struct BannerFit {
+    labelled: bool,
+    /// The title's least: the operation's phrase with the ellipsis.
+    floor: Pixels,
+    /// Whether the actions, as icons, have no room beside the title's
+    /// least, and so stand on a line of their own below it.
+    wraps: bool,
+    /// How far that line's first frame stands past the banner's padding:
+    /// past the warning icon and its gap, to the title's edge, less the
+    /// frame's icon inset, so its icon stands on the title's edge.
+    indent: Pixels,
+}
+
+impl BannerFit {
+    /// The banner's fit in a page `width` wide, for an operation of `kind`
+    /// whose banner reads `title` and `detail`, and whose continuation
+    /// reads `continuation`. The text is measured once per font, size and
+    /// text ([`crate::views::cached_text_width`]), so a frame at rest lays
+    /// none of it out again.
+    fn new(
+        width: Pixels,
+        kind: &str,
+        title: &str,
+        detail: &str,
+        continuation: &str,
+        window: &Window,
+    ) -> Self {
+        let device = |length: Pixels| crate::image_compare::on_device_pixel(length, window);
+        let rem = window.rem_size();
+        let (padding, gap) = (device(rem * 0.75), device(rem * 0.5));
+        let text = |text: &str, size: f32, weight: FontWeight| {
+            let shaped =
+                crate::views::shaped_width(text, crate::appearance::ui_text(size), weight, window);
+            crate::views::laid_out_text_width(shaped.ceil(), window)
+        };
+        let key = format!("{title}\n{detail}\n{continuation}");
+        let line = crate::views::cached_text_width(&LABELLED_BANNER, &key, window, || {
+            let regular = window.text_style().font_weight;
+            let whole = text(title, 12., FontWeight::MEDIUM).max(text(detail, 11., regular));
+            let actions: Pixels = ["Review files", continuation, "Abort…", "Keep files…"]
+                .into_iter()
+                .map(|label| {
+                    let label = crate::views::line_widths(
+                        &[(label, crate::appearance::ui_text(12.))],
+                        window,
+                    );
+                    crate::placed_button_width(label, false, window)
+                })
+                .sum();
+            whole + actions
+        });
+        let phrase = format!("{kind} in progress…");
+        let floor = crate::views::cached_text_width(&BANNER_TITLE_FLOOR, &phrase, window, || {
+            text(&phrase, 12., FontWeight::MEDIUM)
+        });
+        // Its padding, the warning's 16 px icon and the gaps between its
+        // six parts.
+        let chrome = padding * 2. + px(16.) + gap * 5.;
+        // The four icons, the shared Button's 28 px squares on device
+        // pixels, beside the title's least. A device pixel's slack counts a
+        // fit that layout's rounding could break as none, so the actions
+        // never wrap of themselves, at the banner's padding.
+        let icons = device(crate::appearance::ui_size(28.)) * 4.;
+        let slack = px(1. / window.scale_factor());
+        let inset = device(crate::appearance::ui_size(crate::ICON_INSET));
+        Self {
+            labelled: chrome + line <= width + px(0.01),
+            floor,
+            wraps: chrome + device(floor) + icons + slack > width,
+            indent: px(16.) + gap - inset,
+        }
     }
 }
 

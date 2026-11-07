@@ -7951,7 +7951,7 @@ pub(crate) fn note_control_icon(id: &ElementId, path: &str) {
 /// `control` drawn with `tooltip`, noted under its element ID `id` as the
 /// tooltip it is drawn with ([`note_control_tooltip`]): the value noted is
 /// the one the control takes.
-fn noted_tooltip(control: Button, id: &'static str, tooltip: SharedString) -> Button {
+pub(crate) fn noted_tooltip(control: Button, id: &'static str, tooltip: SharedString) -> Button {
     note_control_tooltip(&id.into(), &tooltip);
     control.tooltip(tooltip)
 }
@@ -8951,7 +8951,7 @@ impl GitTurtle {
                 self.sync_fit(chrome.is_compact(), window, cx),
                 cx,
             ))
-            .child(self.render_operation_state(cx))
+            .child(self.render_operation_state(self.repository_width(window, cx), window, cx))
             .child(columns)
             .into_any_element()
     }
