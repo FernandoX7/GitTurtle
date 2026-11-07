@@ -74,6 +74,60 @@ fn phrases(
             .child(phrase)
     }))
 }
+/// A path's line of the panel, its label and the path, built once for the path it names
+/// ([`PathText::new`]), so a frame builds none of its text: the panel's frames clone its
+/// shared strings, which count references.
+struct PathText {
+    prefix: &'static str,
+    path: SharedString,
+    /// `prefix` and then `path`, whole: the line's accessible name and its tooltip.
+    text: SharedString,
+}
+impl PathText {
+    fn new(prefix: &'static str, path: &std::path::Path) -> Self {
+        #[cfg(test)]
+        PATH_TEXT_BUILT.with(|built| built.set(built.get() + 1));
+        let path: SharedString = path.display().to_string().into();
+        Self {
+            prefix,
+            text: format!("{prefix}{path}").into(),
+            path,
+        }
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// How many times a [`PathText`] was built, for a test.
+    static PATH_TEXT_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// A [`label`] of one line, `line`'s prefix and then its path, the path elided in its middle,
+/// keeping its top directory and its last component, where the line is narrower than both
+/// ([`PathLine`]). The whole text is its accessible name and its tooltip.
+fn path_label(
+    id: &'static str,
+    line: &PathText,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    let lines = ElementId::from(id);
+    let size = crate::appearance::ui_text(12.);
+    let tooltip = line.text.clone();
+    crate::views::note_control_tooltip(&lines, &tooltip);
+    native_accessibility::static_text(
+        div()
+            .on_children_prepainted(move |children, window, cx| {
+                review::text_lines(&lines, children, window, cx)
+            })
+            .id(id)
+            .debug_selector(move || id.into())
+            .child(PathLine {
+                prefix: line.prefix,
+                path: line.path.clone(),
+                size,
+            }),
+        line.text.clone(),
+    )
+    .text_size(size)
+    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+}
 /// Where the panel's text starts, in from its edge: a compact Button's label
 /// inset, [`crate::LABEL_INSET`] at the interface size. The dialog's title, the
 /// fixture banner, the notices, the PR rows and the labels between them start
@@ -175,6 +229,163 @@ impl Element for LaidOut {
         cx: &mut App,
     ) {
         self.child.paint(window, cx);
+    }
+}
+/// One line of the panel's text, `prefix` and then `path` elided in its middle where the line
+/// is narrower than both, keeping the path's top directory and its last component, as the
+/// header elides the repository's path ([`crate::views::location_tail`]): "Local worktree:
+/// /tmp/…/compact". It works the path out for the width layout gives the line, as it
+/// prepaints, so the line keeps to one line at every width and text size (decided
+/// 2026-11-06): wrapped with a 120-character path, the connection pane's line took six lines
+/// at 17 pt in a 440 × 490 window, and no stop of the pane's Tab walk then showed the help's
+/// first line whole. Its text is `size` in the font and colour the line is drawn in.
+struct PathLine {
+    prefix: &'static str,
+    path: SharedString,
+    size: Pixels,
+}
+/// What a [`PathLine`]'s text follows from: the font, interface scale and rem size the line
+/// is laid out in ([`crate::views::LineKey`], as the header's identity keys on), its text
+/// size, the window's scale, the line's width and the path, so a frame at rest measures
+/// nothing and a line in another font is measured in it.
+#[derive(Clone, PartialEq)]
+struct PathLineKey {
+    line: crate::views::LineKey,
+    size: u32,
+    scale: u32,
+    width: u32,
+    path: SharedString,
+}
+/// A [`PathLine`]'s text size, the window's rem size and its scale, as bits, whose line height
+/// is kept ([`PATH_LINE_HEIGHTS`]).
+type PathLineHeightKey = (u32, u32, u32);
+thread_local! {
+    /// What [`PathLine`]s showed lately, for what each followed from, so windows drawing the
+    /// line at other widths, scales or fonts in turn each keep theirs
+    /// ([`crate::views::Measured`]): a cache of one slot worked the line out again on each
+    /// other's frames, every frame.
+    static PATH_LINES: std::cell::RefCell<crate::views::Measured<PathLineKey, SharedString>> =
+        const { std::cell::RefCell::new(crate::views::Measured::new()) };
+    /// The height of a [`PathLine`]'s one line for the text sizes, rem sizes and scales drawn
+    /// lately: reading the window's text style for it in every frame allocates its font
+    /// features.
+    static PATH_LINE_HEIGHTS: std::cell::RefCell<crate::views::Measured<PathLineHeightKey, Pixels>> =
+        const { std::cell::RefCell::new(crate::views::Measured::new()) };
+    /// How many times a [`PathLine`]'s text was worked out, for a test.
+    #[cfg(test)]
+    static PATH_LINE_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The text the last [`PathLine`] drawn showed, for a test.
+    #[cfg(test)]
+    static PATH_LINE_SHOWN: std::cell::RefCell<Option<SharedString>> =
+        const { std::cell::RefCell::new(None) };
+}
+impl IntoElement for PathLine {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+impl Element for PathLine {
+    type RequestLayoutState = ();
+    type PrepaintState = Option<AnyElement>;
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // As tall as one line of a text element in the line's text style, which its parent
+        // gives it now, its line height snapped to a device pixel as that element snaps it,
+        // and as wide as its parent.
+        let at = (
+            f32::from(self.size).to_bits(),
+            f32::from(window.rem_size()).to_bits(),
+            window.scale_factor().to_bits(),
+        );
+        let height = PATH_LINE_HEIGHTS.with_borrow_mut(|kept| {
+            *kept.get(at, |_| {
+                let (style, rem) = (window.text_style(), window.rem_size());
+                let size = style.font_size.to_pixels(rem);
+                window.pixel_snap(style.line_height.to_pixels(size.into(), rem))
+            })
+        });
+        let style = Style {
+            size: Size {
+                width: relative(1.).into(),
+                height: height.into(),
+            },
+            ..Default::default()
+        };
+        (window.request_layout(style, [], cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let key = PathLineKey {
+            line: crate::views::LineKey::current(window),
+            size: f32::from(self.size).to_bits(),
+            scale: window.scale_factor().to_bits(),
+            width: f32::from(bounds.size.width).to_bits(),
+            path: self.path.clone(),
+        };
+        let shown = PATH_LINES.with_borrow_mut(|kept| {
+            kept.get(key, |_| self.work_out(bounds.size.width, window))
+                .clone()
+        });
+        #[cfg(test)]
+        PATH_LINE_SHOWN.with_borrow_mut(|kept| *kept = Some(shown.clone()));
+        // One line that fits its box whole, or, where not even "…/" and the path's last
+        // component elided fit beside the prefix, elided in its middle inside it.
+        let mut line = crate::views::ellipsis_middle(div().child(shown)).into_any_element();
+        line.layout_as_root(bounds.size.map(AvailableSpace::Definite), window, cx);
+        line.prepaint_at(bounds.origin, window, cx);
+        Some(line)
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        line: &mut Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(line) = line {
+            line.paint(window, cx);
+        }
+    }
+}
+impl PathLine {
+    /// The line's text in `width`: the prefix and the path elided in the room the prefix
+    /// leaves ([`crate::views::location_tail`]).
+    fn work_out(&self, width: Pixels, window: &Window) -> SharedString {
+        #[cfg(test)]
+        PATH_LINE_MEASURED.with(|measured| measured.set(measured.get() + 1));
+        // Each part measured as layout places it; the line's own middle elision keeps its
+        // pixel of slack ([`crate::views::ellipsis_middle`]).
+        let measure = |text: &str| {
+            crate::views::laid_out_text_width(
+                crate::views::shaped_width(text, self.size, FontWeight::NORMAL, window),
+                window,
+            )
+        };
+        let room = width - px(1.) - measure(self.prefix);
+        let path = crate::views::location_tail(&self.path, room, measure);
+        format!("{}{path}", self.prefix).into()
     }
 }
 /// The dialog's own height around the panel's body in `window`: its 1 px edge above and
@@ -921,6 +1132,8 @@ struct Panel {
     conversations: conversations::State,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
+    /// The connection pane's "Local worktree:" line for `repo`, built with the panel.
+    worktree: PathText,
     destination: Entity<InputState>,
     head: Entity<InputState>,
     base: Entity<InputState>,
@@ -996,10 +1209,11 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let worktree = PathText::new("Local worktree: ", repo.path());
         let mut this=Self {
             review:review::ReviewState::new(window,cx),
             conversations:conversations::State::new(window,cx),
-            owner,repo,destination:cx.new(|cx|InputState::new(window,cx).placeholder("owner/repository")),
+            owner,worktree,repo,destination:cx.new(|cx|InputState::new(window,cx).placeholder("owner/repository")),
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
@@ -2240,9 +2454,11 @@ impl Render for Panel {
             // first line, or the row of controls it wraps to, to the body's top with it:
             // revealed as one part, the pane, taller than the body at 18 pt in a 461 × 490
             // window, showed its foot and left the help's second line cut at the body's top.
+            // Its first line names the local worktree on one line, the path elided in its
+            // middle where it is longer than the line ([`path_label`]).
             .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).map(bordered_pane).border_1().border_color(rgb(p.border)).rounded(px(6.))
                 .child(div().flex().flex_col().gap_2().on_children_prepainted(self.review.body_blocks.starts())
-                .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
+                .child(path_label("github-worktree",&self.worktree).text_color(rgb(p.muted)))
                 .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(self.part("connect",div(),cx).child(review::starts_block()).child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx)))))
@@ -4530,6 +4746,222 @@ mod tests {
     #[gpui::test]
     async fn the_connection_walk_shows_every_help_line_whole(cx: &mut TestAppContext) {
         let walked = walk_connection_reveals(cx, &[17, 18], [440., 480.]).await;
+        assert_every_help_line_whole(&walked);
+    }
+
+    /// With a repository path of about 120 characters ([`long_path_window`]), at 13, 17 and 18
+    /// pt in a 440 × 490 window, the connection pane's "Local worktree:" line keeps to one
+    /// line, the path elided in its middle keeping its top directory and its last component
+    /// ("Local worktree: /tmp/…/compact" where that fits beside the label), measured as laid
+    /// out and fitting the line, so the line's own elision cuts nothing more, with the whole
+    /// path its accessible name and its tooltip; and each line of the help is whole at some
+    /// stop of the pane's Tab walk. The line wrapped with the path: six lines at 17 pt, and
+    /// then no stop of the walk showed the help's first line whole (FU26-A's review).
+    #[gpui::test]
+    async fn a_long_worktree_path_keeps_to_one_line_and_leaves_the_help_whole(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        // A GPUI test's seeds share the thread and the tooltips noted on it.
+        crate::views::CONTROL_TOOLTIPS.with(|tooltips| tooltips.borrow_mut().clear());
+        let mut checked = 0;
+        let check = |cx: &mut VisualTestContext, at: &str, path: &std::path::Path| {
+            let whole = path.display().to_string();
+            assert!(
+                whole.len() >= 110,
+                "{at}: the fixture's path is long: {whole}"
+            );
+            let top = format!("/{}", whole[1..].split('/').next().unwrap());
+            let line = cx
+                .debug_bounds("github-worktree")
+                .expect("the worktree line");
+            let height = label_line(cx);
+            assert!(
+                line.size.height <= height + px(0.5),
+                "{at}: the worktree line is one line, {height:?} tall: {line:?}"
+            );
+            let shown = PATH_LINE_SHOWN
+                .with_borrow(Clone::clone)
+                .expect("the worktree line is drawn");
+            let path = shown
+                .strip_prefix("Local worktree: ")
+                .unwrap_or_else(|| panic!("{at}: {shown:?} starts with its label"));
+            let measure = |cx: &mut VisualTestContext, text: &str| {
+                cx.update(|window, _| {
+                    crate::views::laid_out_text_width(
+                        crate::views::shaped_width(
+                            text,
+                            appearance::ui_text(12.),
+                            FontWeight::NORMAL,
+                            window,
+                        ),
+                        window,
+                    )
+                })
+            };
+            let drawn = measure(cx, &shown);
+            assert!(
+                drawn <= line.size.width - px(1.) + px(0.01),
+                "{at}: {shown:?}, {drawn:?} wide, fits its line, {line:?}"
+            );
+            let kept = format!("{top}/…/compact");
+            let fits = measure(cx, &format!("Local worktree: {kept}")) <= line.size.width - px(1.);
+            assert!(
+                path != whole
+                    && path.ends_with("/compact")
+                    && if fits {
+                        path.starts_with(&format!("{top}/…/"))
+                    } else {
+                        top.starts_with(path.trim_end_matches("…/compact"))
+                    },
+                "{at}: {path:?} keeps {top} and compact, as {kept:?} where it fits"
+            );
+            let named = written::get("github-worktree")
+                .map(|line| line.node)
+                .and_then(|node| node.label().or(node.value()).map(str::to_owned));
+            assert_eq!(
+                named,
+                Some(format!("Local worktree: {whole}")),
+                "{at}: the line's accessible name holds the whole path"
+            );
+            let tooltip = crate::views::CONTROL_TOOLTIPS
+                .with(|tooltips| tooltips.borrow().get("github-worktree").cloned());
+            assert_eq!(
+                tooltip,
+                Some(format!("Local worktree: {whole}")),
+                "{at}: the line's tooltip holds the whole path"
+            );
+            checked += 1;
+        };
+        let walked =
+            walk_connection_reveals_with(cx, long_path_window, &[13, 17, 18], [440.], check).await;
+        assert_eq!(checked, 3, "the line is checked at each size");
+        assert_every_help_line_whole(&walked);
+    }
+
+    /// A window drawing one [`PathLine`] of a long path, `width` wide, in `family` where one
+    /// is given and in the window's font otherwise.
+    struct PathLineView {
+        width: Pixels,
+        family: Option<SharedString>,
+    }
+    impl Render for PathLineView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(self.width)
+                .text_size(px(12.))
+                .when_some(self.family.clone(), |line, family| line.font_family(family))
+                .child(PathLine {
+                    prefix: "Local worktree: ",
+                    path: "/home/someone/projects/a-repository-path-long-enough-to-elide/compact"
+                        .into(),
+                    size: px(12.),
+                })
+        }
+    }
+
+    /// A window drawing a [`PathLine`] ([`PathLineView`]), 300 px wide in its own font.
+    fn path_line_window(cx: &mut TestAppContext) -> (Entity<PathLineView>, &mut VisualTestContext) {
+        crate::views::tests::init_app(cx);
+        cx.add_window_view(|_, _| PathLineView {
+            width: px(300.),
+            family: None,
+        })
+    }
+
+    /// Draws `view` `width` wide in `family`, and returns how many times a path line's text
+    /// has been worked out.
+    fn draw_path_line(
+        view: &Entity<PathLineView>,
+        width: f32,
+        family: Option<&'static str>,
+        cx: &mut VisualTestContext,
+    ) -> usize {
+        view.update(cx, |view, cx| {
+            view.width = px(width);
+            view.family = family.map(Into::into);
+            cx.notify();
+        });
+        cx.run_until_parked();
+        PATH_LINE_MEASURED.with(std::cell::Cell::get)
+    }
+
+    /// A [`PathLine`] drawn in another font works its text out again in that font, as the
+    /// header's identity does ([`crate::views::LineKey`]), and a frame at rest works out
+    /// nothing. Keyed on its size, scale, width and path alone, it kept the text it had
+    /// measured in the font before.
+    #[gpui::test]
+    async fn a_path_line_in_another_font_is_measured_in_it(cx: &mut TestAppContext) {
+        // A GPUI test's seeds share the thread and its caches.
+        PATH_LINES.with_borrow_mut(|kept| *kept = crate::views::Measured::new());
+        let (view, cx) = path_line_window(cx);
+        let before = draw_path_line(&view, 300., None, cx);
+        assert_eq!(
+            draw_path_line(&view, 300., None, cx),
+            before,
+            "a frame at rest works out nothing"
+        );
+        assert_eq!(
+            draw_path_line(&view, 300., Some("Desktop Mono"), cx),
+            before + 1,
+            "a line in another font is worked out in it"
+        );
+    }
+
+    /// [`PathLine`]s drawn at two widths in turn, as two windows with the GitHub panel drawn
+    /// at different widths are, work their text out once for each width and keep both
+    /// ([`crate::views::Measured`]). A cache of one slot worked each line out again on the
+    /// other's frames, every frame.
+    #[gpui::test]
+    async fn path_lines_at_two_widths_drawn_in_turn_are_measured_once_each(
+        cx: &mut TestAppContext,
+    ) {
+        // A GPUI test's seeds share the thread and its caches.
+        PATH_LINES.with_borrow_mut(|kept| *kept = crate::views::Measured::new());
+        let before = PATH_LINE_MEASURED.with(std::cell::Cell::get);
+        let (view, cx) = path_line_window(cx);
+        for _ in 0..3 {
+            for width in [300., 360.] {
+                draw_path_line(&view, width, None, cx);
+            }
+        }
+        assert_eq!(
+            PATH_LINE_MEASURED.with(std::cell::Cell::get) - before,
+            2,
+            "each width is worked out once"
+        );
+    }
+
+    /// The connection pane's "Local worktree:" line builds its text once for the panel's
+    /// repository, with the panel ([`PathText`]): frames that draw the open pane at rest build
+    /// none of it. Each frame built the path's text, the line's label and their shared
+    /// strings again.
+    #[gpui::test]
+    async fn frames_at_rest_build_none_of_the_worktree_lines_text(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = long_path_window(cx);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        open_panel(&app, cx).await;
+        crate::copy_feedback::tests::click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-worktree").is_some(),
+            "the open pane draws the worktree line"
+        );
+        PATH_TEXT_BUILT.with(|built| built.set(0));
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            PATH_TEXT_BUILT.with(std::cell::Cell::get),
+            0,
+            "frames at rest build none of the line's text"
+        );
+    }
+
+    /// Fails unless each line of the connection help is whole at some stop of `walked`'s walk
+    /// at each place it was taken ([`walk_connection_reveals`]).
+    fn assert_every_help_line_whole(walked: &[Walked]) {
         let mut places: Vec<&str> = walked.iter().map(|step| step.at.as_str()).collect();
         places.dedup();
         for at in places {
@@ -4561,9 +4993,27 @@ mod tests {
         sizes: &[u8],
         widths: impl IntoIterator<Item = f32> + Clone,
     ) -> Vec<Walked> {
+        walk_connection_reveals_with(cx, repository_window, sizes, widths, |_, _, _| {}).await
+    }
+
+    /// [`walk_connection_reveals`] over the repository `window` makes, calling `check` with
+    /// the place and the repository's path at each place, once the pane is open at the body's
+    /// top.
+    async fn walk_connection_reveals_with(
+        cx: &mut TestAppContext,
+        window: fn(
+            &mut TestAppContext,
+        ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext),
+        sizes: &[u8],
+        widths: impl IntoIterator<Item = f32> + Clone,
+        mut check: impl FnMut(&mut VisualTestContext, &str, &std::path::Path),
+    ) -> Vec<Walked> {
         use crate::tags::tests::draw;
         let mut walked = Vec::new();
-        let (_fixture, app, cx) = repository_window(cx);
+        let (_fixture, app, cx) = window(cx);
+        let path = app.read_with(cx, |app, _| {
+            app.repository.as_ref().unwrap().path().to_path_buf()
+        });
         // Tab's bindings, the installed focus ring and motion at rest.
         crate::focus_ring::sweep::prepare(&app, cx);
         let panel = cx.update(|window, cx| {
@@ -4606,6 +5056,7 @@ mod tests {
                 draw(cx);
                 draw(cx);
                 assert!(scroll.max_offset().y > px(0.), "{at}: the body scrolls");
+                check(cx, at.as_str(), path.as_path());
                 // On through the pane's controls, each a part starting a block, and back up.
                 for step in [
                     ("tab", "github-connect"),
@@ -11735,30 +12186,59 @@ mod tests {
     /// The repository is made in /tmp, so its path, which the connection
     /// pane's "Local worktree:" line shows above the help, is short on every
     /// host (`/tmp/.tmp…` on Linux, `/private/tmp/.tmp…` on macOS), as
-    /// `worktrees::ring_room_tests::short_fixture`'s is. In a long TMPDIR that line
-    /// wrapped to six lines at 17 pt in a 440 × 490 window, and the help's
-    /// first line lay past every reveal of the connection walk's controls
-    /// that cuts no line, so no stop showed it whole
-    /// (`the_connection_walk_shows_every_help_line_whole`).
+    /// `worktrees::ring_room_tests::short_fixture`'s is, and the line shows it
+    /// whole. The line keeps to one line whatever the path's length, eliding
+    /// it in its middle ([`long_path_window`]).
     fn repository_window(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let fixture = tempfile::tempdir_in("/tmp").unwrap();
+        let path = fixture.path().to_path_buf();
+        repository_window_at(cx, fixture, &path)
+    }
+
+    /// A [`repository_window`] on a repository whose path is about 120 characters long, made
+    /// in a directory of its own under /tmp, outside any work tree, its last component
+    /// "compact": `/tmp/.tmp…/gitturtle-github-connection-pane/a-local-worktree-…/compact`,
+    /// 118 characters on Linux, whatever TMPDIR's length.
+    fn long_path_window(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let fixture = tempfile::tempdir_in("/tmp").unwrap();
+        let path = fixture
+            .path()
+            .join("gitturtle-github-connection-pane")
+            .join("a-local-worktree-path-long-enough-to-wrap-at-every-text-size")
+            .join("compact");
+        std::fs::create_dir_all(&path).unwrap();
+        repository_window_at(cx, fixture, &path)
+    }
+
+    /// A [`repository_window`] on an empty repository made at `path`, inside `fixture`.
+    fn repository_window_at<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: tempfile::TempDir,
+        path: &std::path::Path,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &'a mut VisualTestContext,
+    ) {
         // This full app integration test intentionally performs local reads on
         // the real serial executors. GPUI's supported I/O mode accepts their
         // cross-thread wakes; the barriers in `open_panel` drain them before
         // teardown.
         cx.executor().allow_parking();
-        let fixture = tempfile::tempdir_in("/tmp").unwrap();
         let result = std::process::Command::new("git")
             .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
-            .arg(fixture.path())
+            .arg(path)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .output()
             .unwrap();
         assert!(result.status.success());
-        crate::views::tests::fixture_identity(fixture.path());
-        let repo = GitRepository::open(fixture.path()).unwrap();
+        crate::views::tests::fixture_identity(path);
+        let repo = GitRepository::open(path).unwrap();
         let view: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let captured = view.clone();
         crate::views::tests::init_app(cx);
