@@ -14,8 +14,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 /// User intent only. The application executes repository work in the background.
@@ -47,6 +49,11 @@ pub struct ProjectHub {
     recent: Vec<PathBuf>,
     names: HashMap<PathBuf, String>,
     filtered: Vec<PathBuf>,
+    /// Each recent row's text, by its project ([`Self::row_text`]).
+    row_text: RefCell<HashMap<PathBuf, Rc<RowText>>>,
+    /// The recent list's count and its accessible label, with what they
+    /// were built from ([`Self::count_text`]).
+    count_text: RefCell<Option<CountText>>,
     search: Entity<InputState>,
     source: Entity<InputState>,
     parent: Entity<InputState>,
@@ -108,6 +115,8 @@ impl ProjectHub {
             filtered: recent.clone(),
             recent,
             names,
+            row_text: RefCell::default(),
+            count_text: RefCell::default(),
             search: search.clone(),
             source: source.clone(),
             parent: parent.clone(),
@@ -194,6 +203,64 @@ impl ProjectHub {
     pub fn set_names(&mut self, names: HashMap<PathBuf, String>, cx: &mut Context<Self>) {
         self.names = names;
         self.filter_recent(cx);
+    }
+
+    /// The text the recent row `index` draws, kept for its project and
+    /// built again only when the project's own name changes ([`RowText`]):
+    /// each row formatted its location and both controls' names, and cloned
+    /// its path twice, on every frame that drew it. Entries for projects no
+    /// longer recent go as the list grows past them, so what is kept is
+    /// bounded by the recent list.
+    fn row_text(&self, index: usize) -> Rc<RowText> {
+        #[cfg(test)]
+        let before = crate::test_support::allocations();
+        let path = &self.filtered[index];
+        let custom = self.names.get(path).map(String::as_str);
+        let mut kept = self.row_text.borrow_mut();
+        let text = match kept.get(path.as_path()) {
+            Some(text) if text.custom.as_deref() == custom => text.clone(),
+            _ => {
+                let text = Rc::new(RowText::build(path, custom));
+                kept.insert(path.clone(), text.clone());
+                if kept.len() > self.recent.len() {
+                    kept.retain(|path, _| self.recent.contains(path));
+                }
+                text
+            }
+        };
+        #[cfg(test)]
+        RECENT_TEXT.with(|counted| {
+            let (lookups, allocations) = counted.get();
+            counted.set((
+                lookups + 1,
+                allocations + crate::test_support::allocations() - before,
+            ));
+        });
+        text
+    }
+
+    /// The recent list's count and its accessible label, as `searching`
+    /// shows them, built again only when a count changes ([`CountText`]):
+    /// formatted on every frame.
+    fn count_text(&self, searching: bool) -> (SharedString, SharedString) {
+        #[cfg(test)]
+        let before = crate::test_support::allocations();
+        let counts = (searching, self.filtered.len(), self.recent.len());
+        let mut kept = self.count_text.borrow_mut();
+        if kept.as_ref().is_some_and(|text| text.counts != counts) {
+            *kept = None;
+        }
+        let text = kept.get_or_insert_with(|| CountText::build(counts));
+        let text = (text.count.clone(), text.label.clone());
+        #[cfg(test)]
+        RECENT_TEXT.with(|counted| {
+            let (lookups, allocations) = counted.get();
+            counted.set((
+                lookups + 1,
+                allocations + crate::test_support::allocations() - before,
+            ));
+        });
+        text
     }
 
     fn display_name(&self, path: &Path) -> String {
@@ -466,22 +533,8 @@ impl ProjectHub {
     fn recent_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let colors = Theme::global(cx).colors;
         let palette = crate::appearance::palette(cx);
-        let path = self.filtered[index].clone();
-        let display = path.display().to_string();
-        let folder = directory_name(&path);
-        let name = self.display_name(&path);
-        // A renamed project still has to be identifiable as a folder on disk,
-        // so keep its real folder name beside the location.
-        let location = {
-            let parent = path.parent().unwrap_or(&path).display().to_string();
-            if name == folder {
-                parent
-            } else {
-                format!("{folder} · {parent}")
-            }
-        };
-        let rename_path = path.clone();
-        let rename_name = name.clone();
+        let text = self.row_text(index);
+        let rename = text.clone();
         let row = Button::new(("recent-project", index))
             .debug_selector(move || format!("recent-project-{index}"))
             .ghost()
@@ -490,8 +543,8 @@ impl ProjectHub {
             .px_4()
             .rounded(px(12.))
             .disabled(self.unavailable())
-            .accessibility_label(format!("Open {name}, {display}"))
-            .tooltip(display.clone())
+            .accessibility_label(text.open.clone())
+            .tooltip(text.display.clone())
             .child(
                 div()
                     .w_full()
@@ -523,20 +576,20 @@ impl ProjectHub {
                                     .text_size(crate::appearance::ui_text(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
-                                    .child(name),
+                                    .child(text.name.clone()),
                             )
                             .child(
                                 div()
                                     .text_size(crate::appearance::ui_text(11.))
                                     .text_color(colors.muted_foreground)
                                     .truncate()
-                                    .child(location),
+                                    .child(text.location.clone()),
                             ),
                     )
                     .child(hub_icon("chevron", 14., colors.muted_foreground)),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.emit_operation(ProjectEvent::Open(path.clone()), cx)
+                this.emit_operation(ProjectEvent::Open(text.path.clone()), cx)
             }));
         div()
             .id(("recent-project-row", index))
@@ -553,12 +606,12 @@ impl ProjectHub {
                     .size(crate::appearance::ui_size(30.))
                     .rounded(px(8.))
                     .icon(Icon::default().path("icons/file-renamed.svg").size(px(15.)))
-                    .accessibility_label(format!("Rename {rename_name}, {display}"))
+                    .accessibility_label(rename.rename.clone())
                     .tooltip("Rename this project in GitTurtle")
                     .disabled(self.unavailable())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.unavailable() {
-                            cx.emit(ProjectEvent::Rename(rename_path.clone()));
+                            cx.emit(ProjectEvent::Rename(rename.path.clone()));
                         }
                     })),
             )
@@ -569,6 +622,7 @@ impl ProjectHub {
         let colors = Theme::global(cx).colors;
         let query = self.search.read(cx).value();
         let searching = !query.trim().is_empty();
+        let count = self.count_text(searching);
         // The list clips its rows to its bounds, so it keeps the focus ring's
         // room inside them around its rows, and the panel's 0.5 rem padding
         // gives the room back: a focused row and its Rename draw their rings
@@ -595,9 +649,9 @@ impl ProjectHub {
                             .child(hub_text("recent-projects-heading", "Recently opened").role(Role::Heading).text_size(crate::appearance::ui_text(15.)).font_weight(FontWeight::SEMIBOLD)),
                     )
                     .child(
-                        hub_text("recent-projects-count", if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() })
+                        hub_text("recent-projects-count", count.0)
                             .role(Role::Status)
-                            .aria_label(if searching { format!("{} out of {}", crate::counted(self.filtered.len(), "matching project", "matching projects"), crate::counted(self.recent.len(), "recent project", "recent projects")) } else { crate::counted(self.recent.len(), "recent project", "recent projects") })
+                            .aria_label(count.1)
                             .polite()
                             .px_2().py_0p5().rounded(px(6.))
                             .bg(colors.secondary).text_size(crate::appearance::ui_text(11.))
@@ -1202,6 +1256,97 @@ impl Render for ProjectHub {
                     ),
             ))
     }
+}
+
+/// What a recent row draws for its project ([`ProjectHub::row_text`]).
+struct RowText {
+    /// The project's own name the text was built from, if it has one.
+    custom: Option<String>,
+    /// The project, which the row opens and its Rename renames.
+    path: PathBuf,
+    /// Its name: its own, or its folder's.
+    name: SharedString,
+    /// Where it is: its parent folder, after its folder's name where its own
+    /// name differs, so a renamed project stays identifiable on disk.
+    location: SharedString,
+    /// Its whole path, the row's tooltip.
+    display: SharedString,
+    /// The row's accessible name.
+    open: SharedString,
+    /// Its Rename control's accessible name.
+    rename: SharedString,
+}
+
+impl RowText {
+    fn build(path: &Path, custom: Option<&str>) -> Self {
+        #[cfg(test)]
+        RECENT_ROWS_BUILT.set(RECENT_ROWS_BUILT.get() + 1);
+        let display = path.display().to_string();
+        let folder = directory_name(path);
+        let name = custom.map_or_else(|| folder.clone(), str::to_owned);
+        let parent = path.parent().unwrap_or(path).display().to_string();
+        let location = if name == folder {
+            parent
+        } else {
+            format!("{folder} · {parent}")
+        };
+        Self {
+            custom: custom.map(str::to_owned),
+            path: path.to_path_buf(),
+            open: format!("Open {name}, {display}").into(),
+            rename: format!("Rename {name}, {display}").into(),
+            name: name.into(),
+            location: location.into(),
+            display: display.into(),
+        }
+    }
+}
+
+/// The recent list's count and its accessible label
+/// ([`ProjectHub::count_text`]), with whether a search narrows the list and
+/// the matching and recent projects' counts they were built from.
+struct CountText {
+    counts: (bool, usize, usize),
+    count: SharedString,
+    label: SharedString,
+}
+
+impl CountText {
+    fn build(counts: (bool, usize, usize)) -> Self {
+        #[cfg(test)]
+        RECENT_COUNTS_BUILT.set(RECENT_COUNTS_BUILT.get() + 1);
+        let (searching, matching, recent) = counts;
+        let recent_label = crate::counted(recent, "recent project", "recent projects");
+        let (count, label) = if searching {
+            (
+                format!("{matching} of {recent}"),
+                format!(
+                    "{} out of {recent_label}",
+                    crate::counted(matching, "matching project", "matching projects")
+                ),
+            )
+        } else {
+            (recent.to_string(), recent_label)
+        };
+        Self {
+            counts,
+            count: count.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the recent rows' and count's text looked up
+    /// ([`ProjectHub::row_text`], [`ProjectHub::count_text`]), and the
+    /// allocations the lookups made.
+    static RECENT_TEXT: std::cell::Cell<(usize, u64)> =
+        const { std::cell::Cell::new((0, 0)) };
+    /// Test-only: how many times a recent row's text was built.
+    static RECENT_ROWS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Test-only: how many times the recent count's text was built.
+    static RECENT_COUNTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The hub's icon asset for `symbol`, `icons/<symbol>.svg`, as the shared
@@ -2170,6 +2315,217 @@ mod tests {
             "icons/remote.svg",
             "a symbol's kept path"
         );
+    }
+
+    /// A recent row's text is kept for its project ([`ProjectHub::row_text`])
+    /// and the list's count with its label ([`ProjectHub::count_text`]):
+    /// with three recent projects, one renamed, the first frame builds each
+    /// row's text and the count once, and frames at rest build none of it,
+    /// their lookups allocating nothing; renaming another project rebuilds
+    /// that row's text once and no other, and a project newly opened builds
+    /// its own row's text and the count once, the others kept; with one
+    /// project dropped as another opens, the dropped one's text goes and
+    /// every row is still drawn; and a search every project matches, one
+    /// that narrows the list and a cleared one each build the count and its
+    /// label once and no row's text. Each row's text is kept as it now
+    /// reads, and the count's label is written to its node as it now reads.
+    /// Every frame formatted each row's location and its controls' names,
+    /// cloned its path twice, and formatted the count.
+    #[gpui::test]
+    fn the_hub_builds_a_recent_row_s_text_only_when_its_project_changes(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let client = PathBuf::from("/projects/turtle-client");
+        let core = PathBuf::from("/projects/turtle-core");
+        let docs = PathBuf::from("/projects/turtle-docs");
+        let recent = vec![client.clone(), core.clone(), docs.clone()];
+        let names = HashMap::from([(client.clone(), "Shell".to_owned())]);
+        let captured = Rc::new(RefCell::new(None));
+        let observed = captured.clone();
+        let built = || (RECENT_ROWS_BUILT.get(), RECENT_COUNTS_BUILT.get());
+        let before = built();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let hub = cx.new(|cx| ProjectHub::new(recent, names, "main".into(), window, cx));
+            *captured.borrow_mut() = Some(hub.clone());
+            gpui_kit::component::Root::new(hub, window, cx)
+        });
+        let hub = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        };
+        let since = |before: (usize, usize)| {
+            let after = built();
+            (after.0 - before.0, after.1 - before.1)
+        };
+        let at_rest = |at: &str, rows: usize, cx: &mut VisualTestContext| {
+            let before = built();
+            RECENT_TEXT.set((0, 0));
+            for _ in 0..3 {
+                hub.update(cx, |_, cx| cx.notify());
+                draw(cx);
+            }
+            let (lookups, allocations) = RECENT_TEXT.get();
+            assert!(
+                lookups >= 3 * (rows + 1),
+                "{at}: each frame draws every row's text and the count: {lookups}"
+            );
+            assert_eq!(allocations, 0, "{at}: frames at rest allocate none of it");
+            assert_eq!(
+                since(before),
+                (0, 0),
+                "{at}: frames at rest build none of it"
+            );
+        };
+        // A row's name, location and controls' names, and the count's label,
+        // as drawn.
+        let row = |path: &Path, cx: &mut VisualTestContext| {
+            hub.read_with(cx, |hub, _| {
+                let kept = hub.row_text.borrow();
+                let text = kept.get(path).expect("the row's text");
+                (
+                    text.name.to_string(),
+                    text.location.to_string(),
+                    text.open.to_string(),
+                    text.rename.to_string(),
+                )
+            })
+        };
+        // The count as drawn, and its label as its node was last written.
+        let count = |cx: &mut VisualTestContext| {
+            let drawn = hub.read_with(cx, |hub, _| {
+                hub.count_text
+                    .borrow()
+                    .as_ref()
+                    .map(|text| text.count.to_string())
+            });
+            let label = crate::native_accessibility::written::get("recent-projects-count")
+                .and_then(|written| written.node.label().map(str::to_owned));
+            (drawn, label)
+        };
+        let recent_label =
+            |recent: usize| crate::counted(recent, "recent project", "recent projects");
+        // Types `query` into the search, which narrows the list.
+        let search = |query: &'static str, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                hub.update(cx, |hub, cx| {
+                    hub.search
+                        .update(cx, |input, cx| input.set_value(query, window, cx));
+                    hub.filter_recent(cx);
+                })
+            });
+            draw(cx);
+        };
+        draw(cx);
+        assert_eq!(since(before), (3, 1), "each row's text and the count once");
+        assert_eq!(
+            row(&client, cx),
+            (
+                "Shell".to_owned(),
+                "turtle-client · /projects".to_owned(),
+                "Open Shell, /projects/turtle-client".to_owned(),
+                "Rename Shell, /projects/turtle-client".to_owned(),
+            )
+        );
+        assert_eq!(row(&core, cx).1, "/projects", "a folder's own name");
+        at_rest("three recent projects", 3, cx);
+
+        let before = built();
+        hub.update(cx, |hub, cx| {
+            hub.set_names(
+                HashMap::from([
+                    (client.clone(), "Shell".to_owned()),
+                    (core.clone(), "Engine".to_owned()),
+                ]),
+                cx,
+            )
+        });
+        draw(cx);
+        assert_eq!(since(before), (1, 0), "the renamed row's text once");
+        assert_eq!(
+            row(&core, cx),
+            (
+                "Engine".to_owned(),
+                "turtle-core · /projects".to_owned(),
+                "Open Engine, /projects/turtle-core".to_owned(),
+                "Rename Engine, /projects/turtle-core".to_owned(),
+            )
+        );
+        at_rest("a project renamed", 3, cx);
+
+        let site = PathBuf::from("/projects/turtle-site");
+        let before = built();
+        hub.update(cx, |hub, cx| {
+            hub.set_recent(
+                vec![site.clone(), client.clone(), core.clone(), docs.clone()],
+                cx,
+            )
+        });
+        draw(cx);
+        assert_eq!(
+            since(before),
+            (1, 1),
+            "the new row's text and the count once"
+        );
+        assert_eq!(row(&site, cx).2, "Open turtle-site, /projects/turtle-site");
+        assert_eq!(count(cx), (Some("4".to_owned()), Some(recent_label(4))));
+        at_rest("a project opened", 4, cx);
+
+        // One project dropped and another opened: the row built for the new
+        // one leaves only the recent projects' text kept, and every row the
+        // list draws is still drawn.
+        let blog = PathBuf::from("/projects/turtle-blog");
+        let shown = vec![blog.clone(), site.clone(), client.clone(), core.clone()];
+        let before = built();
+        hub.update(cx, |hub, cx| hub.set_recent(shown.clone(), cx));
+        draw(cx);
+        assert_eq!(since(before), (1, 0), "the new row's text once");
+        let kept = hub.read_with(cx, |hub, _| {
+            let mut kept: Vec<PathBuf> = hub.row_text.borrow().keys().cloned().collect();
+            kept.sort();
+            kept
+        });
+        let mut recent = shown.clone();
+        recent.sort();
+        assert_eq!(kept, recent, "the dropped project's text goes");
+        let rows = [
+            "recent-project-0",
+            "recent-project-1",
+            "recent-project-2",
+            "recent-project-3",
+        ];
+        for (row, path) in rows.into_iter().zip(&shown) {
+            assert!(
+                cx.debug_bounds(row).is_some(),
+                "the row of {path:?} is drawn"
+            );
+        }
+        assert_eq!(row(&blog, cx).2, "Open turtle-blog, /projects/turtle-blog");
+        at_rest("a project dropped", 4, cx);
+
+        // A search that every project matches, one that narrows the list and
+        // a cleared one each build the count and its label once, and no row.
+        let matching = |matching: usize| {
+            format!(
+                "{} out of {}",
+                crate::counted(matching, "matching project", "matching projects"),
+                recent_label(4)
+            )
+        };
+        for (query, rows, expected) in [
+            ("turtle", 4, (Some("4 of 4".to_owned()), Some(matching(4)))),
+            ("core", 1, (Some("1 of 4".to_owned()), Some(matching(1)))),
+            ("", 4, (Some("4".to_owned()), Some(recent_label(4)))),
+        ] {
+            let before = built();
+            search(query, cx);
+            assert_eq!(since(before), (0, 1), "{query:?}: the count once");
+            assert_eq!(count(cx), expected, "{query:?}");
+            at_rest(query, rows, cx);
+        }
     }
 
     #[test]
