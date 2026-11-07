@@ -33571,6 +33571,67 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Where the list and the composer scroll together, the title's counter
+    /// and the description's "· optional" are fitted to the composer's
+    /// column beside the scroll cue's gutter, not to the inspector's width:
+    /// 490 px tall at 18 pt in a 517 and a 531 px wide window, at 16 pt in
+    /// a 461 and a 474 px one and at 15 pt in a 433 and a 444 px one, where
+    /// the whole counter or "Description · optional" fits the inspector's
+    /// width but not the column, which ends the gutter short of the body's
+    /// right, both lie inside the column, in the form that fits it. Fitted
+    /// to the inspector's width beside the whole gutter, the counter ran
+    /// past the column at 18 pt from 515 to 532 px wide and the note from
+    /// 530 to 547, and at 16 pt both from 461 to 478; beside the gutter less
+    /// the rows' inset, from 515 to 519 and 530 to 533 at 18 pt, 458 to 464
+    /// and 471 to 477 at 16 pt, and 430 to 436 and 442 to 447 at 15 pt.
+    #[gpui::test]
+    async fn a_scrolling_working_body_fits_its_counter_and_note_beside_the_gutter(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let gutter = crate::tags::ScrollCue::gutter();
+        let mut failures = Vec::new();
+        let cases = [
+            (18, 517.),
+            (18, 531.),
+            (16, 461.),
+            (16, 474.),
+            (15, 433.),
+            (15, 444.),
+        ];
+        for (text, width) in cases {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            let at = format!("{text} pt at {width} × 490");
+            assert!(
+                app.read_with(cx, |app, _| app.working_body.scroll().max_offset().y) > px(0.),
+                "{at}: the body scrolls"
+            );
+            let body = cx.debug_bounds("working-body").expect("the body");
+            let end = body.right() - gutter + px(0.5);
+            for selector in [
+                "commit-title-counter",
+                "commit-description-name",
+                "commit-description-optional",
+            ] {
+                if let Some(bounds) = cx.debug_bounds(selector)
+                    && bounds.right() > end
+                {
+                    failures.push(format!("{at}: {selector} {bounds:?} past {end:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The scroll cue's gutter follows whether the Working body scrolls, and
     /// no height flips between the two forms: around the height where the
     /// list and the composer begin to scroll together at 18 pt in a 461 px
