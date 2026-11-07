@@ -9658,7 +9658,7 @@ impl Render for GitTurtle {
                             // beside a reachable Dismiss; an unusually long one
                             // scrolls inside a bounded height rather than
                             // pushing the page away.
-                            .child(
+                            .child(native_accessibility::recorded(
                                 div()
                                     .id("operation-notice-summary")
                                     .debug_selector(|| "operation-notice-summary".into())
@@ -9673,9 +9673,22 @@ impl Render for GitTurtle {
                                     .child(
                                         div()
                                             .debug_selector(|| "operation-notice-text".into())
-                                            .child(notice.clone()),
+                                            .child(
+                                                // Test-only: the selector names the
+                                                // text the banner draws, so a test
+                                                // reads what it shows rather than
+                                                // the notice it is built from.
+                                                div()
+                                                    .debug_selector({
+                                                        let drawn = notice.clone();
+                                                        move || {
+                                                            format!("operation-notice-drawn: {drawn}")
+                                                        }
+                                                    })
+                                                    .child(notice.clone()),
+                                            ),
                                     ),
-                            )
+                            ))
                             .when(self.history_updates.committed.as_ref().is_some_and(|oid| notice.starts_with(&format!("Committed {}", short_oid(oid)))), |row| row.child(
                                 button("view-created-commit", "View commit", "", false)
                                     .flex_shrink_0()
@@ -35566,6 +35579,104 @@ pub(crate) mod tests {
         app.read_with(cx, |app, _| assert_eq!(app.operation_notice, None));
         assert!(cx.debug_bounds("operation-notice-summary").is_none());
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The banner draws a write's Git output as a terminal leaves it, the
+    /// text after each line's last carriage return
+    /// (`gitturtle_core::GitRepository::execute`), and names the same text:
+    /// a rebase onto `side` writes each step's progress before its outcome
+    /// on one line, "Rebasing (1/3)\rRebasing (2/3)\rRebasing (3/3)\r
+    /// Successfully rebased and updated refs/heads/main.", and the banner
+    /// shows and says the outcome alone, at 18 pt in 461 × 490 and at 13 pt
+    /// in 1480 × 973. QA-106e found it wrapping all three steps before the
+    /// outcome.
+    #[gpui::test]
+    async fn the_banner_draws_a_write_s_outcome_without_its_progress(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        const OUTCOME: &str = "Successfully rebased and updated refs/heads/main.";
+        let commit = |branch: &str, mark: usize, from: Option<usize>, file: &str| {
+            let from = from.map_or(String::new(), |from| format!("from :{from}\n"));
+            format!(
+                "commit refs/heads/{branch}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{file}\n{from}M 100644 inline {file}.txt\ndata {}\n{file}\n\n",
+                1_700_000_000 + mark,
+                file.len(),
+                file.len() + 1,
+            )
+        };
+        let stream = [
+            commit("main", 1, None, "base"),
+            commit("side", 2, Some(1), "side"),
+            commit("main", 3, None, "one"),
+            commit("main", 4, None, "two"),
+            commit("main", 5, None, "three"),
+        ]
+        .concat()
+            + "done\n";
+        let (fixture, app, cx) = history_window_from(cx, stream).await;
+        let repository = fixture.path().join("narrow");
+        fixture_git(&repository, &["reset", "--hard", "--quiet"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        let plan = app
+            .read_with(cx, |app, _| app.repository.clone())
+            .expect("a repository")
+            .integration_plan("side")
+            .expect("a plan to rebase onto side");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Integration(
+                        gitturtle_core::IntegrationCommand::Rebase { plan },
+                    ),
+                    "Rebasing…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        let rebase = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the rebase");
+        rebase.await;
+        settle(&app, cx).await;
+        let log = fixture_git_output(&repository, &["log", "--format=%s"]);
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout),
+            "three\ntwo\none\nside\nbase\n",
+            "Git replayed three commits, writing a step's progress for each"
+        );
+        for (points, width, height) in [(18, 461., 490.), (13, 1480., 973.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(points, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            written::forget();
+            draw(cx);
+            let at = format!("{points} pt in {width} × {height}");
+            let banner = cx
+                .debug_bounds("operation-notice-summary")
+                .unwrap_or_else(|| panic!("{at}: the banner is drawn"));
+            let drawn = cx
+                .debug_bounds(format!("operation-notice-drawn: {OUTCOME}").leak())
+                .unwrap_or_else(|| panic!("{at}: the banner draws the outcome alone"));
+            assert!(
+                banner.contains(&drawn.origin) && drawn.right() <= banner.right(),
+                "{at}: inside the banner, {drawn:?} in {banner:?}"
+            );
+            let name = written::get("operation-notice-summary")
+                .and_then(|summary| summary.node.label().map(str::to_owned));
+            assert_eq!(name.as_deref(), Some(OUTCOME), "{at}: and names it");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        // The same rebase again: Git's own output holds the progress the
+        // banner leaves out, so the test cannot pass on a Git that stops
+        // writing it.
+        fixture_git(&repository, &["reset", "--hard", "--quiet", "ORIG_HEAD"]);
+        let again = fixture_git_output(&repository, &["rebase", "side"]);
+        let raw = [again.stdout, again.stderr].concat();
+        let raw = String::from_utf8_lossy(&raw);
+        assert!(
+            raw.contains("Rebasing (1/3)\r") && raw.contains(OUTCOME),
+            "Git writes its progress before the outcome: {raw:?}"
+        );
     }
 
     /// Writes after the scoped branch was deleted report the vanished scope
