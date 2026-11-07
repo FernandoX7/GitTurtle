@@ -1140,6 +1140,9 @@ struct Panel {
     title: Entity<InputState>,
     body: Entity<TextareaState>,
     rows: Vec<PullRequest>,
+    /// The part each of `rows`' titles is in the body (`pr-{number}`), built once for each page
+    /// the rows change to ([`Panel::name_row_parts`]) rather than for each row in each frame.
+    row_parts: Vec<(u64, SharedString)>,
     page: u32,
     has_next: bool,
     pull: Option<PullRequest>,
@@ -1217,7 +1220,7 @@ impl Panel {
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
-            rows:vec![],page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
+            rows:vec![],row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
@@ -2331,11 +2334,30 @@ impl Panel {
         }
         cx.notify();
     }
+    /// Names the part of each PR row's title (`pr-{number}`) where the rows have changed since
+    /// they were last named, as a new page of them does: a frame drawing the same rows
+    /// allocates no names ([`Panel::row_parts`]).
+    fn name_row_parts(&mut self) {
+        let named = self.row_parts.len() == self.rows.len()
+            && self
+                .row_parts
+                .iter()
+                .zip(&self.rows)
+                .all(|((number, _), pull)| *number == pull.number);
+        if !named {
+            self.row_parts = self
+                .rows
+                .iter()
+                .map(|pull| (pull.number, format!("pr-{}", pull.number).into()))
+                .collect();
+        }
+    }
 }
 
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.announce(window, cx);
+        self.name_row_parts();
         // The controls this frame draws enabled that can take a pane away ([`Panel::closing`]).
         self.review.closers_drawn.get_mut().clear();
         // The focus a pane that can go with it holds in the frame the window last drew
@@ -2531,7 +2553,7 @@ impl Render for Panel {
                 // below the last the room is the list's own (a negative margin there collapsed
                 // the panel's scrolling body to its padding).
                 .child(review::clipped(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
-                    .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
+                    .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
                         // the selected one on the selected surface, and lifts to the row hover under
                         // both its lines, which open the PR alike. The title Button spans it, its
@@ -2555,7 +2577,7 @@ impl Render for Panel {
                         let pressed=!pending&&self.pressed.get()==Some(number);let (down,up,out)=(self.pressed.clone(),self.pressed.clone(),self.pressed.clone());
                         div().id(("github-pr-card",pull.number)).debug_selector(move||format!("github-pr-card-{number}")).child(review::one_line()).flex_shrink_0().rounded(px(7.)).bg(rgb(if selected||pressed{p.selected}else{p.panel})).when(!pending&&!pressed,|row|row.hover(move|row|row.bg(rgb(hover))))
                             .when(!pending,|row|row.capture_any_mouse_down(move|event,window,_|if event.button==MouseButton::Left{down.set(Some(number));window.refresh();}).capture_any_mouse_up(move|_,window,_|if up.take().is_some(){window.refresh();}).on_mouse_up_out(MouseButton::Left,move|_,window,_|if out.take().is_some(){window.refresh();})).flex().flex_col()
-                            .child(self.part(format!("pr-{number}"),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
+                            .child(self.part(part.clone(),div(),cx).child(title.key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx)))))
                             .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().px(text_inset()).pb_1().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).when(!pending,|line|line.on_click(cx.listener(move|this,_,window,cx|this.inspect(open.clone(),window,cx)))).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
@@ -9180,6 +9202,56 @@ mod tests {
         }))
     }
 
+    /// Where the reveal that brought the body to the stop named `stop`, whose focus drew `ring`,
+    /// kept more than that stop shows ([`sweep_reveals`]): what it kept whole
+    /// (`review::Blocks::kept`) lies inside the focused part, the part's element as its debug
+    /// selector finds it ([`part_selector`]) with the focused control's ring and the content the
+    /// part owns (`review::Owned`), all with the ring's room, or the finding names both. A part
+    /// whose element the sweep cannot find groups nothing it can see with the control, and the
+    /// control with its ring's room bounds it: the PR list's own selector replaces its part's,
+    /// and its rows are parts of their own. [`needless_cut`] holds a stop to what its reveal
+    /// kept, so it could not
+    /// tell a reveal kept too much: revealed as the PR list, the row's reveal kept the list's
+    /// room below the row's context line, and the sweep passed it at 17 pt in a 461 × 490
+    /// window, where that room left Previous PR page cut at the body's foot.
+    fn over_wide(
+        cx: &mut VisualTestContext,
+        panel: &Entity<Panel>,
+        ring: &[crate::focus_ring::PaintedOutline],
+        stop: &str,
+    ) -> Option<String> {
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let (top, bottom) =
+            cx.update(|window, cx| panel.read(cx).review.body_blocks.kept(&scroll, window, cx))?;
+        let ring = ring
+            .iter()
+            .map(|outline| outline.bounds)
+            .reduce(|a, b| a.union(&b))?;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let part = cx.update(|window, _| {
+            window
+                .context_stack()
+                .iter()
+                .rev()
+                .find_map(|context| context.get(review::PART).cloned())
+        });
+        let grouped = part
+            .as_ref()
+            .and_then(|part| cx.debug_bounds(part_selector(part)));
+        let bound = grouped
+            .map_or(ring, |element| element.union(&ring))
+            .dilate(room);
+        let slack = px(0.5);
+        (top < bound.top() - slack || bottom > bound.bottom() + slack).then(|| {
+            format!(
+                "{stop}: the reveal kept {top:?}..{bottom:?}, beyond the focused part {part:?} \
+                 with its ring's room {:?}..{:?}",
+                bound.top(),
+                bound.bottom()
+            )
+        })
+    }
+
     /// The scene order of the open dialog's backdrop in the last frame, the fill in the kit's
     /// overlay colour over the whole window, as the focus sweep reads it (`focus_ring::sweep`):
     /// what the page beneath the dialog paints lies below it. None with no backdrop drawn.
@@ -10899,7 +10971,8 @@ mod tests {
     #[derive(Default)]
     struct Swept {
         /// Reveals that left a line cut at an edge of the body where a place clears every line
-        /// with the focused control whole with its ring.
+        /// with the focused control whole with its ring, and reveals that kept more than the
+        /// focused part with its ring's room ([`over_wide`]).
         cuts: Vec<String>,
         /// Stops that show no whole ring (`focus_ring::sweep::walk_each`), but for a control
         /// too tall for the body with its ring's room, which shows the ring's top edge.
@@ -11095,6 +11168,9 @@ mod tests {
                                     outline.bounds, outline.sides
                                 ));
                                 }
+                            }
+                            if let Some(finding) = over_wide(cx, &panel, ring, stop) {
+                                swept.cuts.push(finding);
                             }
                             let moved = now != before;
                             before = now;
