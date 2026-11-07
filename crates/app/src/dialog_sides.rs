@@ -1333,12 +1333,17 @@ async fn the_reflogs_ghost_buttons_stand_on_its_text_edge_as_wide_as_their_conte
                         ));
                     }
                     // Its glyph stands beside the label's first line, where
-                    // the label reads from, not centred on its lines.
+                    // the label reads from, not centred on its lines: centred
+                    // on that line within a quarter pixel, closer than the
+                    // half a point times the text scale that centres the
+                    // line on the taller glyph (`copy_feedback`'s wrapped
+                    // label margin, 0.69 px at 18 pt), which a 1 px
+                    // allowance let go unnoticed.
                     let beside = |glyph: &Bounds<Pixels>, first: &Bounds<Pixels>| {
                         let middle = glyph.center().y;
                         first.top() <= middle
                             && middle <= first.bottom()
-                            && (middle - first.center().y).abs() <= px(1.)
+                            && (middle - first.center().y).abs() <= px(0.25)
                     };
                     match (glyph, runs.first()) {
                         (Some(glyph), Some(first)) if beside(glyph, first) => {}
