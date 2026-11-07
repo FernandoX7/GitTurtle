@@ -103,8 +103,10 @@ impl Site {
     /// revisions lists up to eight choices, the fixture's first at least;
     /// Download an LFS preview lists the repository's remotes, which the
     /// fixture has none of, before Read configured source. Review messages'
-    /// row is drawn whole with no rewritten series to review, and Back to
-    /// series, which shows only while one is inspected, is not drawn. The
+    /// row is drawn whole with no rewritten series to review, and so is
+    /// Check publication destination…, on its own line below the
+    /// publication fields; Back to series, which shows only while one is
+    /// inspected, is not drawn. The
     /// Reflog's selected entry shows Copy commit ID below its selector and
     /// IDs, and Review recovery branch… below the recovery branch's name.
     /// Interactive rebase's Load commits stands beside the base field.
@@ -143,15 +145,24 @@ impl Site {
                     beside: false,
                 })
                 .collect(),
-            Site::RewriteReview => vec![row(
-                &[
-                    ("inspect-series-messages", Some("Review messages")),
-                    ("inspect-original-commit", Some("Inspect original files")),
-                    ("inspect-rewritten-commit", Some("Inspect rewritten files")),
-                    ("reload-series", Some("Refresh series")),
-                ],
-                false,
-            )],
+            Site::RewriteReview => vec![
+                row(
+                    &[
+                        ("inspect-series-messages", Some("Review messages")),
+                        ("inspect-original-commit", Some("Inspect original files")),
+                        ("inspect-rewritten-commit", Some("Inspect rewritten files")),
+                        ("reload-series", Some("Refresh series")),
+                    ],
+                    false,
+                ),
+                row(
+                    &[(
+                        "inspect-publication-remote",
+                        Some("Check publication destination…"),
+                    )],
+                    false,
+                ),
+            ],
             Site::RemoteForm => vec![row(
                 &[("remote-advanced-settings", Some("Fetch rules…"))],
                 false,

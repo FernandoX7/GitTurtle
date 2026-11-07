@@ -1319,11 +1319,18 @@ impl Render for SeriesBrowser {
                     .child(refusing(crate::edge_button("inspect-original-commit", "Inspect original files").track_focus(&original).debug_selector(|| "inspect-original-commit".into()).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))), "inspect-original-commit", original_refused))
                     .child(refusing(crate::edge_button("inspect-rewritten-commit", "Inspect rewritten files").track_focus(&rewritten).debug_selector(|| "inspect-rewritten-commit".into()).on_click(cx.listener(|this, _, window, cx| this.inspect(false, window, cx))), "inspect-rewritten-commit", rewritten_refused))
                     .child(refusing(crate::edge_button("reload-series", "Refresh series").track_focus(&reload).debug_selector(|| "reload-series".into()).on_click(cx.listener(|this, _, window, cx| this.load(window, cx))), "reload-series", reload_refused)))
-                .child(div().flex().flex_wrap().items_center().gap_2().on_children_prepainted(self.body.controls(vec![Some(remote), Some(remote_branch), Some(check.clone()), Some(stop.clone())], room))
+                .child(div().flex().flex_wrap().items_center().gap_2().on_children_prepainted(self.body.controls(vec![Some(remote), Some(remote_branch)], room))
                     .child(div().w(px(150.)).child(Input::new(&self.remote).aria_label("Publication remote").disabled(self.network_pending)))
-                    .child(div().w(px(170.)).child(Input::new(&self.remote_branch).aria_label("Publication remote branch").disabled(self.network_pending)))
-                    .child(refusing(button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }, "", false).track_focus(&check).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx))), "inspect-publication-remote", check_refused))
-                    .when(self.network_pending, |element| element.child(button("cancel-remote-inspection", "Cancel remote check", "", false).track_focus(&stop).on_click(cx.listener(|this, _, _, cx| { if let Some(control) = &this.network_control { control.cancel(); } cx.notify(); })))))
+                    .child(div().w(px(170.)).child(Input::new(&self.remote_branch).aria_label("Publication remote branch").disabled(self.network_pending))))
+                // Check publication destination… and Cancel remote check,
+                // ghost Buttons, on a line of their own below the fields,
+                // pulled to the text edge as the actions above are
+                // (`edge_row`): wrapped below the fields at 18 pt in a
+                // 461 × 490 window, Check stood its frame on the edge and
+                // its label its inset past it.
+                .child(crate::edge_row(window).on_children_prepainted(self.body.controls(vec![Some(check.clone()), Some(stop.clone())], room))
+                    .child(refusing(crate::edge_button("inspect-publication-remote", if self.network_pending { "Checking remote…" } else { "Check publication destination…" }).track_focus(&check).debug_selector(|| "inspect-publication-remote".into()).on_click(cx.listener(|this, _, window, cx| this.check_remote(window, cx))), "inspect-publication-remote", check_refused))
+                    .when(self.network_pending, |element| element.child(crate::edge_button("cancel-remote-inspection", "Cancel remote check").track_focus(&stop).debug_selector(|| "cancel-remote-inspection".into()).on_click(cx.listener(|this, _, _, cx| { if let Some(control) = &this.network_control { control.cancel(); } cx.notify(); })))))
                 .when_some(self.notice.as_ref(), |element, notice| element.child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(notice.clone())))
                 .when_some(self.publication.as_ref(), |element, plan| element.child(div().p_3().flex_shrink_0().flex().flex_col().gap_2().border_1().border_color(rgb(p.warning)).rounded(px(6.))
                     .child(div().text_size(appearance::ui_text(12.)).child(format!("Publish to {} · {}\n{}\nExpected remote: {}\nReviewed replacement: {}", plan.remote, plan.remote_ref, workspace::display_remote_url(&plan.remote_url), plan.expected_remote_oid, plan.new_oid)))
@@ -3517,6 +3524,53 @@ mod tests {
             node.description(),
             Some(NOT_SHOWN),
             "Edit local commits… says its repository is no longer shown"
+        );
+    }
+
+    /// With a capture present, Check publication destination… is offered,
+    /// and Tab onto it at 18 pt in a 461 × 490 window reveals it with its
+    /// ring whole, below the publication fields.
+    #[gpui::test]
+    async fn check_publication_destination_draws_its_ring_whole(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, review, cx) = rewritten_review(
+            cx,
+            &[&[
+                "commit",
+                "--quiet",
+                "--amend",
+                "-m",
+                "fixture notes 2, reworded",
+            ]],
+        )
+        .await;
+        let app = cx.update(|_, cx| review.read(cx).owner.upgrade().expect("the app"));
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        draw(cx);
+        let check = cx.update(|_, cx| review.read(cx).body.focus("inspect-publication-remote", cx));
+        for _ in 0..12 {
+            if cx.update(|window, _| check.is_focused(window)) {
+                break;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(
+            cx.update(|window, _| check.is_focused(window)),
+            "Tab reaches Check publication destination…"
+        );
+        crate::tags::tests::assert_rings_whole(cx, &["inspect-publication-remote"]);
+        let body = cx
+            .debug_bounds("rewrite-review-body")
+            .expect("the body is drawn");
+        let control = cx
+            .debug_bounds("inspect-publication-remote")
+            .expect("Check publication destination… is drawn");
+        assert!(
+            lies_in(control, body),
+            "Check publication destination… at {control:?} is revealed in the body, {body:?}"
         );
     }
 
