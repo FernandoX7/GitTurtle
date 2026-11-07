@@ -2789,7 +2789,7 @@ mod tests {
             ("review-conflicts", "Review files", "changes"),
             ("continue-operation", "Complete merge", "check"),
             ("abort-operation", "Abort…", "reset"),
-            ("stop-operation", "Keep files…", "file-modified"),
+            ("stop-operation", "Keep files…", "leave"),
         ];
         const SAVED: &str = "Saved draft matches this operation, index stages and working file.";
         let (_fixture, app, cx) = merge_window(cx).await;

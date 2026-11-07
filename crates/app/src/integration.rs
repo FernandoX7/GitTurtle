@@ -363,10 +363,12 @@ impl GitTurtle {
                     )
                     .child(
                         refusing(
-                            // A file, never the close mark, which the
-                            // app keeps for cancel and clear: it ends the
-                            // operation and keeps the working files.
-                            action("stop-operation", "Keep files…", "file-modified"),
+                            // An exit mark: it ends the operation and
+                            // leaves the working files as they are. Never
+                            // the close mark, which the app keeps for cancel
+                            // and clear, nor a page, which Review files and
+                            // the Modified status draw.
+                            action("stop-operation", "Keep files…", "leave"),
                             || "stop-operation".into(),
                             busy,
                             looks_busy,
