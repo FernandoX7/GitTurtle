@@ -314,8 +314,10 @@ impl ReflogBrowser {
     }
 
     /// Selects the newest entry of `browser`, whose log has landed, and lets
-    /// that commit's read land, for tests in other modules that open the
-    /// Reflog as a person does (`focus_ring::sweep::open_dialog`).
+    /// that commit's read land, its changed files with it: for this module's
+    /// tests and for those in other modules that open the Reflog as a person
+    /// does (`focus_ring::sweep::open_dialog`). A test draws the frame it
+    /// reads after it.
     pub(crate) fn select_newest(browser: &Entity<Self>, cx: &mut gpui::VisualTestContext) {
         let entry = browser.read_with(cx, |this, _| {
             let page = this.page.as_ref().expect("the log loaded");
@@ -330,6 +332,9 @@ impl ReflogBrowser {
                 && browser.commit.is_some()),
             "the selected entry's commit is read"
         );
+        // The read has answered, so its task ends here, and a test that asks
+        // whether a later action started a read finds only that one's.
+        drop(browser.update(cx, |this, _| this.task.take()));
     }
 
     /// Whether the browser started a read: one yet to answer, or one that
@@ -2440,7 +2445,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), 1);
         let (_, browser, cx) = opened_browser(cx, &repo).await;
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         let content = rendered(cx, "reflog-browser-content");
 
         // Review, at the content's end, its read held as a slow read is.
@@ -2520,7 +2526,8 @@ mod tests {
         let (_, browser, cx) = opened_browser(cx, &repo).await;
         cx.simulate_resize(size(px(1000.), px(980.)));
         draw(cx);
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         let name = cx.update(|window, cx| {
             browser.update(cx, |this, cx| {
                 this.name.update(cx, |input, cx| {
@@ -2746,7 +2753,8 @@ mod tests {
         let (app, browser, cx) = opened_browser(cx, &repo).await;
         cx.simulate_resize(size(px(461.), px(490.)));
         set_interface_text_size(cx, &app, 18);
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
         let filter_text = |cx: &mut VisualTestContext| {
             cx.read(|cx| browser.read(cx).query.read(cx).input_bounds())
@@ -2943,7 +2951,8 @@ mod tests {
         let repo = changed_repository(fixture.path(), 1);
         let (_, browser, cx) = opened_browser(cx, &repo).await;
         // Entry 0 changes file-0.txt; entry 1, an empty commit, none.
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         content_to_end(cx, &browser);
         let reached = |cx: &mut VisualTestContext| -> Vec<String> {
             written::forget();
@@ -3135,7 +3144,8 @@ mod tests {
         let repo = changed_repository(fixture.path(), 1);
         git(repo.path(), &["branch", "recovery/taken"]);
         let (_, browser, cx) = opened_browser(cx, &repo).await;
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         cx.update(|window, cx| {
             browser.update(cx, |this, cx| {
                 this.name.update(cx, |input, cx| {
@@ -3237,7 +3247,8 @@ mod tests {
                 .await;
                 let browser = browser.borrow().clone().expect("the Reflog opens");
                 if selected {
-                    select_newest(cx, &browser).await;
+                    ReflogBrowser::select_newest(&browser, cx);
+                    park_pointer(cx);
                     let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
                     cx.update(|window, cx| window.focus(&filter, cx));
                     draw(cx);
@@ -3602,20 +3613,6 @@ mod tests {
         (app, browser, cx)
     }
 
-    /// Selects the newest entry and waits for its commit and changed files.
-    async fn select_newest(cx: &mut VisualTestContext, browser: &Entity<ReflogBrowser>) {
-        let entry = browser.read_with(cx, |this, _| {
-            let page = this.page.as_ref().expect("the log loaded");
-            assert_eq!(page.entries.len(), 12);
-            page.entries[0].clone()
-        });
-        cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
-        let read = browser.update(cx, |this, _| this.task.take());
-        read.expect("the commit is read").await;
-        draw(cx);
-        park_pointer(cx);
-    }
-
     fn park_pointer(cx: &mut VisualTestContext) {
         cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
         draw(cx);
@@ -3922,7 +3919,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), 3);
         let (_app, browser, cx) = opened_browser(cx, &repo).await;
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
 
         let p = cx.update(|_, cx| palette(cx));
         let selected = gpui_kit::Background::from(Hsla::from(rgb(p.selected)));
@@ -4046,7 +4044,8 @@ mod tests {
             fills_inside(cx, track)
         );
 
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         assert_eq!(browser.read_with(cx, |this, _| this.changes.len()), 8);
         let content = rendered(cx, "reflog-browser-content");
         let track = rendered(cx, "reflog-browser-scrollbar");
@@ -4152,7 +4151,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), 8);
         let (app, browser, cx) = opened_browser(cx, &repo).await;
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         let row = rendered(cx, "reflog-commit-file-0").size.height;
         let shown = (110. / row.as_f32()).floor() as usize;
         assert!(
@@ -4203,7 +4203,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = changed_repository(fixture.path(), shown);
         let (_app, browser, cx) = opened_browser(cx, &repo).await;
-        select_newest(cx, &browser).await;
+        ReflogBrowser::select_newest(&browser, cx);
+        park_pointer(cx);
         assert_eq!(browser.read_with(cx, |this, _| this.changes.len()), shown);
         assert_whole_rows(cx, shown, shown, 13);
         content_to_end(cx, &browser);
