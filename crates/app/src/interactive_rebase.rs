@@ -713,6 +713,10 @@ struct RebaseForm {
     selected: usize,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
+    /// Where the sequence's list rests: its offset as it was last
+    /// prepainted, and after each wheel turn over it since, which the next
+    /// turn is judged from.
+    rest: Rc<Cell<Pixels>>,
     /// The form's scrolling body, which shows each control focus moves onto
     /// whole: Tab's, and the sequence Load commits and the form's opening
     /// focus, whatever pressed them (`focus_reveal`).
@@ -755,6 +759,7 @@ impl RebaseForm {
             // one, was passed over by Tab and Shift+Tab.
             focus: cx.focus_handle().tab_stop(true),
             scroll: UniformListScrollHandle::new(),
+            rest: Rc::default(),
             body: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             fit: Fit::default(),
             acknowledged: false,
@@ -1101,7 +1106,45 @@ impl RebaseForm {
             }),
         )
         .size_full()
-        .track_scroll(&self.scroll);
+        .track_scroll(&self.scroll)
+        // The sequence lies inside the body's own scroll, and GPUI's scroll
+        // listeners never stop a wheel event, so a turn over a sequence
+        // longer than its view scrolled it and the body together. Nested
+        // scrolling chains natively, as Your themes' list in Settings does:
+        // the turn is the sequence's while it moves the sequence, and the
+        // body's only once it cannot. The list's own scroll listener has
+        // already applied the turn when this one runs (bubble order, the
+        // last registered first), unclamped, by the line height it kept as
+        // it was drawn and from either axis, as GPUI maps a sideways turn
+        // onto a vertical scroller; both judge the pointer by the list's
+        // hitbox. So the turn moved the sequence where the offset it left,
+        // clamped to the list's reach, differs from where the list rested.
+        // Judged by a step recomputed from the event's vertical part, a
+        // sideways turn scrolled both, and a turn by lines was measured by
+        // the window's line height rather than the list's.
+        .on_scroll_wheel({
+            let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
+            move |_, _, cx| {
+                let state = scroll.0.borrow();
+                let Some(size) = state.last_item_size else {
+                    return;
+                };
+                let reach = (size.contents.height - size.item.height).max(Pixels::ZERO);
+                let turned = state.base_handle.offset().y.clamp(-reach, Pixels::ZERO);
+                // Within a rounding error of where it rested, as GPUI
+                // rounds the reach it clamps to.
+                if (rest.replace(turned) - turned).abs() > px(0.01) {
+                    cx.stop_propagation();
+                }
+            }
+        });
+        // Where the list rests once prepainted, its offset clamped there.
+        let rested = {
+            let (scroll, rest) = (self.scroll.clone(), self.rest.clone());
+            move |_: Vec<Bounds<Pixels>>, _: &mut Window, _: &mut App| {
+                rest.set(scroll.0.borrow().base_handle.offset().y);
+            }
+        };
         // The form scrolls, so it clips its controls to its bounds on both
         // axes. It keeps the focus ring's room beside and below them, giving
         // the sides back through its margin and the foot through the
@@ -1191,7 +1234,7 @@ impl RebaseForm {
                     button(action.label(), action.label(), "", active).track_focus(focus).debug_selector(move || format!("rebase-action-{}", action.label().to_lowercase())).toggled(active).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.choose(action, cx)))
                 })).child(button("rebase-move-up", "Move up", "", false).track_focus(&move_up).debug_selector(|| "rebase-move-up".into()).disabled(self.pending || self.selected == 0).on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
                     .child(button("rebase-move-down", "Move down", "", false).track_focus(&move_down).debug_selector(|| "rebase-move-down".into()).disabled(self.pending || self.selected + 1 >= self.steps.len()).on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx)))))
-                .child(marked(&self.fit.list, div().flex().flex_col().on_children_prepainted(sequence_control).child(crate::native_accessibility::clips_children(div().id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(sequence).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
+                .child(marked(&self.fit.list, div().flex().flex_col().on_children_prepainted(sequence_control).child(crate::native_accessibility::clips_children(div().on_children_prepainted(rested).id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(sequence).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
                     .on_action(cx.listener(|this, _: &MoveCommitUp, _, cx| this.move_selected(true, cx)))
                     .on_action(cx.listener(|this, _: &MoveCommitDown, _, cx| this.move_selected(false, cx)))
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -1593,17 +1636,30 @@ mod tests {
     /// remote-tracking branch contains, so Edit local commits asks for its
     /// acknowledgment, as it did on the native fixture.
     fn published_repository(directory: &std::path::Path) -> GitRepository {
+        published_series(directory, 4)
+    }
+
+    /// [`published_repository`] with `commits` commits after its base, its
+    /// four first, then as many more as `commits` asks: twelve make a
+    /// sequence longer than its view.
+    fn published_series(directory: &std::path::Path, commits: usize) -> GitRepository {
         let repo = crate::views::tests::fixture_repository(directory.join("repository"));
-        for subject in [
-            "Base",
+        let named = [
             "Touch every module",
             "Add the wide flag line",
             "Add two large noise images",
             "Rework the blend notes",
-        ] {
+        ];
+        let subjects = std::iter::once("Base".to_owned()).chain((0..commits).map(|index| {
+            named.get(index).map_or_else(
+                || format!("Tune step {index}"),
+                |subject| (*subject).to_owned(),
+            )
+        }));
+        for subject in subjects {
             git(
                 repo.path(),
-                &["commit", "--quiet", "--allow-empty", "-m", subject],
+                &["commit", "--quiet", "--allow-empty", "-m", &subject],
             );
             if subject == "Base" {
                 git(repo.path(), &["tag", "base"]);
@@ -1708,7 +1764,11 @@ mod tests {
         }
         draw(cx);
         form.read_with(cx, |form, _| {
-            assert_eq!(form.steps.len(), 4, "the plan loaded: {:?}", form.error);
+            assert!(
+                form.error.is_none() && !form.steps.is_empty(),
+                "the plan loaded: {:?}",
+                form.error
+            );
             assert_eq!(form.selected, 0, "on its first commit");
         });
         let frames = frames(cx, &form);
@@ -2402,6 +2462,247 @@ mod tests {
         assert!(
             shrunk.iter().all(|frame| frame.offset < px(0.)),
             "the reopened half tile's body is scrolled to the sequence in every frame"
+        );
+    }
+
+    /// Turns the wheel by `dy` over the middle of what the body shows of the
+    /// element `selector` names.
+    fn wheel_over(cx: &mut VisualTestContext, selector: &'static str, dy: Pixels) {
+        turn_over(cx, selector, ScrollDelta::Pixels(point(px(0.), dy)));
+    }
+
+    /// Turns the wheel by `delta` over the middle of what the body shows of
+    /// the element `selector` names.
+    fn turn_over(cx: &mut VisualTestContext, selector: &'static str, delta: ScrollDelta) {
+        let viewport = rendered(cx, "rebase-plan-scroll");
+        let shown = rendered(cx, selector).intersect(&viewport);
+        assert!(
+            shown.size.height > px(1.),
+            "the body, {viewport:?}, shows {selector}"
+        );
+        cx.simulate_event(ScrollWheelEvent {
+            position: shown.center(),
+            delta,
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        draw(cx);
+    }
+
+    /// Twelve commits loaded in a 461 × 490 half tile at 18 pt, a sequence
+    /// longer than its 214 px view: a wheel turned down over the sequence
+    /// scrolls only the sequence until its last commit is at its foot, and
+    /// then the body; turned up, only the sequence until its first commit is
+    /// at its top, and then the body; one long turn up brings the sequence
+    /// to its top, and a wheel over the explanation scrolls only the body,
+    /// as nested scrolling chains natively. The sequence's scroll never
+    /// stopped the wheel, so every turn over it scrolled the body too.
+    #[gpui::test]
+    async fn a_wheel_over_a_long_sequence_scrolls_it_before_the_body_at_18_pt(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = published_series(directory.path(), 12);
+        let (_app, form, cx, _loaded) = loaded_from_the_branch_picker(
+            cx,
+            &repo,
+            size(px(461.), px(490.)),
+            18,
+            None,
+            Press::Click,
+        )
+        .await;
+        let at = "461 × 490 at 18 pt, twelve commits";
+        let (list, body) = form.read_with(cx, |form, _| {
+            assert_eq!(form.steps.len(), 12, "{at}: the plan loaded");
+            (form.scroll.clone(), form.body.scroll().clone())
+        });
+        let offsets =
+            |_: &mut VisualTestContext| (list.0.borrow().base_handle.offset().y, body.offset().y);
+        let reach = list
+            .0
+            .borrow()
+            .last_item_size
+            .map(|size| size.item.height - size.contents.height)
+            .expect("the sequence is laid out");
+        assert!(reach < px(0.), "{at}: the sequence is longer than its view");
+        let end = -body.max_offset().y;
+        let (top, shown) = offsets(cx);
+        assert_eq!(top, px(0.), "{at}: Load commits shows the first commit");
+        assert!(
+            shown < px(0.) && shown > end,
+            "{at}: the body, scrolled to the sequence at {shown:?}, can move both ways, to {end:?}"
+        );
+        let step = px(60.);
+
+        // Down: the sequence alone, until its end.
+        let mut last = offsets(cx);
+        let mut turns = 0;
+        while last.0 > reach {
+            wheel_over(cx, "rebase-list-focus", -step);
+            let now = offsets(cx);
+            assert_eq!(
+                now,
+                ((last.0 - step).max(reach), last.1),
+                "{at}: a turn down over the sequence at {last:?} scrolls it alone"
+            );
+            last = now;
+            turns += 1;
+            assert!(turns < 20, "{at}: the sequence reaches its end");
+        }
+        assert!(turns > 1, "{at}: the sequence took several turns");
+        // Then the body.
+        wheel_over(cx, "rebase-list-focus", -step);
+        let now = offsets(cx);
+        assert_eq!(
+            now,
+            (reach, (last.1 - step).max(end)),
+            "{at}: at its end, a turn down over the sequence scrolls the body"
+        );
+        assert!(now.1 < last.1, "{at}: the body moved");
+        last = now;
+
+        // Up: the sequence alone, until its top.
+        let mut turns = 0;
+        while last.0 < px(0.) {
+            wheel_over(cx, "rebase-list-focus", step);
+            let now = offsets(cx);
+            assert_eq!(
+                now,
+                ((last.0 + step).min(px(0.)), last.1),
+                "{at}: a turn up over the sequence at {last:?} scrolls it alone"
+            );
+            last = now;
+            turns += 1;
+            assert!(turns < 20, "{at}: the sequence reaches its top");
+        }
+        // Then the body.
+        wheel_over(cx, "rebase-list-focus", step);
+        let now = offsets(cx);
+        assert_eq!(
+            now,
+            (px(0.), (last.1 + step).min(px(0.))),
+            "{at}: at its top, a turn up over the sequence scrolls the body"
+        );
+        assert!(now.1 > last.1, "{at}: the body moved");
+
+        // One long turn up, from the sequence's end, brings it to its top,
+        // the body still.
+        cx.update(|_, _| {
+            list.scroll_to_item(11, ScrollStrategy::Bottom);
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        let (bottom, shown) = offsets(cx);
+        assert_eq!(bottom, reach, "{at}: the sequence shows its last commit");
+        wheel_over(cx, "rebase-list-focus", px(2000.));
+        assert_eq!(
+            offsets(cx),
+            (px(0.), shown),
+            "{at}: a long turn up over the sequence brings it to its top alone"
+        );
+
+        // Over the explanation, with the body at its top: only the body.
+        cx.update(|window, _| {
+            body.set_offset(Point::default());
+            window.refresh();
+        });
+        draw(cx);
+        assert_eq!(offsets(cx), (px(0.), px(0.)), "{at}");
+        wheel_over(cx, "rebase-base-explanation", -step);
+        assert_eq!(
+            offsets(cx),
+            (px(0.), (-step).max(end)),
+            "{at}: a turn down over the explanation scrolls the body alone"
+        );
+        wheel_over(cx, "rebase-base-explanation", step);
+        assert_eq!(
+            offsets(cx),
+            (px(0.), px(0.)),
+            "{at}: a turn up over the explanation scrolls the body alone"
+        );
+    }
+
+    /// The twelve commits of
+    /// [`a_wheel_over_a_long_sequence_scrolls_it_before_the_body_at_18_pt`],
+    /// turned by lines, as a mouse wheel turns them, and sideways, which GPUI
+    /// maps onto the vertical sequence and body: a sideways turn moves only
+    /// the sequence while it can move, and the body once the sequence is at
+    /// its end; a turn by lines down at its end reaches the body, and one
+    /// back up moves only the sequence. Judged by a step recomputed from the
+    /// event's vertical part, a sideways turn over the sequence moved the
+    /// body with it.
+    #[gpui::test]
+    async fn a_turn_by_lines_or_sideways_over_a_long_sequence_chains_at_its_end(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = published_series(directory.path(), 12);
+        let (_app, form, cx, _loaded) = loaded_from_the_branch_picker(
+            cx,
+            &repo,
+            size(px(461.), px(490.)),
+            18,
+            None,
+            Press::Click,
+        )
+        .await;
+        let at = "461 × 490 at 18 pt, twelve commits";
+        let (list, body) = form.read_with(cx, |form, _| {
+            assert_eq!(form.steps.len(), 12, "{at}: the plan loaded");
+            (form.scroll.clone(), form.body.scroll().clone())
+        });
+        let offsets =
+            |_: &mut VisualTestContext| (list.0.borrow().base_handle.offset().y, body.offset().y);
+        let reach = list
+            .0
+            .borrow()
+            .last_item_size
+            .map(|size| size.item.height - size.contents.height)
+            .expect("the sequence is laid out");
+        let end = -body.max_offset().y;
+        let sideways = || ScrollDelta::Pixels(point(px(-60.), px(0.)));
+
+        // Sideways at the sequence's top: the sequence alone.
+        let start = offsets(cx);
+        assert_eq!(start.0, px(0.), "{at}: Load commits shows the first commit");
+        turn_over(cx, "rebase-list-focus", sideways());
+        assert_eq!(
+            offsets(cx),
+            (px(-60.), start.1),
+            "{at}: a sideways turn over the sequence scrolls it alone"
+        );
+
+        // Sideways at its end: the body.
+        list.scroll_to_item(11, ScrollStrategy::Bottom);
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        let last = offsets(cx);
+        assert_eq!(last.0, reach, "{at}: the sequence shows its last commit");
+        turn_over(cx, "rebase-list-focus", sideways());
+        let now = offsets(cx);
+        assert_eq!(
+            now,
+            (reach, (last.1 - px(60.)).max(end)),
+            "{at}: at its end, a sideways turn over the sequence scrolls the body"
+        );
+        assert!(now.1 < last.1, "{at}: the body moved");
+
+        // By lines at its end: the body; back up: the sequence alone.
+        let last = now;
+        turn_over(cx, "rebase-list-focus", ScrollDelta::Lines(point(0., -1.)));
+        let now = offsets(cx);
+        assert!(
+            now.0 == reach && now.1 < last.1,
+            "{at}: at its end, a turn by lines down over the sequence at {last:?} scrolls the \
+             body alone, to {now:?}"
+        );
+        let last = now;
+        turn_over(cx, "rebase-list-focus", ScrollDelta::Lines(point(0., 1.)));
+        let now = offsets(cx);
+        assert!(
+            now.0 > reach && now.1 == last.1,
+            "{at}: a turn by lines up over the sequence at {last:?} scrolls it alone, to {now:?}"
         );
     }
 
