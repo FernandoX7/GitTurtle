@@ -751,6 +751,15 @@ cover current upstream x86-64 Omarchy.
      then test infrastructure and nits. Size S/M/L; "verify" marks an item the audit could not
      confirm in code, so its brief reproduces it first. Rounds run up to four implementers on
      disjoint files; a round's slices may change as files free up.
+     - **Found by native QA-106a (2026-11-07, release `6fff51f5`; all on the previous build too unless said):**
+       (keyboard, FU29-A) at 461 × 490 / 18 pt, Escape closing File History leaves nothing focused and Escape and
+       Ctrl+Shift+P then do nothing until a click; Changes' Tab goes from Commit title to Main Menu, skipping the
+       description and Commit. File History at 18 pt in 461 × 490: the message area is 15 px tall and draws nothing,
+       the top row ("File history ← B") and Close are cut at the window's right edge. After an external checkout and
+       Ctrl+R, History's refs and sidebar update one frame before the Git actions bar (one-frame lag; low). (verify)
+       FU27-D's QA note expected "History rows 21–520" in the status bar after a restore past the end; it never shows.
+       N2 (new with FU26-E: the stale "Git rev-parse failed" banner and a half-cut notice line beside the mark) is in
+       FU26-E2's fixup pass.
      - **Held Enter residuals (FU21-E landed 2026-11-06: a held Enter that opened a dialog reaches
        nothing in or behind it until its key-up, input-method repeats included; native QA-106 pending):**
        (macOS, verify) a Command pressed mid-hold clears the press's start, so if Cocoa keeps repeating
