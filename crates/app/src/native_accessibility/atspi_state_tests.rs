@@ -23,7 +23,7 @@ use gpui_kit::gpui::accesskit::{
 };
 use gpui_kit::gpui::{Bounds, Context, Entity, VisualTestContext, Window, point, px};
 
-struct IgnoreCallbacks;
+pub(crate) struct IgnoreCallbacks;
 
 impl AdapterCallback for IgnoreCallbacks {
     fn register_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}

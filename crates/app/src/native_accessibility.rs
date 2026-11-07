@@ -4358,6 +4358,8 @@ mod input_tests;
 pub(crate) mod menu_tests;
 #[cfg(test)]
 mod state_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod text_runs_bench;
 
 #[cfg(test)]
 mod tests {
