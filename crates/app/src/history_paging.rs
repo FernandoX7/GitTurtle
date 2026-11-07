@@ -15,10 +15,15 @@ pub struct State {
     /// as they land (`receive_history_page`), so a page refused or failed
     /// leaves paging as it was. Pinned as the page was asked for, a scope
     /// whose page never came stayed under the snapshot's rows, and Older
-    /// then continued it there. Every other end of that read clears it: a
-    /// read that replaces it, fails or is dropped (`GitTurtle::request`),
-    /// and a search or another tab that takes paging over meanwhile
-    /// ([`Self::take_settled`]).
+    /// then continued it there. Each page read sets it after
+    /// `GitTurtle::request`, which ends any earlier read's, and only that
+    /// read's landing page takes it, so a page compares only its own read's
+    /// scope. A read that replaces it, fails or is dropped (`request`), and
+    /// a search or another tab that takes paging over meanwhile
+    /// ([`Self::take_settled`]), clear it; a read ended otherwise, by
+    /// `invalidate_read` or a bare generation bump, leaves it set until the
+    /// next page read sets it again, harmless, as no page of that read
+    /// lands.
     reading: Option<gitturtle_core::HistoryScope>,
 }
 

@@ -9919,6 +9919,14 @@ mod tests {
                     assert_eq!(app.error, None, "{when}: read");
                     assert_eq!(listed(app), history[2..], "{when}: its page alone");
                     assert_eq!(app.history_paging.offset, 1, "{when}: at its offset");
+                    // The window takes the page's scope with its rows, and
+                    // the page's end: it ends that history, so Older stops.
+                    assert_eq!(
+                        app.history_paging.scope,
+                        Some(gitturtle_core::HistoryScope::FromCommit(history[1].clone())),
+                        "{when}: in the saved scope"
+                    );
+                    assert_eq!(app.history_paging.next_offset, None, "{when}: at its end");
                 });
                 continue;
             }
